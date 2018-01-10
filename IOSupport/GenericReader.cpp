@@ -29,7 +29,7 @@
 #include <memory>
 #include <algorithm>
 #include <fstream>
-#ifdef DEBUG
+#if defined(DEBUG) && defined(DEBUG_READER)
 #include <cstdio>
 #define DBG(x) x
 #else
@@ -112,8 +112,8 @@ enum FrameModeEnum
     eFrameModeTimeOffset,
 };
 
-#define kParamFrameModeOptionStartingTime "Starting Time"
-#define kParamFrameModeOptionTimeOffset "Time Offset"
+#define kParamFrameModeOptionStartingTime "Starting Time", "Set at what output frame the first sequence frame is output. The sequence frame designated by the firstFrame parameter is output at frame timeOffset.", "startingTime"
+#define kParamFrameModeOptionTimeOffset "Time Offset", "Set an offset to be applied as a number of frames. The sequence frame designated by the firstFrame parameter is output at frame firstFrame+timeOffset.", "timeOffset"
 
 #define kParamTimeOffset "timeOffset"
 #define kParamTimeOffsetLabel "Time Offset"
