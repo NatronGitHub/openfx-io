@@ -113,6 +113,7 @@ typedef tthread::fast_mutex Mutex;
 typedef OFX::MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
 }
 #endif
+#include "tinythread.h" // for tthread::condition_variable
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -1312,7 +1313,8 @@ private:
     AVStream* _streamVideo;
     AVStream* _streamAudio;
     AVStream* _streamTimecode;
-    Mutex _nextFrameToEncodeMutex;
+    tthread::mutex _nextFrameToEncodeMutex;
+    tthread::condition_variable _nextFrameToEncodeCond;
     int _nextFrameToEncode; //< the frame index we need to encode next, INT_MIN means uninitialized
     int _firstFrameToEncode;
     int _lastFrameToEncode;
@@ -1590,6 +1592,7 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _streamAudio(NULL)
     , _streamTimecode(NULL)
     , _nextFrameToEncodeMutex()
+    , _nextFrameToEncodeCond()
     , _nextFrameToEncode(INT_MIN)
     , _firstFrameToEncode(1)
     , _lastFrameToEncode(1)
@@ -4336,29 +4339,17 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     // Flag that we didn't encode any frame yet
     {
-        AutoMutex lock(_nextFrameToEncodeMutex);
+        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
         _nextFrameToEncode = (int)args.frameRange.min;
         _firstFrameToEncode = (int)args.frameRange.min;
         _lastFrameToEncode = (int)args.frameRange.max;
         _frameStep = (int)args.frameStep;
+        _nextFrameToEncodeCond.notify_all();
     }
 
     _isOpen = true;
     _error = CLEANUP;
 } // WriteFFmpegPlugin::beginEncode
-
-inline void
-sleep(const unsigned int milliseconds)
-{
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    Sleep(milliseconds);
-#else
-    struct timespec tv;
-    tv.tv_sec = milliseconds / 1000;
-    tv.tv_nsec = (milliseconds % 1000) * 1000000;
-    nanosleep(&tv, 0);
-#endif
-}
 
 #define checkAvError() if (error < 0) { \
         char errorBuf[1024]; \
@@ -4418,12 +4409,10 @@ WriteFFmpegPlugin::encode(const string& filename,
 
     ///Check that we're really encoding in sequential order
     {
-        AutoMutex lock(_nextFrameToEncodeMutex);
+        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
 
         while (_nextFrameToEncode != time && _nextFrameToEncode != INT_MIN) {
-            lock.unlock();
-            sleep(1);
-            lock.relock();
+            _nextFrameToEncodeCond.wait(_nextFrameToEncodeMutex);
         }
 
         if (_nextFrameToEncode == INT_MIN) {
@@ -5156,11 +5145,12 @@ WriteFFmpegPlugin::freeFormat()
         _formatContext = NULL;
     }
     {
-        AutoMutex lock(_nextFrameToEncodeMutex);
+        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
         _nextFrameToEncode = INT_MIN;
         _firstFrameToEncode = 1;
         _lastFrameToEncode = 1;
         _frameStep = 1;
+        _nextFrameToEncodeCond.notify_all();
     }
     _scratchBufferSize = 0;
     delete [] _scratchBuffer;
