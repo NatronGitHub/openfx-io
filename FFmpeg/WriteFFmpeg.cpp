@@ -1310,6 +1310,7 @@ private:
     bool _isOpen; // Flag for the configuration state of the FFmpeg components.
     WriterError _error;
     AVFormatContext*  _formatContext;
+    SwsContext* _convertCtx;
     AVStream* _streamVideo;
     AVStream* _streamAudio;
     AVStream* _streamTimecode;
@@ -1588,6 +1589,7 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _isOpen(false)
     , _error(IGNORE_FINISH)
     , _formatContext(NULL)
+    , _convertCtx(NULL)
     , _streamVideo(NULL)
     , _streamAudio(NULL)
     , _streamTimecode(NULL)
@@ -3472,38 +3474,39 @@ WriteFFmpegPlugin::colourSpaceConvert(MyAVPicture* avPicture,
     int ret = 0;
     int width = (_rodPixel.x2 - _rodPixel.x1);
     int height = (_rodPixel.y2 - _rodPixel.y1);
-    int dstRange = FFmpeg::pixelFormatIsYUV(dstPixelFormat) ? 0 : 1; // 0 = 16..235, 1 = 0..255
-    dstRange |= handle_jpeg(&dstPixelFormat); // may modify dstPixelFormat
-    if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
-        int encodeVideoRange = _encodeVideoRange->getValue();
-        dstRange = !(encodeVideoRange);
+    if (!_convertCtx) {
+        int dstRange = FFmpeg::pixelFormatIsYUV(dstPixelFormat) ? 0 : 1; // 0 = 16..235, 1 = 0..255
+        dstRange |= handle_jpeg(&dstPixelFormat); // may modify dstPixelFormat
+        if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
+            int encodeVideoRange = _encodeVideoRange->getValue();
+            dstRange = !(encodeVideoRange);
+        }
+
+        _convertCtx = sws_getContext(width, height, srcPixelFormat, // from
+                                     avCodecContext->width, avCodecContext->height, dstPixelFormat,// to
+                                     (width == avCodecContext->width && height == avCodecContext->height) ? SWS_POINT : SWS_BICUBIC, NULL, NULL, NULL);
+        if (!_convertCtx) {
+            return -1;
+        }
+        // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
+        //const int colorspace = (width < 1000) ? SWS_CS_ITU601 : SWS_CS_ITU709;
+        // it's the output size that counts (e.g. for DNxHD), and we prefer using height
+        const int colorspace = isRec709Format(avCodecContext->height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
+
+        // Only apply colorspace conversions for YUV.
+        if ( FFmpeg::pixelFormatIsYUV(dstPixelFormat) ) {
+            ret = sws_setColorspaceDetails(_convertCtx,
+                                           sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
+                                           1, // srcRange - 0 = 16..235, 1 = 0..255
+                                           sws_getCoefficients(colorspace), // table
+                                           dstRange, // dstRange - 0 = 16..235, 1 = 0..255
+                                           0, // brightness fixed point, with 0 meaning no change,
+                                           1 << 16, // contrast   fixed point, with 1<<16 meaning no change,
+                                           1 << 16); // saturation fixed point, with 1<<16 meaning no change);
+        }
     }
 
-    SwsContext* convertCtx = sws_getCachedContext(NULL,
-                                                  width, height, srcPixelFormat, // from
-                                                  avCodecContext->width, avCodecContext->height, dstPixelFormat,// to
-                                                  SWS_BICUBIC, NULL, NULL, NULL);
-    if (!convertCtx) {
-        return -1;
-    }
-    // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
-    //const int colorspace = (width < 1000) ? SWS_CS_ITU601 : SWS_CS_ITU709;
-    // it's the output size that counts (e.g. for DNxHD), and we prefer using height
-    const int colorspace = isRec709Format(avCodecContext->height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
-
-    // Only apply colorspace conversions for YUV.
-    if ( FFmpeg::pixelFormatIsYUV(dstPixelFormat) ) {
-        ret = sws_setColorspaceDetails(convertCtx,
-                                       sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
-                                       1, // srcRange - 0 = 16..235, 1 = 0..255
-                                       sws_getCoefficients(colorspace), // table
-                                       dstRange, // dstRange - 0 = 16..235, 1 = 0..255
-                                       0, // brightness fixed point, with 0 meaning no change,
-                                       1 << 16, // contrast   fixed point, with 1<<16 meaning no change,
-                                       1 << 16); // saturation fixed point, with 1<<16 meaning no change);
-    }
-
-    sws_scale(convertCtx,
+    sws_scale(_convertCtx,
               avPicture->data, // src
               avPicture->linesize, // src rowbytes
               0,
@@ -3873,6 +3876,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     }
 
     assert(!_formatContext);
+    assert(!_convertCtx);
 
     // first, check that the codec setting is OK
     checkCodec();
@@ -5131,18 +5135,24 @@ WriteFFmpegPlugin::freeFormat()
 {
     if (_streamVideo) {
         avcodec_close(_streamVideo->codec);
+        avcodec_free_context(&_streamVideo->codec);
         _streamVideo = NULL;
     }
     if (_streamAudio) {
         avcodec_close(_streamAudio->codec);
+        avcodec_free_context(&_streamAudio->codec);
         _streamAudio = NULL;
     }
     if (_formatContext) {
         if ( !(_formatContext->oformat->flags & AVFMT_NOFILE) ) {
             avio_close(_formatContext->pb);
         }
-        avformat_free_context(_formatContext);
+        avformat_free_context(_formatContext); // also cleans up the allocation by avformat_new_stream()
         _formatContext = NULL;
+    }
+    if (_convertCtx) {
+        sws_freeContext(_convertCtx);
+        _convertCtx = NULL;
     }
     {
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
