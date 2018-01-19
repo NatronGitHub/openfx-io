@@ -131,16 +131,18 @@ enum FrameModeEnum
 #define kParamFirstFrame "firstFrame"
 #define kParamFirstFrameLabel "First Frame"
 #define kParamFirstFrameHint \
-    "The first frame this sequence/video should start at. This cannot be less " \
-    " than the first frame of the sequence and cannot be greater than the last" \
-    " frame of the sequence."
+    "The first frame number to read from this image sequence or video file. This cannot be less " \
+    " than the first frame of the image sequence or video file, and cannot be greater than the last" \
+    " frame of the image sequence or video file. The first frame of a video file is numbered 1. " \
+    "If startingTime is 1 or timeOffset is 0, this is also the first output frame."
 
 #define kParamLastFrame "lastFrame"
 #define kParamLastFrameLabel "Last Frame"
 #define kParamLastFrameHint \
-    "The frame this sequence/video should end at. This cannot be lesser " \
-    "than the first frame of the sequence and cannot be greater than the last " \
-    "frame of the sequence."
+    "The last frame number to read from this image sequence or video file. This cannot be less " \
+    "than the first frame of the image sequence or video file, and cannot be greater than the last " \
+    "frame of the image sequence or video file. The first frame of a video file is numbered 1. "\
+    "If startingTime is 1 or timeOffset is 0, this is also the last output frame."
 
 #define kParamBefore "before"
 #define kParamBeforeLabel "Before"
