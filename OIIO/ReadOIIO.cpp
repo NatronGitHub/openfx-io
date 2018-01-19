@@ -1340,7 +1340,7 @@ ReadOIIOPlugin::restoreStateFromParams()
     ///The Create instance action is in the list of actions where you can set param values
 
     string filename;
-    _fileParam->getValueAtTime(_startingTime->getValue(), filename);
+    _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
     if ( filename.empty() ) {
         return;
     }

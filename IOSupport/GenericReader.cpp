@@ -768,7 +768,7 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
                                     (missingFrame == eMissingNext) ||
                                     (missingFrame == eMissingNearest) );
     do {
-        _fileParam->getValueAtTime(sequenceTime + offset, *filename);
+        _fileParam->getValueAtTime(sequenceTime + offset, *filename); // the time in _fileParam is the *file* time
         if (offset == 0) {
             filename0 = *filename; // for error reporting
         }
@@ -2010,7 +2010,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         ///We call guessParamsFromFilename with the first frame of the sequence so we're almost sure it will work
         ///unless the user did a mistake. We are also safe to assume that images specs are the same for
         ///all the sequence
-        _fileParam->getValueAtTime(timeDomain.min, filename);
+        _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
         if ( filename.empty() ) {
             // no need to trigger a useless error or a persistent message
 
@@ -2180,12 +2180,12 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         _proxyThreshold->setEnabled(enabled);
     } else if (paramName == kParamOriginalFrameRange) {
         int oFirst, oLast;
+        _originalFrameRange->getValue(oFirst, oLast);
         string filename;
-        _fileParam->getValueAtTime(time, filename);
+        _fileParam->getValueAtTime(oFirst, filename); // the time in _fileParam is the *file* time
         if ( isVideoStream(filename) ) {
             return;
         }
-        _originalFrameRange->getValue(oFirst, oLast);
 
         _firstFrame->setRange(oFirst, oLast);
         _firstFrame->setDisplayRange(oFirst, oLast);
@@ -2293,7 +2293,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
                 ///unless the user did a mistake. We are also safe to assume that images specs are the same for
                 ///all the sequence
                 string filename;
-                _fileParam->getValueAtTime(timeDomain.min, filename);
+                _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
 
                 double fps;
                 bool gotFps = getFrameRate(filename, &fps);

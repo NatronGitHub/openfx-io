@@ -394,6 +394,8 @@ protected:
     OFX::Clip * _outputClip; //< Mandated output clip
     OFX::StringParam  *_fileParam; //< The input file
 
+    OFX::IntParam* _firstFrame; //< the first frame in the video file (first frame is 1) or file sequence (>=0)
+
     OFX::IntParam* _timeOffset; //< the time offset applied to the sequence
     OFX::IntParam* _startingTime; //< the starting frame of the sequence
 
@@ -407,7 +409,6 @@ private:
     OFX::Double2DParam *_originalProxyScale; //< the original proxy image scale
     OFX::BooleanParam *_enableCustomScale; //< is custom proxy scale enabled
 
-    OFX::IntParam* _firstFrame; //< the first frame in the sequence (clamped to the time domain)
     OFX::ChoiceParam* _beforeFirst;//< what to do before the first frame
     OFX::IntParam* _lastFrame; //< the last frame in the sequence (clamped to the time domain)
     OFX::ChoiceParam* _afterLast; //< what to do after the last frame
