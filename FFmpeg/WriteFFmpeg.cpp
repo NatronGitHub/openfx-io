@@ -4457,6 +4457,7 @@ WriteFFmpegPlugin::encode(const string& filename,
             _nextFrameToEncode = INT_MIN;
             throw e;
         }
+        _nextFrameToEncodeCond.notify_all();
     } // MultiThread::AutoMutex lock(_nextFrameToEncodeMutex);
 } // WriteFFmpegPlugin::encode
 
