@@ -138,9 +138,14 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 // float adjust_maximum_thr
 #define kParamRawAdjustMaximumThr "rawAdjustMaximumThr"
-#define kParamRawAdjustMaximumThrLabel "Adjust Maximum Thr.", " This parameters controls auto-adjusting of maximum value based on channel_maximum[] data, calculated from real frame data. If calculated maximum is greater than adjust_maximum_thr*maximum, than maximum is set to calculated_maximum.\n" \
+#define kParamRawAdjustMaximumThrLabel "Adjust Maximum Thr.", "This parameters controls auto-adjusting of maximum value based on channel_maximum[] data, calculated from real frame data. If calculated maximum is greater than adjust_maximum_thr*maximum, than maximum is set to calculated_maximum.\n" \
 "Default: 0. If you set this value above 0.99999, then default value will be used. If you set this value below 0.00001, then no maximum adjustment will be performed. A value of 0.75 is reasonable for still shots, but sequences should always use 0.\n" \
 "Adjusting maximum should not damage any picture (esp. if you use default value) and is very useful for correcting channel overflow problems (magenta clouds on landscape shots, green-blue highlights for indoor shots)." // default: 0.
+
+#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
+#define kParamRawUserSat "rawUserSat"
+#define kParamRawUserSatLabel "Max. value", "The camera sensor saturation (maximum) value. Raw values greater or equal to this are considered saturated and are processed using the algorithm specified by the rawHighlightMode parameter. 0 means to use the default value."
+#endif
 
 // int output_color;
 #define kParamRawOutputColor "rawOutputColor"
@@ -182,6 +187,24 @@ enum RawUseCameraMatrixEnum
     eRawUseCameraMatrixDefault,
     eRawUseCameraMatrixForce,
 };
+
+#if OIIO_VERSION >= 10808
+#define kParamRawHighlightMode "rawHighlightMode"
+#define kParamRawHighlightModeLabel "Highlight Mode", "Algorithm for restoring highlight clippings. Highlights are part of your images that are burned due to the inability of your camera to capture the highlights. Highlight recovery is applied after white balance and demosaic."
+#define kParamRawHighlightModeClip "Clip", "Clip all highlights to white.", "clip"
+#define kParamRawHighlightModeUnclip "Unclip", "Leave highlights unclipped in various shades of pink.", "unclip"
+#define kParamRawHighlightModeBlend "Blend", "Blend clipped and unclipped values for a gradual fade to white.", "blend"
+#define kParamRawHighlightModeRebuild "Rebuild", "Reconstruct highlights with various levels of aggressiveness.", "rebuild"
+enum RawHighlightModeEnum {
+    eRawHighlightModeClip = 0,
+    eRawHighlightModeUnclip,
+    eRawHighlightModeBlend,
+    eRawHighlightModeRebuild
+};
+#define kParamRawHighlightRebuildLevel "rawHighlightRebuildLevel"
+#define kParamRawHighlightRebuildLevelLabel "Rebuild Level", "Level of aggressiveness used to rebuild highlights. rawHighlightRebuildLevel=2 (which corresponds to -H 5 in LibRaw/dcraw) is a good compromise.  If that's not good enough, use rawHighlightRebuildLevel=6, cut out the non-white highlights, and paste them into an image generated with rawHighlightRebuildLevel=0. "
+#endif
+
 
 // int exp_correc; float exp_shift
 #define kParamRawExposure "rawExposure"
@@ -439,8 +462,15 @@ private:
     BooleanParam* _rawAutoBright;
     BooleanParam* _rawUseCameraWB;
     DoubleParam* _rawAdjustMaximumThr;
+#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
+    IntParam* _rawUserSat;
+#endif
     ChoiceParam* _rawOutputColor;
     ChoiceParam* _rawUseCameraMatrix;
+#if OIIO_VERSION >= 10808
+    ChoiceParam* _rawHighlightMode;
+    IntParam* _rawHighlightRebuildLevel;
+#endif
     DoubleParam* _rawExposure;
     ChoiceParam* _rawDemosaic;
 
@@ -508,8 +538,15 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
     _rawAutoBright = fetchBooleanParam(kParamRawAutoBright);
     _rawUseCameraWB = fetchBooleanParam(kParamRawUseCameraWB);
     _rawAdjustMaximumThr = fetchDoubleParam(kParamRawAdjustMaximumThr);
+#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
+    _rawUserSat = fetchIntParam(kParamRawUserSat);
+#endif
     _rawOutputColor = fetchChoiceParam(kParamRawOutputColor);
     _rawUseCameraMatrix = fetchChoiceParam(kParamRawUseCameraMatrix);
+#if OIIO_VERSION >= 10808
+    _rawHighlightMode = fetchChoiceParam(kParamRawHighlightMode);
+    _rawHighlightRebuildLevel = fetchIntParam(kParamRawHighlightRebuildLevel);
+#endif
     _rawExposure = fetchDoubleParam(kParamRawExposure);
     _rawDemosaic = fetchChoiceParam(kParamRawDemosaic);
 
@@ -641,9 +678,16 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
     } else if ((paramName == kParamRawAutoBright) ||
                (paramName == kParamRawUseCameraWB) ||
                (paramName == kParamRawAdjustMaximumThr) ||
+#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
+               (paramName == kParamRawUserSat) ||
+#endif
                (paramName == kParamRawOutputColor) ||
                (paramName == kParamRawUseCameraMatrix) ||
                (paramName == kParamRawExposure) ||
+#if OIIO_VERSION >= 10808
+               (paramName == kParamRawHighlightMode) ||
+               (paramName == kParamRawHighlightRebuildLevel) ||
+#endif
                (paramName == kParamRawDemosaic)) {
         // advanced parameters changed, invalidate the cache entries for the whole sequence
         if (_cache) {
@@ -1749,6 +1793,17 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
 
     config->attribute("raw:adjust_maximum_thr", (float)_rawAdjustMaximumThr->getValue());
 
+#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
+    // Add "raw:user_sat" configuration attribute to the reader. #1666 (1.7.15/1.8.4)
+    // Set camera maximum value if "raw:user_sat" is not 0
+    // user_sat is used to set sensor saturation (max possible) value.
+    int rawUserSat = _rawUserSat->getValue();
+    if (rawUserSat > 0) {
+        config->attribute("raw:user_sat", rawUserSat);
+    }
+#endif
+
+    // Check to see if the user has explicitly set the output colorspace primaries
     const char* cs = NULL;
     RawOutputColorEnum rawOutputColor = (RawOutputColorEnum)_rawOutputColor->getValue();
     switch(rawOutputColor) {
@@ -1781,6 +1836,12 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
         config->attribute("raw:Colorspace", cs);
     }
 
+    // Use embedded color profile. Values mean:
+    // 0: do not use embedded color profile
+    // 1 (default): use embedded color profile (if present) for DNG files
+    //    (always), for other files only if use_camera_wb is set.
+    // 3: use embedded color data (if present) regardless of white
+    //    balance setting.
     RawUseCameraMatrixEnum rawUseCameraMatrix = (RawUseCameraMatrixEnum)_rawUseCameraMatrix->getValue();
     switch (rawUseCameraMatrix) {
         case eRawUseCameraMatrixNone:
@@ -1794,12 +1855,38 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
             break;
     }
 
-
+    // Exposure adjustment
     double rawExposure = _rawExposure->getValue();
     if (rawExposure != 1.) {
         config->attribute("raw:Exposure", (float)rawExposure);
     }
 
+#if OIIO_VERSION >= 10808
+    // Highlight adjustment
+    // (0=clip, 1=unclip, 2=blend, 3+=rebuild)
+    // LibRaw offers several algorithms for restoring highlight clippings — Solid White, Unclip, Blend, and Rebuild
+    // Default is here to consider highlights (read: part of your images that are burned due to the inability of your camera to capture the highlights) as plain / solid white (solid white option). You can get some fancy results with the unclip option which will paint the highlights in various pinks. At last you can try to consider recovering some parts of the missing information from the highlights (reconstruct option).
+
+    // This is possible because the blue pixels tends to saturate less quickly than the greens and the reds. digiKam/dcraw will try to reconstruct the missing green and red colors from the remaining none saturated blue pixels. Of course here everything is a question of tradeoff between how much color or white you want.
+
+    // If you select Reconstruct as the option, you will be given the choice to set a level. A value of 3 is a compromise and can/should be adapted on a per image basis.
+    RawHighlightModeEnum rawHighlightMode = (RawHighlightModeEnum)_rawHighlightMode->getValue();
+    if (rawHighlightMode != eRawHighlightModeClip) {
+        if (rawHighlightMode != eRawHighlightModeRebuild) {
+            config->attribute("raw:HighlightMode", (int)rawHighlightMode);
+        } else {
+            // rebuild level, from 0 to 7
+            int rawHighlightRebuildLevel = std::max( 0,std::min(_rawHighlightRebuildLevel->getValue(), 7) );
+            config->attribute("raw:HighlightMode", (int)rawHighlightMode + rawHighlightRebuildLevel);
+        }
+    }
+#endif
+
+    // Interpolation quality
+    // note: LibRaw must be compiled with demosaic pack GPL2 to use demosaic
+    // algorithms 5-9. It must be compiled with demosaic pack GPL3 for
+    // algorithm 10 (AMAzE). If either of these packs are not included, it
+    // will silently use option 3 - AHD.
     int rawDemosaic = _rawDemosaic->getValue();
     const char* d = NULL;
     switch (libraw_demosaic[rawDemosaic]) {
@@ -3056,6 +3143,22 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                     page->addChild(*param);
                 }
             }
+#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
+            {
+                IntParamDescriptor* param = desc.defineIntParam(kParamRawUserSat);
+                param->setLabelAndHint(kParamRawUserSatLabel);
+                param->setRange(0, INT_MAX);
+                param->setDisplayRange(0, 0xffff);
+                param->setDefault(0);
+                param->setAnimates(false);
+                if (group) {
+                    param->setParent(*group);
+                }
+                if (page) {
+                    page->addChild(*param);
+                }
+            }
+#endif
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawOutputColor);
                 param->setLabelAndHint(kParamRawOutputColorLabel);
@@ -3102,6 +3205,42 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                     page->addChild(*param);
                 }
             }
+#if OIIO_VERSION >= 10808
+            {
+                ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawHighlightMode);
+                param->setLabelAndHint(kParamRawHighlightModeLabel);
+                assert(param->getNOptions() == eRawHighlightModeClip);
+                param->appendOption(kParamRawHighlightModeClip);
+                assert(param->getNOptions() == eRawHighlightModeUnclip);
+                param->appendOption(kParamRawHighlightModeUnclip);
+                assert(param->getNOptions() == eRawHighlightModeBlend);
+                param->appendOption(kParamRawHighlightModeBlend);
+                assert(param->getNOptions() == eRawHighlightModeRebuild);
+                param->appendOption(kParamRawHighlightModeRebuild);
+                param->setAnimates(false);
+                param->setLayoutHint(eLayoutHintNoNewLine);
+                if (group) {
+                    param->setParent(*group);
+                }
+                if (page) {
+                    page->addChild(*param);
+                }
+            }
+            {
+                IntParamDescriptor* param = desc.defineIntParam(kParamRawHighlightRebuildLevel);
+                param->setLabelAndHint(kParamRawHighlightRebuildLevelLabel);
+                param->setRange(0, 9 - (int)eRawHighlightModeRebuild);
+                param->setDisplayRange(0, 9 - (int)eRawHighlightModeRebuild);
+                param->setDefault(5 - (int)eRawHighlightModeRebuild);
+                param->setAnimates(false);
+                if (group) {
+                    param->setParent(*group);
+                }
+                if (page) {
+                    page->addChild(*param);
+                }
+            }
+#endif
             {
                 DoubleParamDescriptor* param = desc.defineDoubleParam(kParamRawExposure);
                 param->setLabelAndHint(kParamRawExposureLabel);
