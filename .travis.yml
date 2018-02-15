@@ -55,14 +55,11 @@ before_install:
 
 install:
 # OpenColorIO
-# As of 20160917, there is no 1.0.10 release, and OCIO 1.0.9 doesn't build against yaml 0.5.1,
-# and doesn't build universal with the included yaml-cpp 0.3,
-# so we have to fetch a version from the github.
   - sudo apt-get install cmake libtinyxml-dev liblcms2-dev libyaml-cpp-dev libboost1.60-dev
-#  - wget https://github.com/imageworks/OpenColorIO/archive/v1.0.9.tar.gz -O /tmp/ocio-1.0.9.tar.gz
-#  - tar zxf /tmp/ocio-1.0.9.tar.gz > /dev/null 2>&1
-#  - cd OpenColorIO-1.0.9
-  - git clone https://github.com/imageworks/OpenColorIO.git && cd OpenColorIO
+  - wget https://github.com/imageworks/OpenColorIO/archive/v1.1.0.tar.gz -O /tmp/ocio-1.1.0.tar.gz
+  - tar zxf /tmp/ocio-1.1.0.tar.gz > /dev/null 2>&1
+  - cd OpenColorIO-1.1.0
+#  - git clone https://github.com/imageworks/OpenColorIO.git && cd OpenColorIO
   - mkdir _build
   - cd _build
   - cmake .. -DCMAKE_INSTALL_PREFIX=/opt/ocio -DCMAKE_BUILD_TYPE=Release -DOCIO_BUILD_JNIGLUE=OFF -DOCIO_BUILD_NUKE=OFF -DOCIO_BUILD_SHARED=ON -DOCIO_BUILD_STATIC=OFF -DOCIO_STATIC_JNIGLUE=OFF -DOCIO_BUILD_TRUELIGHT=OFF -DUSE_EXTERNAL_LCMS=ON -DUSE_EXTERNAL_TINYXML=ON -DUSE_EXTERNAL_YAML=ON -DOCIO_BUILD_APPS=OFF -DOCIO_USE_BOOST_PTR=ON -DOCIO_BUILD_TESTS=OFF -DOCIO_BUILD_PYGLUE=OFF
@@ -72,9 +69,9 @@ install:
   - sudo apt-get install libopenexr-dev libilmbase-dev
 # OpenImageIO (for some reason, freetype is not recognized)
   - sudo apt-get install libopenjp2-7-dev libtiff4-dev libjpeg-dev libpng-dev libraw-dev libboost-filesystem1.60-dev libboost-regex1.60-dev libboost-thread1.60-dev libboost-system1.60-dev libwebp-dev libfreetype6-dev libssl-dev
-  - wget https://github.com/OpenImageIO/oiio/archive/Release-1.7.17.tar.gz -O /tmp/OpenImageIO-1.7.17.tar.gz
-  - tar zxf /tmp/OpenImageIO-1.7.17.tar.gz > /dev/null 2>&1
-  - cd oiio-Release-1.7.17
+  - wget https://github.com/OpenImageIO/oiio/archive/Release-1.8.8.tar.gz -O /tmp/OpenImageIO-1.8.8.tar.gz
+  - tar zxf /tmp/OpenImageIO-1.8.8.tar.gz > /dev/null 2>&1
+  - cd oiio-Release-1.8.8
   - make $MAKEFLAGSPARALLEL USE_QT=0 USE_PYTHON=0 USE_PYTHON3=0 USE_FIELD3D=0 USE_FFMPEG=0 USE_OPENJPEG=1 USE_OCIO=1 USE_OPENCV=0 USE_OPENSSL=0 USE_FREETYPE=1 USE_GIF=0 USE_PTEX=0 USE_LIBRAW=1 OIIO_BUILD_TESTS=0 OIIO_BUILD_TOOLS=0 OCIO_HOME=/opt/ocio INSTALLDIR=/opt/oiio dist_dir=. cmake
   - sudo make $MAKEFLAGSPARALLEL dist_dir=.
   - cd ..
@@ -100,14 +97,14 @@ script:
     fi
   #- pkg-config --cflags libraw_r
   #- dpkg-query -L libraw-dev
-  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio
-  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio nomulti
+  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CXX="$CXX -std=c++11" CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio
+  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CXX="$CXX -std=c++11" CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio nomulti
   - make clean
   # without OCIO OpenGL support
-  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio OCIO_OPENGL_CXXFLAGS= OCIO_OPENGL_LINKFLAGS=
+  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CXX="$CXX -std=c++11" CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio OCIO_OPENGL_CXXFLAGS= OCIO_OPENGL_LINKFLAGS=
   - make clean
   # without OCIO
-  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio OCIO_CXXFLAGS= OCIO_LINKFLAGS=
+  - env PKG_CONFIG_PATH=/opt/ocio/lib/pkgconfig make $J V=1 CXX="$CXX -std=c++11" CONFIG=debug SEEXPR_HOME=/opt/seexpr OIIO_HOME=/opt/oiio OCIO_CXXFLAGS= OCIO_LINKFLAGS=
 
 addons:
   apt:
