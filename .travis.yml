@@ -71,15 +71,15 @@ install:
 # OpenEXR (2.0 is required for OIIO 1.8)
 # see https://github.com/PixarAnimationStudios/USD/blob/master/.travis.yml
   - if [ ! -d "$HOME/openexr/lib" ]; then
-      wget http://download.savannah.nongnu.org/releases/openexr/ilmbase-2.2.0.tar.gz -O /tmp/ilmbase.tgz;
+      wget http://download.savannah.nongnu.org/releases/openexr/ilmbase-2.2.1.tar.gz -O /tmp/ilmbase.tgz;
       tar -xvzf /tmp/ilmbase.tgz -C $HOME;
-      pushd $HOME/ilmbase-2.2.0;
+      pushd $HOME/ilmbase-2.2.1;
       ./configure --prefix=$HOME/openexr;
       make && make install;
       popd;
-      wget http://download.savannah.nongnu.org/releases/openexr/openexr-2.2.0.tar.gz -O /tmp/openexr.tgz;
+      wget http://download.savannah.nongnu.org/releases/openexr/openexr-2.2.1.tar.gz -O /tmp/openexr.tgz;
       tar -xvzf /tmp/openexr.tgz -C $HOME;
-      pushd $HOME/openexr-2.2.0;
+      pushd $HOME/openexr-2.2.1;
       ./configure --prefix=$HOME/openexr --with-pkg-config=no LDFLAGS="-Wl,-rpath -Wl,$HOME/openexr/lib";
       make $MAKEFLAGSPARALLEL && make install;
       popd;
