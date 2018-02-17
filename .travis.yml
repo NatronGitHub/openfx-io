@@ -2,7 +2,7 @@ env:
   global:
    # The next declaration is the encrypted COVERITY_SCAN_TOKEN, created
    #   via the "travis encrypt" command using the project repo's public key
-   - secure: "az4QH6KOKwa7UCQBEslcDQkm2yedGAoaGpJQ5UjO3I+W467GpuJm9iPEbKZAwz+Geo/QfLOWVA5w3wfwl8LTrOlI+vKTwbgjV2PkqTaHWzFF31v0p7NUoLDPpidHbs7sX/09q0XbBjdlvgCjs4+mbeGm5hPjk6bIcWX2MD8Wi4g="
+   - secure: "d8KMUtwLMEWMePFXVrUpSf7isPZX63NgOCfIXupqfpJJAaQRTf9MYIh3c6FwTtD0xUDEz2O7ei+lTaElEfz2IO5hJjcJUQ8kJeejD0QZ5kQCu0mJe92TdNVT8tTJ0xjgJURJ+CqQrCGwtsH2gQzg7A6ThcTK/Uy+gZzGi3Q5jmjqtjPALyTD5ZXZzEdxcR9GCksmLHSyxMUWaSnZ/fnr856g00XQY3+2nVawfq35NVye1cyZADJeH30h825eAwfBMJ4wx4cyS5cxInB39RzKfQQJQmNJmULntjIhrTfpdwQjxPSSU8mPgA+Wc09TA19KuARCig3z8exDIvqJwTki5k1uuWlVdAgzRtBNqPQ670p/13YeO+hvi5/QlLS5mONh1OfPUbUoqG6MoCTmW/bqsxX7Onob7IDB/bGjzQ/YmLHdW4MlV7ZpA/e99fdLtC063aeXNqwI25SoWyZDSm1SzKZyirG0nmiHCesPYJiBRQ2xe60OCQbrEZ0HswO94+gqK1C1h7ILhpGG/qfAEZJh5ZQUKuoJlUChV1TNOhBDggDmL23HhidiDBC8+7TRdoKAj84SkFQ9w3s62foDedfZk0x7vsCd29XnT2+4+q0EUQJqozJPpxpEmJr4eh1VRMhiyNB8BkJd1cs7+U/VH6CQa+MIxm6vUztJNuuZ7EH6B+Q="
    # Coverity run condition (avoid matrix multiple runs), need customized
    # build script. Need an update if new matrix cases.
    - coverity_scan_run_condition='"$CC" = gcc -a "$TRAVIS_OS_NAME" != osx'
@@ -39,6 +39,7 @@ before_install:
   - date -u
   - uname -a
   - export J='-j3'
+  - echo -n | openssl s_client -connect https://scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
   - git submodule update --init --recursive
 #  - sudo add-apt-repository -y ppa:boost-latest/ppa # precise only
   - sudo add-apt-repository -y ppa:samuel-bachmann/boost
