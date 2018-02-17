@@ -272,6 +272,7 @@ GenericReaderPlugin::GenericReaderPlugin(OfxImageEffectHandle handle,
 #endif
     , _outputClip(NULL)
     , _fileParam(NULL)
+    , _firstFrame(NULL)
     , _timeOffset(NULL)
     , _startingTime(NULL)
     , _originalFrameRange(NULL)
@@ -279,7 +280,6 @@ GenericReaderPlugin::GenericReaderPlugin(OfxImageEffectHandle handle,
     , _proxyThreshold(NULL)
     , _originalProxyScale(NULL)
     , _enableCustomScale(NULL)
-    , _firstFrame(NULL)
     , _beforeFirst(NULL)
     , _lastFrame(NULL)
     , _afterLast(NULL)

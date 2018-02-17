@@ -207,6 +207,6 @@ addons:
     #build_command_prepend: ./configure
     # This command will be added as an argument to "cov-build" to compile
     # the project for analysis
-    build_command: "env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig make $J CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio"
+    build_command: "env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J CXX=\"$CXX -std=c++11\" CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio"
     # Pattern to match selecting branches that will run analysis
     branch_pattern: coverity_scan
