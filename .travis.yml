@@ -39,7 +39,9 @@ before_install:
   - date -u
   - uname -a
   - export J='-j3'
-  - echo -n | openssl s_client -connect https://scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
+  - if [ ${TRAVIS_OS_NAME} = "linux" ]; then
+      echo -n | openssl s_client -connect https://scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca- ;
+    fi
   - git submodule update --init --recursive
 #  - sudo add-apt-repository -y ppa:boost-latest/ppa # precise only
   - sudo add-apt-repository -y ppa:samuel-bachmann/boost
