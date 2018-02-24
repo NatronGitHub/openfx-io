@@ -642,8 +642,10 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
         stringstream ss;
         if (st == kOfxStatOK) {
             ss << metadata(filename);
-        } else {
+        } else if ( filename.empty() ) {
             ss << "Impossible to read image info:\nCould not get filename at time " << args.time << '.';
+        } else {
+            ss << "Impossible to read image info:\nCould not read file " << filename << " corresponding to time " << args.time << '.';
         }
         sendMessage( Message::eMessageMessage, "", ss.str() );
     } else if ( _outputLayerString && (paramName == kParamChannelOutputLayer) ) {
