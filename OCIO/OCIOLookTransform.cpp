@@ -380,7 +380,8 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
     if (!gHostDescription.supportsOpenGLRender) {
         _enableGPU->setEnabled(false);
     }
-    setSupportsOpenGLRender( _enableGPU->getValue() );
+    // GPU rendering is wrong when (un)premult is checked
+    setSupportsOpenGLRender( _enableGPU->getValue() && !_premult->getValue() );
 #endif
 
     bool singleLook = _singleLook->getValue();
@@ -1006,7 +1007,8 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs &args,
         _lookCombination->setEvaluateOnChange(!singleLook);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     } else if (paramName == kParamEnableGPU) {
-        bool supportsGL = _enableGPU->getValueAtTime(args.time);
+        // GPU rendering is wrong when (un)premult is checked
+        bool supportsGL = _enableGPU->getValueAtTime(args.time) && !_premult->getValueAtTime(args.time);
         setSupportsOpenGLRender(supportsGL);
         setSupportsTiles(!supportsGL);
 #endif

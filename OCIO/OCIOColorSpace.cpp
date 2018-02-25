@@ -306,7 +306,8 @@ OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
     if (!gHostDescription.supportsOpenGLRender) {
         _enableGPU->setEnabled(false);
     }
-    setSupportsOpenGLRender( _enableGPU->getValue() );
+    // GPU rendering is wrong when (un)premult is checked
+    setSupportsOpenGLRender( _enableGPU->getValue() && !_premult->getValue() );
 #endif
 }
 
@@ -805,7 +806,8 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs &args,
     clearPersistentMessage();
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     if (paramName == kParamEnableGPU) {
-        bool supportsGL = _enableGPU->getValueAtTime(args.time);
+        // GPU rendering is wrong when (un)premult is checked
+        bool supportsGL = _enableGPU->getValueAtTime(args.time) && !_premult->getValueAtTime(args.time);
         setSupportsOpenGLRender(supportsGL);
         setSupportsTiles(!supportsGL);
 
