@@ -2786,14 +2786,50 @@ ReadOIIOPlugin::metadata(const string& filename)
         return string();
     }
 
-    ss << "file: " << filename << std::endl;
-
-    for (std::size_t sIt = 0; sIt < subImages.size(); ++sIt) {
-        if (subImages.size() > 1) {
-            ss << "Part " << sIt << ":" << std::endl;
+    ss << filename << " : ";
+    if (subImages.size() > 1) {
+        ss << "    " << subImages.size() << " subimages:" << std::endl;
+    }
+    int movie = 0;
+    for (std::size_t sIt = 0; sIt < subImages.size() && !movie; ++sIt) {
+        if (sIt == 0) {
+            // only print the info about the first subimage in movies
+            movie = subImages[sIt].get_int_attribute ("oiio:Movie");
         }
+        if (!movie && subImages.size() > 1) {
+            ss << "subimage " << sIt << ":" << std::endl;
+        }
+        ss << subImages[sIt].width << " x " << subImages[sIt].height;
+        if (subImages[sIt].depth > 1) {
+            ss << " x " << subImages[sIt].depth;
+        }
+        int bits = subImages[sIt].get_int_attribute ("oiio:BitsPerSample", 0);
+        ss << ", " << subImages[sIt].nchannels << " channel, ";
+        if (subImages[sIt].deep) {
+            ss << "deep ";
+        }
+        if (subImages[sIt].depth > 1) {
+            ss << "volume ";
+        }
+        TypeDesc type = subImages[sIt].format;
+        if (bits && bits < (int)type.size()*8) {
+            // The "oiio:BitsPerSample" betrays a different bit depth in the
+            // file than the data type we are passing.
+            if (type == TypeDesc::UINT8 || type == TypeDesc::UINT16 ||
+                type == TypeDesc::UINT32 || type == TypeDesc::UINT64) {
+                ss << "uint" << bits;
+            } else if (type == TypeDesc::INT8 || type == TypeDesc::INT16 ||
+                       type == TypeDesc::INT32 || type == TypeDesc::INT64) {
+                ss << "int" << bits;
+            } else {
+                ss << type.c_str();  // use the name implied by type
+            }
+        } else {
+            ss << type.c_str();  // use the name implied by type
+        }
+        ss << " " << img->format_name() << std::endl;
 
-        ss << "Channels list: " << std::endl;
+        ss << "    channel list: ";
         for (int i = 0; i < subImages[sIt].nchannels; ++i) {
             if ( i < (int)subImages[sIt].channelnames.size() ) {
                 ss << subImages[sIt].channelnames[i];
@@ -2810,7 +2846,7 @@ ReadOIIOPlugin::metadata(const string& filename)
                 if (subImages[sIt].nchannels <= 4) {
                     ss << ", ";
                 } else {
-                    ss << std::endl;
+                    ss << std::endl << "                  ";
                 }
             }
         }
