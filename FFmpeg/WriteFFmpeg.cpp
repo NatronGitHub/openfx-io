@@ -1239,6 +1239,12 @@ private:
     virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
     virtual void changedClip(const InstanceChangedArgs &args, const string &clipName) OVERRIDE FINAL;
     virtual void onOutputFileChanged(const string &filename, bool setColorSpace) OVERRIDE FINAL;
+    /** @brief The sync private data action, called when the effect needs to sync any private data to persistent parameters */
+    virtual void syncPrivateData(void) OVERRIDE FINAL
+    {
+        updateVisibility();
+        updatePixelFormat();
+    }
 
     /** @brief the effect is about to be actively edited by a user, called when the first user interface is opened on an instance */
     virtual void beginEdit(void) OVERRIDE FINAL;
@@ -1665,8 +1671,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     _mbDecision = fetchChoiceParam(kParamMBDecision);
 #endif
 
-    updateVisibility();
-    updatePixelFormat();
+    // finally
+    syncPrivateData();
 }
 
 WriteFFmpegPlugin::~WriteFFmpegPlugin()

@@ -178,6 +178,12 @@ public:
     // override the roi call
     virtual void getRegionsOfInterest(const RegionsOfInterestArguments &args, RegionOfInterestSetter &rois) OVERRIDE FINAL;
 
+    /** @brief The sync private data action, called when the effect needs to sync any private data to persistent parameters */
+    virtual void syncPrivateData(void) OVERRIDE FINAL
+    {
+        updateVisibility();
+    }
+
 private:
     void updateVisibility(void);
 
@@ -226,7 +232,8 @@ RunScriptPlugin::RunScriptPlugin(OfxImageEffectHandle handle)
     _validate = fetchBooleanParam(kParamValidate);
     assert(_script && _validate);
 
-    updateVisibility();
+    // finally
+    syncPrivateData();
 }
 
 void
