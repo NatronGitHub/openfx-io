@@ -188,7 +188,11 @@ enum RawUseCameraMatrixEnum
     eRawUseCameraMatrixForce,
 };
 
-#if OIIO_VERSION >= 10808
+// oiio 1.7.17 can be patched using
+// https://github.com/OpenImageIO/oiio/commit/42cf4d82419795e50bc8be474161968f9f33ff41.diff
+// from
+// https://github.com/OpenImageIO/oiio/pull/1851
+#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
 #define kParamRawHighlightMode "rawHighlightMode"
 #define kParamRawHighlightModeLabel "Highlight Mode", "Algorithm for restoring highlight clippings. Highlights are part of your images that are burned due to the inability of your camera to capture the highlights. Highlight recovery is applied after white balance and demosaic."
 #define kParamRawHighlightModeClip "Clip", "Clip all highlights to white.", "clip"
@@ -467,7 +471,7 @@ private:
 #endif
     ChoiceParam* _rawOutputColor;
     ChoiceParam* _rawUseCameraMatrix;
-#if OIIO_VERSION >= 10808
+#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     ChoiceParam* _rawHighlightMode;
     IntParam* _rawHighlightRebuildLevel;
 #endif
@@ -543,7 +547,7 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 #endif
     _rawOutputColor = fetchChoiceParam(kParamRawOutputColor);
     _rawUseCameraMatrix = fetchChoiceParam(kParamRawUseCameraMatrix);
-#if OIIO_VERSION >= 10808
+#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     _rawHighlightMode = fetchChoiceParam(kParamRawHighlightMode);
     _rawHighlightRebuildLevel = fetchIntParam(kParamRawHighlightRebuildLevel);
 #endif
@@ -686,7 +690,7 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
                (paramName == kParamRawOutputColor) ||
                (paramName == kParamRawUseCameraMatrix) ||
                (paramName == kParamRawExposure) ||
-#if OIIO_VERSION >= 10808
+#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
                (paramName == kParamRawHighlightMode) ||
                (paramName == kParamRawHighlightRebuildLevel) ||
 #endif
@@ -1863,7 +1867,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
         config->attribute("raw:Exposure", (float)rawExposure);
     }
 
-#if OIIO_VERSION >= 10808
+#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     // Highlight adjustment
     // (0=clip, 1=unclip, 2=blend, 3+=rebuild)
     // LibRaw offers several algorithms for restoring highlight clippings — Solid White, Unclip, Blend, and Rebuild
@@ -3243,7 +3247,7 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                     page->addChild(*param);
                 }
             }
-#if OIIO_VERSION >= 10808
+#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawHighlightMode);
                 param->setLabelAndHint(kParamRawHighlightModeLabel);
