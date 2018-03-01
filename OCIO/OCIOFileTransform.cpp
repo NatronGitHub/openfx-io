@@ -103,11 +103,15 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamInterpolationOptionTetrahedral "Tetrahedral", "", "tetrahedral"
 #define kParamInterpolationOptionBest "Best", "", "best"
 
+// OCIO's GPU render is not accurate enough.
+// see https://github.com/imageworks/OpenColorIO/issues/394
+// and https://github.com/imageworks/OpenColorIO/issues/456
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
 #define kParamEnableGPU "enableGPU"
 #define kParamEnableGPULabel "Enable GPU Render"
 #define kParamEnableGPUHint \
     "Enable GPU-based OpenGL render.\n" \
+    "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n" \
     "If the checkbox is checked but is not enabled (i.e. it cannot be unchecked), GPU render can not be enabled or disabled from the plugin and is probably part of the host options.\n" \
     "If the checkbox is not checked and is not enabled (i.e. it cannot be checked), GPU render is not available on this host."
 #endif
@@ -1138,7 +1142,9 @@ OCIOFileTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         const ImageEffectHostDescription &gHostDescription = *getImageEffectHostDescription();
         // Resolve advertises OpenGL support in its host description, but never calls render with OpenGL enabled
         if ( gHostDescription.supportsOpenGLRender && (gHostDescription.hostName != "DaVinciResolveLite") ) {
-            param->setDefault(true);
+            // OCIO's GPU render is not accurate enough.
+            // see https://github.com/imageworks/OpenColorIO/issues/394
+            param->setDefault(/*true*/false);
             if (gHostDescription.APIVersionMajor * 100 + gHostDescription.APIVersionMinor < 104) {
                 // Switching OpenGL render from the plugin was introduced in OFX 1.4
                 param->setEnabled(false);
