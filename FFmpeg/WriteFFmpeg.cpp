@@ -3968,7 +3968,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 } else
 #              endif
                 {
-                    avCodecContext->thread_count = std::min(MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS);
+                    avCodecContext->thread_count = std::min( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS );
                 }
 
                 if (openCodec(formatContext_, audioCodec, streamAudio_) < 0) {
@@ -4145,7 +4145,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         } else
 #     endif
         {
-            avCodecContext->thread_count = std::min(MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS);
+            avCodecContext->thread_count = std::min( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS );
         }
 #     ifdef AV_CODEC_CAP_SLICE_THREADS
         if (avCodecContext->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) {
