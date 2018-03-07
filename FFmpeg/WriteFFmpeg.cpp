@@ -4145,7 +4145,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         } else
 #     endif
         {
-            avCodecContext->thread_count = MultiThread::getNumCPUs();
+            avCodecContext->thread_count = std::min(MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS);
         }
 #     ifdef AV_CODEC_CAP_SLICE_THREADS
         if (avCodecContext->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) {
