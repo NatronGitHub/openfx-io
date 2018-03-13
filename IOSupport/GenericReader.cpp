@@ -270,6 +270,7 @@ GenericReaderPlugin::GenericReaderPlugin(OfxImageEffectHandle handle,
     , _inputSpaceSet(NULL)
     , _ocio( new GenericOCIO(this) )
 #endif
+    , _syncClip(NULL)
     , _outputClip(NULL)
     , _fileParam(NULL)
     , _firstFrame(NULL)
@@ -300,6 +301,7 @@ GenericReaderPlugin::GenericReaderPlugin(OfxImageEffectHandle handle,
     , _supportsTiles(supportsTiles)
     , _isMultiPlanar(isMultiPlanar)
 {
+    _syncClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
     _outputClip = fetchClip(kOfxImageEffectOutputClipName);
 
     _fileParam = fetchStringParam(kParamFilename);
@@ -1324,6 +1326,11 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
     GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, &filename);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
+        if ( _syncClip && _syncClip->isConnected() ){
+            // if the Sync input is connected, just return the RoD from this input
+            // Because Natron calls getRoD() before render(), so the image may not yet be here.
+            return false;
+        }
         setPersistentMessage(Message::eMessageError, "", filename + ": Cannot load frame");
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2189,9 +2196,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
             return;
         }
 
-        _firstFrame->setRange(oFirst, oLast);
         _firstFrame->setDisplayRange(oFirst, oLast);
-        _lastFrame->setRange(oFirst, oLast);
         _lastFrame->setDisplayRange(oFirst, oLast);
 
         _firstFrame->setValue(oFirst);
@@ -2206,7 +2211,6 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         int oFirst, oLast;
         _originalFrameRange->getValue(oFirst, oLast);
         _firstFrame->getValue(first);
-        _lastFrame->setRange(first, oLast);
         _lastFrame->setDisplayRange(first, oLast);
 
         int offset;
@@ -2221,7 +2225,6 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         _originalFrameRange->getValue(oFirst, oLast);
         _firstFrame->getValue(first);
         _lastFrame->getValue(last);
-        _firstFrame->setRange(oFirst, last);
         _firstFrame->setDisplayRange(oFirst, last);
 
         _timeDomainUserSet->setValue(true);

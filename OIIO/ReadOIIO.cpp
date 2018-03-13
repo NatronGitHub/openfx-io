@@ -726,7 +726,11 @@ ReadOIIOPlugin::getClipComponents(const ClipComponentsArguments& args,
     //Should only be called if multi-planar
     assert( isMultiPlanar() );
 
+    // no pass-through
     clipComponents.setPassThroughClip(NULL, args.time, args.view);
+
+    // ask for the color components from the input (needed for the Sync connection to work)
+    clipComponents.addClipPlane(*_syncClip, kFnOfxImagePlaneColour);
 
     {
         AutoMutex lock(_outputLayerMenuMutex);

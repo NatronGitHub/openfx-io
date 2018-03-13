@@ -391,6 +391,7 @@ protected:
     auto_ptr<GenericOCIO> _ocio;
 #endif
 
+    OFX::Clip* _syncClip; //< Mantated input clip
     OFX::Clip * _outputClip; //< Mandated output clip
     OFX::StringParam  *_fileParam; //< The input file
 
