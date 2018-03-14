@@ -65,19 +65,47 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "Run a script with the given arguments.\n" \
     "This is mostly useful to execute an external program on a set of input images files, which outputs image files.\n" \
     "Writers should be connected to each input, so that the image files are written before running the script, and the output of this node should be fed into one or more Readers, which read the images written by the script.\n" \
-    "Sample node graph:\n" \
-    "... +- WriteOIIO(scriptinput#####.png) +- RunScript(processes scriptinput#####.png, output is scriptoutput#####.png) +- ReadOIIO(scriptoutput#####.png) +- ...\n" \
+    "\n" \
+    "Sample section of a node graph which uses RunScript:\n" \
+    "\n" \
+    "```\n" \
+    "              ...\n" \
+    "               ^\n" \
+    "               |\n" \
+    "Write([Project]/scriptinput#####.png)\n" \
+    "               ^\n" \
+    "               |\n" \
+    "RunScript1(processes [Project]/scriptinput#####.png, output is [Project]/scriptoutput#####.png)\n" \
+    "               ^\n" \
+    "               |\n" \
+    "Read([Project]/scriptoutput#####.png, set the frame range manually)\n" \
+    "               ^\n" \
+    "               |\n" \
+    "RunScript2(deletes temporary files [Project]/scriptinput#####.png and [Project]/scriptoutput#####.png, optional)\n" \
+    "               ^\n" \
+    "               |\n" \
+    "              ...\n" \
+    "```\n" \
     "Keep in mind that the input and output files are never removed in the above graph.\n" \
-    "The output of RunScript is a copy of its first input, so that it can be used to execute a script at some point, e.g. to cleanup temporary files, as in:\n" \
-    "... +- WriteOIIO(scriptinput#####.png) +- RunScript(processes scriptinput#####.png, output is scriptoutput#####.png) +- ReadOIIO(scriptoutput#####.png) +- RunScript(deletes temporary files scriptinput#####.png and scriptoutput#####.png, optional) +- ...\n" \
+    "The output of RunScript is a copy of its first input.\n" \
+    "\n" \
     "Each argument may be:\n" \
-    "- A filename (connect an input to an upstream Writer, and link the parameter to the output filename of this writer, or link to the input filename of a downstream Reader)\n" \
+    "\n" \
+    "- A filename (RunScript1 and RunScript2 in the example above should have `[Project]/scriptinput#####.png` and `[Project]/scriptoutput#####.png` as filename parameters 1 and 2)\n" \
     "- A floating-point value (which can be linked to any plugin)\n" \
     "- An integer\n" \
     "- A string\n" \
+    "\n" \
     "Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n" \
     "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces).\n" \
-    "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the GNU LGPLv3.\n"
+    "For example, the script in RunScript2 in the above example would be:\n" \
+    "\n" \
+    "```\n" \
+    "#!/bin/sh\n" \
+    "rm \"$1\" \"$2\"\n" \
+    "```\n" \
+    "\n" \
+    "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
 
 #define kPluginIdentifier "fr.inria.openfx.RunScript"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
@@ -629,6 +657,9 @@ RunScriptPluginFactory::describe(ImageEffectDescriptor &desc)
     desc.setLabel(kPluginName);
     desc.setPluginGrouping(kPluginGrouping);
     desc.setPluginDescription(kPluginDescription);
+#ifdef OFX_EXTENSIONS_NATRON
+   desc.setDescriptionIsMarkdown(true);
+#endif
 
     // add the supported contexts
     desc.addSupportedContext(eContextFilter);
