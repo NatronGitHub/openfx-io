@@ -1427,6 +1427,7 @@ WriteOIIOPluginFactory::load()
         "pfm", // PFM was flipped before 1.6.5
 #     endif
         "avi", "mov", "qt", "mp4", "m4a", "3gp", "3g2", "mj2", "m4v", "mpg", // FFmpeg extensions - better supported by WriteFFmpeg
+        "gif", // animated GIFs are only supported by FFmpeg
         NULL
     };
     for (const char*const* e = extensions_blacklist; *e != NULL; ++e) {

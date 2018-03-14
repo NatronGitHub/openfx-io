@@ -2364,6 +2364,20 @@ WriteFFmpegPlugin::GetCodecSupportedParams(const AVCodec* codec,
             p->qrange = true;
             //p->interGOP = false;
             //p->interB = false;
+        } else if (codecShortName == "gif") {
+            // GIF Animation
+            // always use the default palette
+            // gifflags: set GIF flags
+            //  offsetting: enable picture offsetting
+            //  transdiff: enable transparency detection between frames
+            p->crf = false;
+            p->x26xSpeed = false;
+            p->bitrate = false;
+            p->bitrateTol = false;
+            p->qscale = false;
+            p->qrange = false;
+            p->interGOP = false;
+            p->interB = false;
         } else if (codecShortName == "hap") {
             // VidVox Hap
             // options are:
@@ -3662,7 +3676,9 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 // For any codec an
                 // intermediate buffer is allocated for the
                 // colour space conversion.
-                int bufferSize = av_image_alloc(avFrame->data, avFrame->linesize, avCodecContext->width, avCodecContext->height, pixelFormatCodec, 1);
+                const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(pixelFormatCodec);
+                int align = (desc->flags & AV_PIX_FMT_FLAG_PAL || desc->flags & AV_PIX_FMT_FLAG_PSEUDOPAL) ? 4 : 1;
+                int bufferSize = av_image_alloc(avFrame->data, avFrame->linesize, avCodecContext->width, avCodecContext->height, pixelFormatCodec, align);
                 if (bufferSize > 0) {
                     // Set the frame fields for a video buffer as some
                     // encoders rely on them, e.g. Lossless JPEG.
