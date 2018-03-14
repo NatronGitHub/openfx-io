@@ -547,7 +547,7 @@ FFmpegFile::getStreamFrames(Stream & stream)
     // Obtain from movie duration if specified. This is preferred since mov/mp4 formats allow the media in
     // tracks (=streams) to be remapped in time to the final movie presentation without needing to recode the
     // underlying tracks content; the movie duration thus correctly describes the final presentation.
-    if (_context->duration != 0) {
+    if (frames <= 0 && _context->duration > 0) {
         // Annoyingly, FFmpeg exposes the movie duration converted (with round-to-nearest semantics) to units of
         // AV_TIME_BASE (microseconds in practice) and does not expose the original rational number duration
         // from a mov/mp4 file's "mvhd" atom/box. Accuracy may be lost in this conversion; a duration that was
@@ -587,7 +587,7 @@ FFmpegFile::getStreamFrames(Stream & stream)
 
     // If number of frames still unknown, obtain from stream's number of frames if specified. Will be 0 if
     // unknown.
-    if (!frames) {
+    if (frames <= 0 && stream._avstream->nb_frames > 0) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVFormatContext::duration, obtaining from AVStream::nb_frames..." << std::endl;
 #endif
@@ -600,14 +600,14 @@ FFmpegFile::getStreamFrames(Stream & stream)
     }
 
     // If number of frames still unknown, attempt to calculate from stream's duration, fps and timebase.
-    if (!frames) {
+    if (frames <= 0 && stream._avstream->duration > 0) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::nb_frames, calculating from duration & framerate..." << std::endl;
 #endif
         frames = (int64_t(stream._avstream->duration) * stream._avstream->time_base.num  * stream._fpsNum) /
                  (int64_t(stream._avstream->time_base.den) * stream._fpsDen);
 #if TRACE_FILE_OPEN
-        if (frames) {
+        if (frames > 0) {
             std::cout << "        Calculated from duration & framerate=";
         }
 #endif
@@ -615,7 +615,7 @@ FFmpegFile::getStreamFrames(Stream & stream)
 
     // If the number of frames is still unknown, attempt to measure it from the last frame PTS for the stream in the
     // file relative to first (which we know from earlier).
-    if (!frames) {
+    if (frames <= 0) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by duration & framerate, searching frames for last PTS..." << std::endl;
 #endif
