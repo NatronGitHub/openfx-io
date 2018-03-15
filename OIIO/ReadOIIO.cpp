@@ -3007,7 +3007,8 @@ ReadOIIOPluginFactory::load()
 #if 0
     // hard-coded extensions list
     const char* extensionsl[] = {
-        "bmp", "cin", "dds", "dpx", "f3d", "fits", "hdr", "ico",
+        /*"bmp",*/ // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp
+        "cin", "dds", "dpx", "f3d", "fits", "hdr", "ico",
         "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
         "pbm", "pgm", "ppm",
 #     if OIIO_VERSION >= 10605
@@ -3039,6 +3040,7 @@ ReadOIIOPluginFactory::load()
 #     endif
         "avi", "mov", "qt", "mp4", "m4a", "3gp", "3g2", "mj2", "m4v", "mpg", // FFmpeg extensions - better supported by ReadFFmpeg
         "gif", // animated GIFs are only supported by FFmpeg
+        "bmp", // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp, which is better handled by ImageMagick/ReadMisc from Arena.ofx
         NULL
     };
     for (const char*const* e = extensions_blacklist; *e != NULL; ++e) {
