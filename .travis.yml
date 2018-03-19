@@ -160,6 +160,7 @@ addons:
     - sourceline: 'ppa:jonathonf/ffmpeg-3'
 #    - kalakris-cmake
     packages:
+    - ca-certificate
     #- gcc-4.9
     #- g++-4.9
     #- gcc-5
