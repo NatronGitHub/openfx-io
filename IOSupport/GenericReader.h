@@ -289,9 +289,9 @@ private:
      * @brief compute the sequence/file time from time
      */
     GetSequenceTimeRetEnum getSequenceTime(double t, double *sequenceTime) const WARN_UNUSED_RETURN;
-    GetSequenceTimeRetEnum getSequenceTimeHold(double t, double *sequenceTime) const WARN_UNUSED_RETURN;
-    GetSequenceTimeRetEnum getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain, double t, BeforeAfterEnum beforeChoice, double *sequenceTime) const;
-    GetSequenceTimeRetEnum getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain, double t, BeforeAfterEnum afterChoice, double *sequenceTime) const;
+    //GetSequenceTimeRetEnum getSequenceTimeHold(double t, double *sequenceTime) const WARN_UNUSED_RETURN;
+    GetSequenceTimeRetEnum getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain, BeforeAfterEnum beforeChoice, double *sequenceTime) const;
+    GetSequenceTimeRetEnum getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain, BeforeAfterEnum afterChoice, double *sequenceTime) const;
 
     enum GetFilenameRetCodeEnum
     {

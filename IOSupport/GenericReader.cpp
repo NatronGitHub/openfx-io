@@ -366,7 +366,7 @@ GenericReaderPlugin::refreshSubLabel(OfxTime time)
 {
     assert(_sublabel);
     double sequenceTime;
-    GetSequenceTimeRetEnum getTimeRet = getSequenceTimeHold(time, &sequenceTime);
+    GetSequenceTimeRetEnum getTimeRet = getSequenceTime(time, &sequenceTime);
     if ( (getTimeRet == eGetSequenceTimeWithinSequence) ||
          ( getTimeRet == eGetSequenceTimeBeforeSequence) ||
          ( getTimeRet == eGetSequenceTimeAfterSequence) ) {
@@ -540,12 +540,12 @@ GenericReaderPlugin::timeDomainFromSequenceTimeDomain(const OfxRangeI& sequenceT
 
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
-                                           double t,
                                            BeforeAfterEnum beforeChoice,
                                            double *sequenceTime) const
 {
     ///get the offset from the starting time of the sequence in case we bounce or loop
-    int timeOffsetFromStart = (int)t -  sequenceTimeDomain.min;
+    int timeOffsetFromStart = (int)*sequenceTime -  sequenceTimeDomain.min;
+    int seqFrames = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
 
     switch (beforeChoice) {
     case eBeforeAfterHold:     //hold
@@ -553,27 +553,30 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
 
         return eGetSequenceTimeBeforeSequence;
 
-    case eBeforeAfterLoop:     //loop
-        timeOffsetFromStart %= (int)(sequenceTimeDomain.max - sequenceTimeDomain.min + 1);
-        *sequenceTime = sequenceTimeDomain.max + timeOffsetFromStart;
+    case eBeforeAfterLoop: {     //loop
+        if (seqFrames <= 1) {
+            *sequenceTime = sequenceTimeDomain.min;
+        } else {
+            // positive modulo
+            timeOffsetFromStart = (timeOffsetFromStart % seqFrames + seqFrames) % seqFrames;
+            *sequenceTime = sequenceTimeDomain.min + timeOffsetFromStart;
+        }
 
         return eGetSequenceTimeBeforeSequence;
-
+    }
     case eBeforeAfterBounce: {     //bounce
-        int range = sequenceTimeDomain.max - sequenceTimeDomain.min;
-        // guard against division by zero
-        int sequenceIntervalsCount = range ? (timeOffsetFromStart / range) : 0;
-        ///if the sequenceIntervalsCount is odd then do exactly like loop, otherwise do the load the opposite frame
-        if (sequenceIntervalsCount % 2 == 0) {
-            if (range != 0) {
-                timeOffsetFromStart %= range;
-            }
-            *sequenceTime = sequenceTimeDomain.min - timeOffsetFromStart;
+        if (seqFrames <= 1) {
+            *sequenceTime = sequenceTimeDomain.min;
         } else {
-            if (range != 0) {
-                timeOffsetFromStart %= range;
+            // number of frames in a loop
+            int loopFrames = seqFrames * 2 - 2;
+            // positive modulo
+            timeOffsetFromStart = (timeOffsetFromStart % loopFrames + loopFrames) % loopFrames;
+            // bounce
+            if (timeOffsetFromStart >= seqFrames) {
+                timeOffsetFromStart = loopFrames - timeOffsetFromStart;
             }
-            *sequenceTime = sequenceTimeDomain.max + timeOffsetFromStart;
+            *sequenceTime = sequenceTimeDomain.min + timeOffsetFromStart;
         }
 
         return eGetSequenceTimeBeforeSequence;
@@ -592,13 +595,12 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
 
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
-                                          double t,
                                           BeforeAfterEnum afterChoice,
                                           double *sequenceTime) const
 {
     ///get the offset from the starting time of the sequence in case we bounce or loop
-    int timeOffsetFromStart = (int)t -  sequenceTimeDomain.min;
-
+    int timeOffsetFromStart = (int)*sequenceTime -  sequenceTimeDomain.min;
+    int seqFrames = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
 
     switch (afterChoice) {
     case eBeforeAfterHold: {     //hold
@@ -607,27 +609,29 @@ GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
         return eGetSequenceTimeAfterSequence;
     }
     case eBeforeAfterLoop: {     //loop
-        int range = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
-        if (range > 0) {
-            timeOffsetFromStart %= range;
+        if (seqFrames <= 1) {
+            *sequenceTime = sequenceTimeDomain.min;
+        } else {
+            // positive modulo
+            timeOffsetFromStart = (timeOffsetFromStart % seqFrames + seqFrames) % seqFrames;
+            *sequenceTime = sequenceTimeDomain.min + timeOffsetFromStart;
         }
-        *sequenceTime = sequenceTimeDomain.min + timeOffsetFromStart;
 
         return eGetSequenceTimeAfterSequence;
     }
     case eBeforeAfterBounce: {     //bounce
-        int range = sequenceTimeDomain.max - sequenceTimeDomain.min;
-        // guard against division by zero
-        int sequenceIntervalsCount = range ? (timeOffsetFromStart / range) : 0;
-
-        ///if the sequenceIntervalsCount is odd then do exactly like loop, otherwise do the load the opposite frame
-        if (range > 0) {
-            timeOffsetFromStart %= range;
-        }
-        if (sequenceIntervalsCount % 2 == 0) {
-            *sequenceTime = sequenceTimeDomain.min + timeOffsetFromStart;
+        if (seqFrames <= 1) {
+            *sequenceTime = sequenceTimeDomain.min;
         } else {
-            *sequenceTime = sequenceTimeDomain.max - timeOffsetFromStart;
+            // number of frames in a loop
+            int loopFrames = seqFrames * 2 - 2;
+            // positive modulo
+            timeOffsetFromStart = (timeOffsetFromStart % loopFrames + loopFrames) % loopFrames;
+            // bounce
+            if (timeOffsetFromStart >= seqFrames) {
+                timeOffsetFromStart = loopFrames - timeOffsetFromStart;
+            }
+            *sequenceTime = sequenceTimeDomain.min + timeOffsetFromStart;
         }
 
         return eGetSequenceTimeAfterSequence;
@@ -645,6 +649,7 @@ GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
     return eGetSequenceTimeError;
 } // GenericReaderPlugin::getSequenceTimeAfter
 
+#if 0
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTimeHold(double t,
                                          double *sequenceTime) const
@@ -667,14 +672,15 @@ GenericReaderPlugin::getSequenceTimeHold(double t,
     if ( (sequenceTimeDomain.min <= *sequenceTime) && (*sequenceTime <= sequenceTimeDomain.max) ) {
         return eGetSequenceTimeWithinSequence;
     } else if (*sequenceTime < sequenceTimeDomain.min) {
-        return getSequenceTimeBefore(sequenceTimeDomain, t, eBeforeAfterHold, sequenceTime);
+        return getSequenceTimeBefore(sequenceTimeDomain, eBeforeAfterHold, sequenceTime);
     } else {
         assert(*sequenceTime > sequenceTimeDomain.max); ///the time given is after the sequence
-        return getSequenceTimeAfter(sequenceTimeDomain, t, eBeforeAfterHold, sequenceTime);
+        return getSequenceTimeAfter(sequenceTimeDomain, eBeforeAfterHold, sequenceTime);
     }
 
     return eGetSequenceTimeError;
 }
+#endif
 
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTime(double t,
@@ -703,7 +709,7 @@ GenericReaderPlugin::getSequenceTime(double t,
         _beforeFirst->getValue(beforeChoice_i);
         BeforeAfterEnum beforeChoice = BeforeAfterEnum(beforeChoice_i);
 
-        return getSequenceTimeBefore(sequenceTimeDomain, t, beforeChoice, sequenceTime);
+        return getSequenceTimeBefore(sequenceTimeDomain, beforeChoice, sequenceTime);
     } else {
         assert(*sequenceTime > sequenceTimeDomain.max); ///the time given is after the sequence
         /////if we're after the last frame
@@ -711,7 +717,7 @@ GenericReaderPlugin::getSequenceTime(double t,
         _afterLast->getValue(afterChoice_i);
         BeforeAfterEnum afterChoice = BeforeAfterEnum(afterChoice_i);
 
-        return getSequenceTimeAfter(sequenceTimeDomain, t, afterChoice, sequenceTime);
+        return getSequenceTimeAfter(sequenceTimeDomain, afterChoice, sequenceTime);
     }
 
     return eGetSequenceTimeError;
