@@ -32,6 +32,7 @@
 #include "ofxsLog.h"
 #include "ofxsCopier.h"
 #include "ofxsCoords.h"
+#include "ofxsFileOpen.h"
 
 #include "ofxsMultiPlane.h"
 
@@ -77,6 +78,9 @@ NAMESPACE_OFX_IO_ENTER
     "%d printf-like notation can also be used instead of the hashes, for example path/sequenceName%03d.ext will achieve the same than the example aforementionned. " \
     "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overriden everytimes. " \
     "Views can be specified using the \"long\" view notation %V or the \"short\" notation using %v."
+
+#define kParamOverwrite "overwrite"
+#define kParamOverwriteLabelAndHint "Overwrite", "Overwrite existing files when rendering."
 
 #define kParamOutputFormat kNatronParamFormatChoice
 #define kParamOutputFormatLabel "Format"
@@ -171,6 +175,7 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
     , _inputClip(NULL)
     , _outputClip(NULL)
     , _fileParam(NULL)
+    , _overwrite(NULL)
     , _frameRange(NULL)
     , _firstFrame(NULL)
     , _lastFrame(NULL)
@@ -199,6 +204,7 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
     _outputClip = fetchClip(kOfxImageEffectOutputClipName);
 
     _fileParam = fetchStringParam(kParamFilename);
+    _overwrite = fetchBooleanParam(kParamOverwrite);
     _frameRange = fetchChoiceParam(kParamFrameRange);
     _firstFrame = fetchIntParam(kParamFirstFrame);
     _lastFrame = fetchIntParam(kParamLastFrame);
@@ -769,6 +775,27 @@ GenericWriterPlugin::render(const RenderArguments &args)
         if ( !checkExtension(ext) ) {
             setPersistentMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
             throwSuiteStatusException(kOfxStatErrImageFormat);
+        }
+    }
+
+    // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
+    if ( !_overwrite->getValueAtTime(time) ) {
+        // check if output file exists
+        string filename;
+        _fileParam->getValueAtTime(time, filename);
+        // filename = filenameFromPattern(filename, time);
+        std::FILE *image = fopen_utf8(filename.c_str(), "rb");
+        if (image) {
+            fclose(image);
+            // file exists
+            if (_outputClip && _outputClip->isConnected() ) {
+                auto_ptr<Image> dstImg( _outputClip->fetchImage(time) );
+                // fill output with black
+                fillBlack( *this, args.renderWindow, dstImg.get() );
+            }
+            // nothing else to do!
+
+            return;
         }
     }
 
@@ -1783,6 +1810,30 @@ GenericWriterPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
     return true;
 }
 
+
+void
+GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments &args,
+                                          OFX::RegionOfInterestSetter &rois)
+{
+    const double time = args.time;
+    // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
+    if ( !_overwrite->getValueAtTime(time) ) {
+        // check if output file exists
+        string filename;
+        _fileParam->getValueAtTime(time, filename);
+        // filename = filenameFromPattern(filename, time);
+        {
+            std::FILE *image = fopen_utf8(filename.c_str(), "rb");
+            if (image) {
+                fclose(image);
+                // file exists, do not ask for anything on input
+                const OfxRectD emptyRoI = {0., 0., 0., 0.};
+                rois.setRegionOfInterest(*_inputClip, emptyRoI);
+            }
+        }
+    }
+}
+
 void
 GenericWriterPlugin::encode(const string& /*filename*/,
                             const OfxTime /*time*/,
@@ -2482,6 +2533,17 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         param->setScriptName(kParamFilename);
         param->setAnimates(false);
         desc.addClipPreferencesSlaveParam(*param);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+
+    //////////Overwrite
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamOverwrite);
+        param->setLabelAndHint(kParamOverwriteLabelAndHint);
+        param->setDefault(true);
+        param->setAnimates(false);
         if (page) {
             page->addChild(*param);
         }

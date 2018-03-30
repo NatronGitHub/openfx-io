@@ -92,7 +92,7 @@ public:
     /**
      * @brief Don't override this. It returns the source region of definition.
      **/
-    //virtual void getRegionsOfInterest(const OFX::RegionsOfInterestArguments &args, OFX::RegionOfInterestSetter &rois) OVERRIDE FINAL;
+    virtual void getRegionsOfInterest(const OFX::RegionsOfInterestArguments &args, OFX::RegionOfInterestSetter &rois) OVERRIDE FINAL;
 
     /**
      * @brief Don't override this. It returns the frame range to render.
@@ -254,6 +254,7 @@ protected:
     OFX::Clip* _inputClip; //< Mantated input clip
     OFX::Clip *_outputClip; //< Mandated output clip
     OFX::StringParam  *_fileParam; //< The output file
+    OFX::BooleanParam  *_overwrite; //< Do we overwrite existing files?
     OFX::ChoiceParam *_frameRange; //<The frame range type
     OFX::IntParam* _firstFrame; //< the first frame if the frame range type is "Manual"
     OFX::IntParam* _lastFrame; //< the last frame if the frame range type is "Manual"
