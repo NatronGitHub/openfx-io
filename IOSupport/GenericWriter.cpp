@@ -1816,15 +1816,25 @@ GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments 
                                           OFX::RegionOfInterestSetter &rois)
 {
     const double time = args.time;
+
+    // A writer does not support tiled rendering, but still does not ask for the full
+    // RoD of its inputs. We just ask for the renderwindow.
+
     // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
-    if ( !_overwrite->getValueAtTime(time) ) {
+    if ( _overwrite->getValueAtTime(time) ) {
+        // set the RoI, since the default is the full input RoD
+        rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
+    } else {
         // check if output file exists
         string filename;
         _fileParam->getValueAtTime(time, filename);
         // filename = filenameFromPattern(filename, time);
         {
             std::FILE *image = fopen_utf8(filename.c_str(), "rb");
-            if (image) {
+            if (!image) {
+                // set the RoI, since the default is the full input RoD
+                rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
+            } else {
                 fclose(image);
                 // file exists, do not ask for anything on input
                 const OfxRectD emptyRoI = {0., 0., 0., 0.};
