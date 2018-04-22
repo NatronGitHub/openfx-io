@@ -783,9 +783,11 @@ FFmpegFile::FFmpegFile(const string & filename)
 #ifdef FF_API_LOWRES
             lowres = avctx->lowres;
 #endif
+#ifdef CODEC_FLAG_EMU_EDGE // removed from ffmpeg 4.0
             if ( lowres || ( videoCodec && (videoCodec->capabilities & CODEC_CAP_DR1) ) ) {
                 avctx->flags |= CODEC_FLAG_EMU_EDGE;
             }
+#endif
         }
 
         // skip if the codec can't be open

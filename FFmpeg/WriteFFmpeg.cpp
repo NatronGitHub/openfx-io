@@ -2854,14 +2854,14 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
         // integers are represented exactly as float, so most of the time the denominator will be 1
         frame_rate = av_d2q(fps, INT_MAX);
     }
-#if (LIBAVFORMAT_VERSION_MAJOR > 57) && !defined(FF_API_LAVF_CODEC_TB)
-#error "Using AVStream.codec.time_base as a timebase hint to the muxer is deprecated. Set AVStream.time_base instead."
-#endif
-    avCodecContext->time_base = av_inv_q(frame_rate);;
+    AVRational time_base = av_inv_q(frame_rate);
+#if (LIBAVFORMAT_VERSION_MAJOR < 58) || defined(FF_API_LAVF_CODEC_TB)
     // [mov @ 0x1042d7600] Using AVStream.codec.time_base as a timebase hint to the muxer is deprecated. Set AVStream.time_base instead.
+    avCodecContext->time_base = time_base;
+#endif
     // copy timebase while removing common factors
     const AVRational zero = {0, 1};
-    avStream->time_base = av_add_q(avCodecContext->time_base, zero);
+    avStream->time_base = av_add_q(time_base, zero);
     avStream->avg_frame_rate = frame_rate; // see ffmpeg.c:2894 from ffmpeg 3.2.2 - may be set before avformat_write_header
 
     int gopSize = -1;
@@ -3707,9 +3707,10 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
             avFrame->pts = ( (int)time - _firstFrameToEncode );
             av_frame_set_pkt_duration(avFrame, 1);
         }
+#if FF_API_LAVF_FMT_RAWPICTURE
         if ( (avFormatContext->oformat->flags & AVFMT_RAWPICTURE) != 0 &&
               avCodecContext->codec->id == AV_CODEC_ID_RAWVIDEO ) {
-            // see ffmpeg.c:1168 in ffmpeg 3.2.2
+            // see ffmpeg.c:1202 in ffmpeg 3.4.2 (removed from ffmpeg 4.0)
             /* raw pictures are written as AVPicture structure to
              avoid any copies. We support temporarily the older
              method. */
@@ -3725,7 +3726,9 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
             if (!writeSucceeded) {
                 error = true;
             }
-        } else {
+        } else
+#endif
+        {
             // Use a contiguous block of memory. This is to scope the
             // buffer allocation and ensure that memory is released even
             // if errors or exceptions occur. A vector will allocate

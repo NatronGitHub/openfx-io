@@ -163,6 +163,12 @@ make_context(AVCodecContext *dst,
              AVStream *src) { return avcodec_parameters_to_context(dst, src->codecpar); }
 }
 # endif
+#   if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(58, 0, 0)
+/* ffmpeg 4.0 removed these */
+#define CODEC_CAP_DELAY           AV_CODEC_CAP_DELAY
+#define CODEC_CAP_DR1             AV_CODEC_CAP_DR1
+#define CODEC_FLAG_GLOBAL_HEADER  AV_CODEC_FLAG_GLOBAL_HEADER
+#   endif
 #endif // ifdef LIBAVCODEC_VERSION_INT
 
 #ifdef LIBAVUTIL_VERSION_INT
