@@ -2147,10 +2147,9 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
     // please check the reason for each parameter when it makes sense!
 
     if (paramName == kParamFilename) {
-        // must clear persistent message, or render() is not called by Nuke after an error
-        clearPersistentMessage();
-        
         if (args.reason != eChangeTime) {
+            // must clear persistent message, or render() is not called by Nuke after an error
+            clearPersistentMessage();
             changedFilename(args);
         }
         if ( _sublabel && (args.reason != eChangePluginEdit) ) {
