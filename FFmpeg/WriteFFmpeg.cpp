@@ -2855,14 +2855,17 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
         frame_rate = av_d2q(fps, INT_MAX);
     }
     AVRational time_base = av_inv_q(frame_rate);
-#if (LIBAVFORMAT_VERSION_MAJOR < 58) || defined(FF_API_LAVF_CODEC_TB)
-    // [mov @ 0x1042d7600] Using AVStream.codec.time_base as a timebase hint to the muxer is deprecated. Set AVStream.time_base instead.
-    avCodecContext->time_base = time_base;
-#endif
     // copy timebase while removing common factors
     const AVRational zero = {0, 1};
     avStream->time_base = av_add_q(time_base, zero);
     avStream->avg_frame_rate = frame_rate; // see ffmpeg.c:2894 from ffmpeg 3.2.2 - may be set before avformat_write_header
+
+    // Although it is marked as deprecated, if we don't don't set time_base in the codec context if fails
+    // with message "The encoder timebase is not set". See ffmpeg-4.0/libavcodec/utils.c:758
+    //#if (LIBAVFORMAT_VERSION_MAJOR < 58) || defined(FF_API_LAVF_CODEC_TB)
+    // [mov @ 0x1042d7600] Using AVStream.codec.time_base as a timebase hint to the muxer is deprecated. Set AVStream.time_base instead.
+    avCodecContext->time_base = avStream->time_base;
+    //#endif
 
     int gopSize = -1;
     if (p.interGOP) {
