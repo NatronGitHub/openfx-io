@@ -48,7 +48,7 @@ endif
 
 #libPNG
 PNG_CXXFLAGS = `pkg-config --cflags libpng`
-PNG_LINKFLAGS = `pkg-config --libs libpng`
+PNG_LINKFLAGS = `pkg-config --libs libpng` -lz
 ifeq ($(OS),Linux)
 PNG_LINKFLAGS += -Wl,-rpath,`pkg-config --variable=libdir libpng`
 endif
