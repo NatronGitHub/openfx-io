@@ -223,6 +223,7 @@ private:
      **/
     virtual bool getFrameBounds(const std::string& filename,
                                 OfxTime time,
+                                int view,
                                 OfxRectI *bounds,
                                 OfxRectI *format,
                                 double *par,

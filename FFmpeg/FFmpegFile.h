@@ -287,15 +287,15 @@ private:
         }
     };
 
-    struct FoundryAVPacket : public AVPacket
+    struct MyAVPacket : public AVPacket
     {
     public:
-        FoundryAVPacket()
+        MyAVPacket()
         : wasPacketDecoded(false)
         {
             InitPacket();
         }
-        ~FoundryAVPacket()
+        ~MyAVPacket()
         {
             FreePacket();
         }
@@ -334,7 +334,7 @@ private:
     // reader error state
     std::string _errorMsg;  // internal decoding error string
     bool _invalidState;     // true if the reader is in an invalid state
-    FoundryAVPacket _avPacket;
+    MyAVPacket _avPacket;
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access

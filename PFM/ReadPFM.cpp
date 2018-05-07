@@ -70,7 +70,7 @@ private:
     virtual bool isVideoStream(const string& /*filename*/) OVERRIDE FINAL { return false; }
 
     virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
-    virtual bool getFrameBounds(const string& filename, OfxTime time, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
+    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     /**
      * @brief Called when the input image/video file changed.
@@ -334,6 +334,7 @@ ReadPFMPlugin::decode(const string& filename,
 bool
 ReadPFMPlugin::getFrameBounds(const string& filename,
                               OfxTime /*time*/,
+                              int /*view*/,
                               OfxRectI *bounds,
                               OfxRectI *format,
                               double *par,

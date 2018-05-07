@@ -1357,7 +1357,7 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
     OfxRectI bounds, format;
     double par = 1.;
     int tile_width, tile_height;
-    bool success = getFrameBounds(filename, sequenceTime, &bounds, &format, &par, &error, &tile_width, &tile_height);
+    bool success = getFrameBounds(filename, sequenceTime, args.view, &bounds, &format, &par, &error, &tile_width, &tile_height);
     if (!success) {
         setPersistentMessage(Message::eMessageError, "", error);
         throwSuiteStatusException(kOfxStatFailed);
@@ -1682,7 +1682,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
     string error;
 
     ///if the plug-in doesn't support tiles, just render the full rod
-    bool success = getFrameBounds(filename, sequenceTime, &frameBounds, &format, &par, &error, &tile_width, &tile_height);
+    bool success = getFrameBounds(filename, sequenceTime, args.renderView, &frameBounds, &format, &par, &error, &tile_width, &tile_height);
     ///We shouldve checked above for any failure, now this is too late.
     if (!success) {
         setPersistentMessage(Message::eMessageError, "", error);
@@ -2418,7 +2418,7 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
             double par = 1.;
             string error;
             int tile_width, tile_height;
-            bool success = getFrameBounds(filename, timeDomain.min, &bounds, &format, &par, &error, &tile_width, &tile_height);
+            bool success = getFrameBounds(filename, timeDomain.min, /*view=*/0, &bounds, &format, &par, &error, &tile_width, &tile_height);
             if (success) {
                 clipPreferences.setPixelAspectRatio(*_outputClip, par);
                 clipPreferences.setOutputFormat(format);
@@ -2517,10 +2517,10 @@ GenericReaderPlugin::detectProxyScale(const string& originalFileName,
     string error;
     double originalPAR = 1., proxyPAR = 1.;
     int tile_width, tile_height;
-    bool success = getFrameBounds(originalFileName, time, &originalBounds, &originalFormat, &originalPAR, &error, &tile_width, &tile_height);
+    bool success = getFrameBounds(originalFileName, time, /*view=*/0, &originalBounds, &originalFormat, &originalPAR, &error, &tile_width, &tile_height);
 
     proxyBounds.x1 = proxyBounds.x2 = proxyBounds.y1 = proxyBounds.y2 = 0.f;
-    success = success && getFrameBounds(proxyFileName, time, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
+    success = success && getFrameBounds(proxyFileName, time, /*view=*/0, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
     OfxPointD ret;
     if ( !success ||
          (originalBounds.x1 == originalBounds.x2) ||

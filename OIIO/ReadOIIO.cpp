@@ -438,7 +438,7 @@ private:
 
     void openFile(const string& filename, bool useCache, ImageInput** img, vector<ImageSpec>* subimages);
 
-    virtual bool getFrameBounds(const string& filename, OfxTime time, OfxRectI *bounds, OfxRectI *format, double *par, string *error,  int* tile_width, int* tile_height) OVERRIDE FINAL;
+    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error,  int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     string metadata(const string& filename);
 
@@ -2634,6 +2634,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 bool
 ReadOIIOPlugin::getFrameBounds(const string& filename,
                                OfxTime /*time*/,
+                               int /*view*/,
                                OfxRectI *bounds,
                                OfxRectI *format,
                                double *par,

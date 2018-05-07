@@ -137,7 +137,7 @@ private:
     virtual bool guessParamsFromFilename(const string& filename, string *colorspace, PreMultiplicationEnum *filePremult, PixelComponentEnum *components, int *componentCount) OVERRIDE FINAL;
     virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getSequenceTimeDomain(const string& filename, OfxRangeI &range) OVERRIDE FINAL;
-    virtual bool getFrameBounds(const string& filename, OfxTime time, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
+    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
     virtual bool getFrameRate(const string& filename, double* fps) const OVERRIDE FINAL;
 };
 
@@ -475,7 +475,8 @@ ReadFFmpegPlugin::getFrameRate(const string& filename,
 
 bool
 ReadFFmpegPlugin::getFrameBounds(const string& filename,
-                                 OfxTime /*time*/,
+                                 OfxTime time,
+                                 int view,
                                  OfxRectI *bounds,
                                  OfxRectI *format,
                                  double *par,
@@ -493,6 +494,11 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
         return false;
     }
 
+    bool firstTrackOnly = _firstTrackOnly->getValueAtTime(time);
+    if (firstTrackOnly) {
+        view = 0;
+    }
+    file->setSelectedStream(view);
     int width, height, frames;
     double ap;
     if ( !file->getInfo(width, height, ap, frames) ) {

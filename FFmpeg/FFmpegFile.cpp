@@ -1197,6 +1197,9 @@ FFmpegFile::decode(const ImageEffect* plugin,
 #endif
 
     assert(_selectedStream && "Null _selectedStream");
+    if (!_selectedStream) {
+        return false;
+    }
     Stream* stream = _selectedStream;
 
     // Translate from the 1-based frames expected to 0-based frame offsets for use in the rest of this code.
@@ -1570,7 +1573,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
                 // with avpkt->data=NULL, avpkt->size=0 at the end to return the remaining frames.
                 // Please have a look at the following TP item from more info: TP 24765 https://foundry.tpondemand.com/entity/246765
 
-                FoundryAVPacket emptyAVPacket;
+                MyAVPacket emptyAVPacket;
 #if USE_NEW_FFMPEG_API
                 error = avcodec_send_packet(stream->_codecContext, &emptyAVPacket);
                 if (error == 0) {
@@ -1794,6 +1797,9 @@ FFmpegFile::getInfo(int & width,
     }
 
     assert(_selectedStream && "Null _selectedStream");
+    if (!_selectedStream) {
+        return false;
+    }
     width  = _selectedStream->_width;
     height = _selectedStream->_height;
     aspect = _selectedStream->_aspect;
