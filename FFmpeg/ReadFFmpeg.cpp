@@ -151,7 +151,7 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
 {
     _maxRetries = fetchIntParam(kParamMaxRetries);
     _firstTrackOnly = fetchBooleanParam(kParamFirstTrackOnly);
-    assert(_maxRetries);
+    assert(_maxRetries && _firstTrackOnly);
     int originalFrameRangeMin, originalFrameRangeMax;
     _originalFrameRange->getValue(originalFrameRangeMin, originalFrameRangeMax);
     if (originalFrameRangeMin == 0) {
@@ -995,7 +995,7 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        IntParamDescriptor *param = desc.defineIntParam(kParamMaxRetries);
+        BooleanParamDescriptor *param = desc.defineBooleanParam(kParamFirstTrackOnly);
         param->setLabelAndHint(kParamFirstTrackOnlyLabelAndHint);
         param->setAnimates(false);
         param->setDefault(false);
