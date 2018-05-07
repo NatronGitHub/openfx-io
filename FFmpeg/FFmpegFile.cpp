@@ -19,6 +19,7 @@
 /*
  * OFX ffmpeg Reader plugin.
  * Reads a video input file using the libav library.
+ * Synced with mov64Reader 11.1v3
  */
 
 #if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_ ) ) && !defined(UINT64_C)
@@ -34,6 +35,7 @@
 #include <algorithm>
 
 #include <ofxsImageEffect.h>
+#include <ofxsMacros.h>
 
 #if defined(_WIN32) || defined(WIN64)
 #  include <windows.h> // for GetSystemInfo()
@@ -468,16 +470,20 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     std::cout << "      Determining stream start PTS:" << std::endl;
 #endif
 
+    AVPacket avPacket;
+    av_init_packet(&avPacket);
+
     // Read from stream. If the value read isn't valid, get it from the first frame in the stream that provides such a
     // value.
     int64_t startPTS = stream._avstream->start_time;
+    int64_t startDTS = stream._avstream->start_time;
 #if TRACE_FILE_OPEN
     if ( startPTS != int64_t(AV_NOPTS_VALUE) ) {
         std::cout << "        Obtained from AVStream::start_time=";
     }
 #endif
 
-    if ( startPTS ==  int64_t(AV_NOPTS_VALUE) ) {
+    if (startPTS < 0) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::start_time, searching frames..." << std::endl;
 #endif
@@ -485,25 +491,28 @@ FFmpegFile::getStreamStartTime(Stream & stream)
         // Seek 1st key-frame in video stream.
         avcodec_flush_buffers(stream._codecContext);
 
-        if (av_seek_frame(_context, stream._idx, 0, 0) >= 0) {
-            av_init_packet(&_avPacket);
+        // Here, avPacket needs to be local as we don't need to keep any information outside this function context.
+        // Do not replace this with _avPacket, which is global, because _avPacket is associated with the playback process
+        // and that may produces inconsistencies. _avPacket is now used only in the |decode| method and we need to ensure
+        // that it remains valid even after we get out of the |decode| method context, because the information stored by
+        // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
+        // https://foundry.tpondemand.com/entity/162892
+        if (av_seek_frame(_context, stream._idx, startPTS, AVSEEK_FLAG_BACKWARD) >= 0) {
 
             // Read frames until we get one for the video stream that contains a valid PTS.
-            do {
-                if (av_read_frame(_context, &_avPacket) < 0) {
-                    // Read error or EOF. Abort search for PTS.
-#if TRACE_FILE_OPEN
-                    std::cout << "          Read error, aborted search" << std::endl;
-#endif
+            while (av_read_frame(_context, &avPacket) >= 0) {
+                if (avPacket.stream_index != stream._idx) {
+                    continue;
+                }
+                // Packet read for video stream. Get its PTS.
+                startPTS = avPacket.pts;
+                startDTS = avPacket.dts;
+
+                // Loop will continue if the current packet doesn't end after 0
+                if (startPTS + avPacket.duration > 0) {
                     break;
                 }
-                if (_avPacket.stream_index == stream._idx) {
-                    // Packet read for video stream. Get its PTS. Loop will continue if the PTS is AV_NOPTS_VALUE.
-                    startPTS = _avPacket.pts;
-                }
-
-                av_packet_unref(&_avPacket);
-            } while ( startPTS ==  int64_t(AV_NOPTS_VALUE) );
+            }
         }
 #if TRACE_FILE_OPEN
         else {
@@ -519,18 +528,32 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     }
 
     // If we still don't have a valid initial PTS, assume 0. (This really shouldn't happen for any real media file, as
-    // it would make meaningful playback presentation timing and seeking impossible.)
-    if ( startPTS ==  int64_t(AV_NOPTS_VALUE) ) {
+    // it would make meaningful playback presentation timing and seeking impossible.);
+    // TP 162519 - We discard the samples with a negative timestamp to make mov64 match the Quick Time Player;
+    // Video streams are usually inter-coded (most frames rely on other frames to be decoded). So, when such a stream
+    // is trimmed those reference frames, even if not within the trimmed time range, have to be included in the output
+    // in order for the video to be playable. These frames are assigned to a negative time-stamp;
+    // Based on the experimental work we concluded that for the streams that have included frames which are assigned
+    // to negative timestamps it doesn't make sense to pick a value grater than 0 for the first frame timestamp. The first
+    // frame timestamp is going to match the packet which starts just before 0 and ends after 0 if that exists. Otherwise
+    // it will be 0.
+    // For more information please have a look at TP 162519
+    const bool isStartPTSValid = (startPTS + avPacket.duration > 0);
+    if (!isStartPTSValid) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not found by searching frames, assuming ";
 #endif
         startPTS = 0;
+        startDTS = 0;
     }
 
 #if TRACE_FILE_OPEN
     std::cout << startPTS << " ticks, " << double(startPTS) * double(stream._avstream->time_base.num) /
         double(stream._avstream->time_base.den) << " s" << std::endl;
 #endif
+
+    stream._startDTS = startDTS;
+    av_packet_unref(&avPacket);
 
     return startPTS;
 } // FFmpegFile::getStreamStartTime
@@ -628,13 +651,19 @@ FFmpegFile::getStreamFrames(Stream & stream)
         av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
 
         // Read up to last frame, extending max PTS for every valid PTS value found for the video stream.
-        av_init_packet(&_avPacket);
+        AVPacket avPacket;
+        // Here, avPacket needs to be local as we don't need to keep any information outside this function context.
+        // Do not replace this with _avPacket, which is global, because _avPacket is associated with the playback process
+        // and that may produces inconsistencies. _avPacket is now used only in the |decode| method and we need to ensure
+        // that it remains valid even after we get out of the |decode| method context, because the information stored by
+        // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
+        // https://foundry.tpondemand.com/entity/162892
+        av_init_packet(&avPacket);
 
-        while (av_read_frame(_context, &_avPacket) >= 0) {
-            if ( (_avPacket.stream_index == stream._idx) && ( _avPacket.pts != int64_t(AV_NOPTS_VALUE) ) && (_avPacket.pts > maxPts) ) {
-                maxPts = _avPacket.pts;
-            }
-            av_packet_unref(&_avPacket);
+        while (av_read_frame(_context, &avPacket) >= 0) {
+            if (avPacket.stream_index == stream._idx && avPacket.pts != int64_t(AV_NOPTS_VALUE) && avPacket.pts > maxPts)
+                maxPts = avPacket.pts;
+            av_packet_unref(&avPacket);
         }
 #if TRACE_FILE_OPEN
         std::cout << "          Start PTS=" << stream._startPTS << ", Max PTS found=" << maxPts << std::endl;
@@ -655,11 +684,71 @@ FFmpegFile::getStreamFrames(Stream & stream)
     return frames;
 } // FFmpegFile::getStreamFrames
 
+// Returns true if the properties of the two streams are considered to match in terms of
+// codec, resolution, frame rate, time base, etc. The motivation for this is that streams
+// that match in this way are more likely to contain multiple views rather then unrelated
+// content. This is somewhat arbitrary but seems like a reasonable starting point until
+// users tell us otherwise.
+static
+bool
+CheckStreamPropertiesMatch(const AVStream* streamA,
+                           const AVStream* streamB)
+{
+#if 0//FF_API_LAVF_AVCTX
+    const AVCodecContext* codecA = streamA->codec;
+    const AVCodecContext* codecB = streamB->codec;
+#else
+    const AVCodecParameters* codecA = streamA->codecpar;
+    const AVCodecParameters* codecB = streamB->codecpar;
+#endif
+
+    // Sanity check //
+    if (codecA == NULL || codecB == NULL) {
+        return false;
+    }
+
+#if 0//FF_API_LAVF_AVCTX
+    AVPixelFormat codecAfmt = codecA->pix_fmt;
+    AVPixelFormat codecBfmt = codecB->pix_fmt;
+#else
+    AVPixelFormat codecAfmt = (AVPixelFormat)codecA->format;
+    AVPixelFormat codecBfmt = (AVPixelFormat)codecB->format;
+#endif
+
+    // Not matching even if both reads failed
+    if (codecAfmt == AV_PIX_FMT_NONE || codecBfmt == AV_PIX_FMT_NONE) {
+        return false;
+    }
+
+    const AVPixFmtDescriptor* pixFmtDescA = av_pix_fmt_desc_get(codecAfmt);
+    const AVPixFmtDescriptor* pixFmtDescB = av_pix_fmt_desc_get(codecBfmt);
+
+    return
+    (codecA->codec_id             == codecB->codec_id) &&
+    (codecA->bits_per_raw_sample  == codecB->bits_per_raw_sample) &&
+    (codecA->width                == codecB->width) &&
+    (codecA->height               == codecB->height) &&
+    (codecA->sample_aspect_ratio.num  == codecB->sample_aspect_ratio.num) &&
+    (codecA->sample_aspect_ratio.den  == codecB->sample_aspect_ratio.den) &&
+    (pixFmtDescA->nb_components       == pixFmtDescB->nb_components) &&
+    (streamA->sample_aspect_ratio.num == streamB->sample_aspect_ratio.num) &&
+    (streamA->sample_aspect_ratio.den == streamB->sample_aspect_ratio.den) &&
+    (streamA->time_base.num     == streamB->time_base.num) &&
+    (streamA->time_base.den     == streamB->time_base.den) &&
+    (streamA->start_time        == streamB->start_time) &&
+    (streamA->duration          == streamB->duration) &&
+    (streamA->nb_frames         == streamB->nb_frames) &&
+    (streamA->r_frame_rate.num  == streamB->r_frame_rate.num) &&
+    (streamA->r_frame_rate.den  == streamB->r_frame_rate.den);
+}
+
+// constructor
 FFmpegFile::FFmpegFile(const string & filename)
     : _filename(filename)
     , _context(NULL)
     , _format(NULL)
     , _streams()
+    , _selectedStream(NULL)
     , _errorMsg()
     , _invalidState(false)
     , _avPacket()
@@ -678,6 +767,15 @@ FFmpegFile::FFmpegFile(const string & filename)
 
     assert( !_filename.empty() );
     CHECK( avformat_open_input(&_context, _filename.c_str(), _format, NULL) );
+    assert(_context);
+    // Bug 51016 - probesize is the maximum amount of data, in bytes, which is read to determine
+    // frame information in avformat_find_stream_info. It's important that when reading
+    // stereo quicktimes that the probe size be large enough to read data from both video tracks.
+    // Otherwise the streams could be reported as having different properties, when really they're
+    // the same but due to an insufficient probesize the second stream didn't have all the relevent data
+    // loaded. This defaults to 5meg. 100meg should be enough for large stereo quicktimes.
+    _context->probesize = 100000000;
+
     CHECK( avformat_find_stream_info(_context, NULL) );
 
 #if TRACE_FILE_OPEN
@@ -742,7 +840,7 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // skip codecs not in the white list
-        string reason;
+        //string reason;
         if ( !isCodecWhitelistedForReading(videoCodec->name) ) {
 # if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" disallowed, skipping..." << std::endl;
@@ -802,12 +900,25 @@ FFmpegFile::FFmpegFile(const string & filename)
         std::cout << "Video decoder \"" << videoCodec->name << "\" opened ok, getting stream properties:" << std::endl;
 #endif
 
+        if (!_streams.empty()) {
+            // Assume that if this stream's properties don't match those of the zeroth stream then it doesn't
+            // correspond to an alternative view.
+            // This may turn out to be either too stringent or pointlessly lax, we'll have to see what users
+            // make of it. The way to handle this properly is to provide a knob allowing the user to map views
+            // to streams.
+            if (!CheckStreamPropertiesMatch(_streams[0]->_avstream, avstream)) {
+#if TRACE_FILE_OPEN
+                std::cout << "Stream properties do not match those of first video stream, ignoring this stream." << std::endl;
+#endif
+                continue;
+            }
+        }
         Stream* stream = new Stream();
         stream->_idx = i;
         stream->_avstream = avstream;
         stream->_codecContext = avctx;
         stream->_videoCodec = videoCodec;
-        stream->_avFrame = av_frame_alloc();
+        stream->_avFrame = av_frame_alloc(); // avcodec_alloc_frame();
         {
             // In |engine| the output bit depth was hard coded to 16-bits.
             // Now it will use the bit depth reported by the decoder so
@@ -817,7 +928,7 @@ FFmpegFile::FFmpegFile(const string & filename)
             // internally so this change has no side effects.
             // [openfx-io note] when using insternal ffmpeg 8bits->16 bits conversion,
             // (255 = 100%) becomes (65280 =99.6%)
-            stream->_bitDepth = avctx->bits_per_raw_sample;
+            stream->_bitDepth = avctx->bits_per_raw_sample; // disabled in Nuke's reader
             //stream->_bitDepth = 16; // enabled in Nuke's reader
 
             const AVPixFmtDescriptor* avPixFmtDescriptor = av_pix_fmt_desc_get(stream->_codecContext->pix_fmt);
@@ -895,6 +1006,18 @@ FFmpegFile::FFmpegFile(const string & filename)
     }
     if ( _streams.empty() ) {
         setError( unsuported_codec ? "unsupported codec..." : "unable to find video stream" );
+        _selectedStream = NULL;
+    } else {
+#pragma message WARN("should we build separate FFmpegfile for each view? see also FFmpegFileManager")
+        const int viewIndex = 0; // TODO: pass as parameter?
+        assert(viewIndex >= 0 && "Negative view index specified.");
+
+        if (static_cast<size_t>(viewIndex) < _streams.size()) {
+            _selectedStream = _streams[viewIndex];
+        }
+        else {
+            _selectedStream = _streams[0];
+        }
     }
 }
 
@@ -917,6 +1040,17 @@ FFmpegFile::~FFmpegFile()
     }
     _filename.clear();
     _errorMsg.clear();
+}
+
+void FFmpegFile::setSelectedStream(int streamIndex)
+{
+    if ((streamIndex >= 0) && (streamIndex < static_cast<int>(_streams.size()))) {
+        _selectedStream = _streams[streamIndex];
+    }
+    else {
+        assert(false && "setSelectedStream: Invalid streamIndex");
+        _selectedStream = !_streams.empty() ? _streams[0] : NULL;
+    }
 }
 
 const char*
@@ -970,8 +1104,9 @@ FFmpegFile::getColorspace() const
     //Special case for prores - the util YUV will report RGB, due to pixel format support, but for
     //compatibility and consistency with official quicktime, we need to be using 2.2 for 422 material
     //and 1.8 for 4444. Protected to deal with ffmpeg vagaries.
-    if (!_streams.empty() && _streams[0]->_codecContext && _streams[0]->_codecContext->codec_id) {
-        if (_streams[0]->_codecContext->codec_id == AV_CODEC_ID_PRORES) {
+    assert((_streams.empty() || _selectedStream) && "_streams not empty but null _selectedStream");
+    if (!_streams.empty() && _selectedStream->_codecContext && _selectedStream->_codecContext->codec_id) {
+        if (_selectedStream->_codecContext->codec_id == AV_CODEC_ID_PRORES) {
             if ( ( _streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'h') ) ||
                  ( _streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'x') ) ) {
                 return "Gamma1.8";
@@ -1034,7 +1169,7 @@ FFmpegFile::seekFrame(int frame,
     ///Private should not lock
 
     avcodec_flush_buffers(stream->_codecContext);
-    int64_t timestamp = stream->frameToPts(frame);
+    int64_t timestamp = stream->frameToDts(frame);
     int error = av_seek_frame(_context, stream->_idx, timestamp, AVSEEK_FLAG_BACKWARD);
     if (error < 0) {
         // Seek error. Abort attempt to read and decode frames.
@@ -1042,6 +1177,9 @@ FFmpegFile::seekFrame(int frame,
 
         return false;
     }
+
+    // We can't be re-using the existing _avPacket data because we've just had to seek
+    _avPacket.FreePacket();
 
     return true;
 }
@@ -1054,27 +1192,17 @@ FFmpegFile::decode(const ImageEffect* plugin,
                    int maxRetries,
                    unsigned char* buffer)
 {
-    const unsigned int streamIdx = 0;
-
 #ifdef OFX_IO_MT_FFMPEG
     AutoMutex guard(_lock);
 #endif
 
-    if ( streamIdx >= _streams.size() ) {
-        return false;
-    }
-
-    assert(streamIdx == 0);//, "FFmpegFile functions always assume only the first stream is in use");
-
-    // get the stream
-    Stream* stream = _streams[streamIdx];
+    assert(_selectedStream && "Null _selectedStream");
+    Stream* stream = _selectedStream;
 
     // Translate from the 1-based frames expected to 0-based frame offsets for use in the rest of this code.
     int desiredFrame = frame - 1;
 
-
     // Early-out if out-of-range frame requested.
-
     if (desiredFrame < 0) {
         if (loadNearest) {
             desiredFrame = 0;
@@ -1090,7 +1218,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
     }
 
 #if TRACE_DECODE_PROCESS
-    std::cout << "FFmpeg Reader=" << this << "::decode(): frame=" << desiredFrame << ", videoStream=" << streamIdx << ", streamIdx=" << stream->_idx << std::endl;
+    std::cout << "FFmpeg Reader=" << this << "::decode(): frame=" << desiredFrame << /*", _viewIndex = " << _viewIndex <<*/ ", videoStream=" << streamIdx << ", streamIdx=" << stream->_idx << std::endl;
 #endif
 
     // Number of read retries remaining when decode stall is detected before we give up (in the case of post-seek stalls,
@@ -1148,15 +1276,14 @@ FFmpegFile::decode(const ImageEffect* plugin,
     }
 #endif
 
-    av_init_packet(&_avPacket);
-
     // Loop until the desired frame has been decoded. May also break from within loop on failure conditions where the
     // desired frame will never be decoded.
     bool hasPicture = false;
     do {
         bool decodeAttempted = false;
         int frameDecoded = 0;
-        int srcColourRange = stream->_codecContext->color_range;
+        AVColorRange srcColourRange = stream->_codecContext->color_range;
+        AVPixelFormat srcPixelFormat = stream->_codecContext->pix_fmt;
 
         // If the next frame to decode is within range of frames (or negative implying invalid; we've just seeked), read
         // a new frame from the source file and feed it to the decoder if it's for the video stream.
@@ -1170,7 +1297,21 @@ FFmpegFile::decode(const ImageEffect* plugin,
             }
 #endif
 
-            int error = av_read_frame(_context, &_avPacket);
+            int error = 0;
+            // Check if the packet is within the decompression range (dts - decompression timestamp)
+            const int64_t currentFramePts = stream->frameToPts(frame);
+            const bool isPacketValid = (_avPacket.data != NULL) && (_avPacket.stream_index == stream->_idx);
+            const bool isCurrentPacketInRange = isPacketValid && (_avPacket.dts + _avPacket.duration > currentFramePts) && (currentFramePts >= _avPacket.dts);
+            // If the actual packet is invalid (data == NULL) or it's not within the current decompression range it means that we need to read the next packet;
+            // This happens when decoding for the first time or after the _avPacket was invalidated by calling av_free_packet;
+            if (_avPacket.data == NULL || !isCurrentPacketInRange) {
+                // release the previous packet if this wasn't already released at this point
+                if (_avPacket.data != NULL) {
+                    _avPacket.FreePacket();
+                }
+                _avPacket.InitPacket();
+                error = av_read_frame(_context, &_avPacket);
+            }
             // [FD] 2015/01/20
             // the following if() was not in Nuke's FFmpeg Reader.cpp
             if (error == (int)AVERROR_EOF) {
@@ -1294,7 +1435,30 @@ FFmpegFile::decode(const ImageEffect* plugin,
 #if TRACE_DECODE_PROCESS
                         std::cout << ", landed at " << landingFrame << std::endl;
 #endif
-                        stream->_decodeNextFrameOut = stream->_decodeNextFrameIn = landingFrame;
+                        // If the packet is within the decompression range but the landingFrame is different than the current frame it means that
+                        // we are on a packet that needs to be displayed for more than one frame. In that case landingFrame will be pointing at the
+                        // first frame of that packet which means that we need to update the _decodeNextFrameOut and _decodeNextFrameIn for the other frames
+                        // which are in the current packet.
+                        // If not then it means that we have jumped on a different frame so update that accordingly;
+                        //
+                        // In the below ASCII figure - landingFrame will end up being 2 whenever frame is in the range 2 - 7
+                        //
+                        // Nuke frame     0   1   2   3   4   5   6   7   8   9   10   ...
+                        //              +---+---+-----------------------+---+---+---+-
+                        // data stream  |   |   |                       |   |   |   |  ...
+                        //              +---+---+-----------------------+---+---+---+-
+                        // QT/ffmpeg      0   1   2                       3   4   5    ...
+                        // frame
+                        //
+                        // So in this example, whenever frame is 3-7 we actually need to set stream->_decodeNextFrameIn/Out to frame rather than landingFrame, which is still 2;
+                        // stream->_decodeNextFrameIn/Out is used by our logic to determined what Nuke frame is being decoded;
+                        const int64_t currentFramePts = stream->frameToPts(frame);
+                        const bool isNewPacketInRange = (_avPacket.dts + _avPacket.duration > currentFramePts) && (currentFramePts >= _avPacket.dts);
+                        if (isNewPacketInRange && (landingFrame != frame)) {
+                            stream->_decodeNextFrameOut = stream->_decodeNextFrameIn = frame;
+                        } else {
+                            stream->_decodeNextFrameOut = stream->_decodeNextFrameIn = landingFrame;
+                        }
                         lastSeekedFrame = -1;
                     }
                 }
@@ -1342,22 +1506,32 @@ FFmpegFile::decode(const ImageEffect* plugin,
                     // Decode the frame just read. frameDecoded indicates whether a decoded frame was output.
                     decodeAttempted = true;
 
-#if USE_NEW_FFMPEG_API
-                    error = avcodec_send_packet(stream->_codecContext, &_avPacket);
-                    if (error == 0) {
-                        error = avcodec_receive_frame(stream->_codecContext, stream->_avFrame);
-                        if ( error == AVERROR(EAGAIN) ) {
-                            frameDecoded = 0;
-                            error = 0;
-                        } else if (error < 0) {
-                            frameDecoded = 0;
-                        } else {
-                            frameDecoded = 1;
-                        }
+                    // if the packet wasn't decode yet then it doesn't really metter
+                    // if it's in the playback range or not; we still keep trying to
+                    // decode the information iside the packet
+                    if (_avPacket.wasPacketDecoded && isCurrentPacketInRange) {
+                        error = 0;
+                        frameDecoded = 1; // the image is already pre-cached in the _avFrame - don't do anything here
                     }
+                    else {
+#if USE_NEW_FFMPEG_API
+                        error = avcodec_send_packet(stream->_codecContext, &_avPacket);
+                        if (error == 0) {
+                            error = avcodec_receive_frame(stream->_codecContext, stream->_avFrame);
+                            if ( error == AVERROR(EAGAIN) ) {
+                                frameDecoded = 0;
+                                error = 0;
+                            } else if (error < 0) {
+                                frameDecoded = 0;
+                            } else {
+                                frameDecoded = 1;
+                            }
+                        }
 #else
-                    error = avcodec_decode_video2(stream->_codecContext, stream->_avFrame, &frameDecoded, &_avPacket);
+                        error = avcodec_decode_video2(stream->_codecContext, stream->_avFrame, &frameDecoded, &_avPacket);
 #endif
+                        _avPacket.wasPacketDecoded = frameDecoded;
+                    }
                     if (error < 0) {
                         // Decode error. Abort attempt to read and decode frames.
                         setInternalError(error, "FFmpeg Reader failed to decode frame: ");
@@ -1389,8 +1563,16 @@ FFmpegFile::decode(const ImageEffect* plugin,
                 // The ProRes codec is I-frame only so will not have any
                 // remaining frames.
             } else {
+                // Obtain remaining frames from the decoder. emptyAVPacket contains NULL packet data pointer and size at this point,
+                // required to pump out remaining frames with no more input
+                // That's based on the following FFmpeg's remark:
+                // Codecs which have the CODEC_CAP_DELAY capability set have a delay between input and output, these need to be fed
+                // with avpkt->data=NULL, avpkt->size=0 at the end to return the remaining frames.
+                // Please have a look at the following TP item from more info: TP 24765 https://foundry.tpondemand.com/entity/246765
+
+                FoundryAVPacket emptyAVPacket;
 #if USE_NEW_FFMPEG_API
-                error = avcodec_send_packet(stream->_codecContext, &_avPacket);
+                error = avcodec_send_packet(stream->_codecContext, &emptyAVPacket);
                 if (error == 0) {
                     error = avcodec_receive_frame(stream->_codecContext, stream->_avFrame);
                     if ( error == AVERROR(EAGAIN) ) {
@@ -1404,7 +1586,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
                     }
                 }
 #else
-                error = avcodec_decode_video2(stream->_codecContext, stream->_avFrame, &frameDecoded, &_avPacket);
+                error = avcodec_decode_video2(stream->_codecContext, stream->_avFrame, &frameDecoded, &emptyAVPacket);
 #endif
             }
             if (error < 0) {
@@ -1433,7 +1615,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
 
                 SwsContext* context = NULL;
                 {
-                    context = stream->getConvertCtx(stream->_codecContext->pix_fmt, stream->_width, stream->_height,
+                    context = stream->getConvertCtx(srcPixelFormat, stream->_width, stream->_height,
                                                     srcColourRange,
                                                     stream->_outputPixelFormat, stream->_width, stream->_height);
                 }
@@ -1445,6 +1627,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
                     uint8_t *data[4];
                     int linesize[4];
 #if 0
+                    // Nuke's version
                     {
                         AVPicture output;
                         avpicture_fill(&output, buffer, stream->_outputPixelFormat, stream->_width, stream->_height);
@@ -1555,7 +1738,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
                 }
             } // if (decodeAttempted)
         } // if (stream->_decodeNextFrameIn < stream->_frames)
-        av_packet_unref(&_avPacket);
+        _avPacket.FreePacket();
         if ( plugin->abort() ) {
             return false;
         }
@@ -1569,8 +1752,10 @@ FFmpegFile::decode(const ImageEffect* plugin,
     // the AVPacket, since it won't have been freed at the end of the above loop (we reach here by a break from the main
     // loop when hasPicture is false).
     if (!hasPicture) {
+        // If the process failed to get a picture, but the packet contains information about the decompressed image, then
+        // we need to dispose it;
         if (_avPacket.size > 0) {
-            av_packet_unref(&_avPacket);
+            _avPacket.FreePacket();
         }
         stream->_decodeNextFrameOut = -1;
     }
@@ -1600,20 +1785,19 @@ bool
 FFmpegFile::getInfo(int & width,
                     int & height,
                     double & aspect,
-                    int & frames,
-                    unsigned streamIdx)
+                    int & frames)
 {
-    if ( streamIdx >= _streams.size() ) {
+    AutoMutex guard(_lock);
+
+    if (_streams.empty()) {
         return false;
     }
 
-    // get the stream
-    Stream* stream = _streams[streamIdx];
-
-    width  = stream->_width;
-    height = stream->_height;
-    aspect = stream->_aspect;
-    frames = (int)stream->_frames;
+    assert(_selectedStream && "Null _selectedStream");
+    width  = _selectedStream->_width;
+    height = _selectedStream->_height;
+    aspect = _selectedStream->_aspect;
+    frames = (int)_selectedStream->_frames;
 
     return true;
 }

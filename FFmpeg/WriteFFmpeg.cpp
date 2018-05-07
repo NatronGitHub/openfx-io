@@ -19,6 +19,7 @@
 /*
  * OFX ffmpegWriter plugin.
  * Writes a video output file using the libav library.
+ * Synced with mov64Writer 11.1v3
  */
 
 
@@ -1281,6 +1282,7 @@ private:
 
     void updateBitrateToleranceRange();
     bool isRec709Format(const int height) const;
+    bool isPalFormat(const AVRational& displayRatio) const;
     static bool IsYUVFromShortName(const char* shortName, int codecProfile);
     static bool IsRGBFromShortName(const char* shortName, int codecProfile);
     static AVPixelFormat  GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
@@ -1712,9 +1714,18 @@ WriteFFmpegPlugin::isRec709Format(const int height) const
     }
 
     // Using method described in step 5 of QuickTimeCodecReader::setPreferredMetadata
+    // #cristian: height >= 720 (HD); height < 720 (SD)
     return (height >= 720);
 }
 
+bool
+WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
+{
+    const AVRational palRatio = {5, 4};
+    const bool isPAL = (displayRatio.num == 576) || (av_cmp_q(palRatio, displayRatio) == 0);
+
+    return isPAL;
+}
 
 // Figure out if a codec is definitely YUV based from its shortname.
 /*static*/
@@ -1727,7 +1738,8 @@ WriteFFmpegPlugin::IsYUVFromShortName(const char* shortName,
     unused(codecProfile);
 #endif
 
-    return ( !strcmp(shortName, kProresCodec kProresProfileHQFourCC) ||
+    return ( !strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) ||
+             !strcmp(shortName, kProresCodec kProresProfileHQFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileSQFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileLTFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileProxyFourCC) ||
@@ -2746,37 +2758,36 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
     if ( IsYUVFromShortName(codecsShortNames[codec].c_str(), dnxhdCodecProfile_i) ) {
         bool writeNCLC = _writeNCLC->getValue();
 
-        // Primaries are always 709.
-        //avCodecContext->color_primaries = AVCOL_PRI_BT709;
-        if (writeNCLC) {
-            av_dict_set(&avStream->metadata, kNCLCPrimariesKey, "1", 0);
-        }
+        const AVRational displayRatio = {avCodecContext->width, avCodecContext->height};
 
-        // Transfer function is always set to unknown. This results in more correct reading
-        // on the part of QT Player.
-        avCodecContext->color_trc = AVCOL_TRC_UNSPECIFIED;
-        if (writeNCLC) {
-            av_dict_set(&avStream->metadata, kNCLCTransferKey, "2", 0);
-        }
-
-        // Matrix is based on that used when writing (a combo of height and legacy codec in general).
-        if ( isRec709Format(avCodecContext->height) ) {
-            if (avCodecContext->color_primaries == AVCOL_PRI_BT2020) {
-                avCodecContext->colorspace = AVCOL_SPC_BT2020_NCL;
-            } else {
-                avCodecContext->colorspace = AVCOL_SPC_BT709;
-            }
-            if (writeNCLC) {
-                av_dict_set(&avStream->metadata, kNCLCMatrixKey, "1", 0);
-            }
+        const bool isHD = isRec709Format(avCodecContext->height);
+        const bool isPAL = isPalFormat(displayRatio);
+        if (isHD) {
+            avCodecContext->color_primaries = AVCOL_PRI_BT709;      // kQTPrimaries_ITU_R709_2
+            avCodecContext->color_trc =  AVCOL_TRC_BT709;           // kQTTransferFunction_ITU_R709_2
+            avCodecContext->colorspace = AVCOL_SPC_BT709;           // kQTMatrix_ITU_R_709_2
+        } else if (isPAL) {
+            avCodecContext->color_primaries = AVCOL_PRI_BT470BG;    // kQTPrimaries_EBU_3213
+            avCodecContext->color_trc =  AVCOL_TRC_BT709;           // kQTTransferFunction_ITU_R709_2
+            avCodecContext->colorspace = AVCOL_SPC_SMPTE170M;       // kQTMatrix_ITU_R_601_4
         } else {
-            avCodecContext->color_primaries = AVCOL_PRI_BT470BG;
-            avCodecContext->color_trc = AVCOL_TRC_GAMMA28;
-            avCodecContext->colorspace = AVCOL_SPC_BT470BG;
-            if (writeNCLC) {
-                av_dict_set(&avStream->metadata, kNCLCMatrixKey, "6", 0);
-            }
+            avCodecContext->color_primaries = AVCOL_PRI_SMPTE170M;   // kQTPrimaries_SMPTE_C
+            avCodecContext->color_trc =  AVCOL_TRC_BT709;            // kQTTransferFunction_ITU_R709_2
+            avCodecContext->colorspace = AVCOL_SPC_SMPTE170M;        // kQTMatrix_ITU_R_601_4
         }
+
+        if (writeNCLC) {
+            char nclc_color_primaries[2] = {0, 0};
+            nclc_color_primaries[0] = '0' + (int)avCodecContext->color_primaries;
+            av_dict_set(&avStream->metadata, kNCLCPrimariesKey, nclc_color_primaries, 0);
+            char nclc_color_trc[2] = {0, 0};
+            nclc_color_trc[0] = '0' + (int)avCodecContext->color_trc;
+            av_dict_set(&avStream->metadata, kNCLCTransferKey, nclc_color_trc, 0);
+            char nclc_colorspace[2] = {0, 0};
+            nclc_colorspace[0] = '0' + (int)avCodecContext->colorspace;
+            av_dict_set(&avStream->metadata, kNCLCMatrixKey, nclc_colorspace, 0);
+        }
+
     }
 
     // From the Apple QuickTime movie guidelines. Set the
@@ -3390,29 +3401,27 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
 {
     int ret = 0;
     MyAVFrame avFrame;
-    int nbSamples = audioReader_->read(avFrame);
-
-    if (nbSamples) {
+    const int audioReaderResult = audioReader_->read(avFrame);
+    if ( audioReaderResult > 0 ) { //read sucessful
         AVPacket pkt = {0}; // data and size must be 0
         av_init_packet(&pkt);
-
         if (flush) {
             // A slight hack.
             // So that the durations of the video track and audio track will be
             // as close as possible, when flushing (finishing) calculate how many
             // remaining audio samples to write using the difference between the
             // the duration of the video track and the duration of the audio track.
-            double videoTime = _streamVideo->pts.val * av_q2d(_streamVideo->time_base);
-            double audioTime = _streamAudio->pts.val * av_q2d(_streamAudio->time_base);
-            double delta = videoTime - audioTime;
-            if (0.0f <= delta) {
+            const double videoTime = streamVideo_->pts.val * av_q2d(streamVideo_->time_base);
+            const double audioPts = streamAudio_->pts.val;
+            const int samplesToFinish = static_cast<int>((videoTime / av_q2d(streamAudio_->time_base))-audioPts);
+            if (0 < samplesToFinish) {
                 nbSamples = delta / av_q2d(_streamAudio->time_base);
                 // Add one sample to the count to guarantee that the audio track
                 // will be the same length or very slightly longer than the video
                 // track. This will then end the final loop that writes audio up
                 // to the duration of the video track.
-                if (avFrame->nb_samples > nbSamples) {
-                    avFrame->nb_samples = nbSamples;
+                if (avFrame->nb_samples > samplesToFinish) {
+                    avFrame->nb_samples = samplesToFinish;
                 }
             }
         }
@@ -3431,6 +3440,9 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
             av_strerror( ret, szError, sizeof(szError) );
             iop->error(szError);
         }
+    } else if ( audioReaderResult < 0 ) {
+        //error in read from audio reader
+        ret = audioReaderResult;
     }
 
     return ret;
@@ -3792,6 +3804,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     }
                 }
             }
+            av_packet_unref(&pkt); // av_free_packet(&pkt);
         }
         if (error) {
             av_log(avCodecContext, AV_LOG_ERROR, "error writing frame to file\n");
@@ -3812,6 +3825,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 
     return ret;
 } // WriteFFmpegPlugin::writeVideo
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // writeToFile

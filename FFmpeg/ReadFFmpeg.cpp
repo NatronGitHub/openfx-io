@@ -19,6 +19,7 @@
 /*
  * OFX ffmpegReader plugin.
  * Reads a video input file using the libav library.
+ * Synced with mov64Reader 11.1v3
  */
 
 #if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_ ) ) && !defined(UINT64_C)
@@ -70,6 +71,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamMaxRetriesHint "Some video files are sometimes tricky to read and needs several retries before successfully decoding a frame. This" \
     " parameter controls how many times we should attempt to decode the same frame before failing. "
 
+#define kParamFirstTrackOnly "firstTrackOnly"
+#define kParamFirstTrackOnlyLabelAndHint "First Track Only", "Causes the reader to ignore all but the first video track it finds in the file. This should be selected in a multiview project if the file happens to contain multiple video tracks that don't correspond to different views."
+
 #define kParamLibraryInfo "libraryInfo"
 #define kParamLibraryInfoLabel "FFmpeg Info...", "Display information about the underlying library."
 
@@ -86,6 +90,7 @@ class ReadFFmpegPlugin
 {
     FFmpegFileManager& _manager;
     IntParam *_maxRetries;
+    BooleanParam *_firstTrackOnly;
 
 public:
 
@@ -130,7 +135,7 @@ private:
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
     virtual bool guessParamsFromFilename(const string& filename, string *colorspace, PreMultiplicationEnum *filePremult, PixelComponentEnum *components, int *componentCount) OVERRIDE FINAL;
-    virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getSequenceTimeDomain(const string& filename, OfxRangeI &range) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& filename, OfxTime time, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
     virtual bool getFrameRate(const string& filename, double* fps) const OVERRIDE FINAL;
@@ -142,8 +147,10 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
     : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false)
     , _manager(manager)
     , _maxRetries(NULL)
+    , _firstTrackOnly(NULL)
 {
     _maxRetries = fetchIntParam(kParamMaxRetries);
+    _firstTrackOnly = fetchBooleanParam(kParamFirstTrackOnly);
     assert(_maxRetries);
     int originalFrameRangeMin, originalFrameRangeMax;
     _originalFrameRange->getValue(originalFrameRangeMin, originalFrameRangeMax);
@@ -313,7 +320,7 @@ ReadFFmpegPlugin::isVideoStream(const string& filename)
 void
 ReadFFmpegPlugin::decode(const string& filename,
                          OfxTime time,
-                         int /*view*/,
+                         int view,
                          bool /*isPlayback*/,
                          const OfxRectI& renderWindow,
                          float *pixelData,
@@ -348,6 +355,12 @@ ReadFFmpegPlugin::decode(const string& filename,
 
         return;
     }
+
+    bool firstTrackOnly = _firstTrackOnly->getValueAtTime(time);
+    if (firstTrackOnly) {
+        view = 0;
+    }
+    file->setSelectedStream(view);
 
     int width, height, frames;
     double ap;
@@ -977,6 +990,15 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         param->setDefault(10);
         param->setRange(0, 100);
         param->setDisplayRange(0, 20);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        IntParamDescriptor *param = desc.defineIntParam(kParamMaxRetries);
+        param->setLabelAndHint(kParamFirstTrackOnlyLabelAndHint);
+        param->setAnimates(false);
+        param->setDefault(false);
         param->setLayoutHint(eLayoutHintDivider);
         if (page) {
             page->addChild(*param);

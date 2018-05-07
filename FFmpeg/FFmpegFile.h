@@ -120,10 +120,14 @@ private:
         AVFrame* _avFrame;             // decoding frame
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
+
         int _fpsNum;
         int _fpsDen;
+
         int64_t _startPTS;     // PTS of the first frame in the stream
+        int64_t _startDTS;     // DTS of the first frame in the stream
         int64_t _frames;       // video duration in frames
+
         bool _ptsSeen;                      // True if a read AVPacket has ever contained a valid PTS during this stream's decode,
         // indicating that this stream does contain PTSs.
         int64_t AVPacket::*_timestampField; // Pointer to member of AVPacket from which timestamps are to be retrieved. Enables
@@ -209,7 +213,18 @@ private:
             delete(s);
         }
 
-        int64_t frameToPts(int frame) const
+        int64_t frameToDts(int frame) const
+        {
+            int64_t numerator = int64_t(frame) * _fpsDen *  _avstream->time_base.den;
+            int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
+
+            // guard against division by zero
+            assert(denominator);
+
+            return _startDTS + (numerator / denominator);
+        }
+
+       int64_t frameToPts(int frame) const
         {
             int64_t numerator = int64_t(frame) * _fpsDen *  _avstream->time_base.den;
             int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
@@ -242,6 +257,7 @@ private:
             }
 
             // Using method described in step 5 of QuickTimeCodecReader::setPreferredMetadata
+            // #cristian: height >= 720 (HD); height < 720 (SD)
             return (_height >= 720);
         }
 
@@ -271,6 +287,37 @@ private:
         }
     };
 
+    struct FoundryAVPacket : public AVPacket
+    {
+    public:
+        FoundryAVPacket()
+        : wasPacketDecoded(false)
+        {
+            InitPacket();
+        }
+        ~FoundryAVPacket()
+        {
+            FreePacket();
+        }
+
+    public:
+        void InitPacket()
+        {
+            data = NULL;
+            size = 0;
+
+            av_init_packet(this);
+        }
+        void FreePacket()
+        {
+            wasPacketDecoded = false;
+
+            av_packet_unref(this); //av_free_packet(this);
+        }
+
+        bool wasPacketDecoded;
+    };
+
     std::string _filename;
 
     // AV structure
@@ -280,10 +327,14 @@ private:
     // store all video streams available in the file
     std::vector<Stream*> _streams;
 
+    // The stream selected as the one from which data will be read. The constructor sets this to the
+    // viewIndex^th stream if there is one, otherwise the first (i.e. zeroth) stream.
+    Stream* _selectedStream;
+
     // reader error state
     std::string _errorMsg;  // internal decoding error string
     bool _invalidState;     // true if the reader is in an invalid state
-    AVPacket _avPacket;
+    FoundryAVPacket _avPacket;
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
@@ -338,6 +389,8 @@ public:
     {
         return _streams.size();
     }
+
+    void setSelectedStream(int streamIndex);
 
     void setColorMatrixTypeOverride(int colorMatrixType) const
     {
@@ -459,7 +512,7 @@ public:
         return _streams[0]->_bitDepth > 8 ? sizeof(unsigned short) : sizeof(unsigned char);
     }
 
-    // decode a single frame into the buffer (stream 0). Thread safe
+    // decode a single frame into the buffer. Thread safe
     bool decode(const OFX::ImageEffect* plugin, int frame, bool loadNearest, int maxRetries, unsigned char* buffer);
 
     // get stream information
@@ -470,8 +523,7 @@ public:
     bool getInfo(int& width,
                  int& height,
                  double& aspect,
-                 int& frames,
-                 unsigned streamIdx = 0);
+                 int& frames);
 
     const char* getColorspace() const;
 
