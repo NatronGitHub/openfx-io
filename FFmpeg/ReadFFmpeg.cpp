@@ -19,7 +19,17 @@
 /*
  * OFX ffmpegReader plugin.
  * Reads a video input file using the libav library.
+ *
  * Synced with mov64Reader 11.1v3
+ *
+ * BUGS:
+ * - The last frames from long-GOP mp4 don't read, see:
+ *   - https://github.com/NatronGitHub/Natron/issues/241
+ *   - https://github.com/NatronGitHub/Natron/issues/231
+ * - MPEG1 files cannot be read, for example
+ *   - https://github.com/NatronGitHub/Natron-Tests/raw/master/TestReadMPEG1/input.mpg
+ *   - http://devernay.free.fr/vision/diffprop/herve3d.mpg
+ *   This was already true before the 11.1v3 sync (e.g. at commit 4d0d3a5).
  */
 
 #if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_ ) ) && !defined(UINT64_C)
