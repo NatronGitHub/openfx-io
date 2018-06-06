@@ -875,7 +875,7 @@ FFmpegFile::FFmpegFile(const string & filename)
             //} else
 #          endif
             {
-                avctx->thread_count = std::min( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS ); // ask for the number of available cores for multithreading
+                avctx->thread_count = (std::min)( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS ); // ask for the number of available cores for multithreading
 #             ifdef AV_CODEC_CAP_SLICE_THREADS
                 if ( avctx->codec && (avctx->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) ) {
                     // multiple threads are used to decode a single frame. Reduces delay
@@ -1248,7 +1248,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
     // file but those same frames will decode succesfully on a second attempt. The root cause of this is not understood but
     // it appears to be some oddity of FFmpeg. While I don't really like it, retrying decode enables us to successfully
     // decode those files rather than having to fail the read.
-    int retriesRemaining = std::max(1, maxRetries);
+    int retriesRemaining = (std::max)(1, maxRetries);
 
     // Whether we have just performed a seek and are still awaiting the first decoded frame after that seek. This controls
     // how we respond when a decode stall is detected.

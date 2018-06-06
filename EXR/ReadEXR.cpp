@@ -613,8 +613,8 @@ ReadEXRPlugin::decode(const string& filename,
         //int r = roi.x2;
         //int x = roi.x1;
 
-        //const int X = std::max(x, datawin.min.x + file->dataOffset);
-        //const int R = std::min(r, datawin.max.x + file->dataOffset + 1);
+        //const int X = (std::max)(x, datawin.min.x + file->dataOffset);
+        //const int R = (std::min)(r, datawin.max.x + file->dataOffset + 1);
 
         // if we're below or above the data window
         if ( (exrY < datawin.min.y) || (exrY > datawin.max.y) /* || R <= X*/ ) {

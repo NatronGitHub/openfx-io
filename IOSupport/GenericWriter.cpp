@@ -647,14 +647,14 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 // Be careful: src may have more components than dst (eg dst is RGB, src is RGBA).
                 // In this case, only copy the first components (thus the std::min)
 
-                assert( ( /*dstPixelComponentStartIndex=*/ 0 + /*desiredSrcNComps=*/ std::min(srcMappedComponentsCount, dstMappedComponentsCount) ) <= /*dstPixelComponentCount=*/ dstMappedComponentsCount );
+                assert( ( /*dstPixelComponentStartIndex=*/ 0 + /*desiredSrcNComps=*/ (std::min)(srcMappedComponentsCount, dstMappedComponentsCount) ) <= /*dstPixelComponentCount=*/ dstMappedComponentsCount );
                 interleavePixelBuffers(renderWindowClipped,
                                        srcPixelData,
                                        *bounds,
                                        pixelComponents,
                                        srcMappedComponentsCount,
                                        0, // srcNCompsStartIndex
-                                       std::min(srcMappedComponentsCount, dstMappedComponentsCount), // desiredSrcNComps
+                                       (std::min)(srcMappedComponentsCount, dstMappedComponentsCount), // desiredSrcNComps
                                        bitDepth,
                                        srcRowBytes,
                                        dstBounds,

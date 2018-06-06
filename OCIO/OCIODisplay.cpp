@@ -670,7 +670,7 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
 
             // Specify an (optional) post-display transform.
             {
-                float exponent = 1.0f / std::max(1e-6f, (float)gamma);
+                float exponent = 1.0f / (std::max)(1e-6f, (float)gamma);
                 const float exponent4f[] = { exponent, exponent, exponent, exponent };
                 OCIO::ExponentTransformRcPtr cc =  OCIO::ExponentTransform::Create();
                 cc->setValue(exponent4f);

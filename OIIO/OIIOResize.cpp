@@ -493,8 +493,8 @@ OIIOResizePlugin::renderInternal(const RenderArguments & /*args*/,
             }
         }
         // older versions of OIIO 1.2 don't have ImageBufAlgo::resize(dstBuf, srcBuf, fd.name, fd.width)
-        float w = fd.width * std::max(1.0f, wratio);
-        float h = fd.width * std::max(1.0f, hratio);
+        float w = fd.width * (std::max)(1.0f, wratio);
+        float h = fd.width * (std::max)(1.0f, hratio);
         auto_ptr<Filter2D> filter( Filter2D::create(fd.name, w, h) );
 
         if ( !ImageBufAlgo::resize( dstBuf, srcBuf, filter.get(), ROI::All(), MultiThread::getNumCPUs() ) ) {
@@ -725,10 +725,10 @@ OIIOResizePlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
         srcRoD.y1 *= sy;
         srcRoD.x2 *= sx;
         srcRoD.y2 *= sy;
-        rod.x1 = std::min(srcRoD.x1, srcRoD.x2 - 1);
-        rod.x2 = std::max(srcRoD.x1 + 1, srcRoD.x2);
-        rod.y1 = std::min(srcRoD.y1, srcRoD.y2 - 1);
-        rod.y2 = std::max(srcRoD.y1 + 1, srcRoD.y2);
+        rod.x1 = (std::min)(srcRoD.x1, srcRoD.x2 - 1);
+        rod.x2 = (std::max)(srcRoD.x1 + 1, srcRoD.x2);
+        rod.y1 = (std::min)(srcRoD.y1, srcRoD.y2 - 1);
+        rod.y2 = (std::max)(srcRoD.y1 + 1, srcRoD.y2);
         break;
     }
     } // switch

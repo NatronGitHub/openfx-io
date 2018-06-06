@@ -460,7 +460,7 @@ public:
         // Sometimes AVCodec reports a bitdepth of 0 (eg PNG codec).
 
         // In this case, assume 8 bit.
-        return std::max(8, _streams[0]->_bitDepth);
+        return (std::max)(8, _streams[0]->_bitDepth);
     }
 
     int getNumberOfComponents() const

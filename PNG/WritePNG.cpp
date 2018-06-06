@@ -723,7 +723,7 @@ WritePNGPlugin::encode(const string& filename,
     int compressionLevelParam;
     _compressionLevel->getValue(compressionLevelParam);
     assert(compressionLevelParam >= 0 && compressionLevelParam <= 9);
-    int compressionLevel = std::max(std::min(compressionLevelParam, Z_BEST_COMPRESSION), Z_NO_COMPRESSION);
+    int compressionLevel = (std::max)((std::min)(compressionLevelParam, Z_BEST_COMPRESSION), Z_NO_COMPRESSION);
     png_set_compression_level(png, compressionLevel);
 
     int compression_i;
@@ -762,7 +762,7 @@ WritePNGPlugin::encode(const string& filename,
     std::size_t scratchBufBytes = (bounds.y2 - bounds.y1) * pngRowBytes;
 
     RamBuffer scratchBuffer(scratchBufBytes);
-    int nComps = std::min(dstNComps, pixelDataNComps);
+    int nComps = (std::min)(dstNComps, pixelDataNComps);
     const int srcRowElements = rowBytes / sizeof(float);
     const size_t numPixels = (size_t)(bounds.x2 - bounds.x1) * (size_t)(bounds.y2 - bounds.y1);
 

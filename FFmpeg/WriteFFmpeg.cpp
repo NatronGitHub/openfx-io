@@ -2711,8 +2711,8 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
             double bitrateTolerance = _bitrateTolerance->getValue();
             if (bitrateTolerance >= 0) {
                 double fps = _fps->getValue();
-                double bitrateToleranceMin = std::ceil( (bitrate / std::min(fps, 4.)) * 1000000) / 1000000.;
-                bitrateTolerance = std::max( bitrateToleranceMin, bitrateTolerance );
+                double bitrateToleranceMin = std::ceil( (bitrate / (std::min)(fps, 4.)) * 1000000) / 1000000.;
+                bitrateTolerance = (std::max)( bitrateToleranceMin, bitrateTolerance );
 
                 avCodecContext->bit_rate_tolerance = (int)(bitrateTolerance * 1000000);
             }
@@ -4004,7 +4004,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 } else
 #              endif
                 {
-                    avCodecContext->thread_count = std::min( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS );
+                    avCodecContext->thread_count = (std::min)( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS );
                 }
 
                 if (openCodec(formatContext_, audioCodec, streamAudio_) < 0) {
@@ -4181,7 +4181,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         } else
 #     endif
         {
-            avCodecContext->thread_count = std::min( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS );
+            avCodecContext->thread_count = (std::min)( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS );
         }
 #     ifdef AV_CODEC_CAP_SLICE_THREADS
         if (avCodecContext->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) {
@@ -4669,7 +4669,7 @@ WriteFFmpegPlugin::updateBitrateToleranceRange()
     double bitrate = _bitrate->getValue();
     double fps = _fps->getValue();
     // guard agains division by zero - the 4 comes from the ffserver.c code
-    double minRange = std::ceil( (bitrate / std::min(fps, 4.)) * 1000000) / 1000000.;
+    double minRange = std::ceil( (bitrate / (std::min)(fps, 4.)) * 1000000) / 1000000.;
 
     _bitrateTolerance->setRange(minRange, kParamBitrateToleranceMax);
     _bitrateTolerance->setDisplayRange(minRange, kParamBitrateToleranceMax);

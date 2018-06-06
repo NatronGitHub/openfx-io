@@ -1583,9 +1583,9 @@ GenericReaderPlugin::render(const RenderArguments &args)
     _originalProxyScale->getValue(proxyOriginalScale.x, proxyOriginalScale.y);
 
     ///We only support downscaling at a power of two.
-    unsigned int renderMipmapLevel = getLevelFromScale( std::min(args.renderScale.x, args.renderScale.y) );
-    unsigned int proxyMipMapThresholdLevel = (proxyScaleThreshold.x == 0 || proxyScaleThreshold.y == 0) ? renderMipmapLevel :  getLevelFromScale( std::min(proxyScaleThreshold.x, proxyScaleThreshold.y) );
-    unsigned int originalProxyMipMapLevel = (proxyOriginalScale.x == 0 || proxyOriginalScale.y == 0) ? renderMipmapLevel : getLevelFromScale( std::min(proxyOriginalScale.x, proxyOriginalScale.y) );
+    unsigned int renderMipmapLevel = getLevelFromScale( (std::min)(args.renderScale.x, args.renderScale.y) );
+    unsigned int proxyMipMapThresholdLevel = (proxyScaleThreshold.x == 0 || proxyScaleThreshold.y == 0) ? renderMipmapLevel :  getLevelFromScale( (std::min)(proxyScaleThreshold.x, proxyScaleThreshold.y) );
+    unsigned int originalProxyMipMapLevel = (proxyOriginalScale.x == 0 || proxyOriginalScale.y == 0) ? renderMipmapLevel : getLevelFromScale( (std::min)(proxyOriginalScale.x, proxyOriginalScale.y) );
 
     if ( kSupportsRenderScale && (renderMipmapLevel >= proxyMipMapThresholdLevel) ) {
         useProxy = true;
@@ -1810,15 +1810,15 @@ GenericReaderPlugin::render(const RenderArguments &args)
                     frameBounds.y1 = frameHeight  - frameBounds.y1;
                     frameBounds.y2 = frameHeight  - frameBounds.y2;
 
-                    renderWindowFullRes.x1 = std::min( (double)std::ceil( (double)renderWindowFullRes.x1 / tile_width ) * tile_width, (double)frameBounds.x1 );
-                    renderWindowFullRes.y1 = std::min( (double)std::ceil( (double)renderWindowFullRes.y1 / tile_height ) * tile_height, (double)frameBounds.y1 );
-                    renderWindowFullRes.x2 = std::max( (double)std::floor( (double)renderWindowFullRes.x2 / tile_width ) * tile_width, (double)frameBounds.x2 );
-                    renderWindowFullRes.y2 = std::max( (double)std::floor( (double)renderWindowFullRes.y2 / tile_height ) * tile_height, (double)frameBounds.y2 );
+                    renderWindowFullRes.x1 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.x1 / tile_width ) * tile_width, (double)frameBounds.x1 );
+                    renderWindowFullRes.y1 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.y1 / tile_height ) * tile_height, (double)frameBounds.y1 );
+                    renderWindowFullRes.x2 = (std::max)( (double)std::floor( (double)renderWindowFullRes.x2 / tile_width ) * tile_width, (double)frameBounds.x2 );
+                    renderWindowFullRes.y2 = (std::max)( (double)std::floor( (double)renderWindowFullRes.y2 / tile_height ) * tile_height, (double)frameBounds.y2 );
                 } else {
-                    renderWindowFullRes.x1 = std::max( (double)std::floor( (double)renderWindowFullRes.x1 / tile_width ) * tile_width, (double)frameBounds.x1 );
-                    renderWindowFullRes.y1 = std::max( (double)std::floor( (double)renderWindowFullRes.y1 / tile_height ) * tile_height, (double)frameBounds.y1 );
-                    renderWindowFullRes.x2 = std::min( (double)std::ceil( (double)renderWindowFullRes.x2 / tile_width ) * tile_width, (double)frameBounds.x2 );
-                    renderWindowFullRes.y2 = std::min( (double)std::ceil( (double)renderWindowFullRes.y2 / tile_height ) * tile_height, (double)frameBounds.y2 );
+                    renderWindowFullRes.x1 = (std::max)( (double)std::floor( (double)renderWindowFullRes.x1 / tile_width ) * tile_width, (double)frameBounds.x1 );
+                    renderWindowFullRes.y1 = (std::max)( (double)std::floor( (double)renderWindowFullRes.y1 / tile_height ) * tile_height, (double)frameBounds.y1 );
+                    renderWindowFullRes.x2 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.x2 / tile_width ) * tile_width, (double)frameBounds.x2 );
+                    renderWindowFullRes.y2 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.y2 / tile_height ) * tile_height, (double)frameBounds.y2 );
                 }
 
                 if ( isTileOrientationTopDown() ) {

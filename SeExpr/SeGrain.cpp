@@ -284,8 +284,8 @@ public:
             _black[c] = black[c];
             _minimum[c] = minimum[c];
 
-            Matrix3x3 sizeMat(1. / _renderScale.x / std::max(size[c], kSizeMin), 0., 0.,
-                              0., 1. / _renderScale.x / std::max(size[c], kSizeMin), 0.,
+            Matrix3x3 sizeMat(1. / _renderScale.x / (std::max)(size[c], kSizeMin), 0., 0.,
+                              0., 1. / _renderScale.x / (std::max)(size[c], kSizeMin), 0.,
                               0., 0., (staticSeed ? 0. : _time) + (1 + c) * seed + irregularity[c] / 2.);
             double rads = irregularity[c] * 45. * M_PI / 180.;
             double ca = std::cos(rads);
@@ -352,7 +352,7 @@ public:
                     }
                 }
                 for (int c = 0; c < 3; ++c) {
-                    unpPix[c] = std::max( _minimum[c], unpPix[c] + result[c] * (unpPix[c] * _intensity[c] + _black[c]) );
+                    unpPix[c] = (std::max)( _minimum[c], unpPix[c] + result[c] * (unpPix[c] * _intensity[c] + _black[c]) );
                 }
                 ofxsMaskMixPix<PIX, nComponents, maxValue, true>(unpPix, x, y, srcPix, _doMasking, _maskImg, (float)_mix, _maskInvert, dstPix);
                 dstPix += nComponents;

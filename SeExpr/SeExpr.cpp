@@ -2576,11 +2576,11 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments &args,
     bool absolute;
     _frameRangeAbsolute->getValueAtTime(time, absolute);
     if (absolute) {
-        range.min = std::min(t1, t2);
-        range.max = std::max(t1, t2);
+        range.min = (std::min)(t1, t2);
+        range.max = (std::max)(t1, t2);
     } else {
-        range.min = time + std::min(t1, t2);
-        range.max = time + std::max(t1, t2);
+        range.min = time + (std::min)(t1, t2);
+        range.max = time + (std::max)(t1, t2);
     }
 
     for (int i = 0; i < kSourceClipCount; ++i) {

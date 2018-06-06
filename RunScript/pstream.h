@@ -1780,7 +1780,7 @@ namespace redi
       {
         if (std::streamsize nbuf = this->epptr() - this->pptr())
         {
-          nbuf = std::min(nbuf, n - done);
+          nbuf = (std::min)(nbuf, n - done);
           traits_type::copy(this->pptr(), s + done, nbuf);
           this->pbump(nbuf);
           done += nbuf;
@@ -1881,7 +1881,7 @@ namespace redi
     {
       const std::streamsize pb1 = this->gptr() - this->eback();
       const std::streamsize pb2 = pbsz;
-      const std::streamsize npb = std::min(pb1, pb2);
+      const std::streamsize npb = (std::min)(pb1, pb2);
 
       char_type* const rbuf = rbuffer();
 

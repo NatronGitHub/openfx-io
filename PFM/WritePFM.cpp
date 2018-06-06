@@ -122,12 +122,12 @@ copyLine(const PIX* pixelData,
     for (int x = 0; x < W; ++x) {
         if (srcC == 1) {
             // alpha/grayscale image
-            for (int c = 0; c < std::min(dstC, 3); ++c) {
+            for (int c = 0; c < (std::min)(dstC, 3); ++c) {
                 dstPix[c] = srcPix[dstNCompsStartIndex];
             }
         } else {
             // color image (if dstC == 1, only the red channel is extracted)
-            for (int c = 0; c < std::min(dstC, 3); ++c) {
+            for (int c = 0; c < (std::min)(dstC, 3); ++c) {
                 dstPix[c] = srcPix[dstNCompsStartIndex + c];
             }
         }

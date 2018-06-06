@@ -1113,20 +1113,20 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         EParamTileSize tileSizeE = (EParamTileSize)tileSize_i;
         switch (tileSizeE) {
         case eParamTileSize64:
-            spec.tile_width = std::min(64, spec.full_width);
-            spec.tile_height = std::min(64, spec.full_height);
+            spec.tile_width = (std::min)(64, spec.full_width);
+            spec.tile_height = (std::min)(64, spec.full_height);
             break;
         case eParamTileSize128:
-            spec.tile_width = std::min(128, spec.full_width);
-            spec.tile_height = std::min(128, spec.full_height);
+            spec.tile_width = (std::min)(128, spec.full_width);
+            spec.tile_height = (std::min)(128, spec.full_height);
             break;
         case eParamTileSize256:
-            spec.tile_width = std::min(256, spec.full_width);
-            spec.tile_height = std::min(256, spec.full_height);
+            spec.tile_width = (std::min)(256, spec.full_width);
+            spec.tile_height = (std::min)(256, spec.full_height);
             break;
         case eParamTileSize512:
-            spec.tile_width = std::min(512, spec.full_width);
-            spec.tile_height = std::min(512, spec.full_height);
+            spec.tile_width = (std::min)(512, spec.full_width);
+            spec.tile_height = (std::min)(512, spec.full_height);
             break;
         case eParamTileSizeScanLineBased:
         default:
