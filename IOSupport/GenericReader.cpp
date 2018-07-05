@@ -1718,9 +1718,15 @@ GenericReaderPlugin::render(const RenderArguments &args)
             MultiPlane::ImagePlaneDesc plane, pairedPlane;
             MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(it->rawComps, &plane, &pairedPlane);
             const std::vector<std::string>& channels = plane.getChannels();
-            if (channels.size() < 3 || (channels[0] != "R" && channels[1] != "G" && channels[2] != "B")) {
-                isColor = false;
-            }
+            isColor = ( (channels.size() == 3 &&
+                         channels[0] == "R" &&
+                         channels[1] == "G" &&
+                         channels[2] == "B") ||
+                        (channels.size() == 4 &&
+                         channels[0] == "R" &&
+                         channels[1] == "G" &&
+                         channels[2] == "B" &&
+                         channels[3] == "A") );
             isCustom = true;
             if (isColor) {
 #ifdef OFX_IO_USING_OCIO
