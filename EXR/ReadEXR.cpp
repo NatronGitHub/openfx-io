@@ -26,7 +26,7 @@
 #include <iostream>
 #endif
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <string>
 #include <windows.h>
 #include <fstream>
@@ -329,14 +329,14 @@ struct File
     OfxRectI displayWindow;
     OfxRectI dataWindow;
     float pixelAspectRatio;
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
     std::ifstream* inputStr;
     Imf::StdIFStream* inputStdStream;
 #endif
 #ifdef OFX_IO_MT_EXR
     MultiThread::Mutex lock;
 #endif
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
     inline wstring s2ws(const string& s)
     {
         int len;
@@ -362,7 +362,7 @@ File::File(const string& filename)
     , displayWindow()
     , dataWindow()
     , pixelAspectRatio(1.)
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
     , inputStr(NULL)
     , inputStdStream(NULL)
 #endif
@@ -371,7 +371,7 @@ File::File(const string& filename)
 #endif
 {
     try{
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
         inputStr = new std::ifstream(s2ws(filename), std::ios_base::binary);
         inputStdStream = new Imf_::StdIFStream( *inputStr, filename.c_str() );
         inputfile = new Imf_::InputFile(*inputStdStream);
@@ -443,7 +443,7 @@ File::File(const string& filename)
 
         pixelAspectRatio = inputfile->header().pixelAspectRatio();
     }catch (const std::exception& e) {
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
         delete inputStr;
         delete inputStdStream;
 #endif
@@ -455,7 +455,7 @@ File::File(const string& filename)
 
 File::~File()
 {
-#if defined(_WIN32) && !defined(__MINGW32__)
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
     delete inputStr;
     delete inputStdStream;
 #endif

@@ -47,7 +47,7 @@
 #include <ofxsImageEffect.h>
 #include <ofxsMacros.h>
 
-#if defined(_WIN32) || defined(WIN64)
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
 #  include <windows.h> // for GetSystemInfo()
 #define strncasecmp _strnicmp
 #else

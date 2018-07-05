@@ -36,7 +36,7 @@
 #define DBG(x) (void)0
 #endif
 
-#ifdef _WIN32
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
 #include <windows.h>
 #endif
 
@@ -723,7 +723,7 @@ GenericReaderPlugin::getSequenceTime(double t,
     return eGetSequenceTimeError;
 }
 
-#ifdef _WIN32
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
 std::wstring
 utf8ToUtf16 (const string& str)
 {
@@ -740,7 +740,7 @@ utf8ToUtf16 (const string& str)
 static bool
 checkIfFileExists (const string& path)
 {
-#ifdef _WIN32
+#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
     WIN32_FIND_DATAW FindFileData;
     std::wstring wpath = utf8ToUtf16 (path);
     HANDLE handle = FindFirstFileW(wpath.c_str(), &FindFileData);

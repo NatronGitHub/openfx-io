@@ -63,7 +63,7 @@ NAMESPACE_OFX_IO_ENTER
 inline std::string
 basename( std::string const& pathname )
 {
-#if defined(_WIN32) || defined(WIN64)
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
     std::size_t found = pathname.find_last_of("/\\");
 #else
     std::size_t found = pathname.find_last_of("/");
@@ -75,7 +75,7 @@ basename( std::string const& pathname )
 inline std::string
 dirname( std::string const& pathname )
 {
-#if defined(_WIN32) || defined(WIN64)
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
     std::size_t found = pathname.find_last_of("/\\");
 #else
     std::size_t found = pathname.find_last_of("/");
