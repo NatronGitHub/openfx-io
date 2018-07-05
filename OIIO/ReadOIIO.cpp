@@ -2973,7 +2973,10 @@ ReadOIIOPluginFactory::load()
 {
     {
         int i = 0;
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+        bool libraw_gpl2 = false;
+        bool libraw_gpl3 = false;
+#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
         unsigned caps = libraw_capabilities();
         bool libraw_gpl2 = caps & LIBRAW_CAPS_DEMOSAICSGPL2;
         bool libraw_gpl3 = caps & LIBRAW_CAPS_DEMOSAICSGPL3;
@@ -3308,7 +3311,10 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawDemosaic);
                 param->setLabelAndHint(kParamRawDemosaicLabel);
-#             if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#             if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+                bool libraw_gpl2 = false;
+                bool libraw_gpl3 = false;
+#             elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
                 unsigned caps = libraw_capabilities();
                 bool libraw_gpl2 = caps & LIBRAW_CAPS_DEMOSAICSGPL2;
                 bool libraw_gpl3 = caps & LIBRAW_CAPS_DEMOSAICSGPL3;
