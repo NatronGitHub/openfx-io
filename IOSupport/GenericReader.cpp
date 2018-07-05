@@ -1845,9 +1845,9 @@ GenericReaderPlugin::render(const RenderArguments &args)
             DBG( std::printf("decode (to tmp)\n") );
 
             if (!_isMultiPlanar) {
-                decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
+                decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
             } else {
-                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, it->rawComps, tmpRowBytes);
+                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
             }
 
             if ( abort() ) {
