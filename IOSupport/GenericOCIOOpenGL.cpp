@@ -184,7 +184,14 @@ GenericOCIO::applyGL(const Texture* srcImg,
                      string* lut3DCacheIDParam,
                      string* shaderTextCacheIDParam)
 {
+#if OCIO_VERSION_HEX > 0x01010000 // more recent than 1.1.0?
+    // TODO: OCIO 2 with new GPU API https://github.com/imageworks/OpenColorIO/pull/539
+    // See https://github.com/imageworks/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp
+#error "Code must be upgraded for OCIO 2 with new GPU API"
+#else
+    // Reference code: https://github.com/imageworks/OpenColorIO/blob/RB-1.1/src/apps/ociodisplay/main.cpp
     // Step 1: Create a GPU Shader Description
+    // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L562
     OCIO::GpuShaderDesc shaderDesc;
     shaderDesc.setLanguage(OCIO::GPU_LANGUAGE_GLSL_1_0);
     shaderDesc.setFunctionName("OCIODisplay");
@@ -219,6 +226,9 @@ GenericOCIO::applyGL(const Texture* srcImg,
     }
 
     glEnable(GL_TEXTURE_3D);
+
+    // Step 2: Compute the 3D LUT
+    // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L568
     // The lut3D texture should be cached to avoid calling glTexSubImage3D again
     string lut3dCacheID;
     if (lut3DCacheIDParam) {
@@ -252,6 +262,8 @@ GenericOCIO::applyGL(const Texture* srcImg,
     }
     lut3D = 0;
 
+    // Step 3: Compute the Shader
+    // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L584
     // The shader should be cached, to avoid generating it again
     string shaderCacheID;
     if (shaderTextCacheIDParam) {
@@ -284,6 +296,11 @@ GenericOCIO::applyGL(const Texture* srcImg,
         fragShaderID = *fragShaderIDParam;
     }
 
+    // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L603
+    glUseProgram(programID);
+    glUniform1i(glGetUniformLocation(programID, "tex1"), 0);
+    glUniform1i(glGetUniformLocation(programID, "tex2"), 1);
+
 
     // Bind textures and apply texture mapping
     glEnable(GL_TEXTURE_2D);
@@ -298,9 +315,6 @@ GenericOCIO::applyGL(const Texture* srcImg,
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_3D, lut3dTexID);
 
-    glUseProgram(programID);
-    glUniform1i(glGetUniformLocation(programID, "tex1"), 0);
-    glUniform1i(glGetUniformLocation(programID, "tex2"), 1);
 
 
     const OfxRectI& srcBounds = srcImg->getBounds();
@@ -327,6 +341,7 @@ GenericOCIO::applyGL(const Texture* srcImg,
         glDeleteProgram(programID);
         glDeleteShader(fragShaderID);
     }
+#endif
 } // GenericOCIO::applyGL
 
 #endif // defined(OFX_IO_USING_OCIO)
