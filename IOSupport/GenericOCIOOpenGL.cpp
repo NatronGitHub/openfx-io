@@ -184,7 +184,7 @@ GenericOCIO::applyGL(const Texture* srcImg,
                      string* lut3DCacheIDParam,
                      string* shaderTextCacheIDParam)
 {
-#if OCIO_VERSION_HEX > 0x01010000 // more recent than 1.1.0?
+#if OCIO_VERSION_MAJOR > 1 // more recent than 1.x?
     // TODO: OCIO 2 with new GPU API https://github.com/imageworks/OpenColorIO/pull/539
     // See https://github.com/imageworks/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp
 #error "Code must be upgraded for OCIO 2 with new GPU API"
