@@ -2077,7 +2077,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
             if (colorSpaceStrLen == 0) {
                 colorSpaceStr = NULL;
             }
-#if OCIO_VERSION_HEX > 0x01000900 // more recent than 1.0.9?
+#if OCIO_VERSION_HEX > 0x01010100 // more recent than 1.1.1?
 #pragma message WARN("OpenColorIO was updated, check that the following code is still necessary")
 #endif
             if (colorSpaceStr) {
