@@ -53,6 +53,13 @@ using std::map;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
+#if OIIO_PLUGIN_VERSION >= 22
+// OIIO_VERSION_MAJOR >= 2
+typedef std::unique_ptr<ImageOutput> ImageOutputPtr;
+#else
+typedef ImageOutput* ImageOutputPtr;
+#endif
+
 #define kPluginName "WriteOIIO"
 #define kPluginGrouping "Image/Writers"
 #define kPluginDescription "Write images using OpenImageIO."
@@ -821,7 +828,11 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
 
 struct WriteOIIOEncodePlanesData
 {
+# if OIIO_PLUGIN_VERSION >= 22
+    ImageOutputPtr output;
+#else
     auto_ptr<ImageOutput> output;
+#endif
     vector<ImageSpec> specs;
 };
 
@@ -858,7 +869,11 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     assert( !viewsToRender.empty() );
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
+# if OIIO_PLUGIN_VERSION >= 22
+    data->output = ImageOutput::create(filename);
+# else
     data->output.reset( ImageOutput::create(filename) );
+# endif
     if ( !data->output.get() ) {
         // output is NULL
         setPersistentMessage(Message::eMessageError, "", string("Cannot create output file ") + filename);

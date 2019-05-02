@@ -92,6 +92,13 @@ using std::make_pair;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
+#if OIIO_PLUGIN_VERSION >= 22
+// OIIO_VERSION_MAJOR >= 2
+typedef std::unique_ptr<ImageInput> ImageInputPtr;
+#else
+typedef ImageInput* ImageInputPtr;
+#endif
+
 #define kPluginName "ReadOIIO"
 #define kPluginGrouping "Image/Readers"
 #define kPluginDescription \
@@ -436,13 +443,13 @@ private:
 
     void getOIIOChannelIndexesFromLayerName(const string& filename, int view, const string& layerName, PixelComponentEnum pixelComponents, const vector<ImageSpec>& subimages, vector<int>& channels, int& numChannels, int& subImageIndex);
 
-    void openFile(const string& filename, bool useCache, ImageInput** img, vector<ImageSpec>* subimages);
+    void openFile(const string& filename, bool useCache, ImageInputPtr* img, vector<ImageSpec>* subimages);
 
     virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error,  int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     string metadata(const string& filename);
 
-    void getSpecsFromImageInput(ImageInput* img, vector<ImageSpec>* subimages) const;
+    void getSpecsFromImageInput(const ImageInputPtr& img, vector<ImageSpec>* subimages) const;
 
     void getSpecsFromCache(const string& filename, vector<ImageSpec>* subimages) const;
 
@@ -1288,7 +1295,7 @@ ReadOIIOPlugin::buildOutputLayerMenu(const vector<ImageSpec>& subimages)
 } // buildOutputLayerMenu
 
 void
-ReadOIIOPlugin::getSpecsFromImageInput(ImageInput* img,
+ReadOIIOPlugin::getSpecsFromImageInput(const ImageInputPtr& img,
                                        vector<ImageSpec>* subimages) const
 {
     subimages->clear();
@@ -1345,8 +1352,12 @@ ReadOIIOPlugin::getSpecs(const string &filename,
         // use the right config
         ImageSpec config;
         getConfig(&config);
-        
+
+#     if OIIO_PLUGIN_VERSION >= 22
+        ImageInputPtr img = ImageInput::open(filename, &config);
+#     else
         auto_ptr<ImageInput> img( ImageInput::open(filename, &config) );
+#     endif
         if ( !img.get() ) {
             if (error) {
                 *error = "Could node open file " + filename;
@@ -1354,7 +1365,11 @@ ReadOIIOPlugin::getSpecs(const string &filename,
 
             return;
         }
+#     if OIIO_PLUGIN_VERSION >= 22
+        getSpecsFromImageInput(img, subimages);
+#     else
         getSpecsFromImageInput(img.get(), subimages);
+#     endif
         img->close();
     }
     if ( subimages->empty() ) {
@@ -1954,7 +1969,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
 void
 ReadOIIOPlugin::openFile(const string& filename,
                          bool useCache,
-                         ImageInput** img,
+                         ImageInputPtr* img,
                          vector<ImageSpec>* subimages)
 {
     if (_cache && useCache) {
@@ -2172,13 +2187,21 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
     vector<int> channels;
     int numChannels = 0;
+# if OIIO_PLUGIN_VERSION >= 22
+    ImageInputPtr img;
+# else
     auto_ptr<ImageInput> img;
+# endif
     vector<ImageSpec> subimages;
 
-    ImageInput* rawImg = 0;
+    ImageInputPtr rawImg = 0;
     openFile(filename, useCache, &rawImg, &subimages);
     if (rawImg) {
+# if OIIO_PLUGIN_VERSION >= 22
+        img.swap(rawImg);
+# else
         img.reset(rawImg);
+#endif
     }
 
     if ( subimages.empty() ) {
@@ -2771,14 +2794,22 @@ ReadOIIOPlugin::metadata(const string& filename)
 {
     stringstream ss;
 
+# if OIIO_PLUGIN_VERSION >= 22
+    ImageInputPtr img;
+# else
     auto_ptr<ImageInput> img;
+# endif
 
     if (!_cache) {
         // use the right config
         ImageSpec config;
         getConfig(&config);
         
+#     if OIIO_PLUGIN_VERSION >= 22
+        img = ImageInput::open(filename, &config);
+#     else
         img.reset( ImageInput::open(filename, &config) );
+#     endif
         if ( !img.get() ) {
             setPersistentMessage(Message::eMessageError, "", string("ReadOIIO: cannot open file ") + filename);
             throwSuiteStatusException(kOfxStatFailed);
