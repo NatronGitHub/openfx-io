@@ -29,7 +29,7 @@
 #include <cstdio> // printf
 #endif
 
-#include <GenericOCIO.h>
+#include "GenericOCIO.h"
 
 #include "ofxsProcessing.H"
 #include "ofxsThreadSuite.h"

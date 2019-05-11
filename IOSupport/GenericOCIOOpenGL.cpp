@@ -40,7 +40,7 @@
 #include <ofxsOGLUtilities.h>
 
 // Use OpenGL function directly, no need to use ofxsOGLFunctions.h directly because we don't use OSMesa
-#include <glad.h>
+#include "glad.h"
 
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;
