@@ -179,6 +179,11 @@ enum RawOutputColorEnum
 #endif
 };
 
+#if OIIO_VERSION >= 10904
+#define kParamRawAber "rawAber"
+#define kParamRawAberLabel "Aber.", "Correction of chromatic aberrations, given as a red multiplier and a blue multiplier. The default values of (1.,1.) correspond to no correction."
+#endif
+
 // int use_camera_matrix;
 //0: do not use embedded color profile
 //1 (default): use embedded color profile (if present) for DNG files (always); for other files only if use_camera_wb is set;
@@ -484,6 +489,9 @@ private:
 #endif
     DoubleParam* _rawExposure;
     ChoiceParam* _rawDemosaic;
+#if OIIO_VERSION >= 10904
+    Double2DParam* _rawAber;
+#endif
 
     ///V2 params
     ChoiceParam* _outputLayer;
@@ -560,7 +568,9 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 #endif
     _rawExposure = fetchDoubleParam(kParamRawExposure);
     _rawDemosaic = fetchChoiceParam(kParamRawDemosaic);
-
+#if OIIO_VERSION >= 10904
+    _rawAber = fetchDouble2DParam(kParamRawAber);
+#endif
     _offsetNegativeDispWindow = fetchBooleanParam(kParamOffsetNegativeDisplayWindow);
     _edgePixels = fetchChoiceParam(kParamEdgePixels);
 
@@ -700,6 +710,9 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
 #if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
                (paramName == kParamRawHighlightMode) ||
                (paramName == kParamRawHighlightRebuildLevel) ||
+#endif
+#if OIIO_VERSION >= 10904
+               (paramName == kParamRawAber) ||
 #endif
                (paramName == kParamRawDemosaic)) {
         // advanced parameters changed, invalidate the cache entries for the whole sequence
@@ -1886,6 +1899,22 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
         config->attribute("raw:Exposure", (float)rawExposure);
     }
 
+#if OIIO_VERSION >= 10904
+    // Chromatic Aberration
+    // see:
+    // https://github.com/NatronGitHub/Natron/issues/309
+    // https://github.com/OpenImageIO/oiio/issues/2029
+    // added to OIIO 1.9.4 via https://github.com/OpenImageIO/oiio/pull/2030
+    // Correction of chromatic aberrations; the only specified values are
+    // - the red multiplier
+    // - the blue multiplier.
+    OfxPointD rawAber = _rawAber->getValue();
+    if (rawAber.x != 1. || rawAber.y != 1.) {
+        float floats[2] = {(float)rawAber.x, (float)rawAber.y};
+        config->attribute("raw:aber", TypeDesc(TypeDesc::FLOAT, 2), &floats[0]);
+    }
+#endif
+
 #if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     // Highlight adjustment
     // (0=clip, 1=unclip, 2=blend, 3+=rebuild)
@@ -3043,7 +3072,11 @@ ReadOIIOPluginFactory::load()
     // hard-coded extensions list
     const char* extensionsl[] = {
         /*"bmp",*/ // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp
-        "cin", "dds", "dpx", "f3d", "fits", "hdr", "ico",
+        "cin", "dds", "dpx", "f3d", "fits", "hdr",
+#     if OIIO_VERSION >= 20100
+        "heic", "heif",
+#     endif
+        "ico",
         "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
         "pbm", "pgm", "ppm",
 #     if OIIO_VERSION >= 10605
@@ -3128,6 +3161,9 @@ ReadOIIOPluginFactory::describe(ImageEffectDescriptor &desc)
                                "FITS (*.fits)\n"
                                "GIF (*.gif)\n"
                                "HDR/RGBE (*.hdr)\n"
+#                           if OIIO_VERSION >= 20100
+                               "HEIC/HEIF (*.heic *.heif)\n"
+#                           endif
                                "ICO (*.ico)\n"
                                "IFF (*.iff)\n"
                                "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
@@ -3401,6 +3437,23 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                     page->addChild(*param);
                 }
             }
+#if OIIO_VERSION >= 10904
+            {
+                Double2DParamDescriptor* param = desc.defineDouble2DParam(kParamRawAber);
+                param->setLabelAndHint(kParamRawAberLabel);
+                param->setRange(0.5, 0.5, 1.5, 1.5);
+                param->setDisplayRange(0.99, 0.99, 1.01, 1.01);
+                param->setDefault(1., 1.);
+                param->setAnimates(false);
+                if (group) {
+                    param->setParent(*group);
+                }
+                if (page) {
+                    page->addChild(*param);
+                }
+            }
+#endif
+
         }
     }
 

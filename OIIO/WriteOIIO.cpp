@@ -656,7 +656,7 @@ getDefaultBitDepth(const string& filepath,
                 ( format.find("png") != string::npos) ) {
         return eTuttlePluginBitDepth8;
     } else {
-        //cin, dpx, fits, j2k, j2c, jp2, jpe, sgi, tif, tiff, tpic, webp
+        //cin, dpx, fits, heic, heif, j2k, j2c, jp2, jpe, sgi, tif, tiff, tpic, webp
         return eTuttlePluginBitDepth16;
     }
 
@@ -1415,7 +1415,11 @@ WriteOIIOPluginFactory::load()
 #if 0
     // hard-coded extensions list
     const char* extensionsl[] = {
-        "bmp", "cin", /*"dds",*/ "dpx", /*"f3d",*/ "fits", "hdr", "ico",
+        "bmp", "cin", /*"dds",*/ "dpx", /*"f3d",*/ "fits", "hdr",
+#     if OIIO_VERSION >= 20100
+        "heic", "heif",
+#     endif
+        "ico",
         "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
         "pbm", "pgm", "ppm",
 #     if OIIO_VERSION >= 10605
@@ -1473,6 +1477,9 @@ WriteOIIOPluginFactory::describe(ImageEffectDescriptor &desc)
                                //"Field3D (*.f3d)\n"
                                "FITS (*.fits)\n"
                                "HDR/RGBE (*.hdr)\n"
+#                           if OIIO_VERSION >= 20100
+                               "HEIC/HEIF (*.heic *.heif)\n"
+#                           endif
                                "Icon (*.ico)\n"
                                "IFF (*.iff)\n"
                                "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
