@@ -35,6 +35,8 @@
 #endif
 #endif
 
+#include "ofxsMacros.h"
+
 GCC_DIAG_OFF(deprecated)
 #include <ImfPixelType.h>
 #include <ImfChannelList.h>

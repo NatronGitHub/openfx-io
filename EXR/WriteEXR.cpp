@@ -22,17 +22,16 @@
  */
 
 #include <memory>
-#include <ImfChannelList.h>
-#include <ImfArray.h>
-#include <ImfOutputFile.h>
-#include <half.h>
 
+#include "ofxsMacros.h"
 
+GCC_DIAG_OFF(deprecated)
 #include <ImfChannelList.h>
 #include <IlmThreadPool.h>
 #include <ImfArray.h>
 #include <ImfOutputFile.h>
 #include <half.h>
+GCC_DIAG_ON(deprecated)
 
 #include "GenericOCIO.h"
 #include "GenericWriter.h"
