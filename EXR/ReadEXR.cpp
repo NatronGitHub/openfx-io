@@ -35,10 +35,12 @@
 #endif
 #endif
 
+GCC_DIAG_OFF(deprecated)
 #include <ImfPixelType.h>
 #include <ImfChannelList.h>
 #include <ImfInputFile.h>
 #include <IlmThreadPool.h>
+GCC_DIAG_ON(deprecated)
 
 #ifdef OFX_IO_MT_EXR
 #include <ofxsMultiThread.h>

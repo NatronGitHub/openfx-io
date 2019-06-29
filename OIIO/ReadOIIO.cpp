@@ -41,8 +41,10 @@
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imagecache.h>
 GCC_DIAG_ON(unused-parameter)
+GCC_DIAG_OFF(deprecated-declarations)
 #include <libraw.h>
 #include <libraw_version.h>
+GCC_DIAG_ON(deprecated-declarations)
 
 #include <ofxNatron.h>
 
