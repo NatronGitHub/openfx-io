@@ -149,9 +149,9 @@ script:
     fi
   #- pkg-config --cflags libraw_r
   #- dpkg-query -L libraw-dev
-  - ls $HOME/openexr/lib/pkgconfig 
-  - ls $HOME/openexr/include/OpenEXR
-  - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig pkg-config --cflags libraw_r
+  #- env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig pkg-config --cflags libraw_r
+  #- ls $HOME/openexr/lib/pkgconfig 
+  #- ls $HOME/openexr/include/OpenEXR
   - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio
   - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio nomulti
   - make clean
