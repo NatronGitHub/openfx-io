@@ -2100,7 +2100,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
                     colorSpaceStrLen = 0;
                 }
             }
-            if (colorSpaceStr) {
+            if (colorSpaceStr && colorSpaceStrLen > 0) {
                 assert( _ocio->hasColorspace(colorSpaceStr) ); // parseColorSpaceFromString always returns an existing colorspace
                 // we're lucky
                 _ocio->setInputColorspace(colorSpaceStr);

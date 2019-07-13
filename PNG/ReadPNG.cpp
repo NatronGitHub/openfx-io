@@ -184,6 +184,9 @@ png_compare_ICC_profile_with_sRGB(png_structp /*png_ptr*/,
                                   png_bytep profile,
                                   uLong adler)
 {
+   if (!profile) {
+      return 0;
+   }
    /* The quick check is to verify just the MD5 signature and trust the
     * rest of the data.  Because the profile has already been verified for
     * correctness this is safe.  png_colorspace_set_sRGB will check the 'intent'

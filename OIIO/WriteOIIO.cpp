@@ -516,11 +516,12 @@ WriteOIIOPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
         string filename;
         _fileParam->getValue(filename);
         auto_ptr<ImageOutput> output( ImageOutput::create(filename) );
+        /*
         bool supportsNChannels = false;
         if ( output.get() ) {
             supportsNChannels = output->supports("nchannels");
         }
-
+        */
 
         MultiPlane::ImagePlaneDesc plane;
         OFX::Clip* clip = 0;

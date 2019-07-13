@@ -887,11 +887,11 @@ FFmpegFile::FFmpegFile(const string & filename)
             // Set CODEC_FLAG_EMU_EDGE in the same situations in which ffplay sets it.
             // I don't know what exactly this does, but it is necessary to fix the problem
             // described in this thread: http://lists.nongnu.org/archive/html/bino-list/2012-02/msg00039.html
+#ifdef CODEC_FLAG_EMU_EDGE // removed from ffmpeg 4.0
             int lowres = 0;
 #ifdef FF_API_LOWRES
             lowres = avctx->lowres;
 #endif
-#ifdef CODEC_FLAG_EMU_EDGE // removed from ffmpeg 4.0
             if ( lowres || ( videoCodec && (videoCodec->capabilities & CODEC_CAP_DR1) ) ) {
                 avctx->flags |= CODEC_FLAG_EMU_EDGE;
             }
