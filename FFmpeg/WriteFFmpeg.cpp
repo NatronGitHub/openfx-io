@@ -4458,7 +4458,7 @@ WriteFFmpegPlugin::encode(const string& filename,
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
 
         while (_nextFrameToEncode != time && _nextFrameToEncode != INT_MIN) {
-            _nextFrameToEncodeCond.wait(_nextFrameToEncodeMutex);
+            _nextFrameToEncodeCond.wait(guard);
         }
 
         if (_nextFrameToEncode == INT_MIN) {
