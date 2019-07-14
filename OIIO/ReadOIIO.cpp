@@ -105,7 +105,7 @@ typedef ImageInput* ImageInputPtr;
 #define kPluginGrouping "Image/Readers"
 #define kPluginDescription \
     "Read images using OpenImageIO.\n\n" \
-    "Ouput is always Premultiplied (alpha is associated).\n\n" \
+    "Output is always Premultiplied (alpha is associated).\n\n" \
     "The \"Image Premult\" parameter controls the file premultiplication state, " \
     "and can be used to fix wrong file metadata (see the help for that parameter)."
 #define kPluginIdentifier "fr.inria.openfx.ReadOIIO"

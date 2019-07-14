@@ -75,7 +75,7 @@ NAMESPACE_OFX_IO_ENTER
     "# (hashes) will define the number of digits to append to each " \
     "file. For example path/mySequence###.jpg will be translated to " \
     "path/mySequence000.jpg, path/mySequence001.jpg, etc. " \
-    "%d printf-like notation can also be used instead of the hashes, for example path/sequenceName%03d.ext will achieve the same than the example aforementionned. " \
+    "%d printf-like notation can also be used instead of the hashes, for example path/sequenceName%03d.ext will achieve the same than the example aforementioned. " \
     "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overriden everytimes. " \
     "Views can be specified using the \"long\" view notation %V or the \"short\" notation using %v."
 

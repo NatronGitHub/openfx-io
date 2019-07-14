@@ -239,9 +239,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "### Multi-instruction expressions\n" \
     "\n" \
     "If an expression spans multiple instructions (usually written one per line), " \
-    "each instruction must end with a semicolumn (';'). The last instruction " \
+    "each instruction must end with a semicolon (';'). The last instruction " \
     "of the expression is considered as the final value of the pixel (a RGB vector or an Alpha scalar, depending " \
-    "on the script), and must not be terminated by a semicolumn.\n" \
+    "on the script), and must not be terminated by a semicolon.\n" \
     "More documentation is available on the [SeExpr website](http://www.disneyanimation.com/technology/seexpr.html).\n" \
     "\n" \
     "### Accessing pixel values from other frames\n" \
@@ -330,7 +330,7 @@ enum RegionOfDefinitionEnum
 
 #define kParamOutputComponents "outputComponents"
 #define kParamOutputComponentsLabel "Output components"
-#define kParamOutputComponentsHint "Specify what components to output. In RGB only, the alpha script will not be executed. Similarily, in alpha only, the RGB script " \
+#define kParamOutputComponentsHint "Specify what components to output. In RGB only, the alpha script will not be executed. Similarly, in alpha only, the RGB script " \
     "will not be executed."
 #define kParamOutputComponentsOptionRGBA "RGBA"
 #define kParamOutputComponentsOptionRGB "RGB"
