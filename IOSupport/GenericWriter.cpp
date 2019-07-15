@@ -76,7 +76,7 @@ NAMESPACE_OFX_IO_ENTER
     "file. For example path/mySequence###.jpg will be translated to " \
     "path/mySequence000.jpg, path/mySequence001.jpg, etc. " \
     "%d printf-like notation can also be used instead of the hashes, for example path/sequenceName%03d.ext will achieve the same than the example aforementioned. " \
-    "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overriden everytimes. " \
+    "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overridden everytimes. " \
     "Views can be specified using the \"long\" view notation %V or the \"short\" notation using %v."
 
 #define kParamOverwrite "overwrite"
@@ -290,7 +290,7 @@ GenericWriterPlugin::~GenericWriterPlugin()
 void
 GenericWriterPlugin::restoreStateFromParams()
 {
-    // Natron explicitly set the value of filename before instanciating a Writer.
+    // Natron explicitly set the value of filename before instantiating a Writer.
     // We need to know if all parameters were setup already and we are just loading a project
     // or if we are creating a new Writer from scratch and need toa djust parameters.
     bool writerExisted = _guessedParams->getValue();
@@ -539,7 +539,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         float* tmpPixelData = *tmpMemPtr;
 
-        // Set to black and transparant so that outside the portion defined by the image there's nothing.
+        // Set to black and transparent so that outside the portion defined by the image there's nothing.
         if (!renderWindowIsBounds) {
             std::memset(tmpPixelData, 0, memSize);
         }
@@ -1287,7 +1287,7 @@ public:
         const int procWidth = procWindow.x2 - procWindow.x1;
 
         for (int y = procWindow.y1; y < procWindow.y2; ++y,
-             srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and substract what was done on last iteration
+             srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and subtract what was done on last iteration
              dstPix += (dstRowElements - procWidth * _dstPixelComponentCount)
              ) {
             if ( (y % 100 == 0) && _effect.abort() ) {
@@ -1457,7 +1457,7 @@ public:
         const int procWidth = procWindow.x2 - procWindow.x1;
 
         for (int y = procWindow.y1; y < procWindow.y2; ++y,
-             srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and substract what was done on last iteration
+             srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and subtract what was done on last iteration
              dstPix += (dstRowElements - procWidth * _dstPixelComponentCount)
              ) {
             if ( (y % 10 == 0) && _effect.abort() ) {
@@ -2314,7 +2314,7 @@ GenericWriterPlugin::getFrameViewsNeeded(const FrameViewsNeededArguments& args,
     r.min = r.max = args.time;
 
     if (!gHostIsMultiView) {
-        //As whats requested
+        //As what's requested
         frameViews.addFrameViewsNeeded(*_inputClip, r, args.view);
     } else {
         int viewsToRender = getViewToRender();

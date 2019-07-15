@@ -398,7 +398,7 @@ enum X26xSpeedEnum {
 #if VERSION_CHECK(LIBAVCODEC_VERSION_INT, <, 1000, 1000, 1000, 57, 89, 100)
 #define OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444 0
 // FFmpeg 3.3.4 still contains the DNxHR 444 bug https://trac.ffmpeg.org/ticket/6649
-// FFmpeg patch was submited http://ffmpeg.org/pipermail/ffmpeg-devel/2017-September/216274.html
+// FFmpeg patch was submitted http://ffmpeg.org/pipermail/ffmpeg-devel/2017-September/216274.html
 #pragma message WARN("This version of FFmpeg does not support DNxHR 444, please upgrade to FFmpeg 3.3 or later with patch http://ffmpeg.org/pipermail/ffmpeg-devel/2017-September/216274.html")
 #else
 #define OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444 1
@@ -563,7 +563,7 @@ IsJpeg(ChoiceParam *codecParam,
 }
 
 // check if codec is compatible with format.
-// libavformat may not implemen query_codec for all formats
+// libavformat may not implement query_codec for all formats
 static bool
 codecCompatible(const AVOutputFormat *ofmt,
                 enum AVCodecID codec_id)
@@ -883,7 +883,7 @@ private:
 
     // Probably do not need the following or the headaches
     // of trying to support the functionality.
-    // Hide the copy constuctor. Who would manage memory?
+    // Hide the copy constructor. Who would manage memory?
     MyAVFrame(MyAVFrame& avFrame);
     // Hide the assignment operator. Who would manage memory?
     MyAVFrame& operator=(const MyAVFrame& /* rhs*/) { return *this; }
@@ -1118,7 +1118,7 @@ private:
 
     // Probably do not need the following or the headaches
     // of trying to support the functionality.
-    // Hide the copy constuctor. Who would manage memory?
+    // Hide the copy constructor. Who would manage memory?
     MyAVPicture(MyAVPicture& avPicture);
     // Hide the assignment operator. Who would manage memory?
     MyAVPicture& operator=(const MyAVPicture& /*rhs*/) { return *this; }
@@ -3386,7 +3386,7 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
 //
 // @param avFormatContext A reference to an AVFormatContext of the file.
 // @param avStream A reference to an AVStream of an audio stream.
-// @param flush A boolean value to flag that any remaining frames in the interal
+// @param flush A boolean value to flag that any remaining frames in the internal
 //              queue of the encoder should be written to the file. No new
 //              frames will be queued for encoding.
 //
@@ -3402,7 +3402,7 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
     int ret = 0;
     MyAVFrame avFrame;
     const int audioReaderResult = audioReader_->read(avFrame);
-    if ( audioReaderResult > 0 ) { //read sucessful
+    if ( audioReaderResult > 0 ) { //read successful
         AVPacket pkt = {0}; // data and size must be 0
         av_init_packet(&pkt);
         if (flush) {
@@ -3577,7 +3577,7 @@ WriteFFmpegPlugin::numberOfDestChannels() const
 //
 // @param avFormatContext A reference to an AVFormatContext of the file.
 // @param avStream A reference to an AVStream of a video stream.
-// @param flush A boolean value to flag that any remaining frames in the interal
+// @param flush A boolean value to flag that any remaining frames in the internal
 //              queue of the encoder should be written to the file. No new
 //              frames will be queued for encoding.
 //
@@ -3829,7 +3829,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 
 ////////////////////////////////////////////////////////////////////////////////
 // writeToFile
-// Write video and if specifed audio to the movie. Interleave the audio and
+// Write video and if specified audio to the movie. Interleave the audio and
 // video as specified in the QuickTime movie recommendation. This is to have
 // ~0.5s of audio interleaved with the video.
 //
@@ -3924,7 +3924,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     checkCodec();
 
     ////////////////////                        ////////////////////
-    //////////////////// INTIALIZE FORMAT       ////////////////////
+    //////////////////// INITIALIZE FORMAT       ////////////////////
 
     _filename = filename;
     _rodPixel = rodPixel;
@@ -4668,7 +4668,7 @@ WriteFFmpegPlugin::updateBitrateToleranceRange()
     //We're not force limiting the range since the upper range is not bounded.
     double bitrate = _bitrate->getValue();
     double fps = _fps->getValue();
-    // guard agains division by zero - the 4 comes from the ffserver.c code
+    // guard against division by zero - the 4 comes from the ffserver.c code
     double minRange = std::ceil( (bitrate / (std::min)(fps, 4.)) * 1000000) / 1000000.;
 
     _bitrateTolerance->setRange(minRange, kParamBitrateToleranceMax);
@@ -4778,7 +4778,7 @@ WriteFFmpegPlugin::updatePixelFormat()
     checkCodec();
 
     ////////////////////                        ////////////////////
-    //////////////////// INTIALIZE FORMAT       ////////////////////
+    //////////////////// INITIALIZE FORMAT       ////////////////////
 
     AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
     if (!avOutputFormat) {
@@ -4878,7 +4878,7 @@ WriteFFmpegPlugin::availPixelFormats()
     checkCodec();
 
     ////////////////////                        ////////////////////
-    //////////////////// INTIALIZE FORMAT       ////////////////////
+    //////////////////// INITIALIZE FORMAT       ////////////////////
 
     AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
     if (!avOutputFormat) {
