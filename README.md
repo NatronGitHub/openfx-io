@@ -217,7 +217,7 @@ Note that on this website you can only get shared versions of the ffmpeg librari
 
 ### Boost
 
-You can downlad pre-built binaries for your visual studio version from [teeks99](http://boost.teeks99.com/)
+You can download pre-built binaries for your visual studio version from [teeks99](http://boost.teeks99.com/)
 
 
 ### Note about the external libraries

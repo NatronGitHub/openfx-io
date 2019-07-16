@@ -177,7 +177,7 @@ const FilterEntry kFormatWhitelist[] =
 };
 
 // For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
-// A range of codecs are omitted for licensing reasons, or because they support obselete/unnecessary
+// A range of codecs are omitted for licensing reasons, or because they support obsolete/unnecessary
 // formats that confuse the interface.
 
 #define UNSAFEQT0 true // set to true: not really harmful
@@ -782,7 +782,7 @@ FFmpegFile::FFmpegFile(const string & filename)
     // frame information in avformat_find_stream_info. It's important that when reading
     // stereo quicktimes that the probe size be large enough to read data from both video tracks.
     // Otherwise the streams could be reported as having different properties, when really they're
-    // the same but due to an insufficient probesize the second stream didn't have all the relevent data
+    // the same but due to an insufficient probesize the second stream didn't have all the relevant data
     // loaded. This defaults to 5meg. 100meg should be enough for large stereo quicktimes.
     _context->probesize = 100000000;
 
@@ -1245,7 +1245,7 @@ FFmpegFile::decode(const ImageEffect* plugin,
     //
     // We have a rather annoying case with a small subset of media files in which decode latency (between input and output
     // frames) will exceed the maximum above which we detect decode stall at certain frames on the first pass through the
-    // file but those same frames will decode succesfully on a second attempt. The root cause of this is not understood but
+    // file but those same frames will decode successfully on a second attempt. The root cause of this is not understood but
     // it appears to be some oddity of FFmpeg. While I don't really like it, retrying decode enables us to successfully
     // decode those files rather than having to fail the read.
     int retriesRemaining = (std::max)(1, maxRetries);

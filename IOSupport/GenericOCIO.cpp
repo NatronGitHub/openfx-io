@@ -1329,7 +1329,7 @@ GenericOCIO::describeInContextInput(ImageEffectDescriptor &desc,
         // disable it, and set the default from the env variable.
         assert( getImageEffectHostDescription() );
         if (file == NULL) {
-            param->setDefault("WARNING: Open an OCIO config file, or set the OCIO environnement variable");
+            param->setDefault("WARNING: Open an OCIO config file, or set the OCIO environment variable");
         } else if (config) {
             param->setDefault(file);
         } else {

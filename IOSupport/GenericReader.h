@@ -113,7 +113,7 @@ public:
     virtual void getClipPreferences(OFX::ClipPreferencesSetter &clipPreferences) OVERRIDE;
 
     /**
-     * @brief Overriden to clear any OCIO cache.
+     * @brief Overridden to clear any OCIO cache.
      * This function calls clearAnyCache() if you have any cache to clear.
      **/
     virtual void purgeCaches(void) OVERRIDE;
