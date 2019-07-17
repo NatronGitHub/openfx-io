@@ -171,6 +171,7 @@ private:
     Double2DParam *_scale;
     BooleanParam *_preservePAR;
     BooleanParam* _srcClipChanged; // set to true the first time the user connects src
+    bool _hostIsResolve;
 };
 
 OIIOResizePlugin::OIIOResizePlugin(OfxImageEffectHandle handle)
@@ -185,6 +186,9 @@ OIIOResizePlugin::OIIOResizePlugin(OfxImageEffectHandle handle)
     , _preservePAR(NULL)
     , _srcClipChanged(NULL)
 {
+    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
+    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
+
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
     assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA ||
                          _dstClip->getPixelComponents() == ePixelComponentRGB ||
@@ -251,14 +255,7 @@ OIIOResizePlugin::render(const RenderArguments &args)
 
         return;
     }
-    if ( (dst->getRenderScale().x != args.renderScale.x) ||
-         ( dst->getRenderScale().y != args.renderScale.y) ||
-         ( dst->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, dst, args);
 
     auto_ptr<const Image> src( _srcClip->fetchImage(args.time) );
     if ( src.get() ) {

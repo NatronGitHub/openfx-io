@@ -317,6 +317,7 @@ private:
     BooleanParam* _enableGPU;
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
 #endif
+    bool _hostIsResolve;
 };
 
 OCIOFileTransformPlugin::OCIOFileTransformPlugin(OfxImageEffectHandle handle)
@@ -341,6 +342,9 @@ OCIOFileTransformPlugin::OCIOFileTransformPlugin(OfxImageEffectHandle handle)
     , _openGLContextData(NULL)
 #endif
 {
+    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
+    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
+
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
     assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA ||
                          _dstClip->getPixelComponents() == ePixelComponentRGB) );
@@ -693,14 +697,7 @@ OCIOFileTransformPlugin::renderGPU(const RenderArguments &args)
         return;
     }
 
-    if ( (srcImg->getRenderScale().x != args.renderScale.x) ||
-         ( srcImg->getRenderScale().y != args.renderScale.y) ||
-         ( srcImg->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
 
     auto_ptr<Texture> dstImg( _dstClip->loadTexture(args.time) );
     if ( !dstImg.get() ) {
@@ -708,14 +705,7 @@ OCIOFileTransformPlugin::renderGPU(const RenderArguments &args)
 
         return;
     }
-    if ( (dstImg->getRenderScale().x != args.renderScale.x) ||
-         ( dstImg->getRenderScale().y != args.renderScale.y) ||
-         ( dstImg->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
 
     BitDepthEnum srcBitDepth = srcImg->getPixelDepth();
     PixelComponentEnum srcComponents = srcImg->getPixelComponents();
@@ -808,14 +798,7 @@ OCIOFileTransformPlugin::render(const RenderArguments &args)
 
         return;
     }
-    if ( (srcImg->getRenderScale().x != args.renderScale.x) ||
-         ( srcImg->getRenderScale().y != args.renderScale.y) ||
-         ( srcImg->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
 
     BitDepthEnum srcBitDepth = srcImg->getPixelDepth();
     PixelComponentEnum srcComponents = srcImg->getPixelComponents();
@@ -832,14 +815,7 @@ OCIOFileTransformPlugin::render(const RenderArguments &args)
 
         return;
     }
-    if ( (dstImg->getRenderScale().x != args.renderScale.x) ||
-         ( dstImg->getRenderScale().y != args.renderScale.y) ||
-         ( dstImg->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
 
     BitDepthEnum dstBitDepth = dstImg->getPixelDepth();
     if ( (dstBitDepth != eBitDepthFloat) || (dstBitDepth != srcBitDepth) ) {

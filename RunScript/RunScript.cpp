@@ -226,11 +226,15 @@ private:
     IntParam *_int[kRunScriptPluginArgumentsCount];
     StringParam *_script;
     BooleanParam *_validate;
+    bool _hostIsResolve;
 };
 
 RunScriptPlugin::RunScriptPlugin(OfxImageEffectHandle handle)
     : ImageEffect(handle)
 {
+    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
+    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
+
     if (getContext() != eContextGenerator) {
         for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
             if ( (i == 0) && (getContext() == eContextFilter) ) {
@@ -294,14 +298,7 @@ RunScriptPlugin::render(const RenderArguments &args)
 
                 return;
             }
-            if ( (srcImg->getRenderScale().x != args.renderScale.x) ||
-                 ( srcImg->getRenderScale().y != args.renderScale.y) ||
-                 ( srcImg->getField() != args.fieldToRender) ) {
-                setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
+            checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
         }
     }
 
@@ -320,14 +317,7 @@ RunScriptPlugin::render(const RenderArguments &args)
 
         return;
     }
-    if ( (dstImg->getRenderScale().x != args.renderScale.x) ||
-         ( dstImg->getRenderScale().y != args.renderScale.y) ||
-         ( dstImg->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
 
     // create the script
     char scriptname[] = "/tmp/runscriptXXXXXX";
@@ -436,14 +426,7 @@ RunScriptPlugin::render(const RenderArguments &args)
 
             return;
         }
-        if ( (dstImg->getRenderScale().x != args.renderScale.x) ||
-             ( dstImg->getRenderScale().y != args.renderScale.y) ||
-             ( dstImg->getField() != args.fieldToRender) ) {
-            setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
+        checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
 
         auto_ptr<const Image> srcImg( _srcClip[0]->fetchImage(args.time) );
 
@@ -451,14 +434,7 @@ RunScriptPlugin::render(const RenderArguments &args)
             // fill output with black
             fillBlack( *this, args.renderWindow, dstImg.get() );
         } else {
-            if ( (srcImg->getRenderScale().x != args.renderScale.x) ||
-                 ( srcImg->getRenderScale().y != args.renderScale.y) ||
-                 ( srcImg->getField() != args.fieldToRender) ) {
-                setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
+            checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
 
             // copy the source image (the writer is a no-op)
             copyPixels( *this, args.renderWindow, srcImg.get(), dstImg.get() );

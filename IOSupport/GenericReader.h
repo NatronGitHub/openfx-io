@@ -440,6 +440,7 @@ private:
     const bool _isMultiPlanar;
 
     OFX::PixelComponentEnum _outputComponentsTable[5];
+    bool _hostIsResolve;
 };
 
 

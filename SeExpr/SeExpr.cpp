@@ -531,6 +531,7 @@ private:
     Double2DParam* _size;
     BooleanParam* _interactive;
     ChoiceParam* _outputComponents;
+    bool _hostIsResolve;
 };
 
 PixelComponentEnum
@@ -1847,6 +1848,9 @@ SeExprPlugin::SeExprPlugin(OfxImageEffectHandle handle,
     : ImageEffect(handle)
     , _simple(simple)
 {
+    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
+    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
+
     if (getContext() != eContextGenerator) {
         for (int i = 0; i < kSourceClipCount; ++i) {
             if ( (i == 0) && (getContext() == eContextFilter) ) {
@@ -1972,14 +1976,7 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase & processor,
 
         return;
     }
-    if ( (dst->getRenderScale().x != args.renderScale.x) ||
-         ( dst->getRenderScale().y != args.renderScale.y) ||
-         ( ( dst->getField() != eFieldNone) /* for DaVinci Resolve */ && ( dst->getField() != args.fieldToRender) ) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, dst, args);
 
     string rExpr, gExpr, bExpr, aExpr;
     string rgbScript, alphaScript;

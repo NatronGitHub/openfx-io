@@ -301,6 +301,9 @@ GenericReaderPlugin::GenericReaderPlugin(OfxImageEffectHandle handle,
     , _supportsTiles(supportsTiles)
     , _isMultiPlanar(isMultiPlanar)
 {
+    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
+    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
+
     _syncClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
     _outputClip = fetchClip(kOfxImageEffectOutputClipName);
 
@@ -1478,14 +1481,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
 
     const std::vector<Image*>& outputImages = outputImagesHolder.getOutputPlanes();
     for (std::size_t i = 0; i < outputImages.size(); ++i) {
-        if ( (outputImages[i]->getRenderScale().x != args.renderScale.x) ||
-             ( outputImages[i]->getRenderScale().y != args.renderScale.y) ||
-             ( outputImages[i]->getField() != args.fieldToRender) ) {
-            setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
+        checkBadRenderScaleOrField(_hostIsResolve, outputImages[i], args);
 
         PlaneToRender plane;
         void* dstPixelData = NULL;

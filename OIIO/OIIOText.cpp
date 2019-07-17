@@ -149,6 +149,7 @@ private:
     IntParam *_fontSize;
     StringParam *_fontName;
     RGBAParam *_textColor;
+    bool _hostIsResolve;
 };
 
 OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
@@ -156,6 +157,9 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
 {
+    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
+    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
+
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
     assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA ||
                          _dstClip->getPixelComponents() == ePixelComponentRGB) );
@@ -266,14 +270,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
 
     auto_ptr<const Image> srcImg(_srcClip ? _srcClip->fetchImage(args.time) : 0);
     if ( srcImg.get() ) {
-        if ( (srcImg->getRenderScale().x != args.renderScale.x) ||
-             ( srcImg->getRenderScale().y != args.renderScale.y) ||
-             ( srcImg->getField() != args.fieldToRender) ) {
-            setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
+        checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
     }
 
     if (!_dstClip) {
@@ -288,14 +285,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
 
         return;
     }
-    if ( (dstImg->getRenderScale().x != args.renderScale.x) ||
-         ( dstImg->getRenderScale().y != args.renderScale.y) ||
-         ( dstImg->getField() != args.fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
 
     BitDepthEnum dstBitDepth = dstImg->getPixelDepth();
     if ( (dstBitDepth != eBitDepthFloat) || ( srcImg.get() && ( dstBitDepth != srcImg->getPixelDepth() ) ) ) {
