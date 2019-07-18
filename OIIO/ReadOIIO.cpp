@@ -419,6 +419,7 @@ private:
                         int view,
                         bool isPlayback,
                         const OfxRectI& renderWindow,
+                        const OfxPointD& renderScale,
                         float *pixelData,
                         const OfxRectI& bounds,
                         PixelComponentEnum pixelComponents,
@@ -442,10 +443,10 @@ private:
 
             return;
         }
-        decodePlane(filename, time, view, isPlayback, renderWindow, pixelData, bounds, pixelComponents, pixelComponentCount, rawComps, rowBytes);
+        decodePlane(filename, time, view, isPlayback, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, rawComps, rowBytes);
     }
 
-    virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds,
                              PixelComponentEnum pixelComponents, int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
 
     void getOIIOChannelIndexesFromLayerName(const string& filename, int view, const string& layerName, PixelComponentEnum pixelComponents, const vector<ImageSpec>& subimages, vector<int>& channels, int& numChannels, int& subImageIndex);
@@ -2185,6 +2186,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                             int view,
                             bool isPlayback,
                             const OfxRectI& renderWindow,
+                            const OfxPointD& renderScale,
                             float *pixelData,
                             const OfxRectI& bounds,
                             PixelComponentEnum pixelComponents,
@@ -2192,6 +2194,8 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                             const string& rawComponents,
                             int rowBytes)
 {
+    assert(renderScale.x == 1. && renderScale.y == 1.);
+    unused(renderScale);
     unused(pixelComponentCount);
 #if OIIO_VERSION >= 10605
     // Use cache only if not during playback because the OIIO cache eats too much RAM when playing scaline-based EXRs.

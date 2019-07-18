@@ -101,7 +101,7 @@ private:
 
     virtual bool isVideoStream(const string& /*filename*/) OVERRIDE FINAL { return false; }
 
-    virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     /**
@@ -581,12 +581,15 @@ ReadEXRPlugin::decode(const string& filename,
                       int /*view*/,
                       bool /*isPlayback*/,
                       const OfxRectI& renderWindow,
+                      const OfxPointD& renderScale,
                       float *pixelData,
                       const OfxRectI& bounds,
                       PixelComponentEnum pixelComponents,
                       int pixelComponentCount,
                       int rowBytes)
 {
+    assert(renderScale.x == 1. && renderScale.y == 1.);
+    unused(renderScale);
     /// we only support RGBA output clip
     if ( (pixelComponents != ePixelComponentRGBA) || (pixelComponentCount != 4) ) {
         throwSuiteStatusException(kOfxStatErrFormat);

@@ -367,6 +367,7 @@ protected:
 private:
 
     void copyPixelData(const OfxRectI &renderWindow,
+                       const OfxPointD& renderScale,
                        const OFX::Image* srcImg,
                        OFX::Image* dstImg)
     {
@@ -386,12 +387,13 @@ private:
         getImageData(dstImg, &dstPixelData, &dstBounds, &dstPixelComponents, &dstBitDepth, &dstRowBytes);
         int dstPixelComponentCount = dstImg->getPixelComponentCount();
         copyPixels(*this,
-                   renderWindow,
+                   renderWindow, renderScale,
                    srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                    dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     }
 
     void copyPixelData(const OfxRectI &renderWindow,
+                       const OfxPointD& renderScale,
                        const void *srcPixelData,
                        const OfxRectI& srcBounds,
                        OFX::PixelComponentEnum srcPixelComponents,
@@ -409,12 +411,13 @@ private:
         getImageData(dstImg, &dstPixelData, &dstBounds, &dstPixelComponents, &dstBitDepth, &dstRowBytes);
         int dstPixelComponentCount = dstImg->getPixelComponentCount();
         copyPixels(*this,
-                   renderWindow,
+                   renderWindow, renderScale,
                    srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                    dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     }
 
     void copyPixelData(const OfxRectI &renderWindow,
+                       const OfxPointD& renderScale,
                        const OFX::Image* srcImg,
                        void *dstPixelData,
                        const OfxRectI& dstBounds,
@@ -432,12 +435,13 @@ private:
         getImageData(srcImg, &srcPixelData, &srcBounds, &srcPixelComponents, &srcBitDepth, &srcRowBytes);
         int srcPixelComponentCount = srcImg->getPixelComponentCount();
         copyPixels(*this,
-                   renderWindow,
+                   renderWindow, renderScale,
                    srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                    dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     }
 
     void packPixelBuffer(const OfxRectI& renderWindow,
+                         const OfxPointD& renderScale,
                          const void *srcPixelData,
                          const OfxRectI& bounds,
                          OFX::BitDepthEnum bitDepth,
@@ -448,6 +452,7 @@ private:
                          void* dstPixelData);
 
     void interleavePixelBuffers(const OfxRectI& renderWindow,
+                                const OfxPointD& renderScale,
                                 const void *srcPixelData,
                                 const OfxRectI& bounds,
                                 const OFX::PixelComponentEnum srcPixelComponents,
@@ -464,6 +469,7 @@ private:
                                 void* dstPixelData);
 
     void unPremultPixelData(const OfxRectI &renderWindow,
+                            const OfxPointD& renderScale,
                             const void *srcPixelData,
                             const OfxRectI& srcBounds,
                             OFX::PixelComponentEnum srcPixelComponents,
@@ -478,6 +484,7 @@ private:
                             int dstRowBytes);
 
     void premultPixelData(const OfxRectI &renderWindow,
+                          const OfxPointD& renderScale,
                           const void *srcPixelData,
                           const OfxRectI& srcBounds,
                           OFX::PixelComponentEnum srcPixelComponents,

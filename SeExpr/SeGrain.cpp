@@ -316,8 +316,10 @@ public:
         // TODO: any pre-computation goes here (such as computing a LUT)
     }
 
-    void multiThreadProcessImages(OfxRectI procWindow)
+    void multiThreadProcessImages(const OfxRectI& procWindow, const OfxPointD& rs)
     {
+        // renderScale is handled upstream, see sizeMat
+        unused(rs);
         const int octaves = 2;
         const double lacunarity = 2.;
         const double gain = 0.5;
@@ -378,8 +380,6 @@ public:
         , _maskApply(NULL)
         , _maskInvert(NULL)
     {
-        const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
-        _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
 
         _dstClip = fetchClip(kOfxImageEffectOutputClipName);
         assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGB ||
@@ -477,7 +477,6 @@ private:
     RGBParam* _intensityBlack;
     RGBParam* _intensityMinimum;
     StringParam* _sublabel;
-    bool _hostIsResolve;
 };
 
 
@@ -505,11 +504,11 @@ SeGrainPlugin::setupAndProcess(SeGrainProcessorBase &processor,
         setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong depth or components");
         throwSuiteStatusException(kOfxStatFailed);
     }
-    checkBadRenderScaleOrField(_hostIsResolve, dst, args);
+    checkBadRenderScaleOrField(dst, args);
     auto_ptr<const Image> src( ( _srcClip && _srcClip->isConnected() ) ?
                                     _srcClip->fetchImage(time) : 0 );
     if ( src.get() ) {
-        checkBadRenderScaleOrField(_hostIsResolve, src, args);
+        checkBadRenderScaleOrField(src, args);
         BitDepthEnum srcBitDepth      = src->getPixelDepth();
         PixelComponentEnum srcComponents = src->getPixelComponents();
         if ( (srcBitDepth != dstBitDepth) || (srcComponents != dstComponents) ) {
@@ -519,7 +518,7 @@ SeGrainPlugin::setupAndProcess(SeGrainProcessorBase &processor,
     bool doMasking = ( ( !_maskApply || _maskApply->getValueAtTime(time) ) && _maskClip && _maskClip->isConnected() );
     auto_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : 0);
     if ( mask.get() ) {
-        checkBadRenderScaleOrField(_hostIsResolve, mask, args);
+        checkBadRenderScaleOrField(mask, args);
     }
     if (doMasking) {
         bool maskInvert;
@@ -530,7 +529,7 @@ SeGrainPlugin::setupAndProcess(SeGrainProcessorBase &processor,
 
     processor.setDstImg( dst.get() );
     processor.setSrcImg( src.get() );
-    processor.setRenderWindow(args.renderWindow);
+    processor.setRenderWindow(args.renderWindow, args.renderScale);
 
     // fetch grain parameter values
 
@@ -565,8 +564,8 @@ SeGrainPlugin::render(const RenderArguments &args)
     // instantiate the render code based on the pixel depth of the dst clip
     PixelComponentEnum dstComponents  = _dstClip->getPixelComponents();
 
-    assert( kSupportsMultipleClipPARs   || !_srcClip || _srcClip->getPixelAspectRatio() == _dstClip->getPixelAspectRatio() );
-    assert( kSupportsMultipleClipDepths || !_srcClip || _srcClip->getPixelDepth()       == _dstClip->getPixelDepth() );
+    assert( kSupportsMultipleClipPARs   || !_srcClip || !_srcClip->isConnected() || _srcClip->getPixelAspectRatio() == _dstClip->getPixelAspectRatio() );
+    assert( kSupportsMultipleClipDepths || !_srcClip || !_srcClip->isConnected() || _srcClip->getPixelDepth()       == _dstClip->getPixelDepth() );
     assert(dstComponents == ePixelComponentRGBA || dstComponents == ePixelComponentRGB || dstComponents == ePixelComponentXY || dstComponents == ePixelComponentAlpha);
     // do the rendering
     switch (dstComponents) {

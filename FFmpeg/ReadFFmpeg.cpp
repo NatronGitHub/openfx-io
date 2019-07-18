@@ -145,7 +145,7 @@ private:
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
     virtual bool guessParamsFromFilename(const string& filename, string *colorspace, PreMultiplicationEnum *filePremult, PixelComponentEnum *components, int *componentCount) OVERRIDE FINAL;
-    virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getSequenceTimeDomain(const string& filename, OfxRangeI &range) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
     virtual bool getFrameRate(const string& filename, double* fps) const OVERRIDE FINAL;
@@ -333,6 +333,7 @@ ReadFFmpegPlugin::decode(const string& filename,
                          int view,
                          bool /*isPlayback*/,
                          const OfxRectI& renderWindow,
+                         const OfxPointD& renderScale,
                          float *pixelData,
                          const OfxRectI& imgBounds,
                          PixelComponentEnum pixelComponents,
@@ -438,7 +439,7 @@ ReadFFmpegPlugin::decode(const string& filename,
     }
 
 
-    convertDepthAndComponents(buffer, renderWindow, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+    convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
 } // ReadFFmpegPlugin::decode
 
 bool

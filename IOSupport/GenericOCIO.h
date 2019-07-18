@@ -150,8 +150,8 @@ public:
                         std::string* shaderTextCacheIDParam);
 #endif
 
-    void apply(double time, const OfxRectI& renderWindow, OFX::Image* dstImg);
-    void apply(double time, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
+    void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, OFX::Image* dstImg);
+    void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
     void changedParam(const OFX::InstanceChangedArgs &args, const std::string &paramName);
     void purgeCaches();
     void getInputColorspaceDefault(std::string &v) const;
@@ -249,7 +249,7 @@ public:
     {}
 
     // and do some processing
-    void multiThreadProcessImages(OfxRectI procWindow);
+    void multiThreadProcessImages(const OfxRectI& procWindow, const OfxPointD& rs);
 
     void setProcessor(const OCIO_NAMESPACE::ConstProcessorRcPtr& proc)
     {

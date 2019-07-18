@@ -721,6 +721,7 @@ GenericOCIO::outputCheck(double time)
 void
 GenericOCIO::apply(double time,
                    const OfxRectI& renderWindow,
+                   const OfxPointD& renderScale,
                    Image* img)
 {
     assert(_created);
@@ -730,7 +731,7 @@ GenericOCIO::apply(double time,
         throw std::runtime_error("OCIO: invalid pixel depth (only float is supported)");
     }
 
-    apply( time, renderWindow, (float*)img->getPixelData(), img->getBounds(), img->getPixelComponents(), img->getPixelComponentCount(), img->getRowBytes() );
+    apply( time, renderWindow, renderScale, (float*)img->getPixelData(), img->getBounds(), img->getPixelComponents(), img->getPixelComponentCount(), img->getRowBytes() );
 #endif
 }
 
@@ -768,8 +769,9 @@ GenericOCIO::setValues(const OCIO::ConstContextRcPtr &context,
 }
 
 void
-OCIOProcessor::multiThreadProcessImages(OfxRectI renderWindow)
+OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxPointD& renderScale)
 {
+    unused(renderScale);
     assert(_dstBounds.x1 <= renderWindow.x1 && renderWindow.x1 <= renderWindow.x2 && renderWindow.x2 <= _dstBounds.x2);
     assert(_dstBounds.y1 <= renderWindow.y1 && renderWindow.y1 <= renderWindow.y2 && renderWindow.y2 <= _dstBounds.y2);
     // Ensure there are pixels to render otherwise OCIO::PackedImageDesc will throw an exception.
@@ -835,6 +837,7 @@ GenericOCIO::getOrCreateProcessor(double time)
 void
 GenericOCIO::apply(double time,
                    const OfxRectI& renderWindow,
+                   const OfxPointD& renderScale,
                    float *pixelData,
                    const OfxRectI& bounds,
                    PixelComponentEnum pixelComponents,
@@ -877,7 +880,7 @@ GenericOCIO::apply(double time,
     processor.setProcessor(proc);
 
     // set the render window
-    processor.setRenderWindow(renderWindow);
+    processor.setRenderWindow(renderWindow, renderScale);
 
     // Call the base class process member, this will call the derived templated process code
     processor.process();

@@ -226,15 +226,11 @@ private:
     IntParam *_int[kRunScriptPluginArgumentsCount];
     StringParam *_script;
     BooleanParam *_validate;
-    bool _hostIsResolve;
 };
 
 RunScriptPlugin::RunScriptPlugin(OfxImageEffectHandle handle)
     : ImageEffect(handle)
 {
-    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
-    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
-
     if (getContext() != eContextGenerator) {
         for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
             if ( (i == 0) && (getContext() == eContextFilter) ) {
@@ -298,7 +294,7 @@ RunScriptPlugin::render(const RenderArguments &args)
 
                 return;
             }
-            checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
+            checkBadRenderScaleOrField(srcImg, args);
         }
     }
 
@@ -317,7 +313,7 @@ RunScriptPlugin::render(const RenderArguments &args)
 
         return;
     }
-    checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
+    checkBadRenderScaleOrField(dstImg, args);
 
     // create the script
     char scriptname[] = "/tmp/runscriptXXXXXX";
@@ -426,18 +422,18 @@ RunScriptPlugin::render(const RenderArguments &args)
 
             return;
         }
-        checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
+        checkBadRenderScaleOrField(dstImg, args);
 
         auto_ptr<const Image> srcImg( _srcClip[0]->fetchImage(args.time) );
 
         if ( !srcImg.get() ) {
             // fill output with black
-            fillBlack( *this, args.renderWindow, dstImg.get() );
+            fillBlack( *this, args.renderWindow, args.renderScale, dstImg.get() );
         } else {
-            checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
+            checkBadRenderScaleOrField(srcImg, args);
 
             // copy the source image (the writer is a no-op)
-            copyPixels( *this, args.renderWindow, srcImg.get(), dstImg.get() );
+            copyPixels( *this, args.renderWindow, args.renderScale, srcImg.get(), dstImg.get() );
         }
     }
 } // RunScriptPlugin::render

@@ -149,7 +149,6 @@ private:
     IntParam *_fontSize;
     StringParam *_fontName;
     RGBAParam *_textColor;
-    bool _hostIsResolve;
 };
 
 OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
@@ -157,9 +156,6 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
 {
-    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
-    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
-
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
     assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA ||
                          _dstClip->getPixelComponents() == ePixelComponentRGB) );
@@ -270,7 +266,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
 
     auto_ptr<const Image> srcImg(_srcClip ? _srcClip->fetchImage(args.time) : 0);
     if ( srcImg.get() ) {
-        checkBadRenderScaleOrField(_hostIsResolve, srcImg, args);
+        checkBadRenderScaleOrField(srcImg, args);
     }
 
     if (!_dstClip) {
@@ -285,7 +281,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
 
         return;
     }
-    checkBadRenderScaleOrField(_hostIsResolve, dstImg, args);
+    checkBadRenderScaleOrField(dstImg, args);
 
     BitDepthEnum dstBitDepth = dstImg->getPixelDepth();
     if ( (dstBitDepth != eBitDepthFloat) || ( srcImg.get() && ( dstBitDepth != srcImg->getPixelDepth() ) ) ) {

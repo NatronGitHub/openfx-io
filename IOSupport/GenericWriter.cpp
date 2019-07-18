@@ -391,7 +391,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                                               double time,
                                               const OfxRectI& renderWindow,
                                               const OfxPointD& renderScale,
-                                              FieldEnum fieldToRender,
+                                              FieldEnum /*fieldToRender*/,
                                               PreMultiplicationEnum pluginExpectedPremult,
                                               PreMultiplicationEnum userPremult,
                                               const bool isOCIOIdentity,
@@ -444,6 +444,8 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         srcImgsHolder->addImage(srcImg);
     }
 
+    /*
+    // the following will break on Resolve, Fusion, and maybe others
     if ( (srcImg->getRenderScale().x != renderScale.x) ||
          ( srcImg->getRenderScale().y != renderScale.y) ||
          ( srcImg->getField() != fieldToRender) ) {
@@ -452,6 +454,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         return;
     }
+    */
 
     getImageData(srcImg, &srcPixelData, bounds, &pixelComponents, &bitDepth, &srcRowBytes);
 
@@ -495,6 +498,8 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
                 return;
             }
+            /*
+            // the following will break on Resolve, Fusion, and maybe others
             if ( (dstImg->getRenderScale().x != renderScale.x) ||
                  ( dstImg->getRenderScale().y != renderScale.y) ||
                  ( dstImg->getField() != fieldToRender) ) {
@@ -503,6 +508,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
                 return;
             }
+            */
             if (dstImg->getPixelComponents() != pixelComponents) {
                 setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong components");
                 throwSuiteStatusException(kOfxStatFailed);
@@ -511,7 +517,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             }
 
             // copy the source image (the writer is a no-op)
-            copyPixelData( renderWindow,
+            copyPixelData( renderWindow, renderScale,
                            srcPixelData,
                            renderWindow,
                            pixelComponents /* could also be srcMappedComponents */,
@@ -558,23 +564,23 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 if ( (userPremult == eImageOpaque) && ( (srcMappedComponents == ePixelComponentRGBA) ||
                                                         ( srcMappedComponents == ePixelComponentAlpha) ) ) {
                     // Opaque: force the alpha channel to 1
-                    copyPixelsOpaque(*this, renderWindowClipped,
+                    copyPixelsOpaque(*this, renderWindowClipped, renderScale,
                                      srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
                                      tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 } else {
                     // copy the whole raw src image
-                    copyPixels(*this, renderWindowClipped,
+                    copyPixels(*this, renderWindowClipped, renderScale,
                                srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
                                tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 }
             } else if (userPremult == eImagePreMultiplied) {
                 assert(pluginExpectedPremult == eImageUnPreMultiplied);
-                unPremultPixelData(renderWindow, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                    , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             } else {
                 assert(userPremult == eImageUnPreMultiplied);
                 assert(pluginExpectedPremult == eImagePreMultiplied);
-                premultPixelData(renderWindow, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                premultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                  , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
         } else {
@@ -584,30 +590,30 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 if ( (userPremult == eImageOpaque) && ( (srcMappedComponents == ePixelComponentRGBA) ||
                                                         ( srcMappedComponents == ePixelComponentAlpha) ) ) {
                     // Opaque: force the alpha channel to 1
-                    copyPixelsOpaque(*this, renderWindowClipped,
+                    copyPixelsOpaque(*this, renderWindowClipped, renderScale,
                                      srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
                                      tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 } else {
                     // copy the whole raw src image
-                    copyPixels(*this, renderWindowClipped,
+                    copyPixels(*this, renderWindowClipped, renderScale,
                                srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
                                tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 }
             } else {
                 assert(userPremult == eImagePreMultiplied);
-                unPremultPixelData(renderWindow, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                    , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
 #         ifdef OFX_IO_USING_OCIO
             // do the color-space conversion
             if ( (srcMappedComponents == ePixelComponentRGB) || (srcMappedComponents == ePixelComponentRGBA) ) {
-                _ocio->apply(time, renderWindowClipped, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, tmpRowBytes);
+                _ocio->apply(time, renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, tmpRowBytes);
             }
 #         endif
 
             ///If needed, re-premult the image for the plugin to work correctly
             if ( (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA) ) {
-                premultPixelData(renderWindow, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount
+                premultPixelData(renderWindow, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount
                                  , bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
         } // if (isOCIOIdentity) {
@@ -621,6 +627,8 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
                 return;
             }
+            /*
+             // the following will break on Resolve, Fusion, and maybe others
             if ( (dstImg->getRenderScale().x != renderScale.x) ||
                  ( dstImg->getRenderScale().y != renderScale.y) ||
                  ( dstImg->getField() != fieldToRender) ) {
@@ -629,13 +637,14 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
                 return;
             }
+            */
 
             PixelComponentEnum dstMappedComponents;
             const int dstMappedComponentsCount = getPixelsComponentsCount(dstImg->getPixelComponentsProperty(), &dstMappedComponents);
 
             // copy the source image (the writer is a no-op)
             if (srcMappedComponentsCount == dstMappedComponentsCount) {
-                copyPixelData( renderWindow, srcPixelData, *bounds, pixelComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, dstImg.get() );
+                copyPixelData( renderWindow, renderScale, srcPixelData, *bounds, pixelComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, dstImg.get() );
             } else {
                 void* dstPixelData;
                 OfxRectI dstBounds;
@@ -648,7 +657,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 // In this case, only copy the first components (thus the std::min)
 
                 assert( ( /*dstPixelComponentStartIndex=*/ 0 + /*desiredSrcNComps=*/ (std::min)(srcMappedComponentsCount, dstMappedComponentsCount) ) <= /*dstPixelComponentCount=*/ dstMappedComponentsCount );
-                interleavePixelBuffers(renderWindowClipped,
+                interleavePixelBuffers(renderWindowClipped, renderScale,
                                        srcPixelData,
                                        *bounds,
                                        pixelComponents,
@@ -682,7 +691,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             return;
         }
 
-        packPixelBuffer(renderWindow, *tmpMemPtr, *bounds, bitDepth, *rowBytes, srcMappedComponents, packingMapping, tmpRowBytes, packingBufferData);
+        packPixelBuffer(renderWindow, renderScale, *tmpMemPtr, *bounds, bitDepth, *rowBytes, srcMappedComponents, packingMapping, tmpRowBytes, packingBufferData);
 
         *tmpMemPtr = packingBufferData;
         *rowBytes = tmpRowBytes;
@@ -791,7 +800,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
             if (_outputClip && _outputClip->isConnected() ) {
                 auto_ptr<Image> dstImg( _outputClip->fetchImage(time) );
                 // fill output with black
-                fillBlack( *this, args.renderWindow, dstImg.get() );
+                fillBlack( *this, args.renderWindow, args.renderScale, dstImg.get() );
             }
             // nothing else to do!
 
@@ -1061,6 +1070,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                 if ( Coords::rectIntersection(args.renderWindow, it->bounds, &intersection) ) {
                     assert( (/*dstPixelComponentStartIndex=*/ interleaveIndex + /*desiredSrcNComps=*/ dstNComps) <= /*dstPixelComponentCount=*/ nChannels );
                     interleavePixelBuffers(intersection,
+                                           args.renderScale,
                                            it->srcPixelData,
                                            it->bounds,
                                            it->pixelComponents,
@@ -1156,6 +1166,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     if ( Coords::rectIntersection(args.renderWindow, it->bounds, &intersection) ) {
                         assert( (/*dstPixelComponentStartIndex=*/ interleaveIndex + /*desiredSrcNComps=*/ dstNComps) <= /*dstPixelComponentCount=*/ nChannels );
                         interleavePixelBuffers(intersection,
+                                               args.renderScale,
                                                it->srcPixelData,
                                                it->bounds,
                                                it->pixelComponents,
@@ -1271,8 +1282,10 @@ public:
     {
     }
 
-    virtual void multiThreadProcessImages(OfxRectI procWindow) OVERRIDE FINAL
+    virtual void multiThreadProcessImages(const OfxRectI& procWindow, const OfxPointD& rs) OVERRIDE FINAL
     {
+        unused(rs);
+        assert(rs.x == 1. && rs.y == 1.);
         assert(_srcBounds.x1 < _srcBounds.x2 && _srcBounds.y1 < _srcBounds.y2);
         assert( (int)_mapping.size() == _dstPixelComponentCount );
 
@@ -1326,6 +1339,7 @@ template <typename PIX, int maxValue>
 void
 packPixelBufferForDepth(ImageEffect* instance,
                         const OfxRectI& renderWindow,
+                        const OfxPointD& renderScale,
                         const void *srcPixelData,
                         const OfxRectI& bounds,
                         BitDepthEnum bitDepth,
@@ -1364,7 +1378,7 @@ packPixelBufferForDepth(ImageEffect* instance,
 
     p->setSrcImg(srcPixelData, bounds, srcPixelComponents, srcNComps, bitDepth, srcRowBytes, 0);
     p->setDstImg(dstPixelData, bounds, srcPixelComponents /*this argument is meaningless*/, channelsMapping.size(), bitDepth, dstRowBytes);
-    p->setRenderWindow(renderWindow);
+    p->setRenderWindow(renderWindow, renderScale);
 
     p->setMapping(channelsMapping);
 
@@ -1373,6 +1387,7 @@ packPixelBufferForDepth(ImageEffect* instance,
 
 void
 GenericWriterPlugin::packPixelBuffer(const OfxRectI& renderWindow,
+                                     const OfxPointD& renderScale,
                                      const void *srcPixelData,
                                      const OfxRectI& bounds,
                                      BitDepthEnum bitDepth,
@@ -1386,13 +1401,13 @@ GenericWriterPlugin::packPixelBuffer(const OfxRectI& renderWindow,
            renderWindow.y1 >= bounds.y1 && renderWindow.y2 <= bounds.y2);
     switch (bitDepth) {
     case eBitDepthFloat:
-        packPixelBufferForDepth<float, 1>(this, renderWindow, (const float*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (float*)dstPixelData);
+        packPixelBufferForDepth<float, 1>(this, renderWindow, renderScale, (const float*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (float*)dstPixelData);
         break;
     case eBitDepthUByte:
-        packPixelBufferForDepth<unsigned char, 255>(this, renderWindow, (const unsigned char*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (unsigned char*)dstPixelData);
+        packPixelBufferForDepth<unsigned char, 255>(this, renderWindow, renderScale, (const unsigned char*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (unsigned char*)dstPixelData);
         break;
     case eBitDepthUShort:
-        packPixelBufferForDepth<unsigned short, 65535>(this, renderWindow, (const unsigned short*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (unsigned short*)dstPixelData);
+        packPixelBufferForDepth<unsigned short, 65535>(this, renderWindow, renderScale, (const unsigned short*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (unsigned short*)dstPixelData);
         break;
     default:
         //unknown pixel depth
@@ -1440,8 +1455,10 @@ public:
     {
     }
 
-    virtual void multiThreadProcessImages(OfxRectI procWindow) OVERRIDE FINAL
+    virtual void multiThreadProcessImages(const OfxRectI& procWindow, const OfxPointD& rs) OVERRIDE FINAL
     {
+        assert(rs.x == 1. && rs.y == 1.);
+        unused(rs);
         assert(_srcBounds.x1 < _srcBounds.x2 && _srcBounds.y1 < _srcBounds.y2);
         assert(_dstStartIndex >= 0);
         assert(_dstStartIndex + _desiredSrcNComps <= _dstPixelComponentCount); // inner loop must not overrun dstPix
@@ -1484,6 +1501,7 @@ template <typename PIX, int maxValue>
 void
 interleavePixelBuffersForDepth(ImageEffect* instance,
                                const OfxRectI& renderWindow,
+                               const OfxPointD& renderScale,
                                const PIX *srcPixelData,
                                const OfxRectI& bounds,
                                const PixelComponentEnum srcPixelComponents,
@@ -1522,7 +1540,7 @@ interleavePixelBuffersForDepth(ImageEffect* instance,
     ;
     p->setSrcImg(srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, bitDepth, srcRowBytes, 0);
     p->setDstImg(dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, bitDepth, dstRowBytes);
-    p->setRenderWindow(renderWindow);
+    p->setRenderWindow(renderWindow, renderScale);
     p->setValues(dstPixelComponentStartIndex, desiredSrcNComps, srcNCompsStartIndex);
 
     p->process();
@@ -1530,6 +1548,7 @@ interleavePixelBuffersForDepth(ImageEffect* instance,
 
 void
 GenericWriterPlugin::interleavePixelBuffers(const OfxRectI& renderWindow,
+                                            const OfxPointD& renderScale,
                                             const void *srcPixelData,
                                             const OfxRectI& bounds,
                                             const PixelComponentEnum srcPixelComponents,
@@ -1552,13 +1571,13 @@ GenericWriterPlugin::interleavePixelBuffers(const OfxRectI& renderWindow,
            renderWindow.y1 >= dstBounds.y1 && renderWindow.y2 <= dstBounds.y2);
     switch (bitDepth) {
     case eBitDepthFloat:
-        interleavePixelBuffersForDepth<float, 1>(this, renderWindow, (const float*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (float*)dstPixelData);
+        interleavePixelBuffersForDepth<float, 1>(this, renderWindow, renderScale, (const float*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (float*)dstPixelData);
         break;
     case eBitDepthUByte:
-        interleavePixelBuffersForDepth<unsigned char, 255>(this, renderWindow, (const unsigned char*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (unsigned char*)dstPixelData);
+        interleavePixelBuffersForDepth<unsigned char, 255>(this, renderWindow, renderScale, (const unsigned char*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (unsigned char*)dstPixelData);
         break;
     case eBitDepthUShort:
-        interleavePixelBuffersForDepth<unsigned short, 65535>(this, renderWindow, (const unsigned short*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (unsigned short*)dstPixelData);
+        interleavePixelBuffersForDepth<unsigned short, 65535>(this, renderWindow, renderScale, (const unsigned short*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (unsigned short*)dstPixelData);
         break;
     default:
         //unknown pixel depth
@@ -1620,6 +1639,7 @@ static void
 setupAndProcess(PixelProcessorFilterBase & processor,
                 int premultChannel,
                 const OfxRectI &renderWindow,
+                const OfxPointD& renderScale,
                 const void *srcPixelData,
                 const OfxRectI& srcBounds,
                 PixelComponentEnum srcPixelComponents,
@@ -1647,7 +1667,7 @@ setupAndProcess(PixelProcessorFilterBase & processor,
     processor.setSrcImg(srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, 0);
 
     // set the render window
-    processor.setRenderWindow(renderWindow);
+    processor.setRenderWindow(renderWindow, renderScale);
 
     processor.setPremultMaskMix(true, premultChannel, 1.);
 
@@ -1657,6 +1677,7 @@ setupAndProcess(PixelProcessorFilterBase & processor,
 
 void
 GenericWriterPlugin::unPremultPixelData(const OfxRectI &renderWindow,
+                                        const OfxPointD& renderScale,
                                         const void *srcPixelData,
                                         const OfxRectI& srcBounds,
                                         PixelComponentEnum srcPixelComponents,
@@ -1680,7 +1701,7 @@ GenericWriterPlugin::unPremultPixelData(const OfxRectI &renderWindow,
     }
     if (dstPixelComponents == ePixelComponentRGBA) {
         PixelCopierUnPremult<float, 4, 1, float, 4, 1> fred(*this);
-        setupAndProcess(fred, 3, renderWindow, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
+        setupAndProcess(fred, 3, renderWindow, renderScale, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     } else {
         ///other pixel components means you want to copy only...
         assert(false);
@@ -1689,6 +1710,7 @@ GenericWriterPlugin::unPremultPixelData(const OfxRectI &renderWindow,
 
 void
 GenericWriterPlugin::premultPixelData(const OfxRectI &renderWindow,
+                                      const OfxPointD& renderScale,
                                       const void *srcPixelData,
                                       const OfxRectI& srcBounds,
                                       PixelComponentEnum srcPixelComponents,
@@ -1713,7 +1735,7 @@ GenericWriterPlugin::premultPixelData(const OfxRectI &renderWindow,
 
     if (dstPixelComponents == ePixelComponentRGBA) {
         PixelCopierPremult<float, 4, 1, float, 4, 1> fred(*this);
-        setupAndProcess(fred, 3, renderWindow, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
+        setupAndProcess(fred, 3, renderWindow, renderScale, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     } else {
         ///other pixel components means you want to copy only...
         assert(false);

@@ -175,6 +175,7 @@ protected:
 
     void convertDepthAndComponents(const void* srcPixelData,
                                    const OfxRectI& renderWindow,
+                                   const OfxPointD& renderScale,
                                    const OfxRectI& srcBounds,
                                    OFX::PixelComponentEnum srcPixelComponents,
                                    OFX::BitDepthEnum srcBitDepth,
@@ -249,8 +250,8 @@ private:
      * false colors or sub-par performances in the case the end-user has to append a color-space conversion
      * effect her/himself.
      **/
-    virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
-    virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, float *pixelData, const OfxRectI& bounds,
+    virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
+    virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds,
                              OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, const std::string& rawComponents, int rowBytes);
 
 
@@ -312,6 +313,7 @@ private:
 
 
     void copyPixelData(const OfxRectI &renderWindow,
+                       const OfxPointD& renderScale,
                        const void *srcPixelData,
                        const OfxRectI& srcBounds,
                        OFX::PixelComponentEnum srcPixelComponents,
@@ -326,6 +328,7 @@ private:
                        int dstRowBytes);
 
     void scalePixelData(const OfxRectI& originalRenderWindow,
+                        const OfxPointD& renderScale,
                         const OfxRectI& renderWindow,
                         unsigned int levels,
                         const void* srcPixelData,
@@ -342,6 +345,7 @@ private:
                         int dstRowBytes);
 
     void fillWithBlack(const OfxRectI &renderWindow,
+                       const OfxPointD& renderScale,
                        void *dstPixelData,
                        const OfxRectI& dstBounds,
                        OFX::PixelComponentEnum dstPixelComponents,
@@ -351,6 +355,7 @@ private:
 
 
     void premultPixelData(const OfxRectI &renderWindow,
+                          const OfxPointD& renderScale,
                           const void *srcPixelData,
                           const OfxRectI& srcBounds,
                           OFX::PixelComponentEnum srcPixelComponents,
@@ -365,6 +370,7 @@ private:
                           int dstRowBytes);
 
     void unPremultPixelData(const OfxRectI &renderWindow,
+                            const OfxPointD& renderScale,
                             const void *srcPixelData,
                             const OfxRectI& srcBounds,
                             OFX::PixelComponentEnum srcPixelComponents,
@@ -440,7 +446,6 @@ private:
     const bool _isMultiPlanar;
 
     OFX::PixelComponentEnum _outputComponentsTable[5];
-    bool _hostIsResolve;
 };
 
 

@@ -450,10 +450,6 @@ isSpaces(const string& s)
     return s.find_first_not_of(" \t\n\v\f\r") == string::npos;
 }
 
-template<typename T>
-static inline void
-unused(const T&) {}
-
 class SeExprProcessorBase;
 
 
@@ -531,7 +527,6 @@ private:
     Double2DParam* _size;
     BooleanParam* _interactive;
     ChoiceParam* _outputComponents;
-    bool _hostIsResolve;
 };
 
 PixelComponentEnum
@@ -1848,9 +1843,6 @@ SeExprPlugin::SeExprPlugin(OfxImageEffectHandle handle,
     : ImageEffect(handle)
     , _simple(simple)
 {
-    const ImageEffectHostDescription &hostDescription = *getImageEffectHostDescription();
-    _hostIsResolve = (hostDescription.hostName.substr(0, 14) == "DaVinciResolve");  // Resolve gives bad image properties
-
     if (getContext() != eContextGenerator) {
         for (int i = 0; i < kSourceClipCount; ++i) {
             if ( (i == 0) && (getContext() == eContextFilter) ) {
@@ -1976,7 +1968,7 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase & processor,
 
         return;
     }
-    checkBadRenderScaleOrField(_hostIsResolve, dst, args);
+    checkBadRenderScaleOrField(dst, args);
 
     string rExpr, gExpr, bExpr, aExpr;
     string rgbScript, alphaScript;
