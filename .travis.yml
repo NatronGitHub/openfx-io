@@ -212,6 +212,7 @@ addons:
     - libwebp-dev
     - libfreetype6-dev
     - libssl-dev
+    - libgl-dev
   coverity_scan:
     # customized build script URL
     # TRAVIS_REPO_SLUG: owner_name/repo_name of repository currently being built
