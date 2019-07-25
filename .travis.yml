@@ -102,7 +102,7 @@ install:
     fi
 # OpenImageIO (for some reason, freetype is not recognized)
 # see https://github.com/PixarAnimationStudios/USD/blob/master/.travis.yml
-  - sudo apt-get install libopenjp2-7-dev libtiff5-dev libjpeg-dev libpng-dev libraw-dev libboost-filesystem-dev libboost-regex-dev libboost-thread-dev libboost-system-dev libwebp-dev libfreetype6-dev libssl-dev
+  - sudo apt-get install libopenjp2-7-dev libtiff-dev libjpeg-dev libpng-dev libraw-dev libboost-filesystem-dev libboost-regex-dev libboost-thread-dev libboost-system-dev libwebp-dev libfreetype6-dev libssl-dev
   - if [ ! -d "$HOME/oiio/lib" ]; then
       wget https://github.com/OpenImageIO/oiio/archive/Release-2.0.8.tar.gz -O /tmp/oiio.tgz;
       tar -xvzf /tmp/oiio.tgz -C $HOME;
@@ -197,7 +197,7 @@ addons:
     #- libopenexr-dev
     #- libilmbase-dev
     - libopenjpeg-dev
-    - libtiff4-dev
+    - libtiff-dev
     - libjpeg-dev
     - libpng-dev
     - libraw-dev
