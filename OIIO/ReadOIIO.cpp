@@ -1071,6 +1071,10 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
             }
             if ( view.empty() && !layer.empty() ) {
                 ///Check if the layer we parsed is in fact not a view name
+                // Note: This code was removed in commit https://github.com/NatronGitHub/openfx-io/commit/79ac6546e0a1aed7f14fd15fbc3dfd634b91d4c5
+                // but it is necessary to read all views of multiview EXRs such
+                // as https://github.com/openexr/openexr-images/raw/master/MultiView/Balls.exr
+                // see issue https://github.com/NatronGitHub/Natron/issues/429
                 for (std::size_t v = 0; v < views.size(); ++v) {
                     if ( caseInsensitiveCompare(views[v], layer) ) {
                         view = layer;
