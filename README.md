@@ -1,4 +1,4 @@
-openfx-io [![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?style=flat-square)](https://github.com/MrKepzie/openfx-io/blob/master/LICENSE) [![Open Hub](https://www.openhub.net/p/openfx-io/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/openfx-io?ref=Thin+badge) [![Build Status](https://api.travis-ci.org/NatronGitHub/Natron.png?branch=master)](https://travis-ci.org/NatronGitHub/Natron) [![Build Status](https://api.travis-ci.org/MrKepzie/openfx-io.png?branch=master)](https://travis-ci.org/MrKepzie/openfx-io)
+openfx-io [![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?style=flat-square)](https://github.com/NatronGitHub/openfx-io/blob/master/LICENSE) [![Open Hub](https://www.openhub.net/p/openfx-io/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/openfx-io?ref=Thin+badge) [![Build Status](https://api.travis-ci.org/NatronGitHub/Natron.png?branch=master)](https://travis-ci.org/NatronGitHub/Natron) [![Build Status](https://api.travis-ci.org/NatronGitHub/openfx-io.png?branch=master)](https://travis-ci.org/NatronGitHub/openfx-io)
 =========
 
 A set of Readers/Writers plugins written using the OpenFX standard.
@@ -27,7 +27,7 @@ along with openfx-io.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 
 To fetch the latest sources from github, execute the following commands:
 
-    git clone https://github.com/MrKepzie/openfx-io.git
+    git clone https://github.com/NatronGitHub/openfx-io.git
     cd openfx-io
     git submodule update -i --recursive
 
