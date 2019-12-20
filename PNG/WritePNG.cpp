@@ -524,7 +524,12 @@ WritePNGPlugin::write_info (png_structp& sp,
                 (ocioColorspace == "vd16") ||
                 (ocioColorspace == "VD16") ) {
         png_set_gAMA (sp, ip, 1.0f / 2.2);
-    } else if ( (ocioColorspace == OCIO::ROLE_SCENE_LINEAR) ||
+    } else if (
+#ifdef OFX_IO_USING_OCIO
+                (ocioColorspace == OCIO::ROLE_SCENE_LINEAR) ||
+#else
+                (ocioColorspace == "scene_linear") ||
+#endif
                 (ocioColorspace == "Linear") ||
                 (ocioColorspace == "linear") ||
                 (ocioColorspace == "ACES2065-1") ||
