@@ -156,7 +156,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "- 3: Keys - (Catmull-Rom / Hermite spline) Some smoothing, plus minor sharpening (\\*)\n" \
     "- 4: Simon - Some smoothing, plus medium sharpening (\\*)\n" \
     "- 5: Rifman - Some smoothing, plus significant sharpening (\\*)\n" \
-    "- 6: Mitchell - Some smoothing, plus blurring to hide pixelation (\\*\\+)\n" \
+    "- 6: Mitchell - Some smoothing, plus blurring to hide pixelation (\\*)(\\+)\n" \
     "- 7: Parzen - (cubic B-spline) Greatest smoothing of all filters (\\+)\n" \
     "- 8: notch - Flat smoothing (which tends to hide moire' patterns) (\\+)\n" \
     "\n" \
