@@ -1186,7 +1186,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 std::vector<std::string> planeChannels = plane.getChannels();
                 if ( plane.getNumComponents() > 0 ) {
 
-                    for (std::size_t i = 0; i < channels.size(); ++i) {
+                    for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
                     }
                 }
