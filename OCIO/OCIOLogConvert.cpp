@@ -1,6 +1,7 @@
 /* ***** BEGIN LICENSE BLOCK *****
- * This file is part of openfx-io <https://github.com/MrKepzie/openfx-io>,
- * Copyright (C) 2013-2018 INRIA
+ * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
+ * (C) 2018-2020 The Natron Developers
+ * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
