@@ -42,10 +42,20 @@
 
 #include "ofxsMacros.h"
 
+#define SEEXPR2
+#ifdef SEEXPR2
 GCC_DIAG_OFF(deprecated)
 #include <SeNoise.h>
 #include <SeExprBuiltins.h>
 GCC_DIAG_ON(deprecated)
+#define SeExpr2 SeExpr
+namespace SeExpr {
+typedef SeExprFuncNode ExprFuncNode;
+typedef SeVec3d Vec3d;
+}
+#else
+#include <SeExpr2/Noise.h>
+#endif
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 // fix SePlatform.h's bad defines, see https://github.com/wdas/SeExpr/issues/33
@@ -343,7 +353,7 @@ public:
                     double args[3] = { pc.x, pc.y, pc.z };
                     // process the pixel (the actual computation goes here)
                     // double fbm(int n, const SeVec3d* args) in SeExprBuiltins.cpp
-                    SeExpr::FBM<3, 1, false>(args, &result[c], octaves, lacunarity, gain);
+                    SeExpr2::FBM<3, 1, false>(args, &result[c], octaves, lacunarity, gain);
                 }
                 if (_colorCorr != 0.) {
                     // apply color correction:

@@ -52,6 +52,8 @@
 #include "ofxsRectangleInteract.h"
 #include "ofxsFilter.h"
 
+#define SEEXPR2
+#ifdef SEEXPR2
 GCC_DIAG_OFF(deprecated)
 #include <SeExpression.h>
 #include <SeExprFunc.h>
@@ -59,6 +61,21 @@ GCC_DIAG_OFF(deprecated)
 #include <SeExprBuiltins.h>
 #include <SeMutex.h>
 GCC_DIAG_ON(deprecated)
+#define SeExpr2 SeExpr
+namespace SeExpr {
+typedef SeExprFuncNode ExprFuncNode;
+typedef SeVec3d Vec3d;
+typedef SeExprFuncX ExprFuncX;
+}
+#else
+#include <SeExpr2/Expression.h>
+#include <SeExpr2/ExprFunc.h>
+#include <SeExpr2/ExprNode.h>
+#include <SeExpr2/ExprBuiltins.h>
+#include <SeExpr2/Mutex.h>
+#error "Migration of SeExpr.cpp to SeExpr3 is not finished"
+#endif
+
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 // fix SePlatform.h's bad defines, see https://github.com/wdas/SeExpr/issues/33
@@ -691,9 +708,9 @@ static void
 pixelForDepthCompsFilter(const Image* img,
                          double x,
                          double y,
-                         SeVec3d& result)
+                         SeExpr2::Vec3d& result)
 {
-    result.setValue(0., 0., 0.);
+    result = SeExpr2::Vec3d(0., 0., 0.);
     if ( ( alpha && (nComps != 1) && (nComps != 4) ) ||
          ( !alpha && ( nComps <= 1) ) ) {
         // no value
@@ -705,18 +722,18 @@ pixelForDepthCompsFilter(const Image* img,
     if (alpha) {
         if (nComps == 1) {
             // alpha input
-            result.setValue(pix[0], 0., 0.);
+            result = SeExpr2::Vec3d(pix[0], 0., 0.);
         } else if (nComps == 4) {
             // RGBA input
-            result.setValue(pix[3], 0., 0.);
+            result = SeExpr2::Vec3d(pix[3], 0., 0.);
         }
     } else {
         if (nComps == 2) {
             // XY input: no B color
-            result.setValue(pix[0], pix[1], 0.);
+            result = SeExpr2::Vec3d(pix[0], pix[1], 0.);
         } else if (nComps >= 3) {
             // alpha input: no color
-            result.setValue(pix[0], pix[1], pix[2]);
+            result = SeExpr2::Vec3d(pix[0], pix[1], pix[2]);
         }
     }
 }
@@ -727,7 +744,7 @@ pixelForDepthComps(const Image* img,
                    FilterEnum interp,
                    double x,
                    double y,
-                   SeVec3d& result)
+                   SeExpr2::Vec3d& result)
 {
     switch (interp) {
     case eFilterImpulse:
@@ -758,7 +775,7 @@ pixelForDepthComps(const Image* img,
 
         return pixelForDepthCompsFilter<PIX, nComps, eFilterNotch, alpha>(img, x, y, result);
     default:
-        result.setValue(0., 0., 0.);
+        result = SeExpr2::Vec3d(0., 0., 0.);
     }
 }
 
@@ -768,7 +785,7 @@ pixelForDepth(const Image* img,
               FilterEnum interp,
               double x,
               double y,
-              SeVec3d& result)
+              SeExpr2::Vec3d& result)
 {
     int nComponents = img->getPixelComponentCount();
 
@@ -786,13 +803,13 @@ pixelForDepth(const Image* img,
 
         return pixelForDepthComps<PIX, 4, alpha>(img, interp, x, y, result);
     default:
-        result.setValue(0., 0., 0.);
+        result = SeExpr2::Vec3d(0., 0., 0.);
     }
 }
 
 template<bool alpha>
 class PixelFuncX
-    : public SeExprFuncX
+    : public SeExpr2::ExprFuncX
 {
     SeExprProcessorBase* _processor;
 
@@ -800,7 +817,7 @@ public:
 
 
     PixelFuncX(SeExprProcessorBase* processor)
-        : SeExprFuncX(true) // Thread Safe
+        : SeExpr2::ExprFuncX(true) // Thread Safe
         , _processor(processor)
     {}
 
@@ -808,11 +825,15 @@ public:
 
 private:
 
-    virtual bool prep(SeExprFuncNode* node,
+    virtual bool prep(SeExpr2::ExprFuncNode* node,
                       bool /*wantVec*/)
     {
         // check number of arguments
+#ifdef SEEXPR2
         int nargs = node->nargs();
+#else
+        int nargs = node->numChildren();
+#endif
 
         if ( (nargs < 4) || (5 < nargs) ) {
             node->addError("Wrong number of arguments, should be 4 or 5");
@@ -831,7 +852,7 @@ private:
             }
         }
 
-        SeVec3d v;
+        SeExpr2::Vec3d v;
         node->child(0)->eval(v);
         int inputIndex = (int)SeExpr::round(v[0]) - 1;
         if ( (inputIndex < 0) || (inputIndex >= kSourceClipCount) ) {
@@ -843,10 +864,10 @@ private:
         return true;
     }
 
-    virtual void eval(const SeExprFuncNode* node,
-                      SeVec3d& result) const
+    virtual void eval(const SeExpr2::ExprFuncNode* node,
+                      SeExpr2::Vec3d& result) const
     {
-        SeVec3d v;
+        SeExpr2::Vec3d v;
 
         node->child(0)->eval(v);
         int inputIndex = (int)SeExpr::round(v[0]) - 1;
@@ -862,7 +883,12 @@ private:
         node->child(3)->eval(v);
         double y = v[0];
         FilterEnum interp = eFilterImpulse;
-        if (node->nargs() == 5) {
+#ifdef SEEXPR2
+        int nargs = node->nargs();
+#else
+        int nargs = node->numChildren();
+#endif
+        if (nargs == 5) {
             node->child(4)->eval(v);
             int interp_i = SeExpr::round(v[0]);
             if (interp_i < 0) {
@@ -874,7 +900,7 @@ private:
         }
         if ( (frame != frame) || (x != x) || (y != y) ) {
             // one of the parameters is NaN
-            result.setValue(0., 0., 0.);
+            result = SeExpr2::Vec3d(0., 0., 0.);
 
             return;
         }
@@ -933,7 +959,7 @@ public:
     //! returns this variable's value by setting result, node refers to
     //! where in the parse tree the evaluation is occurring
     virtual void eval(const SeExprVarNode* /*node*/,
-                      SeVec3d& result)
+                      SeExpr2::Vec3d& result)
     {
         SeExprInternal::AutoLock<SeExprInternal::Mutex> locker(_lock);
         if (!_varSet) {
@@ -974,7 +1000,7 @@ public:
     //! returns this variable's value by setting result, node refers to
     //! where in the parse tree the evaluation is occurring
     virtual void eval(const SeExprVarNode* /*node*/,
-                      SeVec3d& result)
+                      SeExpr2::Vec3d& result)
     {
         SeExprInternal::AutoLock<SeExprInternal::Mutex> locker(_lock);
         if (!_varSet) {
@@ -1016,7 +1042,7 @@ public:
     //! returns this variable's value by setting result, node refers to
     //! where in the parse tree the evaluation is occurring
     virtual void eval(const SeExprVarNode* /*node*/,
-                      SeVec3d& result)
+                      SeExpr2::Vec3d& result)
     {
         SeExprInternal::AutoLock<SeExprInternal::Mutex> locker(_lock);
         if (!_varSet) {
@@ -1043,7 +1069,7 @@ public:
     virtual bool isVec() { return false; }
 
     virtual void eval(const SeExprVarNode* /*node*/,
-                      SeVec3d& result)
+                      SeExpr2::Vec3d& result)
     {
         result[0] = _value;
     }
@@ -1062,7 +1088,7 @@ public:
     virtual bool isVec() { return true; }
 
     virtual void eval(const SeExprVarNode* /*node*/,
-                      SeVec3d& result)
+                      SeExpr2::Vec3d& result)
     {
         result[0] = _value[0];
         result[1] = _value[1];
@@ -1073,14 +1099,14 @@ public:
 class StubSeExpression;
 
 class StubPixelFuncX
-    : public SeExprFuncX
+    : public SeExpr2::ExprFuncX
 {
     StubSeExpression* _expr;
 
 public:
 
     StubPixelFuncX(StubSeExpression* expr)
-        : SeExprFuncX(true) // Thread Safe
+        : SeExpr2::ExprFuncX(true) // Thread Safe
         , _expr(expr)
     {}
 
@@ -1089,8 +1115,8 @@ public:
 private:
 
 
-    virtual bool prep(SeExprFuncNode* node, bool /*wantVec*/);
-    virtual void eval(const SeExprFuncNode* node, SeVec3d& result) const;
+    virtual bool prep(SeExpr2::ExprFuncNode* node, bool /*wantVec*/);
+    virtual void eval(const SeExpr2::ExprFuncNode* node, SeExpr2::Vec3d& result) const;
 };
 
 typedef map<int, vector<OfxTime> > FramesNeeded;
@@ -1390,7 +1416,7 @@ OFXSeExpression::resolveFunc(const string& funcName) const
 }
 
 bool
-StubPixelFuncX::prep(SeExprFuncNode* node,
+StubPixelFuncX::prep(SeExpr2::ExprFuncNode* node,
                      bool /*wantVec*/)
 {
     // check number of arguments
@@ -1413,7 +1439,7 @@ StubPixelFuncX::prep(SeExprFuncNode* node,
         }
     }
 
-    SeVec3d v;
+    SeExpr2::Vec3d v;
     node->child(0)->eval(v);
     int inputIndex = (int)SeExpr::round(v[0]) - 1;
     if ( (inputIndex < 0) || (inputIndex >= kSourceClipCount) ) {
@@ -1426,10 +1452,10 @@ StubPixelFuncX::prep(SeExprFuncNode* node,
 }
 
 void
-StubPixelFuncX::eval(const SeExprFuncNode* node,
-                     SeVec3d& result) const
+StubPixelFuncX::eval(const SeExpr2::ExprFuncNode* node,
+                     SeExpr2::Vec3d& result) const
 {
-    SeVec3d v;
+    SeExpr2::Vec3d v;
 
     node->child(0)->eval(v);
     int inputIndex = (int)SeExpr::round(v[0]) - 1;
@@ -1792,28 +1818,28 @@ private:
                 // execute the valid expressions
                 if (_rExpr) {
                     _rExpr->setXY(x, y);
-                    SeVec3d result = _rExpr->evaluate();
+                    SeExpr2::Vec3d result = _rExpr->evaluate();
                     if (nComponents >= 3) {
                         tmpPix[0] = result[0] * maxValue;
                     }
                 }
                 if (_gExpr) {
                     _gExpr->setXY(x, y);
-                    SeVec3d result = _gExpr->evaluate();
+                    SeExpr2::Vec3d result = _gExpr->evaluate();
                     if (nComponents >= 3) {
                         tmpPix[1] = result[0] * maxValue;
                     }
                 }
                 if (_bExpr) {
                     _bExpr->setXY(x, y);
-                    SeVec3d result = _bExpr->evaluate();
+                    SeExpr2::Vec3d result = _bExpr->evaluate();
                     if (nComponents >= 3) {
                         tmpPix[2] = result[0] * maxValue;
                     }
                 }
                 if (_rgbExpr) {
                     _rgbExpr->setXY(x, y);
-                    SeVec3d result = _rgbExpr->evaluate();
+                    SeExpr2::Vec3d result = _rgbExpr->evaluate();
                     if (nComponents >= 3) {
                         tmpPix[0] = result[0] * maxValue;
                         tmpPix[1] = result[1] * maxValue;
@@ -1822,7 +1848,7 @@ private:
                 }
                 if (_alphaExpr) {
                     _alphaExpr->setXY(x, y);
-                    SeVec3d result = _alphaExpr->evaluate();
+                    SeExpr2::Vec3d result = _alphaExpr->evaluate();
                     if (nComponents == 4) {
                         tmpPix[3] = result[0] * maxValue;
                     } else if (nComponents == 1) {

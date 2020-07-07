@@ -51,27 +51,42 @@
 
 #include "ofxsMacros.h"
 
+#define SEEXPR2
+#ifdef SEEXPR2
 GCC_DIAG_OFF(deprecated)
 #include <SeNoise.h>
 #include <SeExprBuiltins.h>
 GCC_DIAG_ON(deprecated)
+#define SeExpr2 SeExpr
+namespace SeExpr {
+typedef SeExprFuncNode ExprFuncNode;
+typedef SeVec3d Vec3d;
+}
+#else
+#include <SeExpr2/Noise.h>
+#endif
 
 #ifdef SENOISE_VORONOI
-// SeExprBuiltins.cpp doesn't export Voronoi functions and data structures, see https://github.com/wdas/SeExpr/issues/32
+// SeExpr2/ExprBuiltins.cpp (SeExprBuiltins.cpp in SeExpr 2.11) doesn't export
+// Voronoi functions and data structures, see https://github.com/wdas/SeExpr/issues/32
+#ifdef SEEXPR2
 #include <SeExprNode.h>
-namespace SeExpr {
+#else
+#include <SeExpr2/ExprNode.h>
+#endif
+namespace SeExpr2 {
 struct VoronoiPointData
-    : public SeExprFuncNode::Data
+    : public ExprFuncNode::Data
 {
-    SeVec3d points[27];
-    SeVec3d cell;
+    Vec3d points[27];
+    Vec3d cell;
     double jitter;
     VoronoiPointData() : jitter(-1) {}
 };
 
-SeVec3d voronoiFn(VoronoiPointData& data, int n, const SeVec3d* args);
-SeVec3d cvoronoiFn(VoronoiPointData& data, int n, const SeVec3d* args);
-SeVec3d pvoronoiFn(VoronoiPointData& data, int n, const SeVec3d* args);
+Vec3d voronoiFn(VoronoiPointData& data, int n, const Vec3d* args);
+Vec3d cvoronoiFn(VoronoiPointData& data, int n, const Vec3d* args);
+Vec3d pvoronoiFn(VoronoiPointData& data, int n, const Vec3d* args);
 }
 #endif
 
@@ -389,7 +404,7 @@ public:
         float unpPix[4];
         float tmpPix[4];
 #ifdef SENOISE_VORONOI
-        SeExpr::VoronoiPointData voronoiPointData;
+        SeExpr2::VoronoiPointData voronoiPointData;
 #endif
         const double norm2 = (_point1.x - _point0.x) * (_point1.x - _point0.x) + (_point1.y - _point0.y) * (_point1.y - _point0.y);
         const double nx = norm2 == 0. ? 0. : (_point1.x - _point0.x) / norm2;
@@ -415,13 +430,13 @@ public:
                 double result;
                 switch (_noiseType) {
                 case eNoiseTypeCellNoise: {
-                    // double cellnoise(const SeVec3d& p)
-                    SeExpr::CellNoise<3, 1>(args, &result);
+                    // double cellnoise(const Vec3d& p)
+                    SeExpr2::CellNoise<3, 1>(args, &result);
                     break;
                 }
                 case eNoiseTypeNoise: {
-                    // double noise(int n, const SeVec3d* args)
-                    SeExpr::Noise<3, 1>(args, &result);
+                    // double noise(int n, const Vec3d* args)
+                    SeExpr2::Noise<3, 1>(args, &result);
                     result = .5 * result + .5;
                     break;
                 }
@@ -432,28 +447,28 @@ public:
                 }
 #endif
                 case eNoiseTypeFBM: {
-                    // double fbm(int n, const SeVec3d* args) in SeExprBuiltins.cpp
-                    SeExpr::FBM<3, 1, false>(args, &result, _octaves, _lacunarity, _gain);
+                    // double fbm(int n, const Vec3d* args) in SeExprBuiltins.cpp
+                    SeExpr2::FBM<3, 1, false>(args, &result, _octaves, _lacunarity, _gain);
                     result = .5 * result + .5;
                     break;
                 }
                 case eNoiseTypeTurbulence: {
-                    // double turbulence(int n, const SeVec3d* args)
-                    SeExpr::FBM<3, 1, true>(args, &result, _octaves, _lacunarity, _gain);
+                    // double turbulence(int n, const Vec3d* args)
+                    SeExpr2::FBM<3, 1, true>(args, &result, _octaves, _lacunarity, _gain);
                     break;
                     //result = .5*result+.5;
                 }
 #ifdef SENOISE_VORONOI
                 case eNoiseTypeVoronoi: {
-                    SeVec3d args[7];
-                    args[0].setValue(p.x, p.y, p.z);
+                    SeExpr2::Vec3d args[7];
+                    args[0] = SeExpr2::Vec3d(p.x, p.y, p.z);
                     args[1][0] = (int)_voronoiType + 1;
                     args[2][0] = _jitter;
                     args[3][0] = _fbmScale;
                     args[4][0] = _octaves;
                     args[5][0] = _lacunarity;
                     args[6][0] = _gain;
-                    result = SeExpr::voronoiFn(voronoiPointData, 7, args)[0];
+                    result = SeExpr2::voronoiFn(voronoiPointData, 7, args)[0];
                     break;
                 }
 #endif
