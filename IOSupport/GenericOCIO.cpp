@@ -111,7 +111,7 @@ static const char*
 colorSpaceName(OCIO::ConstConfigRcPtr config,
                const char* colorSpaceNameDefault)
 {
-    OpenColorIO::ConstColorSpaceRcPtr cs;
+    OCIO::ConstColorSpaceRcPtr cs;
     if ( !strcmp(colorSpaceNameDefault, "sRGB") || !strcmp(colorSpaceNameDefault, "srgb") ) {
         if ( ( cs = config->getColorSpace("sRGB") ) ) {
             // nuke-default, blender, natron
@@ -766,6 +766,10 @@ GenericOCIO::setValues(const OCIO::ConstContextRcPtr &context,
         _procInputSpace = inputSpace;
         _procOutputSpace = outputSpace;
         _proc = _config->getProcessor( context, inputSpace.c_str(), outputSpace.c_str() );
+#if OCIO_VERSION_HEX >= 0x02000000
+        _procCPU = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32,
+                                                   OCIO::OPTIMIZATION_DEFAULT);
+#endif
     }
 }
 
@@ -804,8 +808,13 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     float *pix = (float *) ( ( (char *) _dstPixelData ) + pixelDataOffset ); // (char*)dstImg->getPixelAddress(renderWindow.x1, renderWindow.y1);
     try {
         if (_proc) {
+#if OCIO_VERSION_HEX >= 0x02000000
+            OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, OCIO::BIT_DEPTH_F32, sizeof(float), pixelBytes, _dstRowBytes);
+            _procCPU->apply(img);
+#else
             OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, sizeof(float), pixelBytes, _dstRowBytes);
             _proc->apply(img);
+#endif
         }
     } catch (OCIO::Exception &e) {
         _instance->setPersistentMessage( Message::eMessageError, "", string("OpenColorIO error: ") + e.what() );

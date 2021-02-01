@@ -656,8 +656,13 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
              ( _procView != view) ||
              ( _procGain != gain) ||
              ( _procGamma != gamma) ) {
+#if OCIO_VERSION_HEX >= 0x02000000
+            OCIO::DisplayViewTransformRcPtr transform = OCIO::DisplayViewTransform::Create();
+            transform->setSrc( inputSpace.c_str() );
+#else
             OCIO::DisplayTransformRcPtr transform = OCIO::DisplayTransform::Create();
             transform->setInputColorSpaceName( inputSpace.c_str() );
+#endif
 
             transform->setDisplay( display.c_str() );
 
@@ -665,6 +670,18 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
 
             // Specify an (optional) linear color correction
             {
+#if OCIO_VERSION_HEX >= 0x02000000
+                double m44[16];
+                double offset4[4];
+                const double slope4d[] = { gain, gain, gain, gain };
+                OCIO::MatrixTransform::Scale(m44, offset4, slope4d);
+
+                OCIO::MatrixTransformRcPtr mtx =  OCIO::MatrixTransform::Create();
+                mtx->setMatrix(m44);
+                mtx->setOffset(offset4);
+
+                transform->setLinearCC(mtx);
+#else
                 float m44[16];
                 float offset4[4];
                 const float slope4f[] = { (float)gain, (float)gain, (float)gain, (float)gain };
@@ -674,15 +691,24 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                 mtx->setValue(m44, offset4);
 
                 transform->setLinearCC(mtx);
+#endif
             }
 
             // Specify an (optional) post-display transform.
             {
+#if OCIO_VERSION_HEX >= 0x02000000
+                double exponent = 1.0 / (std::max)(1e-8, gamma);
+                const double exponent4d[] = { exponent, exponent, exponent, exponent };
+                OCIO::ExponentTransformRcPtr cc =  OCIO::ExponentTransform::Create();
+                cc->setValue(exponent4d);
+                transform->setDisplayCC(cc);
+#else
                 float exponent = 1.0f / (std::max)(1e-6f, (float)gamma);
                 const float exponent4f[] = { exponent, exponent, exponent, exponent };
                 OCIO::ExponentTransformRcPtr cc =  OCIO::ExponentTransform::Create();
                 cc->setValue(exponent4f);
                 transform->setDisplayCC(cc);
+#endif
             }
 
             // Add Channel swizzling
@@ -723,6 +749,17 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                     break;
                 }
 
+#if OCIO_VERSION_HEX >= 0x02000000
+                double lumacoef[3];
+                config->getDefaultLumaCoefs(lumacoef);
+                double m44[16];
+                double offset[4];
+                OCIO::MatrixTransform::View(m44, offset, channelHot, lumacoef);
+                OCIO::MatrixTransformRcPtr swizzle = OCIO::MatrixTransform::Create();
+                swizzle->setMatrix(m44);
+                swizzle->setOffset(offset);
+                transform->setChannelView(swizzle);
+#else
                 float lumacoef[3];
                 config->getDefaultLumaCoefs(lumacoef);
                 float m44[16];
@@ -731,6 +768,7 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                 OCIO::MatrixTransformRcPtr swizzle = OCIO::MatrixTransform::Create();
                 swizzle->setValue(m44, offset);
                 transform->setChannelView(swizzle);
+#endif
             }
 
             OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);

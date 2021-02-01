@@ -586,7 +586,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
              ( _procInputSpace != inputSpace) ||
              ( _procOutputSpace != outputSpace) ||
              ( _procDirection != directioni) ) {
-            OCIO::TransformDirection direction = OCIO::TRANSFORM_DIR_UNKNOWN;
+            OCIO::TransformDirection direction;
             OCIO::LookTransformRcPtr transform = OCIO::LookTransform::Create();
             transform->setLooks( look.c_str() );
 

@@ -987,11 +987,19 @@ supportedFormats()
 {
     string s = "Supported formats:\n";
 
+#if OCIO_VERSION_HEX >= 0x02000000
+    for (int i = 0; i < OCIO::FileTransform::GetNumFormats(); ++i) {
+        const char* name = OCIO::FileTransform::GetFormatNameByIndex(i);
+        const char* exten = OCIO::FileTransform::GetFormatExtensionByIndex(i);
+        s += string("\n.") + exten + " (" + name + ")";
+    }
+#else
     for (int i = 0; i < OCIO::FileTransform::getNumFormats(); ++i) {
         const char* name = OCIO::FileTransform::getFormatNameByIndex(i);
         const char* exten = OCIO::FileTransform::getFormatExtensionByIndex(i);
         s += string("\n.") + exten + " (" + name + ")";
     }
+#endif
 
     return s;
 }
