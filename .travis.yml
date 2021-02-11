@@ -73,7 +73,7 @@ install:
 # OpenColorIO
   - sudo apt-get install cmake libtinyxml-dev liblcms2-dev libyaml-cpp-dev libboost-dev
   - if [ ! -d "$HOME/ocio/lib" ]; then
-      wget https://github.com/imageworks/AcademySoftwareFoundation/archive/v1.1.1.tar.gz -O /tmp/ocio.tgz;
+      wget https://github.com/AcademySoftwareFoundation/OpenColorIO/archive/v1.1.1.tar.gz -O /tmp/ocio.tgz;
       tar -xvzf /tmp/ocio.tgz -C $HOME;
       pushd $HOME/OpenColorIO-1.1.1;
       find . -name CMakeLists.txt -exec sed -e s/-Werror// -i {} \; ;
