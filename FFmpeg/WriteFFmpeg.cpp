@@ -2859,7 +2859,7 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
     //          is corrected here.
     int frameRate = (0.0 < fps) ? (int)fps : 0;
     AVRational frame_rate;
-    if ( ( (23.969 < fps) && (fps < 23.981) ) || ( (29.969 < fps) && (29.981 < fps) ) || ( (59.939 < fps) && (fps < 59.941) ) ) {
+    if ( ( (23.969 < fps) && (fps < 23.981) ) || ( (29.969 < fps) && (fps < 29.981) ) || ( (59.939 < fps) && (fps < 59.941) ) ) {
         frame_rate.num = std::ceil(fps) * 1000;
         frame_rate.den = 1001;
     } else {
