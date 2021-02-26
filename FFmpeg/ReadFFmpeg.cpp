@@ -592,53 +592,6 @@ split(const string &s,
     return elems;
 }
 
-#ifdef OFX_IO_MT_FFMPEG
-static int
-FFmpegLockManager(void** mutex,
-                  enum AVLockOp op)
-{
-    switch (op) {
-    case AV_LOCK_CREATE:     // Create a mutex.
-        try {
-            *mutex = static_cast< void* >(new FFmpegFile::Mutex);
-
-            return 0;
-        }catch (...) {
-            // Return error if mutex creation failed.
-            return 1;
-        }
-
-    case AV_LOCK_OBTAIN:     // Lock the specified mutex.
-        try {
-            static_cast< FFmpegFile::Mutex* >(*mutex)->lock();
-
-            return 0;
-        }catch (...) {
-            // Return error if mutex lock failed.
-            return 1;
-        }
-
-    case AV_LOCK_RELEASE:     // Unlock the specified mutex.
-        // Mutex unlock can't fail.
-        static_cast< FFmpegFile::Mutex* >(*mutex)->unlock();
-
-        return 0;
-
-    case AV_LOCK_DESTROY:     // Destroy the specified mutex.
-        // Mutex destruction can't fail.
-        delete static_cast< FFmpegFile::Mutex* >(*mutex);
-        *mutex = 0;
-
-        return 0;
-
-    default:     // Unknown operation.
-        assert(false);
-
-        return 1;
-    }
-}
-
-#endif
 
 void
 ReadFFmpegPluginFactory::load()
@@ -652,8 +605,9 @@ ReadFFmpegPluginFactory::load()
     }
 #else
     std::list<string> extensionsl;
-    AVInputFormat* iFormat = av_iformat_next(NULL);
-    while (iFormat != NULL) {
+    const AVInputFormat* iFormat;
+    void *i = 0;
+    while ((iFormat = av_demuxer_iterate (&i))) {
         //DBG(std::printf("ReadFFmpeg: \"%s\", // %s (%s)\n", iFormat->extensions ? iFormat->extensions : iFormat->name, iFormat->name, iFormat->long_name));
         if (iFormat->extensions != NULL) {
             string extStr( iFormat->extensions );
@@ -665,7 +619,6 @@ ReadFFmpegPluginFactory::load()
             string extStr( iFormat->name);
             split(extStr, ',', extensionsl);
         }
-        iFormat = av_iformat_next( iFormat );
     }
 
     // Hack: Add basic video container extensions
@@ -969,18 +922,11 @@ ReadFFmpegPluginFactory::describe(ImageEffectDescriptor &desc)
     // basic labels
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription);
-#ifdef OFX_IO_MT_FFMPEG
-    // Register a lock manager callback with FFmpeg, providing it the ability to use mutex locking around
-    // otherwise non-thread-safe calls.
-    av_lockmgr_register(FFmpegLockManager);
+    // FFmpeg 4 is thread-safe, see
+    // https://ffmpeg.org/doxygen/4.1/group__lavc__misc.html#ga4e9a0032df8f76cc766846514cebfab7
     desc.setRenderThreadSafety(eRenderFullySafe);
-#else
-    desc.setRenderThreadSafety(eRenderInstanceSafe);
-#endif
 
     av_log_set_level(AV_LOG_WARNING);
-    avcodec_register_all();
-    av_register_all();
 
     _manager.reset(new FFmpegFileManager);
     _manager->init();
