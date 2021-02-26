@@ -74,13 +74,11 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.ReadFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 0
 
+// Deprecated parameter, for backward compatibility
 #define kParamMaxRetries "maxRetries"
-#define kParamMaxRetriesLabel "Max retries per frame"
-#define kParamMaxRetriesHint "Some video files are sometimes tricky to read and needs several retries before successfully decoding a frame. This" \
-    " parameter controls how many times we should attempt to decode the same frame before failing. "
 
 #define kParamFirstTrackOnly "firstTrackOnly"
 #define kParamFirstTrackOnlyLabelAndHint "First Track Only", "Causes the reader to ignore all but the first video track it finds in the file. This should be selected in a multiview project if the file happens to contain multiple video tracks that don't correspond to different views."
@@ -416,7 +414,7 @@ ReadFFmpegPlugin::decode(const string& filename,
     // this is the first stream (in fact the only one we consider for now), allocate the output buffer according to the bitdepth
 
     try {
-        if ( !file->decode(this, (int)time, loadNearestFrame(), maxRetries, buffer) ) {
+        if ( !file->decode(this, (int)time, loadNearestFrame(), buffer) ) {
             if ( abort() ) {
                 // decode() probably existed because plugin was aborted
                 return;
@@ -1001,13 +999,9 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                                                                     kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false);
 
     {
+        // deprecated parameter, for backward compatibility only
         IntParamDescriptor *param = desc.defineIntParam(kParamMaxRetries);
-        param->setLabel(kParamMaxRetriesLabel);
-        param->setHint(kParamMaxRetriesHint);
-        param->setAnimates(false);
-        param->setDefault(10);
-        param->setRange(0, 100);
-        param->setDisplayRange(0, 20);
+        param->setIsSecretAndDisabled(true);
         if (page) {
             page->addChild(*param);
         }

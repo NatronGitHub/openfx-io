@@ -119,6 +119,7 @@ private:
         AVCodecContext* _codecContext; // video codec context
         AVCodec* _videoCodec;
         AVFrame* _avFrame;             // decoding frame
+        AVFrame* _avIntermediateFrame; // decode into this if an image conversion is required
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
 
@@ -159,6 +160,7 @@ private:
             , _codecContext(NULL)
             , _videoCodec(NULL)
             , _avFrame(NULL)
+            , _avIntermediateFrame(NULL)
             , _convertCtx(NULL)
             , _resetConvertCtx(true)
             , _fpsNum(1)
@@ -514,7 +516,7 @@ public:
     }
 
     // decode a single frame into the buffer. Thread safe
-    bool decode(const OFX::ImageEffect* plugin, int frame, bool loadNearest, int maxRetries, unsigned char* buffer);
+    bool decode(const OFX::ImageEffect* plugin, int frame, bool loadNearest, unsigned char* buffer);
 
     // get stream information
     bool getFPS(double& fps,
@@ -539,6 +541,14 @@ public:
     //! Check whether a certain codec name is Whitelisted
     static bool isCodecWhitelistedForReading(const char* name);
     static bool isCodecWhitelistedForWriting(const char* name);
+
+private:
+
+  bool seekToFrame(int64_t frame, int seekFlags);
+
+  bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame);
+
+  bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
 };
 
 
