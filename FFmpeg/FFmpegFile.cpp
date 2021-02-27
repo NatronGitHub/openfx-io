@@ -60,9 +60,6 @@ using namespace OFX;
 using std::string;
 using std::make_pair;
 
-// FFMPEG 3.1
-#define USE_NEW_FFMPEG_API ( LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 0) )
-
 #define CHECK(x) \
     { \
         int error = x; \
@@ -174,7 +171,7 @@ const FilterEntry kFormatWhitelist[] =
     { "mxf",            true,  false },     // not readable in Qt but may be used with other software, however MXF has too many constraints to be easyly writable (for H264 it requires avctx.profile = FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10 or FF_PROFILE_H264_HIGH_422). it is better to transcode with an external tool
     { "ogg",            true,  false },    // Ogg, for theora codec (use ogv for writing)
     { "ogv",            true,  true },    // Ogg Video, for theora codec
-    { NULL, false, false}
+    { nullptr, false, false}
 };
 
 // For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
@@ -266,19 +263,19 @@ const FilterEntry kCodecWhitelist[] =
     { "pcm_u32be",      true,  true },     // PCM unsigned 32-bit big-endian
     { "pcm_u32le",      true,  true },     // PCM unsigned 32-bit little-endian
     { "pcm_u8",         true,  true },     // PCM unsigned 8-bit
-    { NULL, false, false}
+    { nullptr, false, false}
 };
 
 const FilterEntry*
 getEntry(const char* name,
          const FilterEntry* whitelist,
-         const FilterEntry* blacklist = NULL)
+         const FilterEntry* blacklist = nullptr)
 {
     const FilterEntry* iterWhitelist = whitelist;
     const size_t nameLength = strlen(name);
 
     // check for normal mode
-    while (iterWhitelist->name != NULL) {
+    while (iterWhitelist->name != nullptr) {
         size_t iteNameLength = strlen(iterWhitelist->name);
         size_t maxLength = (nameLength > iteNameLength) ? nameLength : iteNameLength;
         if (strncmp(name, iterWhitelist->name, maxLength) == 0) {
@@ -286,12 +283,12 @@ getEntry(const char* name,
             if (blacklist) {
                 const FilterEntry* iterBlacklist = blacklist;
 
-                while (iterBlacklist->name != NULL) {
+                while (iterBlacklist->name != nullptr) {
                     iteNameLength = strlen(iterBlacklist->name);
                     maxLength = (nameLength > iteNameLength) ? nameLength : iteNameLength;
                     if (strncmp(name, iterBlacklist->name, maxLength) == 0) {
                         // Found in codec whitelist but blacklisted too
-                        return NULL;
+                        return nullptr;
                     }
 
                     ++iterBlacklist;
@@ -305,7 +302,7 @@ getEntry(const char* name,
         ++iterWhitelist;
     }
 
-    return NULL;
+    return nullptr;
 }
 } // namespace {
 
@@ -357,7 +354,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
         _resetConvertCtx = false;
         if (_convertCtx) {
             sws_freeContext(_convertCtx);
-            _convertCtx = NULL;
+            _convertCtx = nullptr;
         }
     }
 
@@ -395,7 +392,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
 
         _convertCtx = sws_getContext(srcWidth, srcHeight, srcPixelFormat, // src format
                                      dstWidth, dstHeight, dstPixelFormat,        // dest format
-                                     SWS_BICUBIC, NULL, NULL, NULL);
+                                     SWS_BICUBIC, nullptr, nullptr, nullptr);
 
         // Set up the SoftWareScaler to convert colorspaces correctly.
         // Colorspace conversion makes no sense for RGB->RGB conversions
@@ -712,7 +709,7 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
 #endif
 
     // Sanity check //
-    if (codecA == NULL || codecB == NULL) {
+    if (codecA == nullptr || codecB == nullptr) {
         return false;
     }
 
@@ -754,10 +751,10 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
 // constructor
 FFmpegFile::FFmpegFile(const string & filename)
     : _filename(filename)
-    , _context(NULL)
-    , _format(NULL)
+    , _context(nullptr)
+    , _format(nullptr)
     , _streams()
-    , _selectedStream(NULL)
+    , _selectedStream(nullptr)
     , _errorMsg()
     , _invalidState(false)
     , _avPacket()
@@ -775,7 +772,7 @@ FFmpegFile::FFmpegFile(const string & filename)
 #endif
 
     assert( !_filename.empty() );
-    AVDictionary* demuxerOptions = NULL;
+    AVDictionary* demuxerOptions = nullptr;
     // enabling drefs to allow reading from external tracks
     // this enables quicktime reference files demuxing
     av_dict_set(&demuxerOptions, "enable_drefs", "1", 0);
@@ -783,7 +780,9 @@ FFmpegFile::FFmpegFile(const string & filename)
     if (demuxerOptions != nullptr) {
         // demuxerOptions is destroyed and replaced, on avformat_open_input return,
         // with a dict containing the options that were not found
-        assert(false && "invalid options passed to demuxer");
+        //assert(false && "invalid options passed to demuxer");
+        // Actually, this is OK since enable_drefs is a valid option only for mov/mp4/3gp
+        // https://ffmpeg.org/ffmpeg-formats.html#Options-1
         av_dict_free(&demuxerOptions);
     }
     assert(_context);
@@ -795,7 +794,7 @@ FFmpegFile::FFmpegFile(const string & filename)
     // loaded. This defaults to 5meg. 100meg should be enough for large stereo quicktimes.
     _context->probesize = 100000000;
 
-    CHECK( avformat_find_stream_info(_context, NULL) );
+    CHECK( avformat_find_stream_info(_context, nullptr) );
 
 #if TRACE_FILE_OPEN
     std::cout << "  " << _context->nb_streams << " streams:" << std::endl;
@@ -810,8 +809,8 @@ FFmpegFile::FFmpegFile(const string & filename)
         std::cout << "    FFmpeg stream index " << i << ": ";
 #endif
         AVStream* avstream = _context->streams[i];
-        AVCodecContext* codecCtx = avcodec_alloc_context3(NULL);
-        avcodec_parameters_to_context(codecCtx, avstream->FFMSCODEC);
+        AVCodecContext* codecCtx = avcodec_alloc_context3(nullptr);
+        avcodec_parameters_to_context(codecCtx, avstream->codecpar);
 
         // be sure to have a valid stream
         if (!avstream || !codecCtx) {
@@ -821,7 +820,7 @@ FFmpegFile::FFmpegFile(const string & filename)
             continue;
         }
 
-        int ret = make_context(codecCtx, avstream);
+        int ret = avcodec_parameters_to_context(codecCtx, avstream->codecpar);
         if (ret < 0) {
 #if TRACE_FILE_OPEN
             std::cout << "Could not convert to context, skipping..." << std::endl;
@@ -845,7 +844,7 @@ FFmpegFile::FFmpegFile(const string & filename)
 
         // find the codec
         AVCodec* videoCodec = avcodec_find_decoder(codecCtx->codec_id);
-        if (videoCodec == NULL) {
+        if (videoCodec == nullptr) {
 #if TRACE_FILE_OPEN
             std::cout << "Decoder not found, skipping..." << std::endl;
 #endif
@@ -902,7 +901,7 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // skip if the codec can't be open
-        if (avcodec_open2(codecCtx, videoCodec, NULL) < 0) {
+        if (avcodec_open2(codecCtx, videoCodec, nullptr) < 0) {
 #if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" failed to open, skipping..." << std::endl;
 #endif
@@ -947,7 +946,7 @@ FFmpegFile::FFmpegFile(const string & filename)
             //stream->_bitDepth = 16; // enabled in Nuke's reader
 
             const AVPixFmtDescriptor* avPixFmtDescriptor = av_pix_fmt_desc_get(stream->_codecContext->pix_fmt);
-            if (avPixFmtDescriptor == NULL) {
+            if (avPixFmtDescriptor == nullptr) {
                 throw std::runtime_error("av_pix_fmt_desc_get() failed");
             }
             // Sanity check the number of components.
@@ -971,11 +970,7 @@ FFmpegFile::FFmpegFile(const string & filename)
 
         if (stream->_bitDepth > 8) {
             // TODO: This will sometimes be sub-optimal for the timeline, which can deal directly with 3 x 10 bit pixel formats.
-#        if VERSION_CHECK(LIBAVUTIL_VERSION_INT, <, 53, 6, 0, 53, 6, 0)
-            stream->_outputPixelFormat = (4 == stream->_numberOfComponents) ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB48LE; // 16-bit.
-#         else
             stream->_outputPixelFormat = (4 == stream->_numberOfComponents) ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_RGB48LE; // 16-bit.
-#         endif
         } else {
             stream->_outputPixelFormat = (4 == stream->_numberOfComponents) ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24; // 8-bit
         }
@@ -1022,7 +1017,7 @@ FFmpegFile::FFmpegFile(const string & filename)
     }
     if ( _streams.empty() ) {
         setError( unsuported_codec ? "unsupported codec..." : "unable to find video stream" );
-        _selectedStream = NULL;
+        _selectedStream = nullptr;
     } else {
 #pragma message WARN("should we build a separate FFmpegfile for each view? see also FFmpegFileManager")
         const int viewIndex = 0; // TODO: pass as parameter?
@@ -1064,7 +1059,7 @@ void FFmpegFile::setSelectedStream(int streamIndex)
     }
     else {
         assert(false && "setSelectedStream: Invalid streamIndex");
-        _selectedStream = !_streams.empty() ? _streams[0] : NULL;
+        _selectedStream = !_streams.empty() ? _streams[0] : nullptr;
     }
 }
 
@@ -1083,9 +1078,9 @@ FFmpegFile::getColorspace() const
     if (_context && _context->metadata) {
         AVDictionaryEntry* t;
 
-        t = av_dict_get(_context->metadata, "uk.co.thefoundry.Colorspace", NULL, AV_DICT_IGNORE_SUFFIX);
+        t = av_dict_get(_context->metadata, "uk.co.thefoundry.Colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (!t) {
-            av_dict_get(_context->metadata, "uk.co.thefoundry.colorspace", NULL, AV_DICT_IGNORE_SUFFIX);
+            av_dict_get(_context->metadata, "uk.co.thefoundry.colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
         if (t) {
 #if 0
@@ -1093,7 +1088,7 @@ FFmpegFile::getColorspace() const
             //we have a matching conversion for.
             bool found = false;
             int i     = 0;
-            while (!found && LUT::builtin_names[i] != NULL) {
+            while (!found && LUT::builtin_names[i] != nullptr) {
                 found = !strcasecmp(t->value, LUT::builtin_names[i++]);
             }
 #else
@@ -1104,9 +1099,9 @@ FFmpegFile::getColorspace() const
             }
         }
 
-        t = av_dict_get(_context->metadata, "com.arri.camera.ColorGammaSxS", NULL, AV_DICT_IGNORE_SUFFIX);
+        t = av_dict_get(_context->metadata, "com.arri.camera.ColorGammaSxS", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (!t) {
-            av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", NULL, AV_DICT_IGNORE_SUFFIX);
+            av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
         if ( t && !strncasecmp(t->value, "LOG-C", 5) ) {
             return "AlexaV3LogC";
@@ -1559,7 +1554,7 @@ FFmpegFile::getBufferBytesCount() const
 
 FFmpegFileManager::FFmpegFileManager()
     : _files()
-    , _lock(NULL)
+    , _lock(nullptr)
 {
 }
 
@@ -1618,7 +1613,7 @@ FFmpegFileManager::get(void const * plugin,
         }
     }
 
-    return NULL;
+    return nullptr;
 }
 
 FFmpegFile*

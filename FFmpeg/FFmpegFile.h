@@ -50,7 +50,6 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
 }
-#include "FFmpegCompat.h"
 
 #include "ofxsMultiThread.h"
 #ifndef OFX_USE_MULTITHREAD_MUTEX
@@ -156,12 +155,12 @@ private:
 
         Stream()
             : _idx(0)
-            , _avstream(NULL)
-            , _codecContext(NULL)
-            , _videoCodec(NULL)
-            , _avFrame(NULL)
-            , _avIntermediateFrame(NULL)
-            , _convertCtx(NULL)
+            , _avstream(nullptr)
+            , _codecContext(nullptr)
+            , _videoCodec(nullptr)
+            , _avFrame(nullptr)
+            , _avIntermediateFrame(nullptr)
+            , _convertCtx(nullptr)
             , _resetConvertCtx(true)
             , _fpsNum(1)
             , _fpsDen(1)
@@ -284,7 +283,7 @@ private:
         // I needed to add the thread_count onto the codec delay - pickles
         int getCodecDelay() const
         {
-            return ( ( (_videoCodec->capabilities & CODEC_CAP_DELAY) ? _codecContext->delay : 0 )
+            return ( ( (_videoCodec->capabilities & AV_CODEC_CAP_DELAY) ? _codecContext->delay : 0 )
                      + _codecContext->has_b_frames
                      + _codecContext->thread_count );
         }
@@ -306,7 +305,7 @@ private:
     public:
         void InitPacket()
         {
-            data = NULL;
+            data = nullptr;
             size = 0;
 
             av_init_packet(this);

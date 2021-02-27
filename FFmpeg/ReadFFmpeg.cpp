@@ -57,6 +57,10 @@
 #include "FFmpegFile.h"
 #include "ofxsCopier.h"
 
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 0, 0)
+#error "This requires FFmpeg >= 4.0"
+#endif
+
 using namespace OFX;
 using namespace OFX::IO;
 
@@ -205,11 +209,7 @@ static string
 ffmpeg_versions()
 {
     std::ostringstream oss;
-#ifdef FFMS_USE_FFMPEG_COMPAT
     oss << "FFmpeg ";
-#else
-    oss << "libav";
-#endif
     oss << " versions (compiled with / running with):" << std::endl;
     oss << "libavformat ";
     oss << LIBAVFORMAT_VERSION_MAJOR << '.' << LIBAVFORMAT_VERSION_MINOR << '.' << LIBAVFORMAT_VERSION_MICRO << " / ";
