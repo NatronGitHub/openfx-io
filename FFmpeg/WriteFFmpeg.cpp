@@ -89,7 +89,7 @@ extern "C" {
 #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 0, 0)
 #error "This requires FFmpeg >= 4.0"
 #endif
-#pragma message WARN("TODO: sync with mov64Writer 12.2v5")
+#pragma message WARN("TODO: sync with mov64Writer 12.2v5 (this is synced with mov64Writer 11.1v3)")
 
 #define OFX_FFMPEG_PRINT_CODECS 0 // print list of supported/ignored codecs and formats
 #define OFX_FFMPEG_TIMECODE 0     // timecode support
