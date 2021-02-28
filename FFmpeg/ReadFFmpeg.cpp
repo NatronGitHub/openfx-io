@@ -102,7 +102,6 @@ class ReadFFmpegPlugin
     : public GenericReaderPlugin
 {
     FFmpegFileManager& _manager;
-    IntParam *_maxRetries;
     BooleanParam *_firstTrackOnly;
 
 public:
@@ -159,12 +158,10 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
                                    const vector<string>& extensions)
     : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false)
     , _manager(manager)
-    , _maxRetries(NULL)
     , _firstTrackOnly(NULL)
 {
-    _maxRetries = fetchIntParam(kParamMaxRetries);
     _firstTrackOnly = fetchBooleanParam(kParamFirstTrackOnly);
-    assert(_maxRetries && _firstTrackOnly);
+    assert(_firstTrackOnly);
     int originalFrameRangeMin, originalFrameRangeMax;
     _originalFrameRange->getValue(originalFrameRangeMin, originalFrameRangeMax);
     if (originalFrameRangeMin == 0) {
@@ -389,9 +386,6 @@ ReadFFmpegPlugin::decode(const string& filename,
 
         return;
     }
-
-    int maxRetries;
-    _maxRetries->getValue(maxRetries);
 
     // not in FFmpeg Reader: initialize the output buffer
     // TODO: use avpicture_get_size? see WriteFFmpeg
