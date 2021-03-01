@@ -60,9 +60,6 @@ using namespace OFX;
 using std::string;
 using std::make_pair;
 
-// FFMPEG 3.1
-#define USE_NEW_FFMPEG_API ( LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 0) )
-
 #define CHECK(x) \
     { \
         int error = x; \
@@ -174,7 +171,7 @@ const FilterEntry kFormatWhitelist[] =
     { "mxf",            true,  false },     // not readable in Qt but may be used with other software, however MXF has too many constraints to be easyly writable (for H264 it requires avctx.profile = FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10 or FF_PROFILE_H264_HIGH_422). it is better to transcode with an external tool
     { "ogg",            true,  false },    // Ogg, for theora codec (use ogv for writing)
     { "ogv",            true,  true },    // Ogg Video, for theora codec
-    { NULL, false, false}
+    { nullptr, false, false}
 };
 
 // For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
@@ -266,19 +263,19 @@ const FilterEntry kCodecWhitelist[] =
     { "pcm_u32be",      true,  true },     // PCM unsigned 32-bit big-endian
     { "pcm_u32le",      true,  true },     // PCM unsigned 32-bit little-endian
     { "pcm_u8",         true,  true },     // PCM unsigned 8-bit
-    { NULL, false, false}
+    { nullptr, false, false}
 };
 
 const FilterEntry*
 getEntry(const char* name,
          const FilterEntry* whitelist,
-         const FilterEntry* blacklist = NULL)
+         const FilterEntry* blacklist = nullptr)
 {
     const FilterEntry* iterWhitelist = whitelist;
     const size_t nameLength = strlen(name);
 
     // check for normal mode
-    while (iterWhitelist->name != NULL) {
+    while (iterWhitelist->name != nullptr) {
         size_t iteNameLength = strlen(iterWhitelist->name);
         size_t maxLength = (nameLength > iteNameLength) ? nameLength : iteNameLength;
         if (strncmp(name, iterWhitelist->name, maxLength) == 0) {
@@ -286,12 +283,12 @@ getEntry(const char* name,
             if (blacklist) {
                 const FilterEntry* iterBlacklist = blacklist;
 
-                while (iterBlacklist->name != NULL) {
+                while (iterBlacklist->name != nullptr) {
                     iteNameLength = strlen(iterBlacklist->name);
                     maxLength = (nameLength > iteNameLength) ? nameLength : iteNameLength;
                     if (strncmp(name, iterBlacklist->name, maxLength) == 0) {
                         // Found in codec whitelist but blacklisted too
-                        return NULL;
+                        return nullptr;
                     }
 
                     ++iterBlacklist;
@@ -305,7 +302,7 @@ getEntry(const char* name,
         ++iterWhitelist;
     }
 
-    return NULL;
+    return nullptr;
 }
 } // namespace {
 
@@ -357,7 +354,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
         _resetConvertCtx = false;
         if (_convertCtx) {
             sws_freeContext(_convertCtx);
-            _convertCtx = NULL;
+            _convertCtx = nullptr;
         }
     }
 
@@ -395,7 +392,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
 
         _convertCtx = sws_getContext(srcWidth, srcHeight, srcPixelFormat, // src format
                                      dstWidth, dstHeight, dstPixelFormat,        // dest format
-                                     SWS_BICUBIC, NULL, NULL, NULL);
+                                     SWS_BICUBIC, nullptr, nullptr, nullptr);
 
         // Set up the SoftWareScaler to convert colorspaces correctly.
         // Colorspace conversion makes no sense for RGB->RGB conversions
@@ -662,19 +659,17 @@ FFmpegFile::getStreamFrames(Stream & stream)
         av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
 
         // Read up to last frame, extending max PTS for every valid PTS value found for the video stream.
-        AVPacket avPacket;
+        MyAVPacket avPacket;
         // Here, avPacket needs to be local as we don't need to keep any information outside this function context.
         // Do not replace this with _avPacket, which is global, because _avPacket is associated with the playback process
         // and that may produces inconsistencies. _avPacket is now used only in the |decode| method and we need to ensure
         // that it remains valid even after we get out of the |decode| method context, because the information stored by
         // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
         // https://foundry.tpondemand.com/entity/162892
-        av_init_packet(&avPacket);
 
         while (av_read_frame(_context, &avPacket) >= 0) {
             if (avPacket.stream_index == stream._idx && avPacket.pts != int64_t(AV_NOPTS_VALUE) && avPacket.pts > maxPts)
                 maxPts = avPacket.pts;
-            av_packet_unref(&avPacket);
         }
 #if TRACE_FILE_OPEN
         std::cout << "          Start PTS=" << stream._startPTS << ", Max PTS found=" << maxPts << std::endl;
@@ -714,7 +709,7 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
 #endif
 
     // Sanity check //
-    if (codecA == NULL || codecB == NULL) {
+    if (codecA == nullptr || codecB == nullptr) {
         return false;
     }
 
@@ -756,10 +751,10 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
 // constructor
 FFmpegFile::FFmpegFile(const string & filename)
     : _filename(filename)
-    , _context(NULL)
-    , _format(NULL)
+    , _context(nullptr)
+    , _format(nullptr)
     , _streams()
-    , _selectedStream(NULL)
+    , _selectedStream(nullptr)
     , _errorMsg()
     , _invalidState(false)
     , _avPacket()
@@ -777,7 +772,19 @@ FFmpegFile::FFmpegFile(const string & filename)
 #endif
 
     assert( !_filename.empty() );
-    CHECK( avformat_open_input(&_context, _filename.c_str(), _format, NULL) );
+    AVDictionary* demuxerOptions = nullptr;
+    // enabling drefs to allow reading from external tracks
+    // this enables quicktime reference files demuxing
+    av_dict_set(&demuxerOptions, "enable_drefs", "1", 0);
+    CHECK( avformat_open_input(&_context, _filename.c_str(), _format, &demuxerOptions) );
+    if (demuxerOptions != nullptr) {
+        // demuxerOptions is destroyed and replaced, on avformat_open_input return,
+        // with a dict containing the options that were not found
+        //assert(false && "invalid options passed to demuxer");
+        // Actually, this is OK since enable_drefs is a valid option only for mov/mp4/3gp
+        // https://ffmpeg.org/ffmpeg-formats.html#Options-1
+        av_dict_free(&demuxerOptions);
+    }
     assert(_context);
     // Bug 51016 - probesize is the maximum amount of data, in bytes, which is read to determine
     // frame information in avformat_find_stream_info. It's important that when reading
@@ -787,7 +794,7 @@ FFmpegFile::FFmpegFile(const string & filename)
     // loaded. This defaults to 5meg. 100meg should be enough for large stereo quicktimes.
     _context->probesize = 100000000;
 
-    CHECK( avformat_find_stream_info(_context, NULL) );
+    CHECK( avformat_find_stream_info(_context, nullptr) );
 
 #if TRACE_FILE_OPEN
     std::cout << "  " << _context->nb_streams << " streams:" << std::endl;
@@ -802,24 +809,18 @@ FFmpegFile::FFmpegFile(const string & filename)
         std::cout << "    FFmpeg stream index " << i << ": ";
 #endif
         AVStream* avstream = _context->streams[i];
+        AVCodecContext* codecCtx = avcodec_alloc_context3(nullptr);
+        avcodec_parameters_to_context(codecCtx, avstream->codecpar);
 
         // be sure to have a valid stream
-        if (!avstream || !avstream->FFMSCODEC) {
+        if (!avstream || !codecCtx) {
 #if TRACE_FILE_OPEN
             std::cout << "No valid stream or codec, skipping..." << std::endl;
 #endif
             continue;
         }
 
-        AVCodecContext *avctx;
-        avctx = avcodec_alloc_context3(NULL);
-        if (!avctx) {
-            setError( "cannot allocate codec context" );
-
-            return;
-        }
-
-        int ret = make_context(avctx, avstream);
+        int ret = avcodec_parameters_to_context(codecCtx, avstream->codecpar);
         if (ret < 0) {
 #if TRACE_FILE_OPEN
             std::cout << "Could not convert to context, skipping..." << std::endl;
@@ -828,13 +829,13 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // considering only video streams, skipping audio
-        if (avctx->codec_type != AVMEDIA_TYPE_VIDEO) {
+        if (codecCtx->codec_type != AVMEDIA_TYPE_VIDEO) {
 #if TRACE_FILE_OPEN
             std::cout << "Not a video stream, skipping..." << std::endl;
 #endif
             continue;
         }
-        if (avctx->pix_fmt == AV_PIX_FMT_NONE) {
+        if (codecCtx->pix_fmt == AV_PIX_FMT_NONE) {
 #         if TRACE_FILE_OPEN
             std::cout << "Unknown pixel format, skipping..." << std::endl;
 #         endif
@@ -842,8 +843,8 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // find the codec
-        AVCodec* videoCodec = avcodec_find_decoder(avctx->codec_id);
-        if (videoCodec == NULL) {
+        AVCodec* videoCodec = avcodec_find_decoder(codecCtx->codec_id);
+        if (videoCodec == nullptr) {
 #if TRACE_FILE_OPEN
             std::cout << "Decoder not found, skipping..." << std::endl;
 #endif
@@ -860,7 +861,7 @@ FFmpegFile::FFmpegFile(const string & filename)
             continue;
         }
 
-        if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (codecCtx->codec_type == AVMEDIA_TYPE_VIDEO) {
             // source: http://git.savannah.gnu.org/cgit/bino.git/tree/src/media_object.cpp
 
             // Some codecs support multi-threaded decoding (eg mpeg). Its fast but causes problems when opening many readers
@@ -876,11 +877,11 @@ FFmpegFile::FFmpegFile(const string & filename)
             //} else
 #          endif
             {
-                avctx->thread_count = (std::min)( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS ); // ask for the number of available cores for multithreading
+                codecCtx->thread_count = (std::min)( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS ); // ask for the number of available cores for multithreading
 #             ifdef AV_CODEC_CAP_SLICE_THREADS
-                if ( avctx->codec && (avctx->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) ) {
+                if ( codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) ) {
                     // multiple threads are used to decode a single frame. Reduces delay
-                    avctx->thread_type = FF_THREAD_SLICE;
+                    codecCtx->thread_type = FF_THREAD_SLICE;
                 }
 #             endif
                 //avstream->codec->thread_count = video_decoding_threads(); // bino's strategy (disabled)
@@ -900,7 +901,7 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // skip if the codec can't be open
-        if (avcodec_open2(avctx, videoCodec, NULL) < 0) {
+        if (avcodec_open2(codecCtx, videoCodec, nullptr) < 0) {
 #if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" failed to open, skipping..." << std::endl;
 #endif
@@ -927,9 +928,11 @@ FFmpegFile::FFmpegFile(const string & filename)
         Stream* stream = new Stream();
         stream->_idx = i;
         stream->_avstream = avstream;
-        stream->_codecContext = avctx;
+        stream->_codecContext = codecCtx;
         stream->_videoCodec = videoCodec;
         stream->_avFrame = av_frame_alloc(); // avcodec_alloc_frame();
+        stream->_avIntermediateFrame = av_frame_alloc();
+
         {
             // In |engine| the output bit depth was hard coded to 16-bits.
             // Now it will use the bit depth reported by the decoder so
@@ -939,11 +942,11 @@ FFmpegFile::FFmpegFile(const string & filename)
             // internally so this change has no side effects.
             // [openfx-io note] when using insternal ffmpeg 8bits->16 bits conversion,
             // (255 = 100%) becomes (65280 =99.6%)
-            stream->_bitDepth = avctx->bits_per_raw_sample; // disabled in Nuke's reader
+            stream->_bitDepth = codecCtx->bits_per_raw_sample; // disabled in Nuke's reader
             //stream->_bitDepth = 16; // enabled in Nuke's reader
 
             const AVPixFmtDescriptor* avPixFmtDescriptor = av_pix_fmt_desc_get(stream->_codecContext->pix_fmt);
-            if (avPixFmtDescriptor == NULL) {
+            if (avPixFmtDescriptor == nullptr) {
                 throw std::runtime_error("av_pix_fmt_desc_get() failed");
             }
             // Sanity check the number of components.
@@ -966,11 +969,8 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         if (stream->_bitDepth > 8) {
-#        if VERSION_CHECK(LIBAVUTIL_VERSION_INT, <, 53, 6, 0, 53, 6, 0)
-            stream->_outputPixelFormat = (4 == stream->_numberOfComponents) ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB48LE; // 16-bit.
-#         else
+            // TODO: This will sometimes be sub-optimal for the timeline, which can deal directly with 3 x 10 bit pixel formats.
             stream->_outputPixelFormat = (4 == stream->_numberOfComponents) ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_RGB48LE; // 16-bit.
-#         endif
         } else {
             stream->_outputPixelFormat = (4 == stream->_numberOfComponents) ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24; // 8-bit
         }
@@ -999,8 +999,8 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 #endif
 
-        stream->_width  = avctx->width;
-        stream->_height = avctx->height;
+        stream->_width  = codecCtx->width;
+        stream->_height = codecCtx->height;
 #if TRACE_FILE_OPEN
         std::cout << "      Image size=" << stream->_width << "x" << stream->_height << std::endl;
 #endif
@@ -1017,9 +1017,9 @@ FFmpegFile::FFmpegFile(const string & filename)
     }
     if ( _streams.empty() ) {
         setError( unsuported_codec ? "unsupported codec..." : "unable to find video stream" );
-        _selectedStream = NULL;
+        _selectedStream = nullptr;
     } else {
-#pragma message WARN("should we build separate FFmpegfile for each view? see also FFmpegFileManager")
+#pragma message WARN("should we build a separate FFmpegfile for each view? see also FFmpegFileManager")
         const int viewIndex = 0; // TODO: pass as parameter?
         assert(viewIndex >= 0 && "Negative view index specified.");
 
@@ -1039,7 +1039,6 @@ FFmpegFile::~FFmpegFile()
     AutoMutex guard(_lock);
 #endif
 
-    // force to close all resources needed for all streams
     for (unsigned int i = 0; i < _streams.size(); ++i) {
         delete _streams[i];
     }
@@ -1060,7 +1059,7 @@ void FFmpegFile::setSelectedStream(int streamIndex)
     }
     else {
         assert(false && "setSelectedStream: Invalid streamIndex");
-        _selectedStream = !_streams.empty() ? _streams[0] : NULL;
+        _selectedStream = !_streams.empty() ? _streams[0] : nullptr;
     }
 }
 
@@ -1079,9 +1078,9 @@ FFmpegFile::getColorspace() const
     if (_context && _context->metadata) {
         AVDictionaryEntry* t;
 
-        t = av_dict_get(_context->metadata, "uk.co.thefoundry.Colorspace", NULL, AV_DICT_IGNORE_SUFFIX);
+        t = av_dict_get(_context->metadata, "uk.co.thefoundry.Colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (!t) {
-            av_dict_get(_context->metadata, "uk.co.thefoundry.colorspace", NULL, AV_DICT_IGNORE_SUFFIX);
+            av_dict_get(_context->metadata, "uk.co.thefoundry.colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
         if (t) {
 #if 0
@@ -1089,7 +1088,7 @@ FFmpegFile::getColorspace() const
             //we have a matching conversion for.
             bool found = false;
             int i     = 0;
-            while (!found && LUT::builtin_names[i] != NULL) {
+            while (!found && LUT::builtin_names[i] != nullptr) {
                 found = !strcasecmp(t->value, LUT::builtin_names[i++]);
             }
 #else
@@ -1100,9 +1099,9 @@ FFmpegFile::getColorspace() const
             }
         }
 
-        t = av_dict_get(_context->metadata, "com.arri.camera.ColorGammaSxS", NULL, AV_DICT_IGNORE_SUFFIX);
+        t = av_dict_get(_context->metadata, "com.arri.camera.ColorGammaSxS", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (!t) {
-            av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", NULL, AV_DICT_IGNORE_SUFFIX);
+            av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
         if ( t && !strncasecmp(t->value, "LOG-C", 5) ) {
             return "AlexaV3LogC";
@@ -1126,7 +1125,22 @@ FFmpegFile::getColorspace() const
             }
         }
     }
-
+    if (!_streams.empty() && _selectedStream->_codecContext) {
+        if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_BT709 ||
+            _selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE240M) {
+            return "rec709";
+        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_GAMMA22) {
+            return "Gamma2.2";
+        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE170M) {
+            return "rec601";
+        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE2084) {
+            return "st2084";
+        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_IEC61966_2_1) {
+            return "sRGB";
+        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_LINEAR) {
+            return "linear";
+        }
+    }
     return isYUV() ? "Gamma2.2" : "Gamma1.8";
 } // FFmpegFile::getColorspace
 
@@ -1197,10 +1211,9 @@ FFmpegFile::seekFrame(int frame,
 
 // decode a single frame into the buffer thread safe
 bool
-FFmpegFile::decode(const ImageEffect* plugin,
+FFmpegFile::decode(const ImageEffect* /*plugin*/,
                    int frame,
                    bool loadNearest,
-                   int maxRetries,
                    unsigned char* buffer)
 {
 #ifdef OFX_IO_MT_FFMPEG
@@ -1218,13 +1231,12 @@ FFmpegFile::decode(const ImageEffect* plugin,
     Stream* stream = _selectedStream;
 
     // Translate from the 1-based frames expected to 0-based frame offsets for use in the rest of this code.
-    int originalFrame = frame;
     frame = frame - 1;
 
-    // Early-out if out-of-range frame requested.
-    if (frame < 0) {
+    // Check if the requested frame index is in range
+    if (frame < stream->ptsToFrame(stream->_avstream->start_time)) {
         if (loadNearest) {
-            frame = 0;
+            frame = stream->ptsToFrame(stream->_avstream->start_time);
         } else {
             throw std::runtime_error("Missing frame");
         }
@@ -1240,543 +1252,249 @@ FFmpegFile::decode(const ImageEffect* plugin,
     std::cout << "FFmpeg Reader=" << this << "::decode(): frame=" << frame << /*", _viewIndex = " << _viewIndex <<*/ ", stream->_idx=" << stream->_idx << std::endl;
 #endif
 
-    // Number of read retries remaining when decode stall is detected before we give up (in the case of post-seek stalls,
-    // such retries are applied only after we've searched all the way back to the start of the file and failed to find a
-    // successful start point for playback)..
-    //
-    // We have a rather annoying case with a small subset of media files in which decode latency (between input and output
-    // frames) will exceed the maximum above which we detect decode stall at certain frames on the first pass through the
-    // file but those same frames will decode successfully on a second attempt. The root cause of this is not understood but
-    // it appears to be some oddity of FFmpeg. While I don't really like it, retrying decode enables us to successfully
-    // decode those files rather than having to fail the read.
-    int retriesRemaining = (std::max)(1, maxRetries);
-
-    // Whether we have just performed a seek and are still awaiting the first decoded frame after that seek. This controls
-    // how we respond when a decode stall is detected.
-    //
-    // One cause of such stalls is when a file contains incorrect information indicating that a frame is a key-frame when it
-    // is not; a seek may land at such a frame but the decoder will not be able to start decoding until a real key-frame is
-    // reached, which may be a long way in the future. Once a frame has been decoded, we will expect it to be the first frame
-    // input to decode but it will actually be the next real key-frame found, leading to subsequent frames appearing as
-    // earlier frame numbers and the movie ending earlier than it should. To handle such cases, when a stall is detected
-    // immediately after a seek, we seek to the frame before the previous seek's landing frame, allowing us to search back
-    // through the movie for a valid key frame from which decode commences correctly; if this search reaches the beginning of
-    // the movie, we give up and fail the read, thus ensuring that this method will exit at some point.
-    //
-    // Stalls once seeking is complete and frames are being decoded are handled differently; these result in immediate read
-    // failure.
-    bool awaitingFirstDecodeAfterSeek = false;
-
-    // If the frame we want is not the next one to be decoded, seek to the keyframe before/at our desired frame. Set the last
-    // seeked frame to indicate that we need to synchronise frame indices once we've read the first frame of the video stream,
-    // since we don't yet know which frame number the seek will land at. Also invalidate current indices, reset accumulated
-    // decode latency and record that we're awaiting the first decoded frame after a seek.
-    int lastSeekedFrame = -1; // 0-based index of the last frame to which we seeked when seek in progress / negative when no
-    // seek in progress,
-
-    if (frame != stream->_decodeNextFrameOut) {
-#if TRACE_DECODE_PROCESS
-        std::cout << "  Next frame expected out=" << stream->_decodeNextFrameOut << ", Seeking to desired frame" << std::endl;
-#endif
-
-        lastSeekedFrame = frame;
-        stream->_decodeNextFrameIn  = -1;
-        stream->_decodeNextFrameOut = -1;
-        stream->_accumDecodeLatency = 0;
-        awaitingFirstDecodeAfterSeek = true;
-
-        if ( !seekFrame(frame, stream) ) {
-            return false;
-        }
-    }
-#if TRACE_DECODE_PROCESS
-    else {
-        std::cout << "  Next frame expected out=" << stream->_decodeNextFrameOut << ", No seek required" << std::endl;
-    }
-#endif
-
-    // Loop until the desired frame has been decoded. May also break from within loop on failure conditions where the
-    // desired frame will never be decoded.
     bool hasPicture = false;
-    do {
-        bool decodeAttempted = false;
-        int frameDecoded = 0;
-        AVColorRange srcColourRange = stream->_codecContext->color_range;
-        AVPixelFormat srcPixelFormat = stream->_codecContext->pix_fmt;
+    AVFrame* avFrameOut = stream->_avFrame;
 
-        // If the next frame to decode is within range of frames (or negative implying invalid; we've just seeked), read
-        // a new frame from the source file and feed it to the decoder if it's for the video stream.
-        if (stream->_decodeNextFrameIn < stream->_frames) {
-#if TRACE_DECODE_PROCESS
-            std::cout << "  Next frame expected in=";
-            if (stream->_decodeNextFrameIn >= 0) {
-                std::cout << stream->_decodeNextFrameIn;
-            } else {
-                std::cout << "unknown";
-            }
-#endif
+    // If gop_size == 0 then this is a intra-only encode and we can
+    // assume sequential frame output from the decoder
+    bool isIntraOnly = stream->_codecContext->gop_size ? false: true;
 
-            int error = 0;
-            // Check if the packet is within the decompression range (dts - decompression timestamp)
-            const int64_t currentFramePts = stream->frameToPts(frame);
-            const bool isPacketValid = (_avPacket.data != NULL) && (_avPacket.stream_index == stream->_idx);
-            const bool isCurrentPacketInRange = isPacketValid && (_avPacket.dts + _avPacket.duration > currentFramePts) && (currentFramePts >= _avPacket.dts);
-            // If the actual packet is invalid (data == NULL) or it's not within the current decompression range it means that we need to read the next packet;
-            // This happens when decoding for the first time or after the _avPacket was invalidated by calling av_free_packet;
-            if (_avPacket.data == NULL || !isCurrentPacketInRange) {
-                // release the previous packet if this wasn't already released at this point
-                if (_avPacket.data != NULL) {
-                    _avPacket.FreePacket();
-                }
-                _avPacket.InitPacket();
-                error = av_read_frame(_context, &_avPacket);
-            }
-            // [FD] 2015/01/20
-            // the following if() was not in Nuke's FFmpeg Reader.cpp
-            if (error == (int)AVERROR_EOF) {
-                // getStreamFrames() was probably wrong
-                stream->_frames = stream->_decodeNextFrameIn;
-                if (loadNearest) {
-                    // try again
-                    frame = (int)stream->_frames - 1;
-                    lastSeekedFrame = frame;
-                    stream->_decodeNextFrameIn  = -1;
-                    stream->_decodeNextFrameOut = -1;
-                    stream->_accumDecodeLatency = 0;
-                    awaitingFirstDecodeAfterSeek = true;
+    // These codecs may still report a gop_size if incorrectly muxed.
+    if ((stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_PNG)) {
+        isIntraOnly = true;
+    }
 
-                    if ( !seekFrame(frame, stream) ) {
-                        return false;
-                    }
-                }
-                continue;
-            }
-            if (error < 0) {
-                // Read error. Abort attempt to read and decode frames.
-#if TRACE_DECODE_PROCESS
-                std::cout << ", Read failed" << std::endl;
-#endif
-                setInternalError(error, "FFmpeg Reader failed to read frame: ");
-                break;
-            }
-#if TRACE_DECODE_PROCESS
-            std::cout << ", Read OK, Packet data:" << std::endl;
-            std::cout << "    PTS=" << _avPacket.pts <<
-                ", DTS=" << _avPacket.dts <<
-                ", Duration=" << _avPacket.duration <<
-                ", KeyFrame=" << ( (_avPacket.flags & AV_PKT_FLAG_KEY) ? 1 : 0 ) <<
-                ", Corrupt=" << ( (_avPacket.flags & AV_PKT_FLAG_CORRUPT) ? 1 : 0 ) <<
-                ", StreamIdx=" << _avPacket.stream_index <<
-                ", PktSize=" << _avPacket.size;
-#endif
+    // Old behaviour of expecting the next frame out of the decoder to be current frame + 1 is wrong.
+    // For some codecs i.e H.264 and HEVC the decoder can output frames in decode order.
+    // This is here to prevent any performace regression where we assume the decoder will always
+    // output the frames in presentation order (true for the SW H.264 and MPEG4 decoders in libavcodec).
+    // This may come back to haunt us one day.
 
-            // If the packet read belongs to the video stream, synchronise frame indices from it if required and feed it
-            // into the decoder.
-            if (_avPacket.stream_index == stream->_idx) {
-#if TRACE_DECODE_PROCESS
-                std::cout << ", Relevant stream" << std::endl;
-#endif
+    // Only seek and reset for non-sequential frames as this can be very costly.
+    if (stream->ptsToFrame(avFrameOut->pts) + 1 != frame) {
+        seekToFrame(stream->frameToPts(frame), AVSEEK_FLAG_BACKWARD);
+    }
 
-                // If the packet read has a valid PTS, record that we have seen a PTS for this stream.
-                if ( _avPacket.pts != int64_t(AV_NOPTS_VALUE) ) {
-                    stream->_ptsSeen = true;
-                }
+    // Setup the output frame struct with the buffer passed in
+    avFrameOut->width   = stream->_width;
+    avFrameOut->height  = stream->_height;
+    avFrameOut->format  = stream->_outputPixelFormat;
 
-                // If a seek is in progress, we need to synchronise frame indices if we can...
-                if (lastSeekedFrame >= 0) {
-#if TRACE_DECODE_PROCESS
-                    std::cout << "    In seek (" << lastSeekedFrame << ")";
-#endif
+    int res = 0;
 
-                    // Determine which frame the seek landed at, using whichever kind of timestamp is currently selected for this
-                    // stream. If there's no timestamp available at that frame, we can't synchronise frame indices to know which
-                    // frame we're first going to decode, so we need to seek back to an earlier frame in hope of obtaining a
-                    // timestamp. Likewise, if the landing frame is after the seek target frame (this can happen, presumably a bug
-                    // in FFmpeg seeking), we need to seek back to an earlier frame so that we can start decoding at or before the
-                    // desired frame.
-                    bool noTimestamp = ( _avPacket.*stream->_timestampField == int64_t(AV_NOPTS_VALUE) );
-                    int landingFrame = noTimestamp ? -1 : stream->ptsToFrame(_avPacket.*stream->_timestampField);
+    if ((res = av_image_fill_linesizes(avFrameOut->linesize, stream->_outputPixelFormat, stream->_width)) < 0) {
+        setInternalError(res, "FFmpeg Reader Failed to fill image linesizes: ");
+        return false;
+    }
 
-                    if ( noTimestamp || (landingFrame  > lastSeekedFrame) ) {
-#if TRACE_DECODE_PROCESS
-                        std::cout << ", landing frame not found";
-                        if ( noTimestamp ) {
-                            std::cout << " (no timestamp)";
-                        } else {
-                            std::cout << " (landed after target at " << landingFrame << ")";
-                        }
-#endif
+    res = av_image_fill_pointers(
+                                 avFrameOut->data,
+                                 stream->_outputPixelFormat,
+                                 stream->_height,
+                                 buffer,
+                                 avFrameOut->linesize
+                                 );
 
-                        // Wind back 1 frame from last seeked frame. If that takes us to before frame 0, we're never going to be
-                        // able to synchronise using the current timestamp source...
-                        if (--lastSeekedFrame < 0) {
-#if TRACE_DECODE_PROCESS
-                            std::cout << ", can't seek before start";
-#endif
+    if (res < 0) {
+        setInternalError(res, "FFmpeg Reader Failed to fill image pointers: ");
+        return false;
+    }
 
-                            // If we're currently using PTSs to determine the landing frame and we've never seen a valid PTS for any
-                            // frame from this stream, switch to using DTSs and retry the read from the initial desired frame.
-                            if ( (stream->_timestampField == &AVPacket::pts) && !stream->_ptsSeen ) {
-                                stream->_timestampField = &AVPacket::dts;
-                                lastSeekedFrame = frame;
-#if TRACE_DECODE_PROCESS
-                                std::cout << ", PTSs absent, switching to use DTSs";
-#endif
-                            }
-                            // Otherwise, failure to find a landing point isn't caused by an absence of PTSs from the file or isn't
-                            // recovered by using DTSs instead. Something is wrong with the file. Abort attempt to read and decode frames.
-                            else {
-#if TRACE_DECODE_PROCESS
-                                if (stream->_timestampField == &AVPacket::dts) {
-                                    std::cout << ", search using DTSs failed";
-                                } else {
-                                    std::cout << ", PTSs present";
-                                }
-                                std::cout << ",  giving up" << std::endl;
-#endif
-                                setError("FFmpeg Reader failed to find timing reference frame, possible file corruption");
-                                break;
-                            }
-                        }
 
-                        // Seek to the new frame. By leaving the seek in progress, we will seek backwards frame by frame until we
-                        // either successfully synchronise frame indices or give up having reached the beginning of the stream.
-#if TRACE_DECODE_PROCESS
-                        std::cout << ", seeking to " << lastSeekedFrame << std::endl;
-#endif
-                        if ( !seekFrame(lastSeekedFrame, stream) ) {
-                            break;
-                        }
-                    }
-                    // Otherwise, we have a valid landing frame, so set that as the next frame into and out of decode and set
-                    // no seek in progress.
-                    else {
-#if TRACE_DECODE_PROCESS
-                        std::cout << ", landed at " << landingFrame << std::endl;
-#endif
-                        // If the packet is within the decompression range but the landingFrame is different than the current frame it means that
-                        // we are on a packet that needs to be displayed for more than one frame. In that case landingFrame will be pointing at the
-                        // first frame of that packet which means that we need to update the _decodeNextFrameOut and _decodeNextFrameIn for the other frames
-                        // which are in the current packet.
-                        // If not then it means that we have jumped on a different frame so update that accordingly;
-                        //
-                        // In the below ASCII figure - landingFrame will end up being 2 whenever frame is in the range 2 - 7
-                        //
-                        // Nuke frame     0   1   2   3   4   5   6   7   8   9   10   ...
-                        //              +---+---+-----------------------+---+---+---+-
-                        // data stream  |   |   |                       |   |   |   |  ...
-                        //              +---+---+-----------------------+---+---+---+-
-                        // QT/ffmpeg      0   1   2                       3   4   5    ...
-                        // frame
-                        //
-                        // So in this example, whenever frame is 3-7 we actually need to set stream->_decodeNextFrameIn/Out to frame rather than landingFrame, which is still 2;
-                        // stream->_decodeNextFrameIn/Out is used by our logic to determined what Nuke frame is being decoded;
-                        const int64_t currentFramePts = stream->frameToPts(frame);
-                        const bool isNewPacketInRange = (_avPacket.dts + _avPacket.duration > currentFramePts) && (currentFramePts >= _avPacket.dts);
-                        if (isNewPacketInRange && (landingFrame != frame)) {
-                            stream->_decodeNextFrameOut = stream->_decodeNextFrameIn = frame;
-                        } else {
-                            stream->_decodeNextFrameOut = stream->_decodeNextFrameIn = landingFrame;
-                        }
-                        lastSeekedFrame = -1;
-                    }
-                }
+    bool retriedSeek = false;
+    bool retriedDecode = false;
 
-                // If there's no seek in progress, feed this frame into the decoder.
-                if (lastSeekedFrame < 0) {
-#if TRACE_DECODE_BITSTREAM
-                    // H.264 ONLY
-                    std::cout << "  Decoding input frame " << stream->_decodeNextFrameIn << " bitstream:" << std::endl;
-                    uint8_t *data = _avPacket.data;
-                    uint32_t remain = _avPacket.size;
-                    while (remain > 0) {
-                        if (remain < 4) {
-                            std::cout << "    Insufficient remaining bytes (" << remain << ") for block size at BlockOffset=" << (data - _avPacket.data) << std::endl;
-                            remain = 0;
-                        } else {
-                            uint32_t blockSize = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
-                            data += 4;
-                            remain -= 4;
-                            std::cout << "    BlockOffset=" << (data - _avPacket.data) << ", Size=" << blockSize;
-                            if (remain < blockSize) {
-                                std::cout << ", Insufficient remaining bytes (" << remain << ")" << std::endl;
-                                remain = 0;
-                            } else {
-                                std::cout << ", Bytes:";
-                                int count = (blockSize > 16 ? 16 : blockSize);
-                                for (int offset = 0; offset < count; offset++) {
-                                    static const char hexTable[] = "0123456789ABCDEF";
-                                    uint8_t byte = data[offset];
-                                    std::cout << ' ' << hexTable[byte >> 4] << hexTable[byte & 0xF];
-                                }
-                                std::cout << std::endl;
-                                data += blockSize;
-                                remain -= blockSize;
-                            }
-                        }
-                    }
-#elif TRACE_DECODE_PROCESS
-                    std::cout << "  Decoding input frame " << stream->_decodeNextFrameIn << std::endl;
-#endif
+    while (!retriedDecode) {
 
-                    // Advance next frame to input.
-                    ++stream->_decodeNextFrameIn;
+        retriedDecode = retriedSeek ? true: false;
 
-                    // Decode the frame just read. frameDecoded indicates whether a decoded frame was output.
-                    decodeAttempted = true;
+        hasPicture = demuxAndDecode(avFrameOut, frame);
 
-                    // if the packet wasn't decode yet then it doesn't really metter
-                    // if it's in the playback range or not; we still keep trying to
-                    // decode the information iside the packet
-                    if (_avPacket.wasPacketDecoded && isCurrentPacketInRange) {
-                        error = 0;
-                        frameDecoded = 1; // the image is already pre-cached in the _avFrame - don't do anything here
-                    }
-                    else {
-#if USE_NEW_FFMPEG_API
-                        error = avcodec_send_packet(stream->_codecContext, &_avPacket);
-                        if (error == 0) {
-                            error = avcodec_receive_frame(stream->_codecContext, stream->_avFrame);
-                            if ( error == AVERROR(EAGAIN) ) {
-                                frameDecoded = 0;
-                                error = 0;
-                            } else if (error < 0) {
-                                frameDecoded = 0;
-                            } else {
-                                frameDecoded = 1;
-                            }
-                        }
-#else
-                        error = avcodec_decode_video2(stream->_codecContext, stream->_avFrame, &frameDecoded, &_avPacket);
-#endif
-                        _avPacket.wasPacketDecoded = frameDecoded;
-                    }
-                    if (error < 0) {
-                        // Decode error. Abort attempt to read and decode frames.
-                        setInternalError(error, "FFmpeg Reader failed to decode frame: ");
-                        break;
-                    }
-                }
-            } //_avPacket.stream_index == stream->_idx
-#if TRACE_DECODE_PROCESS
-            else {
-                std::cout << ", Irrelevant stream" << std::endl;
-            }
-#endif
-        } //stream->_decodeNextFrameIn < stream->_frames
-        // If the next frame to decode is out of frame range, there's nothing more to read and the decoder will be fed
-        // null input frames in order to obtain any remaining output.
+        // A last ditch effot to get a frame out for non-intra codecs.
+        // This will perform a seek to the start of the file. which is
+        // the only reliable way to get frame accurate seeking in a
+        // stream with B-frames.
+        if (!hasPicture && !isIntraOnly && !retriedSeek) {
+            retriedSeek = true;
+            seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD);
+        }
         else {
-#if TRACE_DECODE_PROCESS
-            std::cout << "  No more frames to read, pumping remaining decoder output" << std::endl;
-#endif
-
-            // Obtain remaining frames from the decoder. pkt_ contains NULL packet data pointer and size at this point,
-            // required to pump out remaining frames with no more input. frameDecoded indicates whether a decoded frame
-            // was output.
-            decodeAttempted = true;
-            int error = 0;
-            if ( (AV_CODEC_ID_PRORES == stream->_codecContext->codec_id) ||
-                 (AV_CODEC_ID_DNXHD == stream->_codecContext->codec_id) ) {
-                // Apple ProRes specific.
-                // The ProRes codec is I-frame only so will not have any
-                // remaining frames.
-            } else {
-                // Obtain remaining frames from the decoder. emptyAVPacket contains NULL packet data pointer and size at this point,
-                // required to pump out remaining frames with no more input
-                // That's based on the following FFmpeg's remark:
-                // Codecs which have the CODEC_CAP_DELAY capability set have a delay between input and output, these need to be fed
-                // with avpkt->data=NULL, avpkt->size=0 at the end to return the remaining frames.
-                // Please have a look at the following TP item from more info: TP 24765 https://foundry.tpondemand.com/entity/246765
-
-                MyAVPacket emptyAVPacket;
-#if USE_NEW_FFMPEG_API
-                error = avcodec_send_packet(stream->_codecContext, &emptyAVPacket);
-                if (error == 0) {
-                    error = avcodec_receive_frame(stream->_codecContext, stream->_avFrame);
-                    if ( error == AVERROR(EAGAIN) ) {
-                        frameDecoded = 0;
-                        error = 0;
-                    } else if (error < 0) {
-                        frameDecoded = 0;
-                        // Decode error. Abort attempt to read and decode frames.
-                    } else {
-                        frameDecoded = 1;
-                    }
-                }
-#else
-                error = avcodec_decode_video2(stream->_codecContext, stream->_avFrame, &frameDecoded, &emptyAVPacket);
-#endif
-            }
-            if (error < 0) {
-                // Decode error. Abort attempt to read and decode frames.
-                setInternalError(error, "FFmpeg Reader failed to decode frame: ");
-                break;
-            }
+            break;
         }
-
-        // If a frame was decoded, ...
-        if (frameDecoded) {
-#if TRACE_DECODE_PROCESS
-            std::cout << "    Frame decoded=" << stream->_decodeNextFrameOut;
-#endif
-
-            // Now that we have had a frame decoded, we know that seek landed at a valid place to start decode. Any decode
-            // stalls detected after this point will result in immediate decode failure.
-            awaitingFirstDecodeAfterSeek = false;
-
-            // If the frame just output from decode is the desired one, get the decoded picture from it and set that we
-            // have a picture.
-            if (stream->_decodeNextFrameOut == frame) {
-#if TRACE_DECODE_PROCESS
-                std::cout << ", is desired frame" << std::endl;
-#endif
-
-                SwsContext* context = NULL;
-                {
-                    context = stream->getConvertCtx(srcPixelFormat, stream->_width, stream->_height,
-                                                    srcColourRange,
-                                                    stream->_outputPixelFormat, stream->_width, stream->_height);
-                }
-
-                // Scale if any of the decoding path has provided a convert
-                // context. Otherwise, no scaling/conversion is required after
-                // decoding the frame.
-                if (context) {
-                    uint8_t *data[4];
-                    int linesize[4];
-#if 0
-                    // Nuke's version
-                    {
-                        AVPicture output;
-                        avpicture_fill(&output, buffer, stream->_outputPixelFormat, stream->_width, stream->_height);
-                        data[0] = output.data[0];
-                        data[1] = output.data[1];
-                        data[2] = output.data[2];
-                        data[3] = output.data[3];
-                        linesize[0] = output.linesize[0];
-                        linesize[1] = output.linesize[1];
-                        linesize[2] = output.linesize[2];
-                        linesize[3] = output.linesize[3];
-                    }
-#else
-                    av_image_fill_arrays(data, linesize, buffer, stream->_outputPixelFormat, stream->_width, stream->_height, 1);
-#endif
-                    sws_scale(context,
-                              stream->_avFrame->data,
-                              stream->_avFrame->linesize,
-                              0,
-                              stream->_height,
-                              data,
-                              linesize);
-                }
-
-                hasPicture = true;
-            }
-#if TRACE_DECODE_PROCESS
-            else {
-                std::cout << ", is not desired frame (" << frame << ")" << std::endl;
-            }
-#endif
-
-            // Advance next output frame expected from decode.
-            ++stream->_decodeNextFrameOut;
-        }
-        // If no frame was decoded but decode was attempted, determine whether this constitutes a decode stall and handle if so.
-        else if (decodeAttempted) {
-            // Failure to get an output frame for an input frame increases the accumulated decode latency for this stream.
-            ++stream->_accumDecodeLatency;
-
-#if TRACE_DECODE_PROCESS
-            std::cout << "    No frame decoded, accumulated decode latency=" << stream->_accumDecodeLatency << ", max allowed latency=" << stream->getCodecDelay() << std::endl;
-#endif
-
-            // If the accumulated decode latency exceeds the maximum delay permitted for this codec at this time (the delay can
-            // change dynamically if the codec discovers B-frames mid-stream), we've detected a decode stall.
-            if ( stream->_accumDecodeLatency > stream->getCodecDelay() ) {
-                int seekTargetFrame; // Target frame for any seek we might perform to attempt decode stall recovery.
-
-                // Handle a post-seek decode stall.
-                if (awaitingFirstDecodeAfterSeek) {
-                    // If there's anywhere in the file to seek back to before the last seek's landing frame (which can be found in
-                    // stream->_decodeNextFrameOut, since we know we've not decoded any frames since landing), then set up a seek to
-                    // the frame before that landing point to try to find a valid decode start frame earlier in the file.
-                    if (stream->_decodeNextFrameOut > 0) {
-                        seekTargetFrame = stream->_decodeNextFrameOut - 1;
-#if TRACE_DECODE_PROCESS
-                        std::cout << "    Post-seek stall detected, trying earlier decode start, seeking frame " << seekTargetFrame << std::endl;
-#endif
-                    }
-                    // Otherwise, there's nowhere to seek back. If we have any retries remaining, use one to attempt the read again,
-                    // starting from the desired frame.
-                    else if (retriesRemaining > 0) {
-                        --retriesRemaining;
-                        seekTargetFrame = frame;
-#if TRACE_DECODE_PROCESS
-                        std::cout << "    Post-seek stall detected, at start of file, retrying from desired frame " << seekTargetFrame << std::endl;
-#endif
-                    }
-                    // Otherwise, all we can do is to fail the read so that this method exits safely.
-                    else {
-#if TRACE_DECODE_PROCESS
-                        std::cout << "    Post-seek STALL DETECTED, at start of file, no more retries, failed read" << std::endl;
-#endif
-                        setError("FFmpeg Reader failed to find decode reference frame, possible file corruption");
-                        break;
-                    }
-                }
-                // Handle a mid-decode stall. All we can do is to fail the read so that this method exits safely.
-                else {
-                    // If we have any retries remaining, use one to attempt the read again, starting from the desired frame.
-                    if (retriesRemaining > 0) {
-                        --retriesRemaining;
-                        seekTargetFrame = frame;
-#if TRACE_DECODE_PROCESS
-                        std::cout << "    Mid-decode stall detected, retrying from desired frame " << seekTargetFrame << std::endl;
-#endif
-                    }
-                    // Otherwise, all we can do is to fail the read so that this method exits safely.
-                    else {
-#if TRACE_DECODE_PROCESS
-                        std::cout << "    Mid-decode STALL DETECTED, no more retries, failed read" << std::endl;
-#endif
-                        setError("FFmpeg Reader detected decoding stall, possible file corruption");
-                        break;
-                    }
-                } // if (awaitingFirstDecodeAfterSeek)
-
-                // If we reach here, seek to the target frame chosen above in an attempt to recover from the decode stall.
-                lastSeekedFrame = seekTargetFrame;
-                stream->_decodeNextFrameIn  = -1;
-                stream->_decodeNextFrameOut = -1;
-                stream->_accumDecodeLatency = 0;
-                awaitingFirstDecodeAfterSeek = true;
-
-                if ( !seekFrame(seekTargetFrame, stream) ) {
-                    break;
-                }
-            } // if (decodeAttempted)
-        } // if (stream->_decodeNextFrameIn < stream->_frames)
-    } while (!hasPicture && !plugin->abort());
-
-#if TRACE_DECODE_PROCESS
-    std::cout << "<-validPicture=" << hasPicture << " for frame " << frame << std::endl;
-#endif
-
-    // If read failed, reset the next frame expected out so that we seek and restart decode on next read attempt. Also free
-    // the AVPacket, since it won't have been freed at the end of the above loop (we reach here by a break from the main
-    // loop when hasPicture is false).
-    if (!hasPicture) {
-        // If the process failed to get a picture, but the packet contains information about the decompressed image, then
-        // we need to dispose it;
-        if (_avPacket.size > 0) {
-            _avPacket.FreePacket();
-        }
-        stream->_decodeNextFrameOut = -1;
     }
 
     return hasPicture;
 } // FFmpegFile::decode
+
+
+bool
+FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
+{
+    Stream* stream = _selectedStream;
+
+    avcodec_flush_buffers(stream->_codecContext);
+    int res = 0;
+
+    if ((res = av_seek_frame(_context, stream->_idx, frame, seekFlags)) < 0) {
+        setInternalError(res, "FFmpeg Reader Failed to seek frame: ");
+        return false;
+    }
+
+    return true;
+}
+
+// compat_decode() replaces avcodec_decode_video2(), see
+// https://github.com/FFmpeg/FFmpeg/blob/9e30859cb60b915f237581e3ce91b0d31592edc0/libavcodec/decode.c#L748
+// Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
+static int
+mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
+                int *got_frame, const AVPacket &pkt)
+{
+    return avcodec_decode_video2(avctx, frame, got_frame, &pkt);
+}
+
+bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
+{
+    Stream* stream = _selectedStream;
+    MyAVPacket avPacket;
+
+    av_frame_unref(stream->_avIntermediateFrame);
+
+    int res                   = 0;
+    bool hasPicture           = false;
+    int frameDecoded          = 0;
+    AVFrame* avFrameDecodeDst = stream->_avIntermediateFrame;
+
+    auto foundCorrectFrame = [stream](AVFrame* decodedFrame, int64_t targetFrameIdx) -> bool {
+        bool found = false;
+
+        // Fallback to using the DTS from the AVPacket that triggered returning this frame if no PTS is found
+        if (decodedFrame->pts == AV_NOPTS_VALUE) {
+            decodedFrame->pts = decodedFrame->pkt_dts;
+        }
+
+        int64_t decodedFrameIdx = stream->ptsToFrame(decodedFrame->pts);
+
+        if (decodedFrameIdx == targetFrameIdx) {
+            found = true;
+        }
+        // If the current frame needs to be displayed longer than current_pts - prev_pts
+        else if ((decodedFrameIdx < targetFrameIdx) && (stream->ptsToFrame(decodedFrame->pts + decodedFrame->pkt_duration) > targetFrameIdx)) {
+            found = true;
+        }
+
+        return found;
+    };
+
+    // Begin reading from the newly seeked position
+    while ((res = av_read_frame(_context, &avPacket)) >= 0) {
+
+        if (avPacket.stream_index == stream->_idx) {
+
+            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, avPacket)) < 0) {
+                setInternalError(res, "FFmpeg Reader Failed to decode packet: ");
+                return false;
+            }
+
+            if (frameDecoded) {
+                if (foundCorrectFrame(avFrameDecodeDst, frame)) {
+                    hasPicture = imageConvert(avFrameDecodeDst, avFrameOut);
+                    return hasPicture;
+                }
+            }
+        }
+    }
+
+
+    // Check for any read failures
+    if (res < 0 && res != AVERROR_EOF) {
+        setInternalError(res, "FFmpeg Reader Failed to read frame: ");
+        return false;
+    }
+
+
+    // Flush the decoder of remaining frames
+    if (res == AVERROR_EOF) {
+        AVPacket emptyPkt = {};
+        while (1) {
+
+            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, emptyPkt)) < 0) {
+                setInternalError(res, "FFmpeg Reader Failed to flush the decoder of remaing frames: ");
+                return false;
+            }
+
+            if (frameDecoded) {
+                if (foundCorrectFrame(avFrameDecodeDst, frame)) {
+                    return imageConvert(avFrameDecodeDst, avFrameOut);
+                }
+            }
+            else {
+                break;
+            }
+        }
+    }
+
+    return hasPicture;
+}
+
+bool
+FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
+{
+    if (!avFrameIn || !avFrameOut) {
+        setError("mov64Reader no input or output frame provided for conversion");
+        return false;
+    }
+
+    Stream* stream = _selectedStream;
+
+    AVPixelFormat dstPixFmt = (AVPixelFormat)avFrameOut->format;
+    AVPixelFormat srcPixFmt = (AVPixelFormat)avFrameIn->format;
+
+    avFrameOut->pts          = avFrameIn->pts;
+    avFrameOut->pkt_dts      = avFrameIn->pkt_dts;
+    avFrameOut->pkt_duration = avFrameIn->pkt_duration;
+
+    if (!avFrameOut->data[0]) {
+        int res = av_image_alloc(avFrameOut->data, avFrameOut->linesize, avFrameOut->width, avFrameOut->height, dstPixFmt, 32);
+        if (res <= 0) {
+            setInternalError(res, "FFmpeg Reader Output frame allocation failed during format conversion");
+            return false;
+        }
+    }
+
+    SwsContext* context = stream->getConvertCtx(
+                                                srcPixFmt,
+                                                avFrameIn->width,
+                                                avFrameIn->height,
+                                                avFrameIn->color_range,
+                                                dstPixFmt,
+                                                avFrameOut->width,
+                                                avFrameOut->height
+                                                );
+
+    // Scale if any of the decoding path has provided a convert
+    // context. Otherwise, no scaling/conversion is required after
+    // decoding the frame.
+    if (context) {
+        sws_scale(
+                  context,
+                  avFrameIn->data,
+                  avFrameIn->linesize,
+                  0,
+                  avFrameIn->height,
+                  avFrameOut->data,
+                  avFrameOut->linesize
+                  );
+    } else {
+        return false;
+    }
+
+    return true;
+}
 
 bool
 FFmpegFile::getFPS(double & fps,
@@ -1836,7 +1554,7 @@ FFmpegFile::getBufferBytesCount() const
 
 FFmpegFileManager::FFmpegFileManager()
     : _files()
-    , _lock(NULL)
+    , _lock(nullptr)
 {
 }
 
@@ -1895,7 +1613,7 @@ FFmpegFileManager::get(void const * plugin,
         }
     }
 
-    return NULL;
+    return nullptr;
 }
 
 FFmpegFile*

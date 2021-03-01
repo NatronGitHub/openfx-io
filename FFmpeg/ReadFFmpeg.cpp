@@ -57,6 +57,10 @@
 #include "FFmpegFile.h"
 #include "ofxsCopier.h"
 
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 0, 0)
+#error "This requires FFmpeg >= 4.0"
+#endif
+
 using namespace OFX;
 using namespace OFX::IO;
 
@@ -74,13 +78,11 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.ReadFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 0
 
+// Deprecated parameter, for backward compatibility
 #define kParamMaxRetries "maxRetries"
-#define kParamMaxRetriesLabel "Max retries per frame"
-#define kParamMaxRetriesHint "Some video files are sometimes tricky to read and needs several retries before successfully decoding a frame. This" \
-    " parameter controls how many times we should attempt to decode the same frame before failing. "
 
 #define kParamFirstTrackOnly "firstTrackOnly"
 #define kParamFirstTrackOnlyLabelAndHint "First Track Only", "Causes the reader to ignore all but the first video track it finds in the file. This should be selected in a multiview project if the file happens to contain multiple video tracks that don't correspond to different views."
@@ -100,7 +102,6 @@ class ReadFFmpegPlugin
     : public GenericReaderPlugin
 {
     FFmpegFileManager& _manager;
-    IntParam *_maxRetries;
     BooleanParam *_firstTrackOnly;
 
 public:
@@ -157,12 +158,10 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
                                    const vector<string>& extensions)
     : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false)
     , _manager(manager)
-    , _maxRetries(NULL)
     , _firstTrackOnly(NULL)
 {
-    _maxRetries = fetchIntParam(kParamMaxRetries);
     _firstTrackOnly = fetchBooleanParam(kParamFirstTrackOnly);
-    assert(_maxRetries && _firstTrackOnly);
+    assert(_firstTrackOnly);
     int originalFrameRangeMin, originalFrameRangeMax;
     _originalFrameRange->getValue(originalFrameRangeMin, originalFrameRangeMax);
     if (originalFrameRangeMin == 0) {
@@ -207,11 +206,7 @@ static string
 ffmpeg_versions()
 {
     std::ostringstream oss;
-#ifdef FFMS_USE_FFMPEG_COMPAT
     oss << "FFmpeg ";
-#else
-    oss << "libav";
-#endif
     oss << " versions (compiled with / running with):" << std::endl;
     oss << "libavformat ";
     oss << LIBAVFORMAT_VERSION_MAJOR << '.' << LIBAVFORMAT_VERSION_MINOR << '.' << LIBAVFORMAT_VERSION_MICRO << " / ";
@@ -392,9 +387,6 @@ ReadFFmpegPlugin::decode(const string& filename,
         return;
     }
 
-    int maxRetries;
-    _maxRetries->getValue(maxRetries);
-
     // not in FFmpeg Reader: initialize the output buffer
     // TODO: use avpicture_get_size? see WriteFFmpeg
     unsigned int numComponents = file->getNumberOfComponents();
@@ -416,7 +408,7 @@ ReadFFmpegPlugin::decode(const string& filename,
     // this is the first stream (in fact the only one we consider for now), allocate the output buffer according to the bitdepth
 
     try {
-        if ( !file->decode(this, (int)time, loadNearestFrame(), maxRetries, buffer) ) {
+        if ( !file->decode(this, (int)time, loadNearestFrame(), buffer) ) {
             if ( abort() ) {
                 // decode() probably existed because plugin was aborted
                 return;
@@ -594,53 +586,6 @@ split(const string &s,
     return elems;
 }
 
-#ifdef OFX_IO_MT_FFMPEG
-static int
-FFmpegLockManager(void** mutex,
-                  enum AVLockOp op)
-{
-    switch (op) {
-    case AV_LOCK_CREATE:     // Create a mutex.
-        try {
-            *mutex = static_cast< void* >(new FFmpegFile::Mutex);
-
-            return 0;
-        }catch (...) {
-            // Return error if mutex creation failed.
-            return 1;
-        }
-
-    case AV_LOCK_OBTAIN:     // Lock the specified mutex.
-        try {
-            static_cast< FFmpegFile::Mutex* >(*mutex)->lock();
-
-            return 0;
-        }catch (...) {
-            // Return error if mutex lock failed.
-            return 1;
-        }
-
-    case AV_LOCK_RELEASE:     // Unlock the specified mutex.
-        // Mutex unlock can't fail.
-        static_cast< FFmpegFile::Mutex* >(*mutex)->unlock();
-
-        return 0;
-
-    case AV_LOCK_DESTROY:     // Destroy the specified mutex.
-        // Mutex destruction can't fail.
-        delete static_cast< FFmpegFile::Mutex* >(*mutex);
-        *mutex = 0;
-
-        return 0;
-
-    default:     // Unknown operation.
-        assert(false);
-
-        return 1;
-    }
-}
-
-#endif
 
 void
 ReadFFmpegPluginFactory::load()
@@ -654,8 +599,9 @@ ReadFFmpegPluginFactory::load()
     }
 #else
     std::list<string> extensionsl;
-    AVInputFormat* iFormat = av_iformat_next(NULL);
-    while (iFormat != NULL) {
+    const AVInputFormat* iFormat;
+    void *i = 0;
+    while ((iFormat = av_demuxer_iterate (&i))) {
         //DBG(std::printf("ReadFFmpeg: \"%s\", // %s (%s)\n", iFormat->extensions ? iFormat->extensions : iFormat->name, iFormat->name, iFormat->long_name));
         if (iFormat->extensions != NULL) {
             string extStr( iFormat->extensions );
@@ -667,7 +613,6 @@ ReadFFmpegPluginFactory::load()
             string extStr( iFormat->name);
             split(extStr, ',', extensionsl);
         }
-        iFormat = av_iformat_next( iFormat );
     }
 
     // Hack: Add basic video container extensions
@@ -971,18 +916,11 @@ ReadFFmpegPluginFactory::describe(ImageEffectDescriptor &desc)
     // basic labels
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription);
-#ifdef OFX_IO_MT_FFMPEG
-    // Register a lock manager callback with FFmpeg, providing it the ability to use mutex locking around
-    // otherwise non-thread-safe calls.
-    av_lockmgr_register(FFmpegLockManager);
+    // FFmpeg 4 is thread-safe, see
+    // https://ffmpeg.org/doxygen/4.1/group__lavc__misc.html#ga4e9a0032df8f76cc766846514cebfab7
     desc.setRenderThreadSafety(eRenderFullySafe);
-#else
-    desc.setRenderThreadSafety(eRenderInstanceSafe);
-#endif
 
     av_log_set_level(AV_LOG_WARNING);
-    avcodec_register_all();
-    av_register_all();
 
     _manager.reset(new FFmpegFileManager);
     _manager->init();
@@ -1001,13 +939,9 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                                                                     kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false);
 
     {
+        // deprecated parameter, for backward compatibility only
         IntParamDescriptor *param = desc.defineIntParam(kParamMaxRetries);
-        param->setLabel(kParamMaxRetriesLabel);
-        param->setHint(kParamMaxRetriesHint);
-        param->setAnimates(false);
-        param->setDefault(10);
-        param->setRange(0, 100);
-        param->setDisplayRange(0, 20);
+        param->setIsSecretAndDisabled(true);
         if (page) {
             page->addChild(*param);
         }

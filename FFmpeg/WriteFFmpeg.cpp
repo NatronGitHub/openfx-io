@@ -23,7 +23,6 @@
  * Synced with mov64Writer 11.1v3
  */
 
-
 // to test writing a codec with ffmpeg (e.g. DNxHD with dnxhr_lb profile):
 // ffmpeg -f lavfi  -i testsrc=size=2048x1152 -vframes 2 -vcodec dnxhd -profile:v dnxhr_lb out.mov
 
@@ -76,7 +75,6 @@ extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/mathematics.h>
 }
-#include "FFmpegCompat.h"
 #include "IOUtility.h"
 #include "ofxsMacros.h"
 
@@ -88,13 +86,15 @@ extern "C" {
 #include "FFmpegFile.h"
 #include "PixelFormat.h"
 
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 0, 0)
+#error "This requires FFmpeg >= 4.0"
+#endif
+#pragma message WARN("TODO: sync with mov64Writer 12.2v5 (this is synced with mov64Writer 11.1v3)")
+
 #define OFX_FFMPEG_PRINT_CODECS 0 // print list of supported/ignored codecs and formats
 #define OFX_FFMPEG_TIMECODE 0     // timecode support
 #define OFX_FFMPEG_AUDIO 0        // audio support
 #define OFX_FFMPEG_MBDECISION 0   // add the macroblock decision parameter
-#define OFX_FFMPEG_PRORES 1       // experimental apple prores support
-#define OFX_FFMPEG_PRORES4444 1   // experimental apple prores 4444 support
-#define OFX_FFMPEG_DNXHD 1        // experimental DNxHD support (disactivated, because of unsolved color shifting issues)
 
 #if OFX_FFMPEG_PRINT_CODECS
 #include <iostream>
@@ -163,7 +163,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.WriteFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 0 // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated
 
 #define kSupportsRGBA true
@@ -348,11 +348,6 @@ enum X26xSpeedEnum {
     "Option -g in ffmpeg."
 
 #define kParamBFrames "bFrames"
-#define kParamBFramesLabel "Max B-Frames"
-#define kParamBFramesHint \
-    "Set max number of B frames between non-B-frames. Must be an integer between -1 and 16. 0 means that B-frames are disabled. If a value of -1 is used, it will choose an automatic value depending on the encoder. Influences file size and seekability. Only supported by certain codecs.\n" \
-    "-1 means to use the codec default if Keyframe Interval is not 1, or 0 if Keyframe Interval is 1 to ensure only intra (I) frames are produced, producing a video which is easier to scrub frame-by-frame.\n" \
-    "Option -bf in ffmpeg."
 
 #define kParamWriteNCLC "writeNCLC"
 #define kParamWriteNCLCLabel "Write NCLC"
@@ -388,22 +383,6 @@ enum X26xSpeedEnum {
 #define kProresProfile4444XQName "Apple ProRes 4444 XQ"
 #define kProresProfile4444XQFourCC "ap4x"
 
-#if OFX_FFMPEG_DNXHD
-
-// dnxhr_444 and dnxhr_hqx is supported from ffmpeg 3.3.
-// libav doesn't seem to support these
-// try with:
-// ffmpeg -f lavfi  -i testsrc=size=2048x1152 -vframes 2 -vf format=gbrp12 -vcodec dnxhd -profile:v dnxhr_444 out.mov
-// ffmpeg -f lavfi  -i testsrc=size=2048x1152 -vframes 2 -vf format=yuv422p12 -vcodec dnxhd -profile:v dnxhr_hqx out.mov
-// As of FFmpeg 3.3.3, ffmpeg seems to encode only 10 bits, see libavcodec/dnxhdenc.c:392 in FFmpeg 3.3.3
-#if VERSION_CHECK(LIBAVCODEC_VERSION_INT, <, 1000, 1000, 1000, 57, 89, 100)
-#define OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444 0
-// FFmpeg 3.3.4 still contains the DNxHR 444 bug https://trac.ffmpeg.org/ticket/6649
-// FFmpeg patch was submitted http://ffmpeg.org/pipermail/ffmpeg-devel/2017-September/216274.html
-#pragma message WARN("This version of FFmpeg does not support DNxHR 444, please upgrade to FFmpeg 3.3 or later with patch http://ffmpeg.org/pipermail/ffmpeg-devel/2017-September/216274.html")
-#else
-#define OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444 1
-#endif
 
 // Valid DNxHD profiles (as of FFmpeg 3.2.2):
 // Frame size: 1920x1080p; bitrate: 175Mbps; pixel format: yuv422p10; framerate: 24000/1001
@@ -479,10 +458,8 @@ enum X26xSpeedEnum {
 #define kParamDNxHDCodecProfile "DNxHDCodecProfile"
 #define kParamDNxHDCodecProfileLabel "DNxHD Codec Profile"
 #define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. The stream may be resized to 1920x1080 if resolution is not supported. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it."
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
 #define kParamDNxHDCodecProfileOptionHR444   "DNxHR 444", "DNxHR 4:4:4 (12 bit, RGB / 4:4:4, 4.5:1 compression)", "dnxhr444"
 #define kParamDNxHDCodecProfileOptionHRHQX   "DNxHR HQX", "DNxHR High Quality (12 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
-#endif
 #define kParamDNxHDCodecProfileOptionHRHQ   "DNxHR HQ", "DNxHR High Quality (8 bit, 4:2:2 chroma sub-sampling, 4.5:1 compression)", "dnxhrhq"
 #define kParamDNxHDCodecProfileOptionHRSQ   "DNxHR SQ", "DNxHR Standard Quality (8 bit, 4:2:2 chroma sub-sampling, 7:1 compression)", "dnxhrsq"
 #define kParamDNxHDCodecProfileOptionHRLB   "DNxHR LB", "DNxHR Low Bandwidth (8 bit, 4:2:2 chroma sub-sampling, 22:1 compression)", "dnxhrlb"
@@ -494,10 +471,8 @@ enum X26xSpeedEnum {
 
 enum DNxHDCodecProfileEnum
 {
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
     eDNxHDCodecProfileHR444,
     eDNxHDCodecProfileHRHQX,
-#endif
     eDNxHDCodecProfileHRHQ,
     eDNxHDCodecProfileHRSQ,
     eDNxHDCodecProfileHRLB,
@@ -517,7 +492,6 @@ enum DNxHDCodecProfileEnum
 #define kParamDNxHDEncodeVideoRangeOptionFull "Full Range", "", "full"
 #define kParamDNxHDEncodeVideoRangeOptionVideo "Video Range", "", "video"
 
-#endif // if OFX_FFMPEG_DNXHD
 
 #define kParamHapFormat "HapFormat"
 #define kParamHapFormatLabel "Hap Format", "Only for the Hap codec, select the target format."
@@ -597,9 +571,7 @@ CreateCodecKnobLabelsMap()
     m["avrp"]          = "AVrp\tAvid 1:1 10-bit RGB Packer";
     m["ayuv"]          = "AYUV\tUncompressed packed MS 4:4:4:4";
     m["cinepak"]       = "cvid\tCinepak"; // disabled in whitelist (bad quality)
-#if OFX_FFMPEG_DNXHD
     m["dnxhd"]         = "AVdn\tAvid DNxHD / DNxHR / SMPTE VC-3";
-#endif
     m["ffv1"]          = "FFV1\tFFmpeg video codec #1";
     m["ffvhuff"]       = "FFVH\tHuffyuv FFmpeg variant";
     m["flv"]           = "FLV1\tFLV / Sorenson Spark / Sorenson H.263 (Flash Video)";
@@ -1172,14 +1144,10 @@ MyAVPicture::alloc(int width,
                    enum AVPixelFormat avPixelFormat)
 {
     deallocateAVPictureData(); // In case this method is called multiple times on the same object.
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(51, 63, 100) // https://ffmpeg.org/pipermail/ffmpeg-cvslog/2015-October/094884.html
     int ret = av_image_alloc(data, linesize, width, height, avPixelFormat, 1);
     if (ret > 0) { // av_image_alloc returns bytes on success
         ret = 0;
     }
-#else
-    int ret = avpicture_alloc(&_avPicture, avPixelFormat, width, height);
-#endif
 
     return ret;
 }
@@ -1189,7 +1157,6 @@ MyAVPicture::alloc(int width,
 void
 MyAVPicture::deallocateAVPictureData()
 {
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(51, 63, 100) // https://ffmpeg.org/pipermail/ffmpeg-cvslog/2015-October/094884.html
     if (data[0]) {
         av_freep(&data[0]);
         for (int i = 0; i < 4; ++i) {
@@ -1197,15 +1164,6 @@ MyAVPicture::deallocateAVPictureData()
             linesize[i] = 0;
         }
     }
-#else
-    if (_avPicture.data[0]) {
-        avpicture_free(&_avPicture);
-        for (int i = 0; i < 4; ++i) {
-            _avPicture.data[i] = NULL;
-            _avPicture.linesize[i] = 0;
-        }
-    }
-#endif
 }
 
 class WriteFFmpegPlugin
@@ -1337,10 +1295,8 @@ private:
     StringParam* _infoPixelFormat;
     IntParam* _infoBitDepth;
     IntParam* _infoBPP;
-#ifdef OFX_FFMPEG_DNXHD
     ChoiceParam* _dnxhdCodecProfile;
     ChoiceParam* _encodeVideoRange;
-#endif
     ChoiceParam* _hapFormat;
 #if OFX_FFMPEG_TIMECODE
     BooleanParam* _writeTimeCode;
@@ -1457,16 +1413,13 @@ FFmpegSingleton::FFmpegSingleton()
     }
     assert( _formatsLongNames.size() == _formatsShortNames.size() );
 
-#if OFX_FFMPEG_PRORES
     // Apple ProRes support.
     // short name must start with prores_ap
     // knoblabel must start with FourCC
-#if OFX_FFMPEG_PRORES4444
     _codecsShortNames.push_back(kProresCodec kProresProfile4444FourCC);
     _codecsLongNames.push_back              (kProresProfile4444Name);
     _codecsKnobLabels.push_back             (kProresProfile4444FourCC "\t" kProresProfile4444Name);
     _codecsIds.push_back                    (AV_CODEC_ID_PRORES);
-#endif
     _codecsShortNames.push_back(kProresCodec kProresProfileHQFourCC);
     _codecsLongNames.push_back              (kProresProfileHQName);
     _codecsKnobLabels.push_back             (kProresProfileHQFourCC "\t" kProresProfileHQName);
@@ -1486,7 +1439,6 @@ FFmpegSingleton::FFmpegSingleton()
     _codecsLongNames.push_back              (kProresProfileProxyName);
     _codecsKnobLabels.push_back             (kProresProfileProxyFourCC "\t" kProresProfileProxyName);
     _codecsIds.push_back                    (AV_CODEC_ID_PRORES);
-#endif
 
     AVCodec* c = av_codec_next(NULL);
     while (c) {
@@ -1616,10 +1568,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _infoPixelFormat(NULL)
     , _infoBitDepth(NULL)
     , _infoBPP(NULL)
-#if OFX_FFMPEG_DNXHD
     , _dnxhdCodecProfile(NULL)
     , _encodeVideoRange(NULL)
-#endif
     , _hapFormat(NULL)
 #if OFX_FFMPEG_TIMECODE
     , _writeTimeCode(NULL)
@@ -1651,10 +1601,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     _infoPixelFormat = fetchStringParam(kParamInfoPixelFormat);
     _infoBitDepth = fetchIntParam(kParamInfoBitDepth);
     _infoBPP = fetchIntParam(kParamInfoBPP);
-#if OFX_FFMPEG_DNXHD
     _dnxhdCodecProfile = fetchChoiceParam(kParamDNxHDCodecProfile);
     _encodeVideoRange = fetchChoiceParam(kParamDNxHDEncodeVideoRange);
-#endif
     _hapFormat = fetchChoiceParam(kParamHapFormat);
 #if OFX_FFMPEG_TIMECODE
     _writeTimeCode = fetchBooleanParam(kParamWriteTimeCode);
@@ -1734,20 +1682,13 @@ bool
 WriteFFmpegPlugin::IsYUVFromShortName(const char* shortName,
                                       int codecProfile)
 {
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
-#else
-    unused(codecProfile);
-#endif
-
     return ( !strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileHQFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileSQFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileLTFourCC) ||
              !strcmp(shortName, kProresCodec kProresProfileProxyFourCC) ||
              (
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
                  (codecProfile != (int)eDNxHDCodecProfileHR444) && // DNxHR 444 is RGB
-#endif
               !strcmp(shortName, "dnxhd")) ||
              !strcmp(shortName, "mjpeg") ||
              !strcmp(shortName, "mpeg1video") ||
@@ -1761,17 +1702,10 @@ bool
 WriteFFmpegPlugin::IsRGBFromShortName(const char* shortName,
                                       int codecProfile)
 {
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
-#else
-    unused(codecProfile);
-#endif
-
     return ( !strcmp(shortName, kProresCodec kProresProfile4444FourCC) ||
              !strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) ||
              (
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
               (!strcmp(shortName, "dnxhd") && codecProfile == (int)eDNxHDCodecProfileHR444) || // only DNxHR 444 is RGB
-#endif
               !strcmp(shortName, "png")  ||
               !strcmp(shortName, "qtrle") ) );
 }
@@ -1923,14 +1857,12 @@ WriteFFmpegPlugin::initCodec(AVOutputFormat* fmt,
     if (userCodec) {
         outCodecId = userCodec->id;
     }
-#if OFX_FFMPEG_PRORES
     if (outCodecId == AV_CODEC_ID_PRORES) {
         // use prores_ks instead of prores
         outVideoCodec = userCodec;
 
         return true;
     }
-#endif
     if (userCodec) {
         outVideoCodec = userCodec;
     } else {
@@ -1958,7 +1890,6 @@ WriteFFmpegPlugin::getPixelFormats(AVCodec* videoCodec,
 
         return;
     }
-#if OFX_FFMPEG_PRORES
     if (AV_CODEC_ID_PRORES == videoCodec->id) {
         int index = _codec->getValue();
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
@@ -1976,11 +1907,8 @@ WriteFFmpegPlugin::getPixelFormats(AVCodec* videoCodec,
             outTargetPixelFormat = AV_PIX_FMT_YUV422P10;
         }
     } else
-#endif
-#if OFX_FFMPEG_DNXHD
     if (AV_CODEC_ID_DNXHD == videoCodec->id) {
         DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)_dnxhdCodecProfile->getValue();
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
         // As of FFmpeg 3.3.3, ffmpeg seems to encode only 10 bits
         if (dnxhdCodecProfile == eDNxHDCodecProfileHR444) {
             // see libavcodec/dnxhdenc.c:392 in FFmpeg 3.3.3
@@ -1989,7 +1917,6 @@ WriteFFmpegPlugin::getPixelFormats(AVCodec* videoCodec,
             // see libavcodec/dnxhdenc.c:401 in FFmpeg 3.3.3
             outTargetPixelFormat = AV_PIX_FMT_YUV422P10;
         } else
-#endif
         if ( (dnxhdCodecProfile == eDNxHDCodecProfileHRHQ) || (dnxhdCodecProfile == eDNxHDCodecProfileHRSQ) || (dnxhdCodecProfile == eDNxHDCodecProfileHRLB) ) {
             // see libavcodec/dnxhdenc.c:407 in FFmpeg 3.3.3
             outTargetPixelFormat = AV_PIX_FMT_YUV422P;
@@ -1998,9 +1925,7 @@ WriteFFmpegPlugin::getPixelFormats(AVCodec* videoCodec,
         } else {
             outTargetPixelFormat = AV_PIX_FMT_YUV422P;
         }
-    } else
-#endif // FN_LICENSED_PRORES_CODEC
-    if (videoCodec->pix_fmts != NULL) {
+    } else if (videoCodec->pix_fmts != NULL) {
         //This is the most frequent path, where we can guess best pix format using ffmpeg.
         //find highest bit depth pix fmt.
         const AVPixelFormat* currPixFormat  = videoCodec->pix_fmts;
@@ -2242,19 +2167,15 @@ WriteFFmpegPlugin::GetCodecSupportedParams(const AVCodec* codec,
         lossy = p->interB = false;
         p->interGOP = true;
     }
-#if OFX_FFMPEG_PRORES
     // Prores is profile-based, we don't need the bitrate parameters
     if ( codecDesc && (codecDesc->id == AV_CODEC_ID_PRORES) ) {
         // https://trac.ffmpeg.org/wiki/Encode/VFX
         lossy = p->interB = p->interGOP = false;
     }
-#endif
-#if OFX_FFMPEG_DNXHD
     // DNxHD is profile-based, we don't need the bitrate parameters
     if ( codecDesc && (codecDesc->id == AV_CODEC_ID_DNXHD) ) {
         lossy = p->interB = p->interGOP = false;
     }
-#endif
     /* && codec->id != AV_CODEC_ID_PRORES*/
 
     if (!lossy) {
@@ -2752,9 +2673,7 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
     int codec = _codec->getValue();
     const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
     int dnxhdCodecProfile_i = 0;
-#if OFX_FFMPEG_DNXHD
     _dnxhdCodecProfile->getValue(dnxhdCodecProfile_i);
-#endif
     //Write the NCLC atom in the case the underlying storage is YUV.
     if ( IsYUVFromShortName(codecsShortNames[codec].c_str(), dnxhdCodecProfile_i) ) {
         bool writeNCLC = _writeNCLC->getValue();
@@ -2931,17 +2850,14 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
     //} else
     avCodecContext->field_order = AV_FIELD_PROGRESSIVE;
 
-#if OFX_FFMPEG_DNXHD
     // the following was moved here from openCodec()
     if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
         DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)dnxhdCodecProfile_i;
         int srcWidth = avCodecContext->width;
         int srcHeight = avCodecContext->height;
         switch (dnxhdCodecProfile) {
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
         case eDNxHDCodecProfileHR444:
         case eDNxHDCodecProfileHRHQX:
-#endif
         case eDNxHDCodecProfileHRHQ:
         case eDNxHDCodecProfileHRSQ:
         case eDNxHDCodecProfileHRLB:
@@ -2979,7 +2895,6 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
         avCodecContext->bits_per_coded_sample = (hasAlpha) ? 32 : 24;
         int mbs = 0;
         switch (dnxhdCodecProfile) {
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
         case eDNxHDCodecProfileHR444:
             av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_444", 0);
             mbs = -1;
@@ -2988,7 +2903,6 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
             av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_hqx", 0);
             mbs = -1;
             break;
-#endif
         case eDNxHDCodecProfileHRHQ:
             av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_hq", 0);
             mbs = -1;
@@ -3136,7 +3050,6 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
         //if (rd->ffcodecdata.flags & FFMPEG_LOSSLESS_OUTPUT)
         //  av_opt_set(avCodecContext->priv_data, "mbd", "rd", 0);
     }
-#endif // DNxHD
 
     if (AV_CODEC_ID_HAP == avCodecContext->codec_id) {
         HapFormatEnum hapFormat = (HapFormatEnum)_hapFormat->getValue();
@@ -3266,13 +3179,10 @@ WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
     AVCodec* avCodec = NULL;
 
     // Find the encoder.
-#if OFX_FFMPEG_PRORES
     if (avCodecId == AV_CODEC_ID_PRORES) {
         // use prores_ks instead of prores
         avCodec = avcodec_find_encoder_by_name(kProresCodec);
-    } else
-#endif
-    {
+    } else {
         avCodec = avcodec_find_encoder(avCodecId);
     }
     if (!avCodec) {
@@ -3361,14 +3271,12 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
     }
 
     // see ffmpeg.c:3042 from ffmpeg 3.2.2
-#if (LIBAVFORMAT_VERSION_INT) >= (AV_VERSION_INT(57, 41, 100 ) ) // appeared with ffmpeg 3.1.1
     int ret = avcodec_parameters_from_context(avStream->codecpar, avCodecContext);
     if (ret < 0) {
         setPersistentMessage( Message::eMessageError, "", string("Error initializing the output stream codec context.") );
 
         return -5;
     }
-#endif
 
     return 0;
 }
@@ -3940,17 +3848,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     }
 
     if (!_formatContext) {
-#     if defined(FFMS_USE_FFMPEG_COMPAT) && LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(54, 0, 0)
         avformat_alloc_output_context2( &_formatContext, avOutputFormat, NULL, filename.c_str() );
-#     else
-#       ifdef FFMS_USE_FFMPEG_COMPAT
-        _formatContext = avformat_alloc_output_context( NULL, avOutputFormat, filename.c_str() );
-#       else
-        _formatContext = avformat_alloc_context();
-        assert(_formatContext);
-        _formatContext->oformat = fmt;
-#       endif
-#     endif
     }
 
     //snprintf(_formatContext->filename, sizeof(_formatContext->filename), "%s", filename.c_str());
@@ -4112,15 +4010,9 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         AVCodecContext* avCodecContext = _streamVideo->codec;
         avCodecContext->pix_fmt = targetPixelFormat;
 
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(51, 63, 100) // https://ffmpeg.org/pipermail/ffmpeg-cvslog/2015-October/094884.html
         std::size_t picSize = av_image_get_buffer_size(targetPixelFormat,
                                                        max(avCodecContext->width, rodPixel.x2 - rodPixel.x1),
                                                        max(avCodecContext->height, rodPixel.y2 - rodPixel.y1), 1);
-#else
-        std::size_t picSize = (std::size_t)avpicture_get_size(targetPixelFormat,
-                                                              max(avCodecContext->width, rodPixel.x2 - rodPixel.x1),
-                                                              max(avCodecContext->height, rodPixel.y2 - rodPixel.y1));
-#endif
         if (_scratchBufferSize < picSize) {
             delete [] _scratchBuffer;
             _scratchBuffer = new uint8_t[picSize];
@@ -4152,9 +4044,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
              !strcmp(_formatContext->oformat->name, "mp4") ||
              !strcmp(_formatContext->oformat->name, "mov") ||
              !strcmp(_formatContext->oformat->name, "3gp") ) {
-            avCodecContext->flags |= CODEC_FLAG_GLOBAL_HEADER;
+            avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         }
-#if OFX_FFMPEG_PRORES
         if (codecId == AV_CODEC_ID_PRORES) {
             int index = _codec->getValue();
             const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
@@ -4166,7 +4057,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             // ref: https://ffmpeg.org/ffmpeg-all.html#toc-Private-Options-for-prores_002dks
             av_opt_set(avCodecContext->priv_data, "vendor", "apl0", 0);
         }
-#endif
         // The default vendor ID is "FFMP" (FFmpeg), and it is hardcoded (see mov_write_video_tag in libavformat/movenc.c)
         // Some tools may check that QuickTime movies were made by Apple ("appl", as seen in exiftool source).
         // Maybe one day a future version of movenc.c will use it rather than the hardcoded FFMP.
@@ -4271,7 +4161,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // - https://lists.ffmpeg.org/pipermail/ffmpeg-user/2015-May/026742.html
     // - https://forum.blackmagicdesign.com/viewtopic.php?f=21&t=51457#p355458
     const char* encoder = NULL;
-#if OFX_FFMPEG_PRORES
     if (codecId == AV_CODEC_ID_PRORES) {
         int index = _codec->getValue();
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
@@ -4297,12 +4186,9 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             break;
         }
     }
-#endif
-#if OFX_FFMPEG_DNXHD
     if (AV_CODEC_ID_DNXHD == videoCodec->id) {
         DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)_dnxhdCodecProfile->getValue();
         switch (dnxhdCodecProfile) {
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
         case eDNxHDCodecProfileHR444:
             // http://users.mur.at/ms/attachments/dnxhr-444.mov
             encoder = "DNxHR 444";
@@ -4311,7 +4197,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             // http://users.mur.at/ms/attachments/dnxhr-hqx.mov
             encoder = "DNxHR HQX";
             break;
-#endif
         case eDNxHDCodecProfileHRHQ:
             encoder = "DNxHR HQ";
             break;
@@ -4330,7 +4215,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             break;
         }
     }
-#endif // OFX_FFMPEG_DNXHD
     if (AV_CODEC_ID_CINEPAK == videoCodec->id) {
         encoder = "Cinepak";
     }
@@ -4636,7 +4520,6 @@ WriteFFmpegPlugin::updateVisibility()
     //We use the bitrate to set the min range for bitrate tolerance.
     updateBitrateToleranceRange();
 
-#if OFX_FFMPEG_DNXHD
     // Only enable the DNxHD codec profile knob if the Avid
     // DNxHD codec has been selected.
     // Only enable the video range knob if the Avid DNxHD codec
@@ -4644,7 +4527,6 @@ WriteFFmpegPlugin::updateVisibility()
     bool isdnxhd = ( !strcmp(codecShortName.c_str(), "dnxhd") );
     _dnxhdCodecProfile->setIsSecretAndDisabled(!isdnxhd);
     _encodeVideoRange->setIsSecretAndDisabled(!isdnxhd);
-#endif
 
     bool ishap = ( !strcmp(codecShortName.c_str(), "hap") );
     _hapFormat->setIsSecretAndDisabled(!ishap);
@@ -5057,11 +4939,7 @@ static string
 ffmpeg_versions()
 {
     std::ostringstream oss;
-#ifdef FFMS_USE_FFMPEG_COMPAT
     oss << "FFmpeg ";
-#else
-    oss << "libav";
-#endif
     oss << " versions (compiled with / running with):" << std::endl;
     oss << "libavformat ";
     oss << LIBAVFORMAT_VERSION_MAJOR << '.' << LIBAVFORMAT_VERSION_MINOR << '.' << LIBAVFORMAT_VERSION_MICRO << " / ";
@@ -5725,18 +5603,15 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
 
-#if OFX_FFMPEG_DNXHD
     {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamDNxHDCodecProfile);
         param->setLabel(kParamDNxHDCodecProfileLabel);
         param->setHint(kParamDNxHDCodecProfileHint);
         // DNxHR
-#if OFX_FFMPEG_DNXHD_SUPPORTS_DNXHR_444
         assert(param->getNOptions() == (int)eDNxHDCodecProfileHR444);
         param->appendOption(kParamDNxHDCodecProfileOptionHR444);
         assert(param->getNOptions() == (int)eDNxHDCodecProfileHRHQX);
         param->appendOption(kParamDNxHDCodecProfileOptionHRHQX);
-#endif
         assert(param->getNOptions() == (int)eDNxHDCodecProfileHRHQ);
         param->appendOption(kParamDNxHDCodecProfileOptionHRHQ);
         assert(param->getNOptions() == (int)eDNxHDCodecProfileHRSQ);
@@ -5761,7 +5636,6 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
             page->addChild(*param);
         }
     }
-#endif
 
     {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamHapFormat);
@@ -5841,7 +5715,6 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
             page->addChild(*group);
         }
 
-#if OFX_FFMPEG_DNXHD
         {
             ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamDNxHDEncodeVideoRange);
             param->setLabel(kParamDNxHDEncodeVideoRangeLabel);
@@ -5855,7 +5728,6 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 page->addChild(*param);
             }
         }
-#endif
 
         {
             ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamCRF);
@@ -5987,12 +5859,10 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
 
         ////////////B Frames
         {
+            // @deprecated there is no libavcodec-wide limit on the number of B-frames
+            // left for backward compatibility.
             IntParamDescriptor* param = desc.defineIntParam(kParamBFrames);
-            param->setLabel(kParamBFramesLabel);
-            param->setHint(kParamBFramesHint);
-            param->setRange(-1, FF_MAX_B_FRAMES);
-            param->setDefault(-1); // default is -1, see x264_defaults in libavcodec/libx264.c
-            param->setAnimates(false);
+            param->setIsSecretAndDisabled(true);
             param->setParent(*group);
             if (page) {
                 page->addChild(*param);
