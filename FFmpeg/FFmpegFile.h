@@ -50,7 +50,6 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
 }
-#include "FFmpegCompat.h"
 
 #include "ofxsMultiThread.h"
 #ifndef OFX_USE_MULTITHREAD_MUTEX
@@ -119,6 +118,7 @@ private:
         AVCodecContext* _codecContext; // video codec context
         AVCodec* _videoCodec;
         AVFrame* _avFrame;             // decoding frame
+        AVFrame* _avIntermediateFrame; // decode into this if an image conversion is required
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
 
@@ -155,11 +155,12 @@ private:
 
         Stream()
             : _idx(0)
-            , _avstream(NULL)
-            , _codecContext(NULL)
-            , _videoCodec(NULL)
-            , _avFrame(NULL)
-            , _convertCtx(NULL)
+            , _avstream(nullptr)
+            , _codecContext(nullptr)
+            , _videoCodec(nullptr)
+            , _avFrame(nullptr)
+            , _avIntermediateFrame(nullptr)
+            , _convertCtx(nullptr)
             , _resetConvertCtx(true)
             , _fpsNum(1)
             , _fpsDen(1)
@@ -282,7 +283,7 @@ private:
         // I needed to add the thread_count onto the codec delay - pickles
         int getCodecDelay() const
         {
-            return ( ( (_videoCodec->capabilities & CODEC_CAP_DELAY) ? _codecContext->delay : 0 )
+            return ( ( (_videoCodec->capabilities & AV_CODEC_CAP_DELAY) ? _codecContext->delay : 0 )
                      + _codecContext->has_b_frames
                      + _codecContext->thread_count );
         }
@@ -304,7 +305,7 @@ private:
     public:
         void InitPacket()
         {
-            data = NULL;
+            data = nullptr;
             size = 0;
 
             av_init_packet(this);
@@ -514,7 +515,7 @@ public:
     }
 
     // decode a single frame into the buffer. Thread safe
-    bool decode(const OFX::ImageEffect* plugin, int frame, bool loadNearest, int maxRetries, unsigned char* buffer);
+    bool decode(const OFX::ImageEffect* plugin, int frame, bool loadNearest, unsigned char* buffer);
 
     // get stream information
     bool getFPS(double& fps,
@@ -539,6 +540,14 @@ public:
     //! Check whether a certain codec name is Whitelisted
     static bool isCodecWhitelistedForReading(const char* name);
     static bool isCodecWhitelistedForWriting(const char* name);
+
+private:
+
+  bool seekToFrame(int64_t frame, int seekFlags);
+
+  bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame);
+
+  bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
 };
 
 

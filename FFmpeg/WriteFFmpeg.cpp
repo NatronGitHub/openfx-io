@@ -356,11 +356,6 @@ enum X26xSpeedEnum {
     "Option -g in ffmpeg."
 
 #define kParamBFrames "bFrames"
-#define kParamBFramesLabel "Max B-Frames"
-#define kParamBFramesHint \
-    "Set max number of B frames between non-B-frames. Must be an integer between -1 and 16. 0 means that B-frames are disabled. If a value of -1 is used, it will choose an automatic value depending on the encoder. Influences file size and seekability. Only supported by certain codecs.\n" \
-    "-1 means to use the codec default if Keyframe Interval is not 1, or 0 if Keyframe Interval is 1 to ensure only intra (I) frames are produced, producing a video which is easier to scrub frame-by-frame.\n" \
-    "Option -bf in ffmpeg."
 
 #define kParamWriteNCLC "writeNCLC"
 #define kParamWriteNCLCLabel "Write NCLC"
@@ -5760,6 +5755,8 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
 
         ////////////B Frames
         {
+            // @deprecated there is no libavcodec-wide limit on the number of B-frames
+            // left for backward compatibility.
             IntParamDescriptor* param = desc.defineIntParam(kParamBFrames);
             param->setLabel(kParamBFramesLabel);
             param->setHint(kParamBFramesHint);
