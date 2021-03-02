@@ -1265,7 +1265,10 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) ||
         (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) ||
         (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_PNG)) {
+        (stream->_codecContext->codec_id == AV_CODEC_ID_PNG) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_DPX) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_TARGA) ||
+        (stream->_codecContext->codec_id == AV_CODEC_ID_TIFF)) {
         isIntraOnly = true;
     }
 
@@ -1370,12 +1373,21 @@ bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
     int frameDecoded          = 0;
     AVFrame* avFrameDecodeDst = stream->_avIntermediateFrame;
 
-    auto foundCorrectFrame = [stream](AVFrame* decodedFrame, int64_t targetFrameIdx) -> bool {
+    auto foundCorrectFrame = [this,stream](AVFrame* decodedFrame, int64_t targetFrameIdx) -> bool {
         bool found = false;
 
         // Fallback to using the DTS from the AVPacket that triggered returning this frame if no PTS is found
+        // Original code, which doesn't work (AVI/m1v):
+        // if (decodedFrame->pts == AV_NOPTS_VALUE) {
+        //     decodedFrame->pts = decodedFrame->pkt_dts;
+        // }
+        decodedFrame->pts = decodedFrame->best_effort_timestamp;
         if (decodedFrame->pts == AV_NOPTS_VALUE) {
-            decodedFrame->pts = decodedFrame->pkt_dts;
+            // A given framme cannot be read from a video with no timestamps.
+            // H.264 elementary packets have no timestamp.
+            // See https://libav-user.ffmpeg.narkive.com/HhouRdWQ/pts-from-best-effort-timestamp
+            setInternalError(-1, "FFmpeg Reader Video frames have no timestamp: ");
+            return false;
         }
 
         int64_t decodedFrameIdx = stream->ptsToFrame(decodedFrame->pts);
