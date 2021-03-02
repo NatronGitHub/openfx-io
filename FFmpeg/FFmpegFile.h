@@ -293,7 +293,6 @@ private:
     {
     public:
         MyAVPacket()
-        : wasPacketDecoded(false)
         {
             InitPacket();
         }
@@ -312,19 +311,14 @@ private:
         }
         void FreePacket()
         {
-            wasPacketDecoded = false;
-
             av_packet_unref(this); //av_free_packet(this);
         }
-
-        bool wasPacketDecoded;
     };
 
     std::string _filename;
 
     // AV structure
     AVFormatContext* _context;
-    AVInputFormat*   _format;
 
     // store all video streams available in the file
     std::vector<Stream*> _streams;

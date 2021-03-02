@@ -753,7 +753,6 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
 FFmpegFile::FFmpegFile(const string & filename)
     : _filename(filename)
     , _context(nullptr)
-    , _format(nullptr)
     , _streams()
     , _selectedStream(nullptr)
     , _errorMsg()
@@ -777,7 +776,7 @@ FFmpegFile::FFmpegFile(const string & filename)
     // enabling drefs to allow reading from external tracks
     // this enables quicktime reference files demuxing
     av_dict_set(&demuxerOptions, "enable_drefs", "1", 0);
-    CHECK( avformat_open_input(&_context, _filename.c_str(), _format, &demuxerOptions) );
+    CHECK( avformat_open_input(&_context, _filename.c_str(), nullptr, &demuxerOptions) );
     if (demuxerOptions != nullptr) {
         // demuxerOptions is destroyed and replaced, on avformat_open_input return,
         // with a dict containing the options that were not found
@@ -802,7 +801,7 @@ FFmpegFile::FFmpegFile(const string & filename)
 #endif
 
     // fill the array with all available video streams
-    bool unsuported_codec = false;
+    bool unsupported_codec = false;
 
     // find all streams that the library is able to decode
     for (unsigned i = 0; i < _context->nb_streams; ++i) {
@@ -855,10 +854,22 @@ FFmpegFile::FFmpegFile(const string & filename)
         // skip codecs not in the white list
         //string reason;
         if ( !isCodecWhitelistedForReading(videoCodec->name) ) {
-# if TRACE_FILE_OPEN
+#         if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" disallowed, skipping..." << std::endl;
-# endif
-            unsuported_codec = true;
+#         endif
+            unsupported_codec = true;
+            continue;
+        }
+        // Some format/codec combinations, even if readable, do not have timestamps.
+        // See also codecCompatible() in WriteFFmpeg.cpp which contains a similar check.
+        if ((std::string(_context->iformat->name) == "avi") &&
+            (codecCtx->codec_id == AV_CODEC_ID_H264 ||
+             codecCtx->codec_id == AV_CODEC_ID_MPEG1VIDEO ||
+             codecCtx->codec_id == AV_CODEC_ID_MPEG2VIDEO) ) {
+#         if TRACE_FILE_OPEN
+            std::cout << "Decoder \"" << videoCodec->name << "\" in format \"" << _format->name << "\" disallowed because it lacks timestamps, skipping..." << std::endl;
+#         endif
+            unsupported_codec = true;
             continue;
         }
 
@@ -1017,7 +1028,7 @@ FFmpegFile::FFmpegFile(const string & filename)
         _streams.push_back(stream);
     }
     if ( _streams.empty() ) {
-        setError( unsuported_codec ? "unsupported codec..." : "unable to find video stream" );
+        setError( unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream" );
         _selectedStream = nullptr;
     } else {
 #pragma message WARN("should we build a separate FFmpegfile for each view? see also FFmpegFileManager")
@@ -1358,7 +1369,30 @@ static int
 mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
                 int *got_frame, const AVPacket &pkt)
 {
-    return avcodec_decode_video2(avctx, frame, got_frame, &pkt);
+#if 1
+    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+        return avcodec_decode_video2(avctx, frame, got_frame, &pkt);
+    } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+        return avcodec_decode_audio4(avctx, frame, got_frame, &pkt);
+    }
+#else
+    AVPacket pkt_ = pkt;
+    int ret;
+    do {
+        if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+            ret = avcodec_decode_video2(avctx, frame, got_frame, &pkt_);
+        } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ret =  avcodec_decode_audio4(avctx, frame, got_frame, &pkt_);
+        }
+        if (ret < 0) {
+            break;
+        }
+        pkt_.data += ret;
+        pkt_.size -= ret;
+    } while (pkt_.size > 0);
+
+    return ret;
+#endif
 }
 
 bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
