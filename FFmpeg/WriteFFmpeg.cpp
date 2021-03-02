@@ -558,6 +558,13 @@ codecCompatible(const AVOutputFormat *ofmt,
 {
     string fmt = string(ofmt->name);
 
+    // Explicitly deny format/codec combinations that don't produce timestamps.
+    // See also FFmpegFile::FFmpegFile() which contains a similar check.
+    if ( (fmt == "avi" && (codec_id == AV_CODEC_ID_MPEG1VIDEO ||
+                           codec_id == AV_CODEC_ID_MPEG2VIDEO ||
+                           codec_id == AV_CODEC_ID_H264) ) ) {
+        return false;
+    }
     return ( avformat_query_codec(ofmt, codec_id, FF_COMPLIANCE_NORMAL) == 1 ||
              ( fmt == "mxf" && (codec_id == AV_CODEC_ID_MPEG2VIDEO ||
                                 codec_id == AV_CODEC_ID_DNXHD ||
@@ -3162,7 +3169,13 @@ mov64_av_encode(AVCodecContext *avctx,
                 const AVFrame *frame,
                 int *got_packet_ptr)
 {
-    return avcodec_encode_video2(avctx, avpkt, frame, got_packet_ptr);
+    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+        return avcodec_encode_video2(avctx, avpkt, frame, got_packet_ptr);
+    } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+        return avcodec_encode_audio2(avctx, avpkt, frame, got_packet_ptr);
+    }
+
+    return -1;
 }
 
 #if OFX_FFMPEG_AUDIO
