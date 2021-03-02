@@ -4121,6 +4121,9 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     if (AV_CODEC_ID_PNG == videoCodec->id) {
         encoder = "PNG";
     }
+    if (AV_CODEC_ID_DPX == videoCodec->id) {
+        encoder = "DPX";
+    }
     if (AV_CODEC_ID_TARGA == videoCodec->id) {
         encoder = "TGA";
     }
