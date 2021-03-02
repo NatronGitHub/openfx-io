@@ -1358,7 +1358,7 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
 
     case eGetFileNameReturnedFullRes:
     case eGetFileNameReturnedProxy:
-        clearPersistentMessage();
+        // clearPersistentMessage();
         break;
     }
 
