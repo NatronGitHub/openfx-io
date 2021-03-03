@@ -1062,7 +1062,36 @@ pixelFormatBitDepth(const AVPixelFormat pixelFormat)
         case AV_PIX_FMT_GBRAP10LE:  ///< planar GBR 4:4:4:4 40bpp, little-endian
             return 10;
             break;
-
+        case AV_PIX_FMT_GRAY12BE:   ///<        Y        , 12bpp, big-endian
+            return 12;
+            break;
+        case AV_PIX_FMT_GRAY12LE:   ///<        Y        , 12bpp, little-endian
+            return 12;
+            break;
+        case AV_PIX_FMT_GRAY10BE:   ///<        Y        , 10bpp, big-endian
+            return 10;
+            break;
+        case AV_PIX_FMT_GRAY10LE:   ///<        Y        , 10bpp, little-endian
+            return 10;
+            break;
+        case AV_PIX_FMT_GRAY9BE:   ///<        Y        , 9bpp, big-endian
+            return 9;
+            break;
+        case AV_PIX_FMT_GRAY9LE:   ///<        Y        , 9bpp, little-endian
+            return 9;
+            break;
+        case AV_PIX_FMT_GBRPF32BE:  ///< IEEE-754 single precision planar GBR 4:4:4,     96bpp, big-endian
+            return 32;
+            break;
+        case AV_PIX_FMT_GBRPF32LE:  ///< IEEE-754 single precision planar GBR 4:4:4,     96bpp, little-endian
+            return 32;
+            break;
+        case AV_PIX_FMT_GBRAPF32BE: ///< IEEE-754 single precision planar GBRA 4:4:4:4, 128bpp, big-endian
+            return 32;
+            break;
+        case AV_PIX_FMT_GBRAPF32LE: ///< IEEE-754 single precision planar GBRA 4:4:4:4, 128bpp, little-endian
+            return 32;
+            break;
         default:
 #if OFX_FFMPEG_PRINT_CODECS
             std::cout << "** Format " << av_get_pix_fmt_name(pixelFormat) << "not handled" << std::endl;
@@ -1574,6 +1603,36 @@ pixelFormatCoding(const AVPixelFormat pixelFormat)
             return ePixelCodingRGB;
             break;
         case AV_PIX_FMT_GBRAP10LE:  ///< planar GBR 4:4:4:4 40bpp, little-endian
+            return ePixelCodingRGB;
+            break;
+        case AV_PIX_FMT_GRAY12BE:   ///<        Y        , 12bpp, big-endian
+            return ePixelCodingGray;
+            break;
+        case AV_PIX_FMT_GRAY12LE:   ///<        Y        , 12bpp, little-endian
+            return ePixelCodingGray;
+            break;
+        case AV_PIX_FMT_GRAY10BE:   ///<        Y        , 10bpp, big-endian
+            return ePixelCodingGray;
+            break;
+        case AV_PIX_FMT_GRAY10LE:   ///<        Y        , 10bpp, little-endian
+            return ePixelCodingGray;
+            break;
+        case AV_PIX_FMT_GRAY9BE:   ///<        Y        , 9bpp, big-endian
+            return ePixelCodingGray;
+            break;
+        case AV_PIX_FMT_GRAY9LE:   ///<        Y        , 9bpp, little-endian
+            return ePixelCodingGray;
+            break;
+        case AV_PIX_FMT_GBRPF32BE:  ///< IEEE-754 single precision planar GBR 4:4:4,     96bpp, big-endian
+            return ePixelCodingRGB;
+            break;
+        case AV_PIX_FMT_GBRPF32LE:  ///< IEEE-754 single precision planar GBR 4:4:4,     96bpp, little-endian
+            return ePixelCodingRGB;
+            break;
+        case AV_PIX_FMT_GBRAPF32BE: ///< IEEE-754 single precision planar GBRA 4:4:4:4, 128bpp, big-endian
+            return ePixelCodingRGB;
+            break;
+        case AV_PIX_FMT_GBRAPF32LE: ///< IEEE-754 single precision planar GBRA 4:4:4:4, 128bpp, little-endian
             return ePixelCodingRGB;
             break;
 

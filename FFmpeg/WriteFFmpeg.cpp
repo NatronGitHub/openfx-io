@@ -590,8 +590,11 @@ CreateCodecKnobLabelsMap()
     // Video codecs.
     m["avrp"]          = "AVrp\tAvid 1:1 10-bit RGB Packer";
     m["ayuv"]          = "AYUV\tUncompressed packed MS 4:4:4:4";
+    m["cfhd"]          = "CFHD\GoPro Cineform HD";
     m["cinepak"]       = "cvid\tCinepak"; // disabled in whitelist (bad quality)
     m["dnxhd"]         = "AVdn\tAvid DNxHD / DNxHR / SMPTE VC-3";
+    m["dpx"]           = "dpx \tDPX (Digital Picture Exchange) image";
+    m["exr"]           = "exr \tEXR image";
     m["ffv1"]          = "FFV1\tFFmpeg video codec #1";
     m["ffvhuff"]       = "FFVH\tHuffyuv FFmpeg variant";
     m["flv"]           = "FLV1\tFLV / Sorenson Spark / Sorenson H.263 (Flash Video)";
@@ -601,6 +604,7 @@ CreateCodecKnobLabelsMap()
     m["huffyuv"]       = "HFYU\tHuffYUV";
     m["jpeg2000"]      = "mjp2\tJPEG 2000"; // disabled in whitelist (bad quality)
     m["jpegls"]        = "MJLS\tJPEG-LS"; // disabled in whitelist
+    m["libaom-av1"]    = "AV1\tlibaom AV1 encoder";
     m["libopenh264"]   = "H264\tCisco libopenh264 H.264/MPEG-4 AVC encoder";
     m["libopenjpeg"]   = "mjp2\tOpenJPEG JPEG 2000";
     m["libschroedinger"] = "drac\tSMPTE VC-2 (previously BBC Dirac Pro)";

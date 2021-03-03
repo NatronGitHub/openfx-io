@@ -188,14 +188,17 @@ const FilterEntry kCodecWhitelist[] =
 {
     // Video codecs.
     { "aic",            true,  false },     // Apple Intermediate Codec (no encoder)
+    { "av1",            true,  false },    // Alliance for Open Media AV1 (encoder: libaom-av1)
     { "avrp",           true,  UNSAFEQT0 && UNSAFEVLC },     // Avid 1:1 10-bit RGB Packer - write not supported as not official qt readable with relevant 3rd party codec.
     { "avui",           true,  false },     // Avid Meridien Uncompressed - write not supported as this is an SD only codec. Only 720x486 and 720x576 are supported. experimental in ffmpeg 2.6.1.
     { "ayuv",           true,  UNSAFEQT0 && UNSAFEVLC },     // Uncompressed packed MS 4:4:4:4 - write not supported as not official qt readable.
-    { "cfhd",           true,  false },     // Cineform HD.
+    { "cfhd",           true,  true },     // GoPro Cineform HD.
     { "cinepak",        true,  true },     // Cinepak.
+    { "cllc",           true,  false },    // Canopus Lossless Codec
     { "dnxhd",          true,  true },     // VC3/DNxHD
     { "dpx",            true,  true },     // DPX (Digital Picture Exchange) image
     { "dxv",            true,  false },     // Resolume DXV
+    { "exr",            true,  true },     // EXR image
     { "ffv1",           true,  UNSAFEQT0 && UNSAFEVLC },     // FFmpeg video codec #1 - write not supported as not official qt readable.
     { "ffvhuff",        true,  UNSAFEQT0 && UNSAFEVLC },     // Huffyuv FFmpeg variant - write not supported as not official qt readable.
     { "flv",            true,  UNSAFEQT0 },     // FLV / Sorenson Spark / Sorenson H.263 (Flash Video) - write not supported as not official qt readable.
@@ -204,9 +207,13 @@ const FilterEntry kCodecWhitelist[] =
     { "h264",           true,  false },     // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (the encoder is libx264)
     { "hap",            true,  true },     // Vidvox Hap
     { "hevc",           true,  false },     // H.265 / HEVC (High Efficiency Video Coding) (the encoder is libx265)
+    { "hq_hqa",         true,  false },    // Canopus HQ/HQA
+    { "hqx",            true,  false },    // Canopus HQX
     { "huffyuv",        true,  UNSAFEQT0 && UNSAFEVLC },     // HuffYUV - write not supported as not official qt readable.
     { "jpeg2000",       true,  UNSAFEQT0 },     // JPEG 2000 - write not supported as not official qt readable.
     { "jpegls",         true,  UNSAFEQT0 },     // JPEG-LS - write not supported as can't be read in in official qt.
+    { "libaom-av1",     true,  true },     // Alliance for Open Media AV1 encoder
+    { "libdav1d",       true,  false },    // Alliance for Open Media AV1 (encoder: libaom-av1)
     { "libopenh264",    true,  true },     // Cisco libopenh264 H.264/MPEG-4 AVC encoder
     { "libopenjpeg",    true,  true },     // OpenJPEG JPEG 2000
     { "libschroedinger", true,  UNSAFEQT0 && UNSAFEVLC },     // libschroedinger Dirac - write untested. VLC plays with a wrong format
@@ -1375,6 +1382,8 @@ mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
     } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
         return avcodec_decode_audio4(avctx, frame, got_frame, &pkt);
     }
+
+    return -1;
 #else
     AVPacket pkt_ = pkt;
     int ret;
