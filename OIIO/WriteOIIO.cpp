@@ -646,18 +646,22 @@ getDefaultBitDepth(const string& filepath,
     if (bitDepth != eTuttlePluginBitDepthAuto) {
         return bitDepth;
     }
-    string format = Filesystem::extension (filepath);
-    if ( (format.find("exr") != string::npos) ) {
+    string format = Strutil::lower( Filesystem::extension(filepath) );
+    if ( (format == ".exr") ) {
         return eTuttlePluginBitDepth16f; // 16f is the most commonly used bit depth in the EXR world
-    } else if ( (format.find("hdr") != string::npos) || (format.find("rgbe") != string::npos) ) {
+    } else if ( (format == ".hdr") || (format == ".rgbe") || (format == ".pfm") ) {
         return eTuttlePluginBitDepth32f;
-    } else if ( (format.find("jpg") != string::npos) || (format.find("jpeg") != string::npos) ||
-                ( format.find("bmp") != string::npos) || ( format.find("dds") != string::npos) ||
-                ( format.find("ico") != string::npos) || ( format.find("jfi") != string::npos) ||
-                ( format.find("pgm") != string::npos) || ( format.find("pnm") != string::npos) ||
-                ( format.find("ppm") != string::npos) || ( format.find("pbm") != string::npos) ||
-                ( format.find("pic") != string::npos) || ( format.find("tga") != string::npos) ||
-                ( format.find("png") != string::npos) ) {
+    } else if ( (format == ".jpg") || ( format == ".jpe") ||
+               ( format == ".jpeg") || ( format == ".jif") ||
+               ( format == ".jfif") || ( format == ".jfi") ||
+               ( format == ".bmp") ||
+               ( format == ".dds") ||
+               ( format == ".ico") ||
+               ( format == ".pgm") || ( format == ".pnm") ||
+               ( format == ".ppm") || ( format == ".pbm") ||
+               ( format == ".pic") ||
+               ( format == ".tga") || ( format == ".tpic") ||
+               ( format == ".png") ) {
         return eTuttlePluginBitDepth8;
     } else {
         //cin, dpx, fits, heic, heif, j2k, j2c, jp2, jpe, sgi, tif, tiff, tpic, webp
