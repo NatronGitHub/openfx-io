@@ -647,7 +647,9 @@ getDefaultBitDepth(const string& filepath,
         return bitDepth;
     }
     string format = Filesystem::extension (filepath);
-    if ( (format.find("exr") != string::npos) || (format.find("hdr") != string::npos) || (format.find("rgbe") != string::npos) ) {
+    if ( (format.find("exr") != string::npos) ) {
+        return eTuttlePluginBitDepth16f; // 16f is the most commonly used bit depth in the EXR world
+    } else if ( (format.find("hdr") != string::npos) || (format.find("rgbe") != string::npos) ) {
         return eTuttlePluginBitDepth32f;
     } else if ( (format.find("jpg") != string::npos) || (format.find("jpeg") != string::npos) ||
                 ( format.find("bmp") != string::npos) || ( format.find("dds") != string::npos) ||
@@ -1168,12 +1170,17 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
             }
         }
 
-        partSpec.attribute("multiView", tv, &ustrvec[0]);
+        if (viewsToRender.size() > 1) {
+            partSpec.attribute("multiView", tv, &ustrvec[0]);
+        }
         vector<string>  channels;
 
         for (map<int, string>::const_iterator view = viewsToRender.begin(); view != viewsToRender.end(); ++view) {
             for (std::list<string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-
+                bool isColor = ( (*it == kFnOfxImagePlaneColour) ||
+                                (*it == kOfxImageComponentRGB) ||
+                                (*it == kOfxImageComponentAlpha) ||
+                                (*it == kOfxImageComponentRGBA) );
                 string rawComponents;
                 if (*it == kFnOfxImagePlaneColour) {
                     rawComponents = _inputClip->getPixelComponentsProperty();
@@ -1185,7 +1192,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
 
                 std::vector<std::string> planeChannels = plane.getChannels();
-                if ( plane.getNumComponents() > 0 && *it != kFnOfxImagePlaneColour) {
+                if ( plane.getNumComponents() > 0 && !isColor) {
 
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
@@ -1231,23 +1238,29 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         int specIndex = 0;
         for (map<int, string>::const_iterator view = viewsToRender.begin(); view != viewsToRender.end(); ++view) {
             ImageSpec partSpec = spec;
-            partSpec.attribute("view", view->second);
+            if (viewsToRender.size() > 1) {
+                partSpec.attribute("view", view->second);
+            }
             vector<string>  channels;
 
             for (std::list<string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-
+                bool isColor = ( (*it == kFnOfxImagePlaneColour) ||
+                                (*it == kOfxImageComponentRGB) ||
+                                (*it == kOfxImageComponentAlpha) ||
+                                (*it == kOfxImageComponentRGBA) );
                 string rawComponents;
                 if (*it == kFnOfxImagePlaneColour) {
                     rawComponents = _inputClip->getPixelComponentsProperty();
                 } else {
                     rawComponents = *it;
                 }
+
                 MultiPlane::ImagePlaneDesc plane, pairedPlane;
                 MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
 
                 std::vector<std::string> planeChannels = plane.getChannels();
 
-                if ( plane.getNumComponents() > 0 && *it != kFnOfxImagePlaneColour) {
+                if ( plane.getNumComponents() > 0 && !isColor) {
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
                     }
@@ -1288,7 +1301,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         int specIndex = 0;
         for (map<int, string>::const_iterator view = viewsToRender.begin(); view != viewsToRender.end(); ++view) {
             for (std::list<string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-
+                bool isColor = ( (*it == kFnOfxImagePlaneColour) ||
+                                (*it == kOfxImageComponentRGB) ||
+                                (*it == kOfxImageComponentAlpha) ||
+                                (*it == kOfxImageComponentRGBA) );
                 string rawComponents;
                 if (*it == kFnOfxImagePlaneColour) {
                     rawComponents = _inputClip->getPixelComponentsProperty();
@@ -1303,7 +1319,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
 
                 ImageSpec partSpec = spec;
-                if ( plane.getNumComponents() > 0 && *it != kFnOfxImagePlaneColour) {
+                if ( plane.getNumComponents() > 0 && !isColor) {
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
                     }
@@ -1334,7 +1350,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
                 partSpec.nchannels = channels.size();
                 partSpec.channelnames = channels;
-                partSpec.attribute("view", view->second);
+                if (viewsToRender.size() > 1) {
+                    partSpec.attribute("view", view->second);
+                }
                 data->specs[specIndex] = partSpec;
 
                 ++specIndex;
