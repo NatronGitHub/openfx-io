@@ -1185,7 +1185,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
 
                 std::vector<std::string> planeChannels = plane.getChannels();
-                if ( plane.getNumComponents() > 0 ) {
+                if ( plane.getNumComponents() > 0 && *it != kFnOfxImagePlaneColour) {
 
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
@@ -1247,7 +1247,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
                 std::vector<std::string> planeChannels = plane.getChannels();
 
-                if ( plane.getNumComponents() > 0 ) {
+                if ( plane.getNumComponents() > 0 && *it != kFnOfxImagePlaneColour) {
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
                     }
@@ -1303,8 +1303,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
 
                 ImageSpec partSpec = spec;
-                for (std::size_t i = 0; i < planeChannels.size(); ++i) {
-                    planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
+                if ( plane.getNumComponents() > 0 && *it != kFnOfxImagePlaneColour) {
+                    for (std::size_t i = 0; i < planeChannels.size(); ++i) {
+                        planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
+                    }
                 }
 
 
