@@ -646,7 +646,8 @@ getDefaultBitDepth(const string& filepath,
     if (bitDepth != eTuttlePluginBitDepthAuto) {
         return bitDepth;
     }
-    string format = Strutil::lower( Filesystem::extension(filepath) );
+    string format = Filesystem::extension(filepath);
+    Strutil::to_lower(format);
     if ( (format == ".exr") ) {
         return eTuttlePluginBitDepth16f; // 16f is the most commonly used bit depth in the EXR world
     } else if ( (format == ".hdr") || (format == ".rgbe") || (format == ".pfm") ) {
