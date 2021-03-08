@@ -607,9 +607,15 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                    , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
 #             else
-                copyPixels(*this, renderWindowClipped, renderScale,
-                           srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                           tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                if (pluginExpectedPremult == eImageUnPreMultiplied) {
+                    // unpremult before colorspace conversion, only if the plugin expects unpremult data (eg WritePNG)
+                    unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                                       , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                } else {
+                    copyPixels(*this, renderWindowClipped, renderScale,
+                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                }
 #             endif
             }
 #         ifdef OFX_IO_USING_OCIO
