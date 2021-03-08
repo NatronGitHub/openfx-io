@@ -1219,16 +1219,14 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 }
             }
         }     //  for (std::size_t v = 0; v < viewsToRender.size(); ++v) {
-        if (channels.size() == 4) {
+        if ( channels.size() == 4 && (channels[3] == "A" || channels[3] =="alpha") ) {
             partSpec.alpha_channel = 3;
+        } else if ( channels.size() == 1 && (channels[0] == "A" || channels[0] =="alpha") ) {
+            // Alpha component only
+            partSpec.alpha_channel = 0;
         } else {
-            if (channels.size() == 1) {
-                ///Alpha component only
-                partSpec.alpha_channel = 0;
-            } else {
-                ///no alpha
-                partSpec.alpha_channel = -1;
-            }
+            // no alpha
+            partSpec.alpha_channel = -1;
         }
 
         partSpec.nchannels = channels.size();
@@ -1279,16 +1277,14 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                     }
                 }
             }
-            if (channels.size() == 4) {
+            if ( channels.size() == 4 && (channels[3] == "A" || channels[3] =="alpha") ) {
                 partSpec.alpha_channel = 3;
+            } else if ( channels.size() == 1 && (channels[0] == "A" || channels[0] =="alpha") ) {
+                // Alpha component only
+                partSpec.alpha_channel = 0;
             } else {
-                if (channels.size() == 1) {
-                    ///Alpha component only
-                    partSpec.alpha_channel = 0;
-                } else {
-                    ///no alpha
-                    partSpec.alpha_channel = -1;
-                }
+                // no alpha
+                partSpec.alpha_channel = -1;
             }
 
             partSpec.nchannels = channels.size();
@@ -1340,16 +1336,14 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                     }
                 }
 
-                if (channels.size() == 4) {
+                if ( channels.size() == 4 && (channels[3] == "A" || channels[3] =="alpha") ) {
                     partSpec.alpha_channel = 3;
+                } else if ( channels.size() == 1 && (channels[0] == "A" || channels[0] =="alpha") ) {
+                    // Alpha component only
+                    partSpec.alpha_channel = 0;
                 } else {
-                    if ( plane.getNumComponents() > 0 && ( channels.size() == 1) ) {
-                        ///Alpha component only
-                        partSpec.alpha_channel = 0;
-                    } else {
-                        ///no alpha
-                        partSpec.alpha_channel = -1;
-                    }
+                    // no alpha
+                    partSpec.alpha_channel = -1;
                 }
 
                 partSpec.nchannels = channels.size();
