@@ -124,8 +124,8 @@ enum FormatTypeEnum
 #define kParamInputPremultLabel "Input Premult"
 #define kParamInputPremultHint \
     "Input is considered to have this premultiplication state.\n" \
-    "If it is Premultiplied, red, green and blue channels are divided by the alpha channel " \
-    "before applying the colorspace conversion.\n" \
+    "Colorspace conversion is done on the input RGB data, even if it is premultiplied, " \
+    "and may thus give a wrong result if the input is premultiplied and the target colorspace is nonlinear.\n" \
     "This is set automatically from the input stream information, but can be adjusted if this information is wrong."
 #define kParamInputPremultOptionOpaqueHint "The image is opaque and so has no premultiplication state, as if the alpha component in all pixels were set to the white point.", "opaque"
 #define kParamInputPremultOptionPreMultipliedHint "The image is premultiplied by its alpha (also called \"associated alpha\").", "premult"
@@ -602,8 +602,15 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 }
             } else {
                 assert(userPremult == eImagePreMultiplied);
+                // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
+#             if OFX_IO_UNPREMULT_AROUND_OCIO
                 unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                    , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+#             else
+                copyPixels(*this, renderWindowClipped, renderScale,
+                           srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                           tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+#             endif
             }
 #         ifdef OFX_IO_USING_OCIO
             // do the color-space conversion
@@ -614,8 +621,13 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
             ///If needed, re-premult the image for the plugin to work correctly
             if ( (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA) ) {
+                // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
+#             if OFX_IO_UNPREMULT_AROUND_OCIO
                 premultPixelData(renderWindow, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount
                                  , bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+#             else
+                // Nothing do do (output is already in tmpPixelData)
+#             endif
             }
         } // if (isOCIOIdentity) {
 
