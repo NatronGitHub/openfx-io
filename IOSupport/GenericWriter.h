@@ -331,6 +331,7 @@ public:
                                   const bool doAnyPacking,
                                   const bool packingContiguous,
                                   const std::vector<int>& packingMapping,
+                                  const bool alphaOK,
                                   InputImagesHolder* srcImgsHolder,
                                   OfxRectI* bounds,
                                   OFX::ImageMemory** tmpMem,
@@ -358,6 +359,11 @@ public:
     virtual void clearAnyCache() {}
 
     void getOutputRoD(OfxTime time, int view, OfxRectD* rod, double* par);
+
+    /**
+     * @brief Does the given filename support alpha channel.
+     **/
+    virtual bool supportsAlpha(const std::string& filename) const = 0;
 
 protected:
 

@@ -289,6 +289,12 @@ private:
     virtual LayerViewsPartsEnum getPartsSplittingPreference() const OVERRIDE FINAL;
     virtual int getViewToRender() const OVERRIDE FINAL;
     virtual void onOutputFileChanged(const string& filename, bool setColorSpace) OVERRIDE FINAL;
+
+    /**
+     * @brief Does the given filename support alpha channel.
+     **/
+    virtual bool supportsAlpha(const std::string&) const OVERRIDE FINAL;
+
     virtual void encode(const string& filename,
                         const OfxTime time,
                         const string& viewName,
@@ -783,6 +789,18 @@ WriteOIIOPlugin::onOutputFileChanged(const string &filename,
 
     refreshParamsVisibility(filename);
 } // WriteOIIOPlugin::onOutputFileChanged
+
+
+/**
+ * @brief Does the given filename support alpha channel.
+ **/
+bool
+WriteOIIOPlugin::supportsAlpha(const std::string& filename) const
+{
+    auto output = ImageOutput::create(filename);
+
+    return kSupportsRGBA && output->supports("alpha");
+}
 
 void
 WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
