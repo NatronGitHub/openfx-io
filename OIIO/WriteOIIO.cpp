@@ -646,16 +646,23 @@ getDefaultBitDepth(const string& filepath,
     if (bitDepth != eTuttlePluginBitDepthAuto) {
         return bitDepth;
     }
-    string format = Filesystem::extension (filepath);
-    if ( (format.find("exr") != string::npos) || (format.find("hdr") != string::npos) || (format.find("rgbe") != string::npos) ) {
+    string format = Filesystem::extension(filepath);
+    Strutil::to_lower(format);
+    if ( (format == ".exr") ) {
+        return eTuttlePluginBitDepth16f; // 16f is the most commonly used bit depth in the EXR world
+    } else if ( (format == ".hdr") || (format == ".rgbe") || (format == ".pfm") ) {
         return eTuttlePluginBitDepth32f;
-    } else if ( (format.find("jpg") != string::npos) || (format.find("jpeg") != string::npos) ||
-                ( format.find("bmp") != string::npos) || ( format.find("dds") != string::npos) ||
-                ( format.find("ico") != string::npos) || ( format.find("jfi") != string::npos) ||
-                ( format.find("pgm") != string::npos) || ( format.find("pnm") != string::npos) ||
-                ( format.find("ppm") != string::npos) || ( format.find("pbm") != string::npos) ||
-                ( format.find("pic") != string::npos) || ( format.find("tga") != string::npos) ||
-                ( format.find("png") != string::npos) ) {
+    } else if ( (format == ".jpg") || ( format == ".jpe") ||
+               ( format == ".jpeg") || ( format == ".jif") ||
+               ( format == ".jfif") || ( format == ".jfi") ||
+               ( format == ".bmp") ||
+               ( format == ".dds") ||
+               ( format == ".ico") ||
+               ( format == ".pgm") || ( format == ".pnm") ||
+               ( format == ".ppm") || ( format == ".pbm") ||
+               ( format == ".pic") ||
+               ( format == ".tga") || ( format == ".tpic") ||
+               ( format == ".png") ) {
         return eTuttlePluginBitDepth8;
     } else {
         //cin, dpx, fits, heic, heif, j2k, j2c, jp2, jpe, sgi, tif, tiff, tpic, webp
@@ -1168,12 +1175,17 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
             }
         }
 
-        partSpec.attribute("multiView", tv, &ustrvec[0]);
+        if (viewsToRender.size() > 1) {
+            partSpec.attribute("multiView", tv, &ustrvec[0]);
+        }
         vector<string>  channels;
 
         for (map<int, string>::const_iterator view = viewsToRender.begin(); view != viewsToRender.end(); ++view) {
             for (std::list<string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-
+                bool isColor = ( (*it == kFnOfxImagePlaneColour) ||
+                                (*it == kOfxImageComponentRGB) ||
+                                (*it == kOfxImageComponentAlpha) ||
+                                (*it == kOfxImageComponentRGBA) );
                 string rawComponents;
                 if (*it == kFnOfxImagePlaneColour) {
                     rawComponents = _inputClip->getPixelComponentsProperty();
@@ -1185,7 +1197,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
 
                 std::vector<std::string> planeChannels = plane.getChannels();
-                if ( plane.getNumComponents() > 0 ) {
+                if ( plane.getNumComponents() > 0 && !isColor) {
 
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
@@ -1208,16 +1220,14 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 }
             }
         }     //  for (std::size_t v = 0; v < viewsToRender.size(); ++v) {
-        if (channels.size() == 4) {
+        if ( channels.size() == 4 && (channels[3] == "A" || channels[3] =="alpha") ) {
             partSpec.alpha_channel = 3;
+        } else if ( channels.size() == 1 && (channels[0] == "A" || channels[0] =="alpha") ) {
+            // Alpha component only
+            partSpec.alpha_channel = 0;
         } else {
-            if (channels.size() == 1) {
-                ///Alpha component only
-                partSpec.alpha_channel = 0;
-            } else {
-                ///no alpha
-                partSpec.alpha_channel = -1;
-            }
+            // no alpha
+            partSpec.alpha_channel = -1;
         }
 
         partSpec.nchannels = channels.size();
@@ -1231,23 +1241,29 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         int specIndex = 0;
         for (map<int, string>::const_iterator view = viewsToRender.begin(); view != viewsToRender.end(); ++view) {
             ImageSpec partSpec = spec;
-            partSpec.attribute("view", view->second);
+            if (viewsToRender.size() > 1) {
+                partSpec.attribute("view", view->second);
+            }
             vector<string>  channels;
 
             for (std::list<string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-
+                bool isColor = ( (*it == kFnOfxImagePlaneColour) ||
+                                (*it == kOfxImageComponentRGB) ||
+                                (*it == kOfxImageComponentAlpha) ||
+                                (*it == kOfxImageComponentRGBA) );
                 string rawComponents;
                 if (*it == kFnOfxImagePlaneColour) {
                     rawComponents = _inputClip->getPixelComponentsProperty();
                 } else {
                     rawComponents = *it;
                 }
+
                 MultiPlane::ImagePlaneDesc plane, pairedPlane;
                 MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
 
                 std::vector<std::string> planeChannels = plane.getChannels();
 
-                if ( plane.getNumComponents() > 0 ) {
+                if ( plane.getNumComponents() > 0 && !isColor) {
                     for (std::size_t i = 0; i < planeChannels.size(); ++i) {
                         planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
                     }
@@ -1262,16 +1278,14 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                     }
                 }
             }
-            if (channels.size() == 4) {
+            if ( channels.size() == 4 && (channels[3] == "A" || channels[3] =="alpha") ) {
                 partSpec.alpha_channel = 3;
+            } else if ( channels.size() == 1 && (channels[0] == "A" || channels[0] =="alpha") ) {
+                // Alpha component only
+                partSpec.alpha_channel = 0;
             } else {
-                if (channels.size() == 1) {
-                    ///Alpha component only
-                    partSpec.alpha_channel = 0;
-                } else {
-                    ///no alpha
-                    partSpec.alpha_channel = -1;
-                }
+                // no alpha
+                partSpec.alpha_channel = -1;
             }
 
             partSpec.nchannels = channels.size();
@@ -1288,7 +1302,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         int specIndex = 0;
         for (map<int, string>::const_iterator view = viewsToRender.begin(); view != viewsToRender.end(); ++view) {
             for (std::list<string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-
+                bool isColor = ( (*it == kFnOfxImagePlaneColour) ||
+                                (*it == kOfxImageComponentRGB) ||
+                                (*it == kOfxImageComponentAlpha) ||
+                                (*it == kOfxImageComponentRGBA) );
                 string rawComponents;
                 if (*it == kFnOfxImagePlaneColour) {
                     rawComponents = _inputClip->getPixelComponentsProperty();
@@ -1303,8 +1320,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
 
                 ImageSpec partSpec = spec;
-                for (std::size_t i = 0; i < planeChannels.size(); ++i) {
-                    planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
+                if ( plane.getNumComponents() > 0 && !isColor) {
+                    for (std::size_t i = 0; i < planeChannels.size(); ++i) {
+                        planeChannels[i] = plane.getPlaneLabel() + "." + planeChannels[i];
+                    }
                 }
 
 
@@ -1318,21 +1337,21 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                     }
                 }
 
-                if (channels.size() == 4) {
+                if ( channels.size() == 4 && (channels[3] == "A" || channels[3] =="alpha") ) {
                     partSpec.alpha_channel = 3;
+                } else if ( channels.size() == 1 && (channels[0] == "A" || channels[0] =="alpha") ) {
+                    // Alpha component only
+                    partSpec.alpha_channel = 0;
                 } else {
-                    if ( plane.getNumComponents() > 0 && ( channels.size() == 1) ) {
-                        ///Alpha component only
-                        partSpec.alpha_channel = 0;
-                    } else {
-                        ///no alpha
-                        partSpec.alpha_channel = -1;
-                    }
+                    // no alpha
+                    partSpec.alpha_channel = -1;
                 }
 
                 partSpec.nchannels = channels.size();
                 partSpec.channelnames = channels;
-                partSpec.attribute("view", view->second);
+                if (viewsToRender.size() > 1) {
+                    partSpec.attribute("view", view->second);
+                }
                 data->specs[specIndex] = partSpec;
 
                 ++specIndex;
