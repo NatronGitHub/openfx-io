@@ -78,7 +78,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 "video to a digital intermediate format, which is more suitable for grading, " \
 "compositing and video editing.\n" \
 "This can be done using the ffmpeg command-line tool, by following the " \
-"instructions at <https://trac.ffmpeg.org/wiki/Encode/VFX>.\n" \
+"instructions at (https://trac.ffmpeg.org/wiki/Encode/VFX).\n" \
 "Note that some format/codec combinations (eg AVI containing H264, MPEG-1 Video or MPEG-2 Video) do not support timestamps " \
 "and must be moved to another container (e.g., MOV)."
 
