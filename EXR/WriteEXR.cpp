@@ -151,6 +151,12 @@ private:
     virtual PreMultiplicationEnum getExpectedInputPremultiplication() const OVERRIDE FINAL { return eImagePreMultiplied; }
 
     virtual void onOutputFileChanged(const string& newFile, bool setColorSpace) OVERRIDE FINAL;
+
+    /**
+     * @brief Does the given filename support alpha channel.
+     **/
+    virtual bool supportsAlpha(const std::string&) const OVERRIDE FINAL { return kSupportsRGBA; }
+
     ChoiceParam* _compression;
     ChoiceParam* _bitDepth;
 };

@@ -124,8 +124,8 @@ enum FormatTypeEnum
 #define kParamInputPremultLabel "Input Premult"
 #define kParamInputPremultHint \
     "Input is considered to have this premultiplication state.\n" \
-    "If it is Premultiplied, red, green and blue channels are divided by the alpha channel " \
-    "before applying the colorspace conversion.\n" \
+    "Colorspace conversion is done on the input RGB data, even if it is premultiplied, " \
+    "and may thus give a wrong result if the input is premultiplied and the target colorspace is nonlinear.\n" \
     "This is set automatically from the input stream information, but can be adjusted if this information is wrong."
 #define kParamInputPremultOptionOpaqueHint "The image is opaque and so has no premultiplication state, as if the alpha component in all pixels were set to the white point.", "opaque"
 #define kParamInputPremultOptionPreMultipliedHint "The image is premultiplied by its alpha (also called \"associated alpha\").", "premult"
@@ -399,6 +399,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                                               const bool doAnyPacking,
                                               const bool packingContiguous,
                                               const vector<int>& packingMapping,
+                                              const bool alphaOK,
                                               InputImagesHolder* srcImgsHolder, // must be deleted by caller
                                               OfxRectI* bounds,
                                               ImageMemory** tmpMem, // owned by srcImgsHolder
@@ -576,16 +577,46 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 }
             } else if (userPremult == eImagePreMultiplied) {
                 assert(pluginExpectedPremult == eImageUnPreMultiplied);
-                unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                if (pluginExpectedPremult == eImageUnPreMultiplied) {
+                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                    , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                } else {
+                    copyPixels(*this, renderWindowClipped, renderScale,
+                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                }
             } else {
                 assert(userPremult == eImageUnPreMultiplied);
                 assert(pluginExpectedPremult == eImagePreMultiplied);
-                premultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                premultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
                                  , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
         } else {
             assert(!isOCIOIdentity);
+            //
+            // We should NEVER premult in a nonlinear colorspace if the output format doesn't support
+            // alpha. https://github.com/NatronGitHub/Natron/issues/582
+            // If the output format doesn't support Alpha, we just do the OCIO colorspace conversion on
+            // premultiplied values.
+            // It corresponds to merging over solid black.
+            // Note that linear OCIO colorspaces do not need the unpremult/premult operations at all,
+            // and could go in the if (isOCIOIdentity) branch above, if we were able to figure out that
+            // they are linear.
+            //
+            // The decision to unpremult/premult before/after OCIO conversion is done this way:
+            // alphaOK | userPremult | pluginExpectedPremult | doUnpremultBeforeOCIO | doPremultAfterOCIO
+            //   true  |      U      |            U          |           no          |         no
+            //   true  |      U      |            P          |           no          |        yes
+            //   true  |      P      |            U          |          yes          |         no
+            //   true  |      P      |            P          |          yes          |        yes
+            //  false  |      U      |            U          |           no          |         no
+            //  false  |      U      |            P          |           no          |         NO
+            //  false  |      P      |            U          |          yes          |         no
+            //  false  |      P      |            P          |           NO          |         NO (2)
+            // Note the last line: it says that when saving to a format that doesn't handle alpha (eg jpg),
+            // users prefer just considering the image as opaque and dropping alpha before color conversion.
+
+
             // OCIO expects unpremultiplied input
             if ( noPremult || (userPremult == eImageUnPreMultiplied) ) {
                 if ( (userPremult == eImageOpaque) && ( (srcMappedComponents == ePixelComponentRGBA) ||
@@ -602,8 +633,16 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 }
             } else {
                 assert(userPremult == eImagePreMultiplied);
-                unPremultPixelData(renderWindow, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
-                                   , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
+                if (alphaOK || pluginExpectedPremult == eImageUnPreMultiplied) {
+                    // unpremult before colorspace conversion, only if the plugin expects unpremult data (eg WritePNG)
+                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
+                                       , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                } else {
+                    copyPixels(*this, renderWindowClipped, renderScale,
+                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                }
             }
 #         ifdef OFX_IO_USING_OCIO
             // do the color-space conversion
@@ -612,9 +651,11 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             }
 #         endif
 
-            ///If needed, re-premult the image for the plugin to work correctly
-            if ( (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA) ) {
-                premultPixelData(renderWindow, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount
+            // If needed, re-premult the image for the plugin to work correctly
+            // ... but only if output format supports alpha (alphaOK)
+            // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
+            if ( alphaOK && (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA) ) {
+                premultPixelData(renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount
                                  , bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
         } // if (isOCIOIdentity) {
@@ -970,6 +1011,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
     //This controls how we split into parts
     LayerViewsPartsEnum partsSplit = getPartsSplittingPreference();
 
+    bool alphaOK = supportsAlpha(filename);
     if ( (viewNames.size() == 1) && (args.planes.size() == 1) ) {
         //Regular case, just do a simple part
         int viewIndex = viewNames.begin()->first;
@@ -978,7 +1020,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
         ImageMemory *tmpMem; // owned by dataHolder, no need to delete
         ImageData data;
         // NOTE: failIfNoSrcImg=true causes the writer to fail if the src RoD is empty, see https://github.com/MrKepzie/Natron/issues/1617
-        fetchPlaneConvertAndCopy(args.planes.front(), /*failIfNoSrcImg=*/ false, viewIndex, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+        fetchPlaneConvertAndCopy(args.planes.front(), /*failIfNoSrcImg=*/ false, viewIndex, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
 
         int dstNComps = doAnyPacking ? packingMapping.size() : data.pixelComponentsCount;
         int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
@@ -1025,7 +1067,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     ImageMemory *tmpMem;     // owned by dataHolder, no need to delete
                     const Image* srcImg;     // owned by dataHolder, no need to delete
                     ImageData data;
-                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
                     if (!data.srcPixelData) {
                         continue;
                     }
@@ -1121,7 +1163,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     ImageMemory *tmpMem;     // owned by dataHolder, no need to delete
                     const Image* srcImg;     // owned by dataHolder, no need to delete
                     ImageData data;
-                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
                     if (!data.srcPixelData) {
                         continue;
                     }
@@ -1221,7 +1263,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     ImageMemory *tmpMem;     // owned by dataHolder, no need to delete
                     const Image* srcImg;     // owned by dataHolder, no need to delete
                     ImageData data;
-                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
                     if (!data.srcPixelData) {
                         continue;
                     }

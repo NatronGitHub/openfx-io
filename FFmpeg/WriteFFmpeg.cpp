@@ -1048,6 +1048,11 @@ private:
         updatePixelFormat();
     }
 
+    /**
+     * @brief Does the given filename support alpha channel.
+     **/
+    virtual bool supportsAlpha(const std::string&) const OVERRIDE FINAL;
+
     /** @brief the effect is about to be actively edited by a user, called when the first user interface is opened on an instance */
     virtual void beginEdit(void) OVERRIDE FINAL;
     virtual void beginEncode(const string& filename, const OfxRectI& rodPixel, float pixelAspectRatio, const BeginSequenceRenderArguments& args) OVERRIDE FINAL;
@@ -4836,6 +4841,13 @@ WriteFFmpegPlugin::onOutputFileChanged(const string &filename,
     updateVisibility();
 } // WriteFFmpegPlugin::onOutputFileChanged
 
+bool
+WriteFFmpegPlugin::supportsAlpha(const std::string&) const
+{
+    string pf;
+    _infoPixelFormat->getValue(pf);
+    return kSupportsRGBA && (pf.find('A') != string::npos);
+}
 
 static string
 ffmpeg_versions()

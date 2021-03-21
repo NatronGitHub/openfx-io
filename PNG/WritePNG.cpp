@@ -375,6 +375,11 @@ private:
 
     virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
 
+    /**
+     * @brief Does the given filename support alpha channel.
+     **/
+    virtual bool supportsAlpha(const std::string&) const OVERRIDE FINAL { return kSupportsRGBA; }
+
     void openFile(const string& filename,
                   int nChannels,
                   png_structp* png,
