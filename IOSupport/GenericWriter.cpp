@@ -2099,6 +2099,7 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
     // We should wait for the next version, where pull request
     // https://github.com/imageworks/OpenColorIO/pull/381 or
     // https://github.com/imageworks/OpenColorIO/pull/413 may be merged.
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr ocioConfig = _ocio->getConfig();
     if (setColorSpace && ocioConfig) {
         string name = filename;

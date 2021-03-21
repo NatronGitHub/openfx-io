@@ -547,6 +547,7 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
     int interpolationi = _interpolation->getValueAtTime(time);
 
     try {
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
         if (!config) {
             throw std::runtime_error("OCIO: No current config");

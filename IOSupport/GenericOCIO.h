@@ -25,6 +25,14 @@
 #ifndef IO_GenericOCIO_h
 #define IO_GenericOCIO_h
 
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+#  include <windows.h>
+#endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+#include <locale.h>
+#ifdef __APPLE__
+#include <xlocale.h>
+#endif
+
 #include <string>
 #include <vector>
 
@@ -261,8 +269,25 @@ private:
     OCIO_NAMESPACE::ConstProcessorRcPtr _proc;
     OFX::ImageEffect* _instance;
 };
-
 #endif
+
+// Helper class to set the C locale when doing OCIO calls.
+// See https://github.com/AcademySoftwareFoundation/OpenColorIO/issues/297#issuecomment-505636123
+class AutoSetAndRestoreThreadLocale
+{
+public:
+    AutoSetAndRestoreThreadLocale();
+    ~AutoSetAndRestoreThreadLocale();
+
+private:
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+    SoStringA ssaLocale;
+    int previousThreadConfig;
+#else
+    locale_t oldLocale;
+    locale_t currentLocale;
+#endif
+};
 
 NAMESPACE_OFX_IO_EXIT
     NAMESPACE_OFX_EXIT

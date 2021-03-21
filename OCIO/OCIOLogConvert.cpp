@@ -353,6 +353,7 @@ OCIOLogConvertPlugin::loadConfig(double time)
     }
 
     _config.reset();
+    AutoSetAndRestoreThreadLocale locale;
     try {
         _ocioConfigFileName = filename;
         _config = OCIO::Config::CreateFromFile( _ocioConfigFileName.c_str() );
@@ -534,6 +535,7 @@ OCIOLogConvertPlugin::getProcessor(OfxTime time)
                 dst = OCIO::ROLE_COMPOSITING_LOG;
             }
 
+            AutoSetAndRestoreThreadLocale locale;
             _proc = _config->getProcessor(src, dst);
         }
     } catch (const OCIO::Exception &e) {
@@ -1018,6 +1020,7 @@ OCIOLogConvertPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     maskClip->setIsMask(true);
 
     char* file = std::getenv("OCIO");
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config;
     if (file != NULL) {
         try {

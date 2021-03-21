@@ -399,6 +399,7 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
     _lookCombination->setEnabled(!singleLook);
     _lookCombination->setEvaluateOnChange(!singleLook);
 
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = _ocio->getConfig();
     if (!config) {
         // secret should not be set on the descriptor, unless the parameter should *always* be secret
@@ -410,7 +411,6 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
             // the choice menu can only be modified in Natron
             // Natron supports changing the entries in a choiceparam
             // Nuke (at least up to 8.0v3) does not
-            OCIO::ConstConfigRcPtr config = _ocio->getConfig();
             buildLookChoiceMenu(config, _lookChoice);
         } else {
             _lookChoice->setIsSecretAndDisabled(true);
@@ -559,6 +559,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
                                       bool singleLook,
                                       const string& lookCombination)
 {
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = _ocio->getConfig();
     if (!config) {
         setPersistentMessage(Message::eMessageError, "", "OCIO: no current config");
@@ -969,6 +970,7 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs &args,
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
     if (paramName == kParamLookAppend) {
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = _ocio->getConfig();
         string lookCombination;
         int lookChoice;
@@ -1007,6 +1009,7 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs &args,
                 // the choice menu can only be modified in Natron
                 // Natron supports changing the entries in a choiceparam
                 // Nuke (at least up to 8.0v3) does not
+                AutoSetAndRestoreThreadLocale locale;
                 OCIO::ConstConfigRcPtr config = _ocio->getConfig();
                 buildLookChoiceMenu(config, _lookChoice);
             } else {
@@ -1106,6 +1109,7 @@ OCIOLookTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     PageParamDescriptor *page = desc.definePageParam("Controls");
     // insert OCIO parameters
     GenericOCIO::describeInContextInput(desc, context, page, OCIO::ROLE_REFERENCE);
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
     {
         BooleanParamDescriptor* param = desc.defineBooleanParam(kParamSingleLook);

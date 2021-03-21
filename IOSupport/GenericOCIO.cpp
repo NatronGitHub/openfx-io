@@ -451,6 +451,7 @@ GenericOCIO::loadConfig()
         return;
     }
     _config.reset();
+    AutoSetAndRestoreThreadLocale locale;
     try {
         _ocioConfigFileName = filename;
         _config = OCIO::Config::CreateFromFile( _ocioConfigFileName.c_str() );
@@ -512,6 +513,7 @@ GenericOCIO::configIsDefault() const
 OCIO::ConstContextRcPtr
 GenericOCIO::getLocalContext(double time) const
 {
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstContextRcPtr context = _config->getCurrentContext();
     OCIO::ContextRcPtr mutableContext;
 
@@ -803,6 +805,7 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     size_t pixelDataOffset = (size_t)(renderWindow.y1 - _dstBounds.y1) * _dstRowBytes + (size_t)(renderWindow.x1 - _dstBounds.x1) * pixelBytes;
     float *pix = (float *) ( ( (char *) _dstPixelData ) + pixelDataOffset ); // (char*)dstImg->getPixelAddress(renderWindow.x1, renderWindow.y1);
     try {
+        AutoSetAndRestoreThreadLocale locale;
         if (_proc) {
             OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, sizeof(float), pixelBytes, _dstRowBytes);
             _proc->apply(img);
@@ -1306,6 +1309,7 @@ GenericOCIO::describeInContextInput(ImageEffectDescriptor &desc,
     gHostIsNatron = (getImageEffectHostDescription()->isNatron);
 
     char* file = std::getenv("OCIO");
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config;
     if (file != NULL) {
         //Add choices
@@ -1395,6 +1399,7 @@ GenericOCIO::describeInContextOutput(ImageEffectDescriptor &desc,
     gHostIsNatron = (getImageEffectHostDescription()->isNatron);
 
     char* file = std::getenv("OCIO");
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config;
     if (file != NULL) {
         //Add choices
@@ -1537,6 +1542,41 @@ GenericOCIO::describeInContextContext(ImageEffectDescriptor &desc,
     }
 #endif // ifdef OFX_IO_USING_OCIO
 } // GenericOCIO::describeInContextContext
+
+// Helper class to set the C locale when doing OCIO calls.
+// See https://github.com/AcademySoftwareFoundation/OpenColorIO/issues/297#issuecomment-505636123
+AutoSetAndRestoreThreadLocale::AutoSetAndRestoreThreadLocale()
+{
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+    // set locale will only change locale on the current thread
+    previousThreadConfig = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+
+    // get and store current locale
+    ssaLocale.convert(setlocale(LC_ALL, NULL));
+
+    // set to "C" locale
+    setlocale(LC_ALL, "C");
+#else
+    // set to C locale, saving the old one (returned from useLocale)
+    currentLocale = newlocale(LC_ALL_MASK,"C",NULL);
+    oldLocale = uselocale(currentLocale);
+#endif
+}
+
+AutoSetAndRestoreThreadLocale::~AutoSetAndRestoreThreadLocale()
+{
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+    // thread specific
+    setlocale(LC_ALL, ssaLocale.c_str());
+
+    // set back to global settings]
+    _configthreadlocale(previousThreadConfig);
+#else
+    // restore the previous locale and freeing the created locale
+    uselocale(oldLocale);
+    freelocale(currentLocale);
+#endif
+}
 
 NAMESPACE_OFX_IO_EXIT
 NAMESPACE_OFX_EXIT

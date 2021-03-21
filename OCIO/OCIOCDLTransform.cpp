@@ -639,6 +639,7 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
              ( _procPower_b != power_b) ||
              ( _procSaturation != saturation) ||
              ( _procDirection != directioni) ) {
+            AutoSetAndRestoreThreadLocale locale;
             OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
             assert(config);
             OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
@@ -990,6 +991,7 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
     _cccid->getValueAtTime(time, cccid);
 
     try {
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
         if (!config) {
             throw std::runtime_error("OCIO: no current config");
@@ -1197,6 +1199,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                 _direction->getValueAtTime(time, _directioni);
 
                 try {
+                    AutoSetAndRestoreThreadLocale locale;
                     OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
                     if (!config) {
                         throw std::runtime_error("OCIO: no current config");
