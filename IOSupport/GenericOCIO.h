@@ -281,7 +281,7 @@ public:
 
 private:
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    SoStringA ssaLocale;
+    std::string ssaLocale;
     int previousThreadConfig;
 #else
     locale_t oldLocale;

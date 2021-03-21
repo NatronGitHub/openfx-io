@@ -1552,13 +1552,13 @@ AutoSetAndRestoreThreadLocale::AutoSetAndRestoreThreadLocale()
     previousThreadConfig = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
 
     // get and store current locale
-    ssaLocale.convert(setlocale(LC_ALL, NULL));
+    ssaLocale.assign(setlocale(LC_ALL, NULL));
 
     // set to "C" locale
     setlocale(LC_ALL, "C");
 #else
     // set to C locale, saving the old one (returned from useLocale)
-    currentLocale = newlocale(LC_ALL_MASK,"C",NULL);
+    currentLocale = newlocale(LC_ALL_MASK, "C", NULL);
     oldLocale = uselocale(currentLocale);
 #endif
 }
