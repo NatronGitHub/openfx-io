@@ -72,11 +72,12 @@ init:
 clone_folder: c:\dev\openfx-io
 
 # environment variables
-#environment:
+environment:
+  APPVEYOR_SAVE_CACHE_ON_ERROR: true
 
 # build cache to preserve files/folders between builds
 cache:
-  - 'C:/Tools/vcpkg/installed'
+  - C:\Tools\vcpkg\installed -> .appveyor.yml
 
 # scripts that run after cloning repository
 install:
@@ -106,6 +107,7 @@ before_build:
   # openexr openimageio ffmpeg
   - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% libpng
   - cmd: vcpkg integrate install
+  - git submodule update --install --recursive
   - mkdir build
   - cd build
   - cmd: cmake .. -G %GENERATOR% -DCMAKE_INSTALL_PREFIX="c:/dev/openfx-io/install" -DCMAKE_TOOLCHAIN_FILE=C:/Tools/vcpkg/scripts/buildsystems/vcpkg.cmake
