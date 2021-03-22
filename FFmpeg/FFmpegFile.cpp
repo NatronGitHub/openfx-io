@@ -1576,7 +1576,9 @@ FFmpegFile::getInfo(int & width,
                     double & aspect,
                     int & frames)
 {
+#ifdef OFX_IO_MT_FFMPEG
     AutoMutex guard(_lock);
+#endif
 
     if (_streams.empty()) {
         return false;

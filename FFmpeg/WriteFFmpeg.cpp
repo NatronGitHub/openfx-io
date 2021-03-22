@@ -590,7 +590,7 @@ CreateCodecKnobLabelsMap()
     // Video codecs.
     m["avrp"]          = "AVrp\tAvid 1:1 10-bit RGB Packer";
     m["ayuv"]          = "AYUV\tUncompressed packed MS 4:4:4:4";
-    m["cfhd"]          = "CFHD\GoPro Cineform HD";
+    m["cfhd"]          = "CFHD\tGoPro Cineform HD";
     m["cinepak"]       = "cvid\tCinepak"; // disabled in whitelist (bad quality)
     m["dnxhd"]         = "AVdn\tAvid DNxHD / DNxHR / SMPTE VC-3";
     m["dpx"]           = "dpx \tDPX (Digital Picture Exchange) image";
