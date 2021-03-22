@@ -84,6 +84,7 @@ install:
   # Dump appveyor build vars for diagnostics
   - cmd: "ECHO APPVEYOR_FORCED_BUILD: %APPVEYOR_FORCED_BUILD%"
   - cmd: "ECHO APPVEYOR_RE_BUILD: %APPVEYOR_RE_BUILD%"
+  - git submodule update --init --recursive
 
 #---------------------------------#
 #       build configuration       #
@@ -107,7 +108,6 @@ before_build:
   # openexr openimageio ffmpeg
   - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% libpng
   - cmd: vcpkg integrate install
-  - git submodule update --install --recursive
   - mkdir build
   - cd build
   - cmd: cmake .. -G %GENERATOR% -DCMAKE_INSTALL_PREFIX="c:/dev/openfx-io/install" -DCMAKE_TOOLCHAIN_FILE=C:/Tools/vcpkg/scripts/buildsystems/vcpkg.cmake
