@@ -105,7 +105,8 @@ before_build:
   # remove outdated versions
   - cmd: vcpkg remove --outdated --recurse
   # install dependencies
-  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% libpng openexr ffmpeg openimageio
+  # ffmpeg openimageio
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% libpng openexr
   - cmd: vcpkg integrate install
   - mkdir build
   - cd build
