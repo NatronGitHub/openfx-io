@@ -440,7 +440,7 @@ else()
     DESTINATION IO.ofx.bundle/Contents/Resources
   )
 
-  install(FILES Info.plist
+  install(FILES IO/Info.plist
     DESTINATION IO.ofx.bundle/Contents
   )
 endif()
