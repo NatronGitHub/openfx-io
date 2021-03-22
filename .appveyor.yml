@@ -82,8 +82,8 @@ cache:
 # scripts that run after cloning repository
 install:
   # Dump appveyor build vars for diagnostics
-  - cmd: "ECHO APPVEYOR_FORCED_BUILD: %APPVEYOR_FORCED_BUILD%"
-  - cmd: "ECHO APPVEYOR_RE_BUILD: %APPVEYOR_RE_BUILD%"
+  - cmd: echo "APPVEYOR_FORCED_BUILD: %APPVEYOR_FORCED_BUILD%"
+  - cmd: echo "APPVEYOR_RE_BUILD: %APPVEYOR_RE_BUILD%"
   - git submodule update --init --recursive
 
 #---------------------------------#
