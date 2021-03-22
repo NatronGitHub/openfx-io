@@ -349,9 +349,10 @@ endif()
 
 if(${PNG_FOUND})
   message(STATUS "  Adding PNG nodes")
+  target_compile_definitions(IO PRIVATE ${PNG_DEFINITIONS})
   target_include_directories(IO
     PUBLIC
-      ${PNG_INCLUDES}
+      ${PNG_INCLUDE_DIRS}
   )
   target_link_libraries(IO
     PUBLIC
