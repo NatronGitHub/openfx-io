@@ -139,8 +139,9 @@ file(GLOB IO_SOURCES_PNG
 )
 file(GLOB IO_SOURCES_SEEXPR
   "SeExpr/*.cpp"
-  "SupportExt/ofxsOGLTextRenderer.cpp"
   "SupportExt/ofxsOGLFontData.cpp"
+  "SupportExt/ofxsOGLTextRenderer.cpp"
+  "SupportExt/ofxsOGLUtilities.cpp"
   "SupportExt/ofxsRamp.cpp"
   "SupportExt/ofxsRectangleInteract.cpp"
   "SupportExt/ofxsShutter.cpp"
@@ -158,6 +159,7 @@ file(GLOB IO_SOURCES
   "SupportExt/ofxsFileOpen.cpp"
 #  "SupportExt/ofxsGenerator.cpp"
   "SupportExt/ofxsMultiPlane.cpp"
+  "SupportExt/ofxsOGLUtilities.cpp"
 #  "SupportExt/ofxsTracking.cpp"
   "SupportExt/*.h"
   "SupportExt/glad/*.cpp"
