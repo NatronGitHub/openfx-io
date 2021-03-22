@@ -236,6 +236,7 @@ You will have to do the same with Additional Dependencies in the linker options.
 Also, some preprocessor definitions are mandatory, most notably:
 
     OFX_IO_USING_OCIO
+    OFX_IO_USING_LIBRAW
     OFX_EXTENSIONS_VEGAS
     OFX_EXTENSIONS_TUTTLE
     OFX_EXTENSIONS_NUKE

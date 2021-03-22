@@ -323,15 +323,25 @@ endif()
 
 if(${OPENIMAGEIO_FOUND})
   message(STATUS "  Adding OpenImageIO nodes")
-  target_compile_definitions(IO PRIVATE ${LibRaw_r_DEFINITIONS})
   target_include_directories(IO
     PUBLIC
-      ${OPENIMAGEIO_INCLUDES} ${LibRaw_r_INCLUDES}/libraw
+      ${OPENIMAGEIO_INCLUDES}
   )
   target_link_libraries(IO
     PUBLIC
-      ${OPENIMAGEIO_LIBRARIES} ${LibRaw_r_LIBRARIES}
+      ${OPENIMAGEIO_LIBRARIES}
   )
+  if(LibRaw_VERSION_STRING)
+    target_compile_definitions(IO PRIVATE OFX_IO_USING_LIBRAW ${LibRaw_r_DEFINITIONS})
+    target_include_directories(IO
+      PUBLIC
+        ${LibRaw_r_INCLUDES}/libraw
+    )
+    target_link_libraries(IO
+      PUBLIC
+        ${LibRaw_r_LIBRARIES}
+    )
+  endif()
 else()
   message(STATUS "  Not adding OpenImageIO nodes")
 endif()
