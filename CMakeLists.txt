@@ -130,12 +130,22 @@ file(GLOB IO_SOURCES_OPENCOLORIO
 )
 file(GLOB IO_SOURCES_OPENIMAGEIO
   "OIIO/*.cpp"
+  "SupportExt/ofxsOGLTextRenderer.cpp"
+  "SupportExt/ofxsOGLFontData.cpp"
 )
 file(GLOB IO_SOURCES_PNG
   "PNG/*.cpp"
+  "SupportExt/ofxsLut.cpp"
 )
 file(GLOB IO_SOURCES_SEEXPR
   "SeExpr/*.cpp"
+  "SupportExt/ofxsOGLTextRenderer.cpp"
+  "SupportExt/ofxsOGLFontData.cpp"
+  "SupportExt/ofxsRamp.cpp"
+  "SupportExt/ofxsRectangleInteract.cpp"
+  "SupportExt/ofxsShutter.cpp"
+  "SupportExt/ofxsTransform3x3.cpp"
+  "SupportExt/ofxsTransformInteract.cpp"
 )
 file(GLOB IO_SOURCES
   "PFM/*.cpp"
@@ -147,16 +157,8 @@ file(GLOB IO_SOURCES
   "SupportExt/ofxsThreadSuite.cpp"
   "SupportExt/ofxsFileOpen.cpp"
 #  "SupportExt/ofxsGenerator.cpp"
-#  "SupportExt/ofxsLut.cpp"
   "SupportExt/ofxsMultiPlane.cpp"
-  "SupportExt/ofxsOGLTextRenderer.cpp"
-  "SupportExt/ofxsOGLFontData.cpp"
-  "SupportExt/ofxsRamp.cpp"
-  "SupportExt/ofxsShutter.cpp"
 #  "SupportExt/ofxsTracking.cpp"
-  "SupportExt/ofxsTransform3x3.cpp"
-  "SupportExt/ofxsTransformInteract.cpp"
-  "SupportExt/ofxsRectangleInteract.cpp"
   "SupportExt/*.h"
   "SupportExt/glad/*.cpp"
   "SupportExt/glad/*.h"
