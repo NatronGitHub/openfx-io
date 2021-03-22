@@ -67,7 +67,7 @@ init:
   - if "%APPVEYOR_BUILD_WORKER_IMAGE%" == "Visual Studio 2013" (set GENERATOR="Visual Studio 12 2013%arch%")
   - if "%APPVEYOR_BUILD_WORKER_IMAGE%" == "Ubuntu" (set GENERATOR="Unix Makefiles")
 
-shallow_clone: true
+#shallow_clone: true
 
 # clone directory
 clone_folder: c:\dev\openfx-io
