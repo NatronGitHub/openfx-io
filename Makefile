@@ -7,7 +7,8 @@ FFmpeg \
 OCIO \
 OIIO \
 SeExpr \
-PFM
+PFM \
+PNG
 
 all: subdirs
 
