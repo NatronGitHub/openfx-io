@@ -567,9 +567,7 @@
 		1E2F4DCA189295F600F4CE25 /* IO.ofx.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IO.ofx.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		1E3060261B70DA1600A9B507 /* ofxsCoords.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ofxsCoords.h; sourceTree = "<group>"; };
 		1E4E58331AB24365004D6E04 /* INRIA.IO.manifest */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; path = INRIA.IO.manifest; sourceTree = "<group>"; };
-		1E4E58341AB24365004D6E04 /* IO.sln */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = IO.sln; sourceTree = "<group>"; };
 		1E4E58351AB24365004D6E04 /* IOPluginProperty.props */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; path = IOPluginProperty.props; sourceTree = "<group>"; };
-		1E4E58361AB24374004D6E04 /* IO.vcxproj */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; name = IO.vcxproj; path = IO/IO.vcxproj; sourceTree = SOURCE_ROOT; };
 		1E5EBA3F1D4C8DEB0005A5A8 /* gpl-header-c.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "gpl-header-c.txt"; sourceTree = "<group>"; };
 		1E5EBA401D4C8DEB0005A5A8 /* LICENSE */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
 		1E5EBA411D4C8DEB0005A5A8 /* ofxsMipmap.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ofxsMipmap.cpp; sourceTree = "<group>"; };
@@ -1129,8 +1127,6 @@
 				1EC04CAF193C8E4100E47D42 /* Makefile */,
 				1E9B5F6F198A557A0095C8AA /* README.md */,
 				1E4E58331AB24365004D6E04 /* INRIA.IO.manifest */,
-				1E4E58361AB24374004D6E04 /* IO.vcxproj */,
-				1E4E58341AB24365004D6E04 /* IO.sln */,
 				1E4E58351AB24365004D6E04 /* IOPluginProperty.props */,
 				1EDECBAA18B9F6BB0093B6FC /* RunScript */,
 				AC51C4581D0ED84B0004B213 /* PNG */,
@@ -1828,6 +1824,7 @@
 					"DEBUG=1",
 					OFX_IO_MT_FFMPEG,
 					OFX_IO_USING_OCIO,
+					OFX_IO_USING_LIBRAW,
 					OFX_EXTENSIONS_NATRON,
 					OFX_SUPPORTS_OPENGLRENDER,
 				);
@@ -1879,6 +1876,7 @@
 					OFX_EXTENSIONS_TUTTLE,
 					OFX_EXTENSIONS_NATRON,
 					OFX_IO_USING_OCIO,
+					OFX_IO_USING_LIBRAW,
 					OFX_IO_MT_FFMPEG,
 					OFX_SUPPORTS_OPENGLRENDER,
 				);
@@ -2172,6 +2170,7 @@
 					OFX_EXTENSIONS_TUTTLE,
 					OFX_EXTENSIONS_NATRON,
 					OFX_IO_USING_OCIO,
+					OFX_IO_USING_LIBRAW,
 					OFX_IO_MT_FFMPEG,
 				);
 				HEADER_SEARCH_PATHS = (
@@ -2211,6 +2210,7 @@
 					OFX_EXTENSIONS_TUTTLE,
 					OFX_EXTENSIONS_NATRON,
 					OFX_IO_USING_OCIO,
+					OFX_IO_USING_LIBRAW,
 					OFX_IO_MT_FFMPEG,
 				);
 				HEADER_SEARCH_PATHS = (
