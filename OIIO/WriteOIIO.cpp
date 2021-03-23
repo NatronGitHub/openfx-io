@@ -523,7 +523,7 @@ WriteOIIOPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
         string filename;
         _fileParam->getValue(filename);
 #     if OIIO_PLUGIN_VERSION >= 22
-        ImageOutputPtr img = ImageOutput::create(filename);
+        ImageOutputPtr output = ImageOutput::create(filename);
 #     else
         auto_ptr<ImageOutput> output( ImageOutput::create(filename) );
 #     endif
@@ -685,7 +685,11 @@ getDefaultBitDepth(const string& filepath,
 bool
 WriteOIIOPlugin::displayWindowSupportedByFormat(const string& filename) const
 {
+# if OIIO_PLUGIN_VERSION >= 22
+    ImageOutputPtr output = ImageOutput::create(filename);
+# else
     auto_ptr<ImageOutput> output( ImageOutput::create(filename) );
+# endif
     if ( output.get() ) {
         return output->supports("displaywindow");
     } else {
