@@ -111,7 +111,26 @@ before_build:
   # remove outdated versions
   - cmd: vcpkg remove --outdated --recurse
   # install dependencies
-  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH% opengl libpng openexr x264 x265 libvpx opus libtheora ffmpeg[avcodec,avdevice,avfilter,avformat,avresample,core,gpl,postproc,swresample,swscale,opus,theora,x264,x265] jasper lcms libde265 libheif libjpeg-turbo libraw tiff openssl opencolorio openimageio[libraw]
+  - cmd: vcpkg install --recurse --triplet %VCPKG_ARCH%
+        opengl
+        libpng
+        openexr
+        x264
+        x265
+        libvpx
+        opus
+        libtheora
+        ffmpeg[avcodec,avdevice,avfilter,avformat,avresample,core,gpl,postproc,swresample,swscale,opus,theora,x264,x265]
+        jasper
+        lcms
+        libde265
+        libheif
+        libjpeg-turbo
+        libraw
+        tiff
+        openssl
+        opencolorio
+        openimageio[libraw]
   - cmd: vcpkg integrate install
   - mkdir build
   - cd build
