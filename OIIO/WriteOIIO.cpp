@@ -522,7 +522,11 @@ WriteOIIOPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
     if ( gIsMultiplanarV2 ) {
         string filename;
         _fileParam->getValue(filename);
+#     if OIIO_PLUGIN_VERSION >= 22
+        ImageOutputPtr img = ImageOutput::create(filename);
+#     else
         auto_ptr<ImageOutput> output( ImageOutput::create(filename) );
+#     endif
         /*
         bool supportsNChannels = false;
         if ( output.get() ) {
@@ -812,7 +816,11 @@ WriteOIIOPlugin::supportsAlpha(const std::string& filename) const
 void
 WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
 {
+# if OIIO_PLUGIN_VERSION >= 22
+    ImageOutputPtr output = ImageOutput::create(filename);
+# else
     auto_ptr<ImageOutput> output( ImageOutput::create(filename) );
+# endif
     if ( output.get() ) {
         _tileSize->setIsSecretAndDisabled( !output->supports("tiles") );
         //_outputLayers->setIsSecretAndDisabled(!output->supports("nchannels"));
