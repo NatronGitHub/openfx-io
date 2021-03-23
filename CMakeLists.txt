@@ -335,7 +335,7 @@ if(${OPENIMAGEIO_FOUND})
     target_compile_definitions(IO PRIVATE OFX_IO_USING_LIBRAW ${LibRaw_r_DEFINITIONS})
     target_include_directories(IO
       PUBLIC
-        ${LibRaw_r_INCLUDES}/libraw
+        ${LibRaw_INCLUDE_DIR}/libraw
     )
     target_link_libraries(IO
       PUBLIC
