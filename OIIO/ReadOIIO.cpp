@@ -263,7 +263,7 @@ enum RawHighlightModeEnum {
 #pragma message WARN("Some demosaicing algorithms (AFD, VCD, Mixed, LLMSE, AMaZE) will not be available because LibRaw is more recent than 0.18.3.")
 #define WARN_DEMOSAIC " Not available with this version of LibRaw (" LIBRAW_VERSION_STR "), AHD will be used instead."
 #else
-#define WARN_DEMOSAIC "yes"
+#define WARN_DEMOSAIC
 #endif
 #define kParamRawDemosaicAFD "AFD", "AFD interpolation (5-pass)." WARN_DEMOSAIC, "afd"
 #define kParamRawDemosaicVCD "VCD", "VCD interpolation." WARN_DEMOSAIC, "vcd"
