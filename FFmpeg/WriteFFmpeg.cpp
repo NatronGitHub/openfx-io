@@ -2523,9 +2523,11 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
 
         if (qMin >= 0) {
             avCodecContext->qmin = qMin;
+            av_opt_set_int(avCodecContext->priv_data, "qmin", qMin, 0);
         }
         if (qMax >= 0) {
             avCodecContext->qmax = qMax;
+            av_opt_set_int(avCodecContext->priv_data, "qmax", qMax, 0);
         }
     }
 
@@ -2680,8 +2682,8 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
     if (p.interGOP) {
         gopSize = _gopSize->getValue();
         if (gopSize >= 0) {
-            //avCodecContext->gop_size = gopSize;
-            av_opt_set_int(avCodecContext->priv_data, "g", 1, 0); // set the group of picture (GOP) size
+            avCodecContext->gop_size = gopSize; // set the group of picture (GOP) size
+            av_opt_set_int(avCodecContext->priv_data, "g", gopSize, 0);
         }
     }
 
@@ -2692,20 +2694,20 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
             bFrames = 0;
         }
         if (bFrames != -1) {
-            //avCodecContext->max_b_frames = bFrames;
-            av_opt_set_int(avCodecContext->priv_data, "bf", bFrames, 0); // set maximum number of B-frames between non-B-frames
+            avCodecContext->max_b_frames = bFrames; // set maximum number of B-frames between non-B-frames
+            av_opt_set_int(avCodecContext->priv_data, "bf", bFrames, 0);
 #if FF_API_PRIVATE_OPT
             // Strategy to choose between I/P/B-frames
             //avCodecContext->b_frame_strategy = 0; // deprecated: use encoder private option "b_strategy", see below
             av_opt_set_int(avCodecContext->priv_data, "b_strategy", 0, 0); // strategy to choose between I/P/B-frames
 #endif
-            //avCodecContext->b_quant_factor = 2.0f;
-            av_opt_set_double(avCodecContext->priv_data, "b_qfactor", 2., 0); // QP factor between P- and B-frames
+            avCodecContext->b_quant_factor = 2.0f; // QP factor between P- and B-frames
+            av_opt_set_double(avCodecContext->priv_data, "b_qfactor", 2., 0);
 
             if (bFrames == 0 && p.interGOP && gopSize < 0) {
                 // also set keyframe interval to 1, see https://trac.ffmpeg.org/wiki/Encode/VFX#Frame-by-Framescrubbing
-                //avCodecContext->gop_size = 1;
-                av_opt_set_int(avCodecContext->priv_data, "g", 1, 0); // set the group of picture (GOP) size
+                avCodecContext->gop_size = 1; // set the group of picture (GOP) size
+                av_opt_set_int(avCodecContext->priv_data, "g", 1, 0);
             }
         }
     }
