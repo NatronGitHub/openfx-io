@@ -159,7 +159,7 @@ const FilterEntry kFormatWhitelist[] =
     { "avi",            true,  true },
     { "dv",             true,  false },    // DV (Digital Video), no HD support
     { "flv",            true,  true },     // FLV (Flash Video), only used with flv codec. cannot be read in official Qt
-    { "gif",            true,  true },     // GIF Animation
+    { "gif",            true,  false },     // GIF Animation - write not supported as 8-bit only.
     { "h264",           true,  false },     // raw H.264 video. prefer a proper container (mp4, mov, avi)
     { "hevc",           true,  false },     // raw HEVC video. hevc codec cannot be read in official qt
     { "m4v",            true,  false },     // raw MPEG-4 video. prefer a proper container (mp4, mov, avi)
@@ -202,7 +202,7 @@ const FilterEntry kCodecWhitelist[] =
     { "ffv1",           true,  UNSAFEQT0 && UNSAFEVLC },     // FFmpeg video codec #1 - write not supported as not official qt readable.
     { "ffvhuff",        true,  UNSAFEQT0 && UNSAFEVLC },     // Huffyuv FFmpeg variant - write not supported as not official qt readable.
     { "flv",            true,  UNSAFEQT0 },     // FLV / Sorenson Spark / Sorenson H.263 (Flash Video) - write not supported as not official qt readable.
-    { "gif",            true,  true },     // GIF (Graphics Interchange Format) - write not supported as 8-bit only.
+    { "gif",            true,  false },     // GIF (Graphics Interchange Format) - write not supported as 8-bit only.
     { "h263p",          true,  true },     // H.263+ / H.263-1998 / H.263 version 2
     { "h264",           true,  false },     // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (the encoder is libx264)
     { "hap",            true,  true },     // Vidvox Hap
