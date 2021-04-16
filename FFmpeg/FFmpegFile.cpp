@@ -188,7 +188,7 @@ const FilterEntry kCodecWhitelist[] =
 {
     // Video codecs.
     { "aic",            true,  false },     // Apple Intermediate Codec (no encoder)
-    { "av1",            true,  false },    // Alliance for Open Media AV1 (encoder: libaom-av1)
+    { "av1",            true,  false },    // Alliance for Open Media AV1 (encoders: libaom-av1 librav1e)
     { "avrp",           true,  UNSAFEQT0 && UNSAFEVLC },     // Avid 1:1 10-bit RGB Packer - write not supported as not official qt readable with relevant 3rd party codec.
     { "avui",           true,  false },     // Avid Meridien Uncompressed - write not supported as this is an SD only codec. Only 720x486 and 720x576 are supported. experimental in ffmpeg 2.6.1.
     { "ayuv",           true,  UNSAFEQT0 && UNSAFEVLC },     // Uncompressed packed MS 4:4:4:4 - write not supported as not official qt readable.
@@ -216,6 +216,7 @@ const FilterEntry kCodecWhitelist[] =
     { "libdav1d",       true,  false },    // Alliance for Open Media AV1 (encoder: libaom-av1)
     { "libopenh264",    true,  true },     // Cisco libopenh264 H.264/MPEG-4 AVC encoder
     { "libopenjpeg",    true,  true },     // OpenJPEG JPEG 2000
+    { "librav1e",       true,  true },     // rav1e AV1 encoder
     { "libschroedinger", true,  UNSAFEQT0 && UNSAFEVLC },     // libschroedinger Dirac - write untested. VLC plays with a wrong format
     { "libtheora",      true,  UNSAFEQT0 },     // libtheora Theora - write untested.
     { "libvpx",         true,  UNSAFEQT0 },     // On2 VP8

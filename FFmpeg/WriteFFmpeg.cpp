@@ -607,6 +607,7 @@ CreateCodecKnobLabelsMap()
     m["libaom-av1"]    = "AV1\tlibaom AV1 encoder";
     m["libopenh264"]   = "H264\tCisco libopenh264 H.264/MPEG-4 AVC encoder";
     m["libopenjpeg"]   = "mjp2\tOpenJPEG JPEG 2000";
+    m["librav1e"]      = "AV1\trav1e AV1 encoder";
     m["libschroedinger"] = "drac\tSMPTE VC-2 (previously BBC Dirac Pro)";
     m["libtheora"]     = "theo\tTheora";
     m["libvpx"]        = "VP80\tOn2 VP8"; // write doesn't work yet
