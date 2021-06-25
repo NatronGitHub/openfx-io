@@ -111,7 +111,7 @@ static const char*
 colorSpaceName(OCIO::ConstConfigRcPtr config,
                const char* colorSpaceNameDefault)
 {
-    OpenColorIO::ConstColorSpaceRcPtr cs;
+    OCIO::ConstColorSpaceRcPtr cs;
     if ( !strcmp(colorSpaceNameDefault, "sRGB") || !strcmp(colorSpaceNameDefault, "srgb") ) {
         if ( ( cs = config->getColorSpace("sRGB") ) ) {
             // nuke-default, blender, natron
