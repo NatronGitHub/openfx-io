@@ -21,8 +21,9 @@ endif
 # OpenEXR
 # OpenImageIO includes OpenEXR as #include <OpenEXR/ImathVec.h>, to we also add the
 # include dir itself to avoid confusion with a system-installed OpenEXR.
-OPENEXR_CXXFLAGS = -I`pkg-config --variable=prefix OpenEXR`/include `pkg-config --cflags OpenEXR IlmBase`
-OPENEXR_LINKFLAGS =`pkg-config --libs OpenEXR IlmBase`
+# OpenEXR 2 has IlmBase, OpenEXR 3 has Imath, so we ask for both, but it will always cause harmless errors.
+OPENEXR_CXXFLAGS = -I`pkg-config --variable=prefix OpenEXR`/include `pkg-config --cflags IlmBase 2>/dev/null` `pkg-config --cflags Imath 2>/dev/null` `pkg-config --cflags OpenEXR`
+OPENEXR_LINKFLAGS =`pkg-config --libs IlmBase 2>/dev/null` `pkg-config --libs Imath 2>/dev/null` `pkg-config --libs OpenEXR`
 # Uncomment the following line to enable multithreaded EXR reading (untested, and probably does not make sense)
 #OPENEXR_CXXFLAGS += -DOFX_IO_MT_EXR
 

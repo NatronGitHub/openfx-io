@@ -42,6 +42,10 @@ GCC_DIAG_OFF(deprecated)
 #include <ImfPixelType.h>
 #include <ImfChannelList.h>
 #include <ImfInputFile.h>
+#include <ImfHeader.h>
+#include <ImfCompression.h>
+#include <ImfFrameBuffer.h>
+#include <ImathBox.h>
 #include <IlmThreadPool.h>
 GCC_DIAG_ON(deprecated)
 

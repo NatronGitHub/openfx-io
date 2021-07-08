@@ -31,6 +31,10 @@ GCC_DIAG_OFF(deprecated)
 #include <IlmThreadPool.h>
 #include <ImfArray.h>
 #include <ImfOutputFile.h>
+#include <ImfHeader.h>
+#include <ImfCompression.h>
+#include <ImfFrameBuffer.h>
+#include <ImathBox.h>
 #include <half.h>
 GCC_DIAG_ON(deprecated)
 
