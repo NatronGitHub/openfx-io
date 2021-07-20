@@ -656,13 +656,13 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
              ( _procView != view) ||
              ( _procGain != gain) ||
              ( _procGamma != gamma) ) {
-#if OCIO_VERSION_HEX >= 0x02000000
-            OCIO::DisplayViewTransformRcPtr transform = OCIO::DisplayViewTransform::Create();
+#         if OCIO_VERSION_HEX >= 0x02000000
+            auto transform = OCIO::DisplayViewTransform::Create();
             transform->setSrc( inputSpace.c_str() );
-#else
+#         else
             OCIO::DisplayTransformRcPtr transform = OCIO::DisplayTransform::Create();
             transform->setInputColorSpaceName( inputSpace.c_str() );
-#endif
+#         endif
 
             transform->setDisplay( display.c_str() );
 

@@ -737,7 +737,7 @@ GenericOCIO::apply(double time,
 }
 
 #ifdef OFX_IO_USING_OCIO
-OCIO::ConstProcessorRcPtr
+OCIO_NAMESPACE::ConstProcessorRcPtr
 GenericOCIO::getProcessor() const
 {
     AutoMutex guard(_procMutex);
@@ -766,10 +766,6 @@ GenericOCIO::setValues(const OCIO::ConstContextRcPtr &context,
         _procInputSpace = inputSpace;
         _procOutputSpace = outputSpace;
         _proc = _config->getProcessor( context, inputSpace.c_str(), outputSpace.c_str() );
-#if OCIO_VERSION_HEX >= 0x02000000
-        _procCPU = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32,
-                                                   OCIO::OPTIMIZATION_DEFAULT);
-#endif
     }
 }
 
@@ -808,13 +804,17 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     float *pix = (float *) ( ( (char *) _dstPixelData ) + pixelDataOffset ); // (char*)dstImg->getPixelAddress(renderWindow.x1, renderWindow.y1);
     try {
         if (_proc) {
-#if OCIO_VERSION_HEX >= 0x02000000
-            OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, OCIO::BIT_DEPTH_F32, sizeof(float), pixelBytes, _dstRowBytes);
-            _procCPU->apply(img);
-#else
+#     if OCIO_VERSION_HEX >= 0x02000000
+            OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels,
+                                      OCIO::BIT_DEPTH_F32,  // For now, only float
+                                      sizeof(float), pixelBytes, _dstRowBytes);
+            OCIO::ConstCPUProcessorRcPtr cpuproc = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32,
+                                                                                   OCIO::OPTIMIZATION_DEFAULT);
+            cpuproc->apply(img);
+#     else
             OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, sizeof(float), pixelBytes, _dstRowBytes);
             _proc->apply(img);
-#endif
+#     endif
         }
     } catch (OCIO::Exception &e) {
         _instance->setPersistentMessage( Message::eMessageError, "", string("OpenColorIO error: ") + e.what() );
@@ -886,6 +886,7 @@ GenericOCIO::apply(double time,
     OCIOProcessor processor(*_parent);
     // set the images
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
+
 
     processor.setProcessor(proc);
 

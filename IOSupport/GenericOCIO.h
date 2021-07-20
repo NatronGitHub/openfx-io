@@ -230,9 +230,6 @@ private:
 
     mutable Mutex _procMutex;
     OCIO_NAMESPACE::ConstProcessorRcPtr _proc;
-#if OCIO_VERSION_HEX >= 0x02000000
-    OCIO_NAMESPACE::ConstCPUProcessorRcPtr _procCPU;
-#endif
     OCIO_NAMESPACE::ConstContextRcPtr _procContext;
     std::string _procInputSpace;
     std::string _procOutputSpace;
@@ -248,36 +245,20 @@ public:
     // ctor
     OCIOProcessor(OFX::ImageEffect &instance)
         : OFX::PixelProcessor(instance)
-#if OCIO_VERSION_HEX >= 0x02000000
-        , _procCPU()
-#else
         , _proc()
-#endif
-
         , _instance(&instance)
     {}
 
     // and do some processing
     void multiThreadProcessImages(const OfxRectI& procWindow, const OfxPointD& rs);
 
-#if OCIO_VERSION_HEX >= 0x02000000
-    void setProcessor(const OCIO_NAMESPACE::ConstCPUProcessorRcPtr& proc)
-    {
-        _procCPU = proc;
-    }
-#else
     void setProcessor(const OCIO_NAMESPACE::ConstProcessorRcPtr& proc)
     {
         _proc = proc;
     }
-#endif
 
 private:
-#if OCIO_VERSION_HEX >= 0x02000000
-    OCIO_NAMESPACE::ConstCPUProcessorRcPtr _procCPU;
-#else
     OCIO_NAMESPACE::ConstProcessorRcPtr _proc;
-#endif
     OFX::ImageEffect* _instance;
 };
 
