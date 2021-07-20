@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -1358,7 +1358,7 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
 
     case eGetFileNameReturnedFullRes:
     case eGetFileNameReturnedProxy:
-        clearPersistentMessage();
+        // clearPersistentMessage();
         break;
     }
 
@@ -2072,6 +2072,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         // We should wait for the next version, where pull request
         // https://github.com/imageworks/OpenColorIO/pull/381 or
         // https://github.com/imageworks/OpenColorIO/pull/413 may be merged.
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr ocioConfig = _ocio->getConfig();
         if (setColorSpace && ocioConfig) {
             string name = filename;

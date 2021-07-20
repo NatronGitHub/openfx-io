@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -331,6 +331,7 @@ public:
                                   const bool doAnyPacking,
                                   const bool packingContiguous,
                                   const std::vector<int>& packingMapping,
+                                  const bool alphaOK,
                                   InputImagesHolder* srcImgsHolder,
                                   OfxRectI* bounds,
                                   OFX::ImageMemory** tmpMem,
@@ -358,6 +359,11 @@ public:
     virtual void clearAnyCache() {}
 
     void getOutputRoD(OfxTime time, int view, OfxRectD* rod, double* par);
+
+    /**
+     * @brief Does the given filename support alpha channel.
+     **/
+    virtual bool supportsAlpha(const std::string& filename) const = 0;
 
 protected:
 

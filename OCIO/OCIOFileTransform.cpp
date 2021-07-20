@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -547,6 +547,7 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
     int interpolationi = _interpolation->getValueAtTime(time);
 
     try {
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
         if (!config) {
             throw std::runtime_error("OCIO: No current config");

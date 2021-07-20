@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -1962,13 +1962,13 @@ SeExprPlugin::SeExprPlugin(OfxImageEffectHandle handle,
             OfxPointD origin = getProjectOffset();
             OfxPointD p;
             // we must denormalise all parameters for which setDefaultCoordinateSystem(eCoordinatesNormalised) couldn't be done
-            beginEditBlock(kParamDefaultsNormalised);
+            //beginEditBlock(kParamDefaultsNormalised);
             p = _btmLeft->getValue();
             _btmLeft->setValue(p.x * size.x + origin.x, p.y * size.y + origin.y);
             p = _size->getValue();
             _size->setValue(p.x * size.x, p.y * size.y);
             param->setValue(false);
-            endEditBlock();
+            //endEditBlock();
         }
     }
 }

@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -42,10 +42,31 @@
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imagecache.h>
 GCC_DIAG_ON(unused-parameter)
+
+#ifdef OFX_IO_USING_LIBRAW
 GCC_DIAG_OFF(deprecated-declarations)
 #include <libraw.h>
 #include <libraw_version.h>
 GCC_DIAG_ON(deprecated-declarations)
+#else
+// default to a recent version
+#define LIBRAW_MAJOR_VERSION 0
+#define LIBRAW_MINOR_VERSION 20
+#define LIBRAW_PATCH_VERSION 2
+#define _LIBRAW_VERSION_MAKE(a, b, c, d) #a "." #b "." #c "-" #d
+#define LIBRAW_VERSION_MAKE(a, b, c, d) _LIBRAW_VERSION_MAKE(a, b, c, d)
+#define LIBRAW_VERSION_STR                                                     \
+  LIBRAW_VERSION_MAKE(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION,              \
+                      LIBRAW_PATCH_VERSION, LIBRAW_VERSION_TAIL)
+#define LIBRAW_MAKE_VERSION(major, minor, patch)                               \
+  (((major) << 16) | ((minor) << 8) | (patch))
+#define LIBRAW_VERSION                                                         \
+  LIBRAW_MAKE_VERSION(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION,              \
+                      LIBRAW_PATCH_VERSION)
+#endif // OFX_IO_USING_LIBRAW
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+#pragma message WARN("ReadOIIO will not support advanced demosaicing options, because libraw .")
+#endif
 
 #include <ofxNatron.h>
 
@@ -238,11 +259,17 @@ enum RawHighlightModeEnum {
 #define kParamRawDemosaicAHD "AHD", "AHD interpolation.", "ahd"
 #define kParamRawDemosaicDCB "DCB", "DCB interpolation.", "dcb"
 #define kParamRawDemosaicAHDMod "AHD-Mod", "Modified AHD interpolation by Paul Lee.", "ahdmod"
-#define kParamRawDemosaicAFD "AFD", "AFD interpolation (5-pass).", "afd"
-#define kParamRawDemosaicVCD "VCD", "VCD interpolation.", "vcd"
-#define kParamRawDemosaicMixed "Mixed", "Mixed VCD/Modified AHD interpolation.", "mixed"
-#define kParamRawDemosaicLMMSE "LMMSE", "LMMSE interpolation.", "lmmse"
-#define kParamRawDemosaicAMaZE "AMaZE", "AMaZE interpolation.", "amaze"
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+#pragma message WARN("Some demosaicing algorithms (AFD, VCD, Mixed, LLMSE, AMaZE) will not be available because LibRaw is more recent than 0.18.3.")
+#define WARN_DEMOSAIC " Not available with this version of LibRaw (" LIBRAW_VERSION_STR "), AHD will be used instead."
+#else
+#define WARN_DEMOSAIC
+#endif
+#define kParamRawDemosaicAFD "AFD", "AFD interpolation (5-pass)." WARN_DEMOSAIC, "afd"
+#define kParamRawDemosaicVCD "VCD", "VCD interpolation." WARN_DEMOSAIC, "vcd"
+#define kParamRawDemosaicMixed "Mixed", "Mixed VCD/Modified AHD interpolation." WARN_DEMOSAIC, "mixed"
+#define kParamRawDemosaicLMMSE "LMMSE", "LMMSE interpolation." WARN_DEMOSAIC, "lmmse"
+#define kParamRawDemosaicAMaZE "AMaZE", "AMaZE interpolation." WARN_DEMOSAIC, "amaze"
 #if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0) && OIIO_VERSION >= 10712
 // not available in OIIO 1.7.11:
 #define kParamRawDemosaicDHT "DHT", "DHT interpolation.", "dht"

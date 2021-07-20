@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -433,6 +433,7 @@ OCIODisplayPlugin::OCIODisplayPlugin(OfxImageEffectHandle handle)
         // the choice menu can only be modified in Natron
         // Natron supports changing the entries in a choiceparam
         // Nuke (at least up to 8.0v3) does not
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = _ocio->getConfig();
         buildDisplayMenu(config, _displayChoice);
         string display;
@@ -454,6 +455,7 @@ OCIODisplayPlugin::displayCheck(double time)
     if (!_displayChoice) {
         return;
     }
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = _ocio->getConfig();
     if (!config) {
         return;
@@ -490,6 +492,7 @@ OCIODisplayPlugin::viewCheck(double time,
     if (!_viewChoice) {
         return;
     }
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = _ocio->getConfig();
     if (!config) {
         return;
@@ -644,6 +647,7 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
     double gamma = _gamma->getValueAtTime(time);
 
     try {
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = _ocio->getConfig();
         if (!config) {
             throw std::runtime_error("OCIO: no current config");
@@ -1077,6 +1081,7 @@ OCIODisplayPlugin::changedParam(const InstanceChangedArgs &args,
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
 
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = _ocio->getConfig();
 
     if (!config) {
@@ -1211,6 +1216,7 @@ OCIODisplayPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     PageParamDescriptor *page = desc.definePageParam("Controls");
     // insert OCIO parameters
     GenericOCIO::describeInContextInput(desc, context, page, OCIO::ROLE_REFERENCE);
+    AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
     const char * display = config ? config->getDefaultDisplay() : NULL;
     const char * view = display ? config->getDefaultView(display) : NULL;

@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -638,6 +638,7 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
              ( _procPower_b != power_b) ||
              ( _procSaturation != saturation) ||
              ( _procDirection != directioni) ) {
+            AutoSetAndRestoreThreadLocale locale;
             OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
             assert(config);
             OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
@@ -996,6 +997,7 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
     _cccid->getValueAtTime(time, cccid);
 
     try {
+        AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
         if (!config) {
             throw std::runtime_error("OCIO: no current config");
@@ -1224,6 +1226,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                 _direction->getValueAtTime(time, _directioni);
 
                 try {
+                    AutoSetAndRestoreThreadLocale locale;
                     OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
                     if (!config) {
                         throw std::runtime_error("OCIO: no current config");

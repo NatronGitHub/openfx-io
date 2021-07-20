@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2020 The Natron Developers
+ * (C) 2018-2021 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -42,6 +42,10 @@ GCC_DIAG_OFF(deprecated)
 #include <ImfPixelType.h>
 #include <ImfChannelList.h>
 #include <ImfInputFile.h>
+#include <ImfHeader.h>
+#include <ImfCompression.h>
+#include <ImfFrameBuffer.h>
+#include <ImathBox.h>
 #include <IlmThreadPool.h>
 GCC_DIAG_ON(deprecated)
 
