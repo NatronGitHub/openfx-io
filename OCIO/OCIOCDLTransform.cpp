@@ -25,6 +25,7 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdio> // fopen...
+#include <fstream> // std::ofstream
 
 #include "ofxsProcessing.H"
 #include "ofxsThreadSuite.h"
@@ -1206,13 +1207,6 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                 std::fclose(file);
                 sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
             } else {
-                file = std::fopen(exportName.c_str(), "w");
-                if (!file) {
-                    sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
-                }
                 const double time = args.time;
                 double slope_r, slope_g, slope_b;
                 _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
@@ -1266,7 +1260,27 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                         cc->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
                     }
 
+#                 if OCIO_VERSION_HEX >= 0x02000000
+                    OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
+                    std::ofstream ofs;
+                    ofs.open(exportName.c_str(), std::ofstream::out);
+                    if ( !ofs.is_open() ) {
+                        sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
+                        throwSuiteStatusException(kOfxStatFailed);
+
+                        return;
+                    }
+                    g->write(config, "CDL", ofs);
+#                 else
+                    file = std::fopen(exportName.c_str(), "w");
+                    if (!file) {
+                        sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
+                        throwSuiteStatusException(kOfxStatFailed);
+
+                        return;
+                    }
                     std::fputs(cc->getXML(), file);
+#                 endif
                 } catch (const std::exception &e) {
                     setPersistentMessage( Message::eMessageError, "", e.what() );
                     std::fclose(file);
