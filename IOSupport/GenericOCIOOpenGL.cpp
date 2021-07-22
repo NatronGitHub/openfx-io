@@ -40,6 +40,10 @@
 #include <ofxNatron.h>
 #include <ofxsOGLUtilities.h>
 
+#if OCIO_VERSION_HEX >= 0x02000000
+#include <OpenColorIO/oglapphelpers/oglapp.h>
+#endif
+
 // Use OpenGL function directly, no need to use ofxsOGLFunctions.h directly because we don't use OSMesa
 #include "glad.h"
 
@@ -160,6 +164,7 @@ allocateLut3D(GLuint* lut3dTexID,
     lut3D->resize(num3Dentries);
     std::memset(&(*lut3D)[0], 0, sizeof(float) * num3Dentries);
 
+    // https://github.com/AcademySoftwareFoundation/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L234
     glEnable(GL_TEXTURE_3D);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_3D, *lut3dTexID);
@@ -189,6 +194,21 @@ GenericOCIO::applyGL(const Texture* srcImg,
     // TODO: OCIO 2 with new GPU API https://github.com/imageworks/OpenColorIO/pull/539
     // See https://github.com/imageworks/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp
 #error "Code must be upgraded for OCIO 2 with new GPU API"
+
+    // https://github.com/AcademySoftwareFoundation/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp#L415
+    // Set the shader context.
+    OCIO::GpuShaderDescRcPtr shaderDesc = OCIO::GpuShaderDesc::CreateShaderDesc();
+    shaderDesc->setLanguage(OCIO::GPU_LANGUAGE_GLSL_1_2);
+    shaderDesc->setFunctionName("OCIODisplay");
+    shaderDesc->setResourcePrefix("ocio_");
+
+    // Extract the shader information.
+    OCIO::ConstGPUProcessorRcPtr gpu
+        = g_gpulegacy ? processor->getOptimizedLegacyGPUProcessor(g_optimization, 32)
+                      : processor->getOptimizedGPUProcessor(g_optimization);
+    gpu->extractGpuShaderInfo(shaderDesc);
+
+    g_oglApp->setShader(shaderDesc);
 #else
     // Reference code: https://github.com/imageworks/OpenColorIO/blob/RB-1.1/src/apps/ociodisplay/main.cpp
     // Step 1: Create a GPU Shader Description
@@ -302,7 +322,7 @@ GenericOCIO::applyGL(const Texture* srcImg,
     glUniform1i(glGetUniformLocation(programID, "tex1"), 0);
     glUniform1i(glGetUniformLocation(programID, "tex2"), 1);
 
-
+    // https://github.com/AcademySoftwareFoundation/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L192
     // Bind textures and apply texture mapping
     glEnable(GL_TEXTURE_2D);
     glActiveTexture(GL_TEXTURE0);
