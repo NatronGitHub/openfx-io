@@ -187,8 +187,6 @@ private:
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
 
-    void updateCCCId();
-
     void refreshKnobEnabledState(bool readFromFile);
 
     void loadCDLFromFile();
@@ -444,7 +442,6 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
     setSupportsOpenGLRender( _enableGPU->getValue() && !_premult->getValue() );
 #endif
 
-    updateCCCId();
     bool readFromFile;
     _readFromFile->getValue(readFromFile);
     refreshKnobEnabledState(readFromFile);
@@ -1077,21 +1074,6 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
     return false;
 } // OCIOCDLTransformPlugin::isIdentity
 
-void
-OCIOCDLTransformPlugin::updateCCCId()
-{
-    // Convoluted equiv to pysting::endswith(m_file, ".ccc")
-    // TODO: Could this be queried from the processor?
-    string srcstring;
-
-    _file->getValue(srcstring);
-    const string cccext = ".ccc";
-    if ( std::equal( cccext.rbegin(), cccext.rend(), srcstring.rbegin() ) ) {
-        _cccid->setIsSecretAndDisabled(false);
-    } else {
-        _cccid->setIsSecretAndDisabled(true);
-    }
-}
 
 void
 OCIOCDLTransformPlugin::refreshKnobEnabledState(bool readFromFile)
@@ -1190,9 +1172,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
     // Only show the cccid knob when loading a .cc/.ccc file. Set
     // hidden state when the src is changed, or the node properties
     // are shown
-    if (paramName == kParamFile) {
-        updateCCCId();
-    } else if (paramName == kParamReload) {
+    if (paramName == kParamReload) {
         _version->setValue(_version->getValue() + 1); // invalidate the node cache
         OCIO::ClearAllCaches();
     } else if ( (paramName == kParamExport) && (args.reason == eChangeUserEdit) ) {
