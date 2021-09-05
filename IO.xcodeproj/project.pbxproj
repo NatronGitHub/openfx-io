@@ -88,6 +88,7 @@
 		1E378A88194DE27400800F5F /* SequenceParsing.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D7F8CEF118F2B9EE00172EEC /* SequenceParsing.cpp */; };
 		1E378A89194DE28300800F5F /* SequenceParsing.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D7F8CEF118F2B9EE00172EEC /* SequenceParsing.cpp */; };
 		1E378A8B194DE31700800F5F /* SequenceParsing.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D7F8CEF118F2B9EE00172EEC /* SequenceParsing.cpp */; };
+		1E577B5B26E55FCE00229230 /* ofxsFileOpen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AC51C48A1D0EF6710004B213 /* ofxsFileOpen.cpp */; };
 		1E5EBBC31D4E0D5E0005A5A8 /* GenericOCIOOpenGL.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E5EBBC21D4E0D1A0005A5A8 /* GenericOCIOOpenGL.cpp */; };
 		1E5EBBC41D4E0D620005A5A8 /* GenericOCIOOpenGL.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E5EBBC21D4E0D1A0005A5A8 /* GenericOCIOOpenGL.cpp */; };
 		1E626D981E703DAC00405114 /* PixelFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E626D961E703DA300405114 /* PixelFormat.cpp */; };
@@ -1642,6 +1643,7 @@
 				1EA5A4621C8D84790031138D /* ofxsMultiPlane.cpp in Sources */,
 				1E00B3CB188EE90A003BC7F3 /* ReadEXR.cpp in Sources */,
 				1E00B3CD188EE90A003BC7F3 /* WriteEXR.cpp in Sources */,
+				1E577B5B26E55FCE00229230 /* ofxsFileOpen.cpp in Sources */,
 				1E74D851189115BC00E9034B /* GenericOCIO.cpp in Sources */,
 				1E00B391188EE887003BC7F3 /* GenericReader.cpp in Sources */,
 				1E00B39D188EE887003BC7F3 /* GenericWriter.cpp in Sources */,
@@ -1830,20 +1832,25 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SEEXPR_PATH)/include",
+					"$(EXR_PATH)/include/Imath",
 					"$(EXR_PATH)/include/OpenEXR",
 					"$(FFMPEG_PATH)/include",
 					"$(OIIO_PATH)/include",
-					"$(SEEXPR_PATH)/include",
 					"$(LIBRAW_PATH)/include/libraw",
+					"$(LIBPNG_PATH)/include",
 				);
 				INFOPLIST_FILE = IO/Info.plist;
 				OTHER_LDFLAGS = (
+					"-L$(SEEXPR_PATH)/lib",
+					"-lSeExpr",
+					"-L$(OCIO_PATH)/lib",
+					"-lOpenColorIO",
 					"-L$(EXR_PATH)/lib",
 					"-lIlmThread",
 					"-lImath",
-					"-lHalf",
 					"-lIex",
-					"-lIlmImf",
+					"-lOpenEXR",
 					"-L$(FFMPEG_PATH)/lib",
 					"-lavcodec",
 					"-lavformat",
@@ -1851,10 +1858,6 @@
 					"-lswscale",
 					"-L$(OIIO_PATH)/lib",
 					"-lOpenImageIO",
-					"-L$(SEEXPR_PATH)/lib",
-					"-lSeExpr",
-					"-L$(OCIO_PATH)/lib",
-					"-lOpenColorIO",
 					"-L$(LIBPNG_PATH)/lib",
 					"-lpng16",
 					"-lz",
@@ -1882,20 +1885,25 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(SEEXPR_PATH)/include",
+					"$(EXR_PATH)/include/Imath",
 					"$(EXR_PATH)/include/OpenEXR",
 					"$(FFMPEG_PATH)/include",
 					"$(OIIO_PATH)/include",
-					"$(SEEXPR_PATH)/include",
 					"$(LIBRAW_PATH)/include/libraw",
+					"$(LIBPNG_PATH)/include",
 				);
 				INFOPLIST_FILE = IO/Info.plist;
 				OTHER_LDFLAGS = (
+					"-L$(SEEXPR_PATH)/lib",
+					"-lSeExpr",
+					"-L$(OCIO_PATH)/lib",
+					"-lOpenColorIO",
 					"-L$(EXR_PATH)/lib",
 					"-lIlmThread",
 					"-lImath",
-					"-lHalf",
 					"-lIex",
-					"-lIlmImf",
+					"-lOpenEXR",
 					"-L$(FFMPEG_PATH)/lib",
 					"-lavcodec",
 					"-lavformat",
@@ -1903,10 +1911,6 @@
 					"-lswscale",
 					"-L$(OIIO_PATH)/lib",
 					"-lOpenImageIO",
-					"-L$(SEEXPR_PATH)/lib",
-					"-lSeExpr",
-					"-L$(OCIO_PATH)/lib",
-					"-lOpenColorIO",
 					"-L$(LIBPNG_PATH)/lib",
 					"-lpng16",
 					"-lz",
@@ -1959,7 +1963,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				INFOPLIST_FILE = OCIO/Info.plist;
-				LIBRARY_SEARCH_PATHS = "$(OIIO_PATH)/lib";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-L$(OCIO_PATH)/lib",
@@ -1973,7 +1976,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				INFOPLIST_FILE = OCIO/Info.plist;
-				LIBRARY_SEARCH_PATHS = "$(OIIO_PATH)/lib";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-L$(OCIO_PATH)/lib",
@@ -2002,6 +2004,10 @@
 		AC51C47A1D0ED85B0004B213 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(LIBPNG_PATH)/include",
+				);
 				INFOPLIST_FILE = PNG/Info.plist;
 				OTHER_LDFLAGS = (
 					"-L$(OCIO_PATH)/lib",
@@ -2017,6 +2023,10 @@
 		AC51C47B1D0ED85B0004B213 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(LIBPNG_PATH)/include",
+				);
 				INFOPLIST_FILE = PNG/Info.plist;
 				OTHER_LDFLAGS = (
 					"-L$(OCIO_PATH)/lib",
@@ -2068,20 +2078,19 @@
 			buildSettings = {
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(EXR_PATH)/include/Imath",
 					"$(EXR_PATH)/include/OpenEXR",
 				);
 				INFOPLIST_FILE = EXR/Info.plist;
-				LIBRARY_SEARCH_PATHS = "$(EXR_PATH)/lib";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-L$(OCIO_PATH)/lib",
+					"-lOpenColorIO",
 					"-L$(EXR_PATH)/lib",
 					"-lIlmThread",
 					"-lImath",
-					"-lHalf",
 					"-lIex",
-					"-lIlmImf",
-					"-L$(OCIO_PATH)/lib",
-					"-lOpenColorIO",
+					"-lOpenEXR",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
@@ -2092,20 +2101,19 @@
 			buildSettings = {
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(EXR_PATH)/include/Imath",
 					"$(EXR_PATH)/include/OpenEXR",
 				);
 				INFOPLIST_FILE = EXR/Info.plist;
-				LIBRARY_SEARCH_PATHS = "$(EXR_PATH)/lib";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-L$(OCIO_PATH)/lib",
+					"-lOpenColorIO",
 					"-L$(EXR_PATH)/lib",
 					"-lIlmThread",
 					"-lImath",
-					"-lHalf",
 					"-lIex",
-					"-lIlmImf",
-					"-L$(OCIO_PATH)/lib",
-					"-lOpenColorIO",
+					"-lOpenEXR",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
@@ -2123,11 +2131,11 @@
 				LIBRARY_SEARCH_PATHS = "$(OIIO_PATH)/lib";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-L$(OCIO_PATH)/lib",
+					"-lOpenColorIO",
 					"-L$(OIIO_PATH)/lib",
 					"-lOpenImageIO",
 					"-lOpenImageIO_Util",
-					"-L$(OCIO_PATH)/lib",
-					"-lOpenColorIO",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
@@ -2145,11 +2153,11 @@
 				LIBRARY_SEARCH_PATHS = "$(OIIO_PATH)/lib";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-L$(OCIO_PATH)/lib",
+					"-lOpenColorIO",
 					"-L$(OIIO_PATH)/lib",
 					"-lOpenImageIO",
 					"-lOpenImageIO_Util",
-					"-L$(OCIO_PATH)/lib",
-					"-lOpenColorIO",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
