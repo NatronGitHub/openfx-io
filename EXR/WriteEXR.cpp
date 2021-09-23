@@ -25,6 +25,7 @@
 #include <memory>
 
 #include "ofxsMacros.h"
+#include "ofxsFileOpen.h"
 
 GCC_DIAG_OFF(deprecated)
 #include <ImfChannelList.h>
@@ -207,6 +208,13 @@ WriteEXRPlugin::encode(const string& filename,
     }
 
     assert(pixelDataNComps);
+
+    // If the file exists (which means "overwrite" was checked), remove it first.
+    // See https://github.com/NatronGitHub/Natron/issues/666
+    if (OFX::exists_utf8( filename.c_str() )) {
+        OFX::remove_utf8( filename.c_str() );
+    }
+
     try {
         int compressionIndex;
         _compression->getValue(compressionIndex);

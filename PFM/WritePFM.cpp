@@ -164,6 +164,12 @@ WritePFMPlugin::encode(const string& filename,
         return;
     }
 
+    // If the file exists (which means "overwrite" was checked), remove it first.
+    // See https://github.com/NatronGitHub/Natron/issues/666
+    if (OFX::exists_utf8( filename.c_str() )) {
+        OFX::remove_utf8( filename.c_str() );
+    }
+
     std::FILE *const nfile = fopen_utf8(filename.c_str(), "wb");
     if (!nfile) {
         setPersistentMessage(Message::eMessageError, "", "Cannot open file \"" + filename + "\"");

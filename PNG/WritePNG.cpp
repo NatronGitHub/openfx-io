@@ -717,6 +717,12 @@ WritePNGPlugin::encode(const string& filename,
         return;
     }
 
+    // If the file exists (which means "overwrite" was checked), remove it first.
+    // See https://github.com/NatronGitHub/Natron/issues/666
+    if (OFX::exists_utf8( filename.c_str() )) {
+        OFX::remove_utf8( filename.c_str() );
+    }
+
     png_structp png = NULL;
     png_infop info = NULL;
     FILE* file = NULL;
