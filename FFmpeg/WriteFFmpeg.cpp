@@ -77,7 +77,7 @@ extern "C" {
 }
 #include "IOUtility.h"
 #include "ofxsMacros.h"
-
+#include "ofxsFileOpen.h"
 
 #ifdef OFX_IO_USING_OCIO
 #include "GenericOCIO.h"
@@ -3737,6 +3737,12 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
+    }
+
+    // If the file exists (which means "overwrite" was checked), remove it first.
+    // See https://github.com/NatronGitHub/Natron/issues/666
+    if (OFX::exists_utf8( filename.c_str() )) {
+        OFX::remove_utf8( filename.c_str() );
     }
 
     assert(!_formatContext);

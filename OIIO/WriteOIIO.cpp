@@ -1391,7 +1391,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     }
     } // switch
 
-
+    // If the file exists (which means "overwrite" was checked), remove it first.
+    // See https://github.com/NatronGitHub/Natron/issues/666
+    if (Filesystem::exists(filename)) {
+        string err;
+        bool ok = Filesystem::remove(filename, err);
+        if (!ok) {
+            setPersistentMessage(Message::eMessageError, "", err);
+            throwSuiteStatusException(kOfxStatFailed);
+        }
+    }
+    // Some formats only support opening all subimages at once.
+    // See https://openimageio.readthedocs.io/en/stable/imageoutput.html
     if ( !data->output->open( filename, data->specs.size(), &data->specs.front() ) ) {
         setPersistentMessage( Message::eMessageError, "", data->output->geterror() );
         throwSuiteStatusException(kOfxStatFailed);
