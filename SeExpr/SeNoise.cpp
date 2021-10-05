@@ -165,6 +165,10 @@ enum NoiseTypeEnum
 
 #define kParamNoiseTypeDefault eNoiseTypeFBM
 
+#define kParamNoiseColored "noiseColored"
+#define kParamNoiseColoredLabel "Colored Noise"
+#define kParamNoiseColoredHint "If checked, generate independent noise patterns for the red, green and blue channels, and set alpha to 1."
+
 #define kParamNoiseSize "noiseSize"
 #define kParamNoiseSizeLabel "Noise Size"
 #define kParamNoiseSizeHint "Size of noise in pixels, corresponding to its lowest frequency."
@@ -177,7 +181,7 @@ enum NoiseTypeEnum
 
 #define kParamNoiseZSlope "noiseZSlope"
 #define kParamNoiseZSlopeLabel "Z Slope"
-#define kParamNoiseZSlopeHint "Z is computed as Z = Z0 + frame * Z_slope. 0 means a constant noise, 1 means a different noise pattern at every frame."
+#define kParamNoiseZSlopeHint "Z is computed as Z = Z0 + frame * Z_slope. 0 means a constant noise, 1 means a different noise pattern at every frame, values close to 0 mean a noise that varies slowly with time."
 #define kParamNoiseZSlopeDefault 0.
 
 #ifdef SENOISE_VORONOI
@@ -270,6 +274,7 @@ protected:
     // plugin parameter values
     bool _replace;
     NoiseTypeEnum _noiseType;
+    bool _noiseColored;
 #ifdef SENOISE_VORONOI
     VoronoiTypeEnum _voronoiType;
     double _jitter;
@@ -302,6 +307,7 @@ public:
         // initialize plugin parameter values
         , _replace(false)
         , _noiseType(eNoiseTypeCellNoise)
+        , _noiseColored(false)
 #ifdef SENOISE_VORONOI
         , _voronoiType(eVoronoiTypeCell)
         , _jitter(0.5)
@@ -334,6 +340,7 @@ public:
                    bool processA,
                    bool replace,
                    NoiseTypeEnum noiseType,
+                   bool noiseColored,
 #ifdef SENOISE_VORONOI
                    VoronoiTypeEnum voronoiType,
                    double jitter,
@@ -357,6 +364,7 @@ public:
         // set plugin parameter values
         _replace = replace;
         _noiseType = noiseType;
+        _noiseColored = noiseColored;
 #ifdef SENOISE_VORONOI
         _voronoiType = voronoiType;
         _jitter = jitter;
@@ -409,6 +417,7 @@ public:
         const double norm2 = (_point1.x - _point0.x) * (_point1.x - _point0.x) + (_point1.y - _point0.y) * (_point1.y - _point0.y);
         const double nx = norm2 == 0. ? 0. : (_point1.x - _point0.x) / norm2;
         const double ny = norm2 == 0. ? 0. : (_point1.y - _point0.y) / norm2;
+        int noiseComponents = _noiseColored ? 3 : 1;
 
         for (int y = procWindow.y1; y < procWindow.y2; y++) {
             if ( _effect.abort() ) {
@@ -427,54 +436,69 @@ public:
                 p = _invtransform * p;
                 double args[3] = { p.x, p.y, p.z };
                 // process the pixel (the actual computation goes here)
-                double result;
-                switch (_noiseType) {
-                case eNoiseTypeCellNoise: {
-                    // double cellnoise(const Vec3d& p)
-                    SeExpr2::CellNoise<3, 1>(args, &result);
-                    break;
+                double resultComps[3];
+                for (int i = 0; i < noiseComponents; ++i) {
+                    switch (_noiseType) {
+                    case eNoiseTypeCellNoise: {
+                        // double cellnoise(const Vec3d& p)
+                        SeExpr2::CellNoise<3, 1>(args, &resultComps[i]);
+                        break;
+                    }
+                    case eNoiseTypeNoise: {
+                        // double noise(int n, const Vec3d* args)
+                        SeExpr2::Noise<3, 1>(args, &resultComps[i]);
+                        resultComps[i] = .5 * resultComps[i] + .5;
+                        break;
+                    }
+    #ifdef SENOISE_PERLIN
+                    case eNoiseTypePerlin: {
+                        n = SeExpr::perlin(1, &p);
+                        break;
+                    }
+    #endif
+                    case eNoiseTypeFBM: {
+                        // double fbm(int n, const Vec3d* args) in SeExprBuiltins.cpp
+                        SeExpr2::FBM<3, 1, false>(args, &resultComps[i], _octaves, _lacunarity, _gain);
+                        resultComps[i] = .5 * resultComps[i] + .5;
+                        break;
+                    }
+                    case eNoiseTypeTurbulence: {
+                        // double turbulence(int n, const Vec3d* args)
+                        SeExpr2::FBM<3, 1, true>(args, &resultComps[i], _octaves, _lacunarity, _gain);
+                        break;
+                        //resultComps = .5*resultComps+.5;
+                    }
+    #ifdef SENOISE_VORONOI
+                    case eNoiseTypeVoronoi: {
+                        SeExpr2::Vec3d vargs[7];
+                        vargs[0] = SeExpr2::Vec3d(args[0], args[1], args[2]);
+                        vargs[1][0] = (int)_voronoiType + 1;
+                        vargs[2][0] = _jitter;
+                        vargs[3][0] = _fbmScale;
+                        vargs[4][0] = _octaves;
+                        vargs[5][0] = _lacunarity;
+                        vargs[6][0] = _gain;
+                        resultComps[i] = SeExpr2::voronoiFn(voronoiPointData, 7, vargs)[0];
+                        break;
+                    }
+    #endif
+                    }
+                    //resultComps = resultComps*resultComps; // gamma = 0.5 (TODO: gamma param)
+                    // shift xyz for next component by some large enough pseudo-random integer number
+                    // (so that cell noise still works).
+                    args[0] -= 17853;
+                    args[1] += 15707;
+                    args[2] -= 31415;
                 }
-                case eNoiseTypeNoise: {
-                    // double noise(int n, const Vec3d* args)
-                    SeExpr2::Noise<3, 1>(args, &result);
-                    result = .5 * result + .5;
-                    break;
+                OfxRGBAColourD result;
+                if (_noiseColored) {
+                    result.r = resultComps[0];
+                    result.g = resultComps[1];
+                    result.b = resultComps[2];
+                    result.a = 1.;
+                } else {
+                    result.r = result.g = result.b = result.a = resultComps[0];
                 }
-#ifdef SENOISE_PERLIN
-                case eNoiseTypePerlin: {
-                    n = SeExpr::perlin(1, &p);
-                    break;
-                }
-#endif
-                case eNoiseTypeFBM: {
-                    // double fbm(int n, const Vec3d* args) in SeExprBuiltins.cpp
-                    SeExpr2::FBM<3, 1, false>(args, &result, _octaves, _lacunarity, _gain);
-                    result = .5 * result + .5;
-                    break;
-                }
-                case eNoiseTypeTurbulence: {
-                    // double turbulence(int n, const Vec3d* args)
-                    SeExpr2::FBM<3, 1, true>(args, &result, _octaves, _lacunarity, _gain);
-                    break;
-                    //result = .5*result+.5;
-                }
-#ifdef SENOISE_VORONOI
-                case eNoiseTypeVoronoi: {
-                    SeExpr2::Vec3d args[7];
-                    args[0] = SeExpr2::Vec3d(p.x, p.y, p.z);
-                    args[1][0] = (int)_voronoiType + 1;
-                    args[2][0] = _jitter;
-                    args[3][0] = _fbmScale;
-                    args[4][0] = _octaves;
-                    args[5][0] = _lacunarity;
-                    args[6][0] = _gain;
-                    result = SeExpr2::voronoiFn(voronoiPointData, 7, args)[0];
-                    break;
-                }
-#endif
-                }
-                //result = result*result; // gamma = 0.5 (TODO: gamma param)
-
                 // combine with ramp color
                 OfxRGBAColourD rampColor;
                 if (_type == eRampTypeNone) {
@@ -494,13 +518,13 @@ public:
                     rampColor.a = _color0.a * (1 - t) + _color1.a * t;
                 }
                 // coverity[dead_error_line]
-                tmpPix[0] = processR ? t_r * (1. - result) + rampColor.r * result : unpPix[0];
+                tmpPix[0] = processR ? t_r * (1. - result.r) + rampColor.r * result.r : unpPix[0];
                 // coverity[dead_error_line]
-                tmpPix[1] = processG ? t_g * (1. - result) + rampColor.g * result : unpPix[1];
+                tmpPix[1] = processG ? t_g * (1. - result.g) + rampColor.g * result.g : unpPix[1];
                 // coverity[dead_error_line]
-                tmpPix[2] = processB ? t_b * (1. - result) + rampColor.b * result : unpPix[2];
+                tmpPix[2] = processB ? t_b * (1. - result.b) + rampColor.b * result.b : unpPix[2];
                 // coverity[dead_error_line]
-                tmpPix[3] = processA ? t_a * (1. - result) + rampColor.a * result : unpPix[3];
+                tmpPix[3] = processA ? t_a * (1. - result.a) + rampColor.a * result.a : unpPix[3];
 
                 ofxsMaskMixPix<PIX, nComponents, maxValue, true>(tmpPix, x, y, srcPix, _doMasking, _maskImg, (float)_mix, _maskInvert, dstPix);
                 dstPix += nComponents;
@@ -531,6 +555,7 @@ public:
         , _maskApply(NULL)
         , _maskInvert(NULL)
         , _noiseType(NULL)
+        , _noiseColored(NULL)
         , _noiseSize(NULL)
         , _noiseZ(NULL)
         , _noiseZSlope(NULL)
@@ -596,6 +621,7 @@ public:
         assert(_replace);
 
         _noiseType = fetchChoiceParam(kParamNoiseType);
+        _noiseColored = fetchBooleanParam(kParamNoiseColored);
         _noiseSize = fetchDouble2DParam(kParamNoiseSize);
         _noiseZ = fetchDoubleParam(kParamNoiseZ);
         _noiseZSlope = fetchDoubleParam(kParamNoiseZSlope);
@@ -612,7 +638,7 @@ public:
                _voronoiType && _jitter && _fbmScale &&
                _octaves && _lacunarity && _gain);
 #else
-        assert(_noiseType && _noiseSize && _noiseZ && _noiseZSlope &&
+        assert(_noiseType && _noiseColored && _noiseSize && _noiseZ && _noiseZSlope &&
                _octaves && _lacunarity && _gain);
 #endif
 
@@ -712,6 +738,7 @@ private:
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
     ChoiceParam* _noiseType;
+    BooleanParam* _noiseColored;
     Double2DParam* _noiseSize;
     DoubleParam* _noiseZ;
     DoubleParam* _noiseZSlope;
@@ -806,6 +833,8 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase &processor,
     int noiseType_i;
     _noiseType->getValueAtTime(time, noiseType_i);
     NoiseTypeEnum noiseType = (NoiseTypeEnum)noiseType_i;
+    bool noiseColored;
+    _noiseColored->getValueAtTime(time, noiseColored);
     OfxPointD noiseSize;
     _noiseSize->getValueAtTime(time, noiseSize.x, noiseSize.y);
 
@@ -891,7 +920,7 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase &processor,
 
     processor.setValues(mix,
                         processR, processG, processB, processA, replace,
-                        noiseType,
+                        noiseType, noiseColored,
 #ifdef SENOISE_VORONOI
                         voronoiType, jitter, fbmScale,
 #endif
@@ -1350,6 +1379,15 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor &desc,
 
 
     // describe plugin params
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamNoiseColored);
+        param->setLabel(kParamNoiseColoredLabel);
+        param->setHint(kParamNoiseColoredHint);
+        param->setDefault(false);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
     {
         Double2DParamDescriptor* param = desc.defineDouble2DParam(kParamNoiseSize);
         param->setLabel(kParamNoiseSizeLabel);
