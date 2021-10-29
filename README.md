@@ -98,7 +98,7 @@ compiling:
     
 ### Finally
 
-    make CONFIG=release OIIO_HOME=/opt/oiio
+    env PKG_CONFIG_PATH=/opt/oiio/lib/pkgconfig make CONFIG=release
     
 ## Compiling on OS X with macports
 
@@ -161,7 +161,7 @@ Add the following line to `/opt/local/etc/macports/variants.conf`:
 
 Then to compile...
 
-    make CONFIG=release OCIO_HOME=/opt/local OIIO_HOME=/opt/local
+    env PKG_CONFIG_PATH=/opt/local/lib/pkgconfig make CONFIG=release OCIO_HOME=/opt/local
 
 where /opt/local is where the macports tree stores the includes and libs.
 

@@ -150,14 +150,14 @@ script:
   #- env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig pkg-config --cflags libraw_r
   #- ls $HOME/openexr/lib/pkgconfig 
   #- ls $HOME/openexr/include/OpenEXR
-  - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio
-  - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio nomulti
+  - env PKG_CONFIG_PATH=$HOME/oiio/lib/pkgconfig:$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr
+  - env PKG_CONFIG_PATH=$HOME/oiio/lib/pkgconfig:$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr nomulti
   - make clean
   # without OCIO OpenGL support
-  - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio OCIO_OPENGL_CXXFLAGS= OCIO_OPENGL_LINKFLAGS=
+  - env PKG_CONFIG_PATH=$HOME/oiio/lib/pkgconfig:$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OCIO_OPENGL_CXXFLAGS= OCIO_OPENGL_LINKFLAGS=
   - make clean
   # without OCIO
-  - env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio OCIO_CXXFLAGS= OCIO_LINKFLAGS=
+  - env PKG_CONFIG_PATH=$HOME/oiio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J V=1 CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OCIO_CXXFLAGS= OCIO_LINKFLAGS=
 
 addons:
   apt:
@@ -225,6 +225,6 @@ addons:
     #build_command_prepend: ./configure
     # This command will be added as an argument to "cov-build" to compile
     # the project for analysis
-    build_command: "env PKG_CONFIG_PATH=$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr OIIO_HOME=$HOME/oiio"
+    build_command: "env PKG_CONFIG_PATH=$HOME/oiio/lib/pkgconfig:$HOME/ocio/lib/pkgconfig:$HOME/openexr/lib/pkgconfig make $J CXXFLAGS_EXTRA=-std=c++11 CONFIG=debug SEEXPR_HOME=$HOME/seexpr"
     # Pattern to match selecting branches that will run analysis
     branch_pattern: coverity_scan
