@@ -50,6 +50,10 @@
 
 #ifdef OFX_IO_USING_OCIO
 #include <OpenColorIO/OpenColorIO.h>
+
+#if OCIO_VERSION_HEX >= 0x02000000
+#include <OpenColorIO/oglapphelpers/glsl.h>
+#endif
 #endif
 
 #include "IOUtility.h"
@@ -101,7 +105,11 @@ NAMESPACE_OFX_ENTER
 class OCIOOpenGLContextData
 {
 public:
+#if OCIO_VERSION_HEX >= 0x02000000
+    OCIO_NAMESPACE::OpenGLBuilderRcPtr procLut3D;
+#else
     std::vector<float> procLut3D;
+#endif
     std::string procShaderCacheID;
     std::string procLut3DCacheID;
     unsigned int procLut3DID;
@@ -151,7 +159,11 @@ public:
 #if defined(OFX_IO_USING_OCIO)
     static void applyGL(const OFX::Texture* srcImg,
                         const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+#if OCIO_VERSION_HEX >= 0x02000000
+                        OCIO_NAMESPACE::OpenGLBuilderRcPtr* lut3DParam,
+#else
                         std::vector<float>* lut3DParam,
+#endif
                         unsigned int *lut3DTexIDParam,
                         unsigned int *shaderProgramIDParam,
                         unsigned int *fragShaderIDParam,
