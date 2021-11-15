@@ -200,6 +200,14 @@ GenericOCIO::applyGL(const Texture* srcImg,
                      string* lut3DCacheIDParam,
                      string* shaderTextCacheIDParam)
 {
+    // Either we cache it all, or we don't
+    assert( (!lut3DParam && !lut3DTexIDParam && !shaderProgramIDParam && !lut3DCacheIDParam && !shaderTextCacheIDParam) ||
+            (lut3DParam && lut3DTexIDParam && shaderProgramIDParam && lut3DCacheIDParam && shaderTextCacheIDParam) );
+    if ( (lut3DParam || lut3DTexIDParam || shaderProgramIDParam || lut3DCacheIDParam || shaderTextCacheIDParam) &&
+         (!lut3DParam || !lut3DTexIDParam || !shaderProgramIDParam || !lut3DCacheIDParam || !shaderTextCacheIDParam) ) {
+        throw std::invalid_argument("GenericOCIO::applyGL: Invalid caching arguments");
+    }
+
 #if OCIO_VERSION_HEX >= 0x02000000
     // TODO: OCIO 2 with new GPU API https://github.com/imageworks/OpenColorIO/pull/539
     // See https://github.com/imageworks/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp
@@ -210,14 +218,6 @@ GenericOCIO::applyGL(const Texture* srcImg,
     shaderDesc->setLanguage(OCIO::GPU_LANGUAGE_GLSL_1_2);
     shaderDesc->setFunctionName("OCIODisplay");
     shaderDesc->setResourcePrefix("ocio_");
-
-    // Either we cache it all, or we don't
-    assert( (!lut3DParam && !lut3DTexIDParam && !shaderProgramIDParam && !lut3DCacheIDParam && !shaderTextCacheIDParam) ||
-            (lut3DParam && lut3DTexIDParam && shaderProgramIDParam && lut3DCacheIDParam && shaderTextCacheIDParam) );
-    if ( (lut3DParam || lut3DTexIDParam || shaderProgramIDParam || lut3DCacheIDParam || shaderTextCacheIDParam) &&
-         (!lut3DParam || !lut3DTexIDParam || !shaderProgramIDParam || !lut3DCacheIDParam || !shaderTextCacheIDParam) ) {
-        throw std::invalid_argument("GenericOCIO::applyGL: Invalid caching arguments");
-    }
 
     // Extract the shader information.
     bool gpulegacy = false;
@@ -325,14 +325,6 @@ GenericOCIO::applyGL(const Texture* srcImg,
     shaderDesc.setLanguage(OCIO::GPU_LANGUAGE_GLSL_1_0);
     shaderDesc.setFunctionName("OCIODisplay");
     shaderDesc.setLut3DEdgeLen(LUT3D_EDGE_SIZE);
-
-    // Either we cache it all, or we don't
-    assert( (!lut3DParam && !lut3DTexIDParam && !shaderProgramIDParam && !lut3DCacheIDParam && !shaderTextCacheIDParam) ||
-            (lut3DParam && lut3DTexIDParam && shaderProgramIDParam && lut3DCacheIDParam && shaderTextCacheIDParam) );
-    if ( (lut3DParam || lut3DTexIDParam || shaderProgramIDParam || lut3DCacheIDParam || shaderTextCacheIDParam) &&
-         (!lut3DParam || !lut3DTexIDParam || !shaderProgramIDParam || !lut3DCacheIDParam || !shaderTextCacheIDParam) ) {
-        throw std::invalid_argument("GenericOCIO::applyGL: Invalid caching arguments");
-    }
 
     // Allocate CPU lut + init lut 3D texture, this should be done only once
     GLuint lut3dTexID = 0;
