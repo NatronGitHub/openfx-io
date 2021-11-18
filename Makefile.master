@@ -17,6 +17,9 @@ OCIO_LINKFLAGS += `pkg-config --libs OpenColorIO` $(OCIO_OPENGL_LINKFLAGS)
 ifeq ($(OS),Linux)
 OCIO_LINKFLAGS += -Wl,-rpath,`pkg-config --variable=libdir OpenColorIO`
 endif
+ifeq ($(shell pkg-config --modversion OpenColorIO | sed -e 's/\..*//'),2)
+OCIO_OPENGL_LINKFLAGS += -lOpenColorIOoglapphelpers
+endif
 
 # OpenEXR
 # OpenImageIO includes OpenEXR as #include <OpenEXR/ImathVec.h>, to we also add the
