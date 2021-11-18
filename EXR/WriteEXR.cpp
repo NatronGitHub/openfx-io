@@ -31,6 +31,7 @@ GCC_DIAG_OFF(deprecated)
 #include <ImfChannelList.h>
 #include <IlmThreadPool.h>
 #include <ImfArray.h>
+#include <ImfCompression.h>
 #include <ImfOutputFile.h>
 #include <ImfHeader.h>
 #include <ImfCompression.h>

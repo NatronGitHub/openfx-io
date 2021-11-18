@@ -2082,9 +2082,6 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
             if (colorSpaceStrLen == 0) {
                 colorSpaceStr = NULL;
             }
-#if OCIO_VERSION_HEX > 0x01010100 // more recent than 1.1.1?
-#pragma message WARN("OpenColorIO was updated, check that the following code is still necessary")
-#endif
             if (colorSpaceStr) {
                 // Only use this colorspace name if it is the last thing before the extension name,
                 // and it is preceded by '_' or '-' or ' ' or '.' (we exclude '/' and '\\'),

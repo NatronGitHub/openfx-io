@@ -25,6 +25,7 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdio> // fopen...
+#include <fstream> // std::ofstream
 
 #include "ofxsProcessing.H"
 #include "ofxsThreadSuite.h"
@@ -612,7 +613,6 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
         }
     }
 
-    float sop[9];
     double slope_r, slope_g, slope_b;
     _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
     double offset_r, offset_g, offset_b;
@@ -640,15 +640,31 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
             OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
             assert(config);
             OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
-            sop[0] = (float)slope_r;
-            sop[1] = (float)slope_g;
-            sop[2] = (float)slope_b;
-            sop[3] = (float)offset_r;
-            sop[4] = (float)offset_g;
-            sop[5] = (float)offset_b;
-            sop[6] = (float)power_r;
-            sop[7] = (float)power_g;
-            sop[8] = (float)power_b;
+#if OCIO_VERSION_HEX >= 0x02000000
+            double sop[9] = {
+                slope_r,
+                slope_g,
+                slope_b,
+                offset_r,
+                offset_g,
+                offset_b,
+                power_r,
+                power_g,
+                power_b
+            };
+#else
+            float sop[9] = {
+                (float)slope_r,
+                (float)slope_g,
+                (float)slope_b,
+                (float)offset_r,
+                (float)offset_g,
+                (float)offset_b,
+                (float)power_r,
+                (float)power_g,
+                (float)power_b
+            };
+#endif
             cc->setSOP(sop);
             cc->setSat( (float)saturation );
 
@@ -963,22 +979,13 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
                                    , int& /*view*/, std::string& /*plane*/)
 {
     const double time = args.time;
-    float sop[9];
     double saturation;
-    double r, g, b;
-
-    _slope->getValueAtTime(time, r, g, b);
-    sop[0] = (float)r;
-    sop[1] = (float)g;
-    sop[2] = (float)b;
-    _offset->getValueAtTime(time, r, g, b);
-    sop[3] = (float)r;
-    sop[4] = (float)g;
-    sop[5] = (float)b;
-    _power->getValueAtTime(time, r, g, b);
-    sop[6] = (float)r;
-    sop[7] = (float)g;
-    sop[8] = (float)b;
+    double slope_r, slope_g, slope_b;
+    _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
+    double offset_r, offset_g, offset_b;
+    _offset->getValueAtTime(time, offset_r, offset_g, offset_b);
+    double power_r, power_g, power_b;
+    _power->getValueAtTime(time, power_r, power_g, power_b);
     _saturation->getValueAtTime(time, saturation);
     int _directioni;
     _direction->getValueAtTime(time, _directioni);
@@ -994,6 +1001,31 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
             throw std::runtime_error("OCIO: no current config");
         }
         OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
+#if OCIO_VERSION_HEX >= 0x02000000
+        double sop[9] = {
+            slope_r,
+            slope_g,
+            slope_b,
+            offset_r,
+            offset_g,
+            offset_b,
+            power_r,
+            power_g,
+            power_b
+        };
+#else
+        float sop[9] = {
+            (float)slope_r,
+            (float)slope_g,
+            (float)slope_b,
+            (float)offset_r,
+            (float)offset_g,
+            (float)offset_b,
+            (float)power_r,
+            (float)power_g,
+            (float)power_b
+        };
+#endif
         cc->setSOP(sop);
         cc->setSat( (float)saturation );
 
@@ -1090,7 +1122,11 @@ OCIOCDLTransformPlugin::loadCDLFromFile()
     }
 
 
+#if OCIO_VERSION_HEX >= 0x02000000
+    double sop[9];
+#else
     float sop[9];
+#endif
     transform->getSOP(sop);
 
     _slope->deleteAllKeys();
@@ -1151,29 +1187,14 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                 std::fclose(file);
                 sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
             } else {
-                file = std::fopen(exportName.c_str(), "w");
-                if (!file) {
-                    sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
-                }
                 const double time = args.time;
-                float sop[9];
+                double slope_r, slope_g, slope_b;
+                _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
+                double offset_r, offset_g, offset_b;
+                _offset->getValueAtTime(time, offset_r, offset_g, offset_b);
+                double power_r, power_g, power_b;
+                _power->getValueAtTime(time, power_r, power_g, power_b);
                 double saturation;
-                double r, g, b;
-                _slope->getValueAtTime(time, r, g, b);
-                sop[0] = (float)r;
-                sop[1] = (float)g;
-                sop[2] = (float)b;
-                _offset->getValueAtTime(time, r, g, b);
-                sop[3] = (float)r;
-                sop[4] = (float)g;
-                sop[5] = (float)b;
-                _power->getValueAtTime(time, r, g, b);
-                sop[6] = (float)r;
-                sop[7] = (float)g;
-                sop[8] = (float)b;
                 _saturation->getValueAtTime(time, saturation);
                 int _directioni;
                 _direction->getValueAtTime(time, _directioni);
@@ -1185,6 +1206,31 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                         throw std::runtime_error("OCIO: no current config");
                     }
                     OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
+#if OCIO_VERSION_HEX >= 0x02000000
+                    double sop[9] = {
+                        slope_r,
+                        slope_g,
+                        slope_b,
+                        offset_r,
+                        offset_g,
+                        offset_b,
+                        power_r,
+                        power_g,
+                        power_b
+                    };
+#else
+                    float sop[9] = {
+                        (float)slope_r,
+                        (float)slope_g,
+                        (float)slope_b,
+                        (float)offset_r,
+                        (float)offset_g,
+                        (float)offset_b,
+                        (float)power_r,
+                        (float)power_g,
+                        (float)power_b
+                    };
+#endif
                     cc->setSOP(sop);
                     cc->setSat( (float)saturation );
 
@@ -1194,7 +1240,27 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                         cc->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
                     }
 
+#                 if OCIO_VERSION_HEX >= 0x02000000
+                    OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
+                    std::ofstream ofs;
+                    ofs.open(exportName.c_str(), std::ofstream::out);
+                    if ( !ofs.is_open() ) {
+                        sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
+                        throwSuiteStatusException(kOfxStatFailed);
+
+                        return;
+                    }
+                    g->write(config, "CDL", ofs);
+#                 else
+                    file = std::fopen(exportName.c_str(), "w");
+                    if (!file) {
+                        sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
+                        throwSuiteStatusException(kOfxStatFailed);
+
+                        return;
+                    }
                     std::fputs(cc->getXML(), file);
+#                 endif
                 } catch (const std::exception &e) {
                     setPersistentMessage( Message::eMessageError, "", e.what() );
                     std::fclose(file);
