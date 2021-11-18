@@ -282,6 +282,21 @@ target_link_libraries(IO
 
 message(STATUS "External library support:")
 
+if(${OPENCOLORIO_FOUND})
+  message(STATUS "  Adding OpenColorIO nodes")
+  target_compile_definitions(IO PRIVATE OFX_IO_USING_OCIO ${OPENCOLORIO_DEFINITIONS})
+  target_include_directories(IO
+    PUBLIC
+      ${OPENCOLORIO_INCLUDES}
+  )
+  target_link_libraries(IO
+    PUBLIC
+      ${OPENCOLORIO_LIBRARIES}
+  )
+else()
+  message(STATUS "  Not adding OpenColorIO nodes")
+endif()
+
 if(${OPENEXR_FOUND})
   message(STATUS "  Adding OpenEXR nodes")
   target_include_directories(IO
@@ -304,21 +319,6 @@ if(${OPENEXR_FOUND})
   )
 else()
   message(STATUS "  Not adding OpenEXR nodes")
-endif()
-
-if(${OPENCOLORIO_FOUND})
-  message(STATUS "  Adding OpenColorIO nodes")
-  target_compile_definitions(IO PRIVATE OFX_IO_USING_OCIO ${OPENCOLORIO_DEFINITIONS})
-  target_include_directories(IO
-    PUBLIC
-      ${OPENCOLORIO_INCLUDES}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      ${OPENCOLORIO_LIBRARIES}
-  )
-else()
-  message(STATUS "  Not adding OpenColorIO nodes")
 endif()
 
 if(${OPENIMAGEIO_FOUND})
