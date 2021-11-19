@@ -2077,7 +2077,11 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         if (setColorSpace && ocioConfig) {
             string name = filename;
             (void)SequenceParsing::removePath(name); // only use the file NAME
+#         if OCIO_VERSION_HEX >= 0x02000000
+            const char* colorSpaceStr = ocioConfig->getColorSpaceFromFilepath( name.c_str() );
+#         else
             const char* colorSpaceStr = ocioConfig->parseColorSpaceFromString( name.c_str() );
+#         endif
             size_t colorSpaceStrLen = colorSpaceStr ? std::strlen(colorSpaceStr) : 0;
             if (colorSpaceStrLen == 0) {
                 colorSpaceStr = NULL;
