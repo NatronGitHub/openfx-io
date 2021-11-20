@@ -18,7 +18,7 @@ ifeq ($(OS),Linux)
 OCIO_LINKFLAGS += -Wl,-rpath,`pkg-config --variable=libdir OpenColorIO`
 endif
 ifeq ($(shell pkg-config --modversion OpenColorIO | sed -e 's/\..*//'),2)
-OCIO_OPENGL_LINKFLAGS += -lOpenColorIOoglapphelpers
+OCIO_OPENGL_LINKFLAGS += -lOpenColorIOoglapphelpers `pkg-config --libs glew`
 endif
 
 # OpenEXR
