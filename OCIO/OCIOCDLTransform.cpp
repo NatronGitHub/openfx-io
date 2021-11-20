@@ -134,7 +134,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamEnableGPU "enableGPU"
 #define kParamEnableGPULabel "Enable GPU Render"
 #define kParamEnableGPUHint \
-    "Enable GPU-based OpenGL render.\n" \
+    "Enable GPU-based OpenGL render (only available when \"(Un)premult\" is not checked).\n" \
     "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n" \
     "If the checkbox is checked but is not enabled (i.e. it cannot be unchecked), GPU render can not be enabled or disabled from the plugin and is probably part of the host options.\n" \
     "If the checkbox is not checked and is not enabled (i.e. it cannot be checked), GPU render is not available on this host."
@@ -439,7 +439,9 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
         _enableGPU->setEnabled(false);
     }
     // GPU rendering is wrong when (un)premult is checked
-    setSupportsOpenGLRender( _enableGPU->getValue() && !_premult->getValue() );
+    bool premult = _premult->getValue();
+    _enableGPU->setEnabled(!premult);
+    setSupportsOpenGLRender(!premult && _enableGPU->getValue());
 #endif
 
     bool readFromFile;
@@ -1275,9 +1277,11 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
         // reset back to default
         _export->setValue(kParamExportDefault);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    } else if (paramName == kParamEnableGPU) {
+    } else if (paramName == kParamEnableGPU || paramName == kParamPremult) {
         // GPU rendering is wrong when (un)premult is checked
-        bool supportsGL = _enableGPU->getValueAtTime(args.time) && !_premult->getValueAtTime(args.time);
+        bool premult = _premult->getValueAtTime(args.time);
+        _enableGPU->setEnabled(!premult);
+        bool supportsGL = !premult && _enableGPU->getValueAtTime(args.time);
         setSupportsOpenGLRender(supportsGL);
         setSupportsTiles(!supportsGL);
 #endif
