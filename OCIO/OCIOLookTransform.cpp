@@ -804,7 +804,7 @@ OCIOLookTransformPlugin::renderGPU(const RenderArguments &args)
     OCIO::ConstProcessorRcPtr proc = getProcessor(args.time, singleLook, lookCombination);
     assert(proc);
 
-    GenericOCIO::applyGL(srcImg.get(), proc, &contextData->procLut3D, &contextData->procLut3DID, &contextData->procShaderProgramID, &contextData->procFragmentShaderID, &contextData->procLut3DCacheID, &contextData->procShaderCacheID);
+    GenericOCIO::applyGL(srcImg.get(), proc, contextData);
 } // renderGPU
 
 #endif // defined(OFX_SUPPORTS_OPENGLRENDER)

@@ -74,12 +74,14 @@ static const char * g_fragShaderText = ""
 
 
 OCIOOpenGLContextData::OCIOOpenGLContextData()
+#if OCIO_VERSION_HEX < 0x02000000
     : procLut3D()
     , procShaderCacheID()
     , procLut3DCacheID()
     , procLut3DID(0)
     , procShaderProgramID(0)
     , procFragmentShaderID(0)
+#endif
 {
     if ( !ofxsLoadOpenGLOnce() ) {
         // We could use an error message here
@@ -89,7 +91,9 @@ OCIOOpenGLContextData::OCIOOpenGLContextData()
 
 OCIOOpenGLContextData::~OCIOOpenGLContextData()
 {
-#if OCIO_VERSION_HEX < 0x02000000
+#if OCIO_VERSION_HEX >= 0x02000000
+    glBuilder.reset();
+#else
     if (procLut3DID != 0) {
         glDeleteTextures(1, &procLut3DID);
     }
@@ -189,121 +193,75 @@ allocateLut3D(GLuint* lut3dTexID,
 void
 GenericOCIO::applyGL(const Texture* srcImg,
                      const OCIO::ConstProcessorRcPtr& processor,
-#if OCIO_VERSION_HEX >= 0x02000000
-                     OCIO::OpenGLBuilderRcPtr* lut3DParam,
-#else
-                     std::vector<float>* lut3DParam,
-#endif
-                     unsigned int *lut3DTexIDParam,
-                     unsigned int *shaderProgramIDParam,
-                     unsigned int *fragShaderIDParam,
-                     string* lut3DCacheIDParam,
-                     string* shaderTextCacheIDParam)
+                     OCIOOpenGLContextData* contextData)
 {
-    // Either we cache it all, or we don't
-    assert( (!lut3DParam && !lut3DTexIDParam && !shaderProgramIDParam && !lut3DCacheIDParam && !shaderTextCacheIDParam) ||
-            (lut3DParam && lut3DTexIDParam && shaderProgramIDParam && lut3DCacheIDParam && shaderTextCacheIDParam) );
-    if ( (lut3DParam || lut3DTexIDParam || shaderProgramIDParam || lut3DCacheIDParam || shaderTextCacheIDParam) &&
-         (!lut3DParam || !lut3DTexIDParam || !shaderProgramIDParam || !lut3DCacheIDParam || !shaderTextCacheIDParam) ) {
-        throw std::invalid_argument("GenericOCIO::applyGL: Invalid caching arguments");
-    }
 
 #if OCIO_VERSION_HEX >= 0x02000000
-    // TODO: OCIO 2 with new GPU API https://github.com/imageworks/OpenColorIO/pull/539
     // See https://github.com/imageworks/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp
 
-    // https://github.com/AcademySoftwareFoundation/OpenColorIO/blob/master/src/apps/ociodisplay/main.cpp#L415
-    // Set the shader context.
-    OCIO::GpuShaderDescRcPtr shaderDesc = OCIO::GpuShaderDesc::CreateShaderDesc();
-    shaderDesc->setLanguage(OCIO::GPU_LANGUAGE_GLSL_1_2);
-    shaderDesc->setFunctionName("OCIODisplay");
-    shaderDesc->setResourcePrefix("ocio_");
-
-    // Extract the shader information.
-    bool gpulegacy = false;
-    OCIO::ConstGPUProcessorRcPtr gpuProc;
-    gpuProc = gpulegacy ? processor->getOptimizedLegacyGPUProcessor(OCIO::OPTIMIZATION_GOOD, LUT3D_EDGE_SIZE)
-                        : processor->getOptimizedGPUProcessor(OCIO::OPTIMIZATION_VERY_GOOD);
-    gpuProc->extractGpuShaderInfo(shaderDesc);
 
     // Create an OpenGL helper, this should be done only once
     OCIO::OpenGLBuilderRcPtr glBuilder;
-    if (lut3DParam) {
-        glBuilder = *lut3DParam;
+    if (contextData) {
+        if (contextData->processorCacheID != processor->getCacheID()) {
+            contextData->glBuilder.reset();
+        }
+        glBuilder = contextData->glBuilder;
     }
     if (!glBuilder) {
+        // Extract the shader information.
+        bool gpulegacy = false;
+        OCIO::ConstGPUProcessorRcPtr gpuProc;
+        gpuProc = gpulegacy ? processor->getOptimizedLegacyGPUProcessor(OCIO::OPTIMIZATION_GOOD, LUT3D_EDGE_SIZE)
+                            : processor->getOptimizedGPUProcessor(OCIO::OPTIMIZATION_VERY_GOOD);
+        // See https://github.com/AcademySoftwareFoundation/OpenColorIO/blob/b2e88b195c1e1a82a51818e0a4aa2975e03b6a88/vendor/aftereffects/OpenColorIO_AE_Context.cpp#L851
+        // Step 1: Create a GPU Shader Description
+        OCIO::GpuShaderDescRcPtr shaderDesc = OCIO::GpuShaderDesc::CreateShaderDesc();
+        shaderDesc->setLanguage(OCIO::GPU_LANGUAGE_GLSL_1_2);
+        shaderDesc->setFunctionName("OCIODisplay");
+        shaderDesc->setResourcePrefix("ocio_");
+
+        // Step 2: Collect the shader program information for a specific processor
+        gpuProc->extractGpuShaderInfo(shaderDesc);
+
+        // Step 3: Use the helper OpenGL builder
         glBuilder = OCIO::OpenGLBuilder::Create(shaderDesc);
-    }
+        if (contextData) {
+            contextData->processorCacheID = processor->getCacheID();
+            contextData->glBuilder = glBuilder;
+        }
 
-    GLuint lut3DTexID = 0;
-    string lut3DCacheID;
-    if (lut3DCacheIDParam) {
-        lut3DCacheID = processor->getCacheID();
-    }
-    if ( !lut3DCacheIDParam || (*lut3DCacheIDParam != lut3DCacheID) ) {
-        // The LUT was not allocated yet or the caller does not want to cache the lut
-        // allocating at all
+        // Step 4: Allocate & upload all the LUTs
+        //
+        // NB: The start index for the texture indices is 1 as one texture
+        //     was already created for the input image.
+        //
         glBuilder->allocateAllTextures(1);
-        lut3DTexID = 1;
 
-        if (lut3DParam) {
-            *lut3DParam = glBuilder;
-        }
-        if (lut3DTexIDParam) {
-            *lut3DTexIDParam = lut3DTexID;
-        }
-
-        // update the cache ID
-        if (lut3DCacheIDParam) {
-            *lut3DCacheIDParam = lut3DCacheID;
-        }
+        // Step 5: Build the fragment shader program
+        glBuilder->buildProgram(g_fragShaderText);
     }
 
-    string shaderCacheID;
-    if (shaderTextCacheIDParam) {
-        shaderCacheID = shaderDesc->getCacheID();
-    }
+    glEnable(GL_TEXTURE_2D);
+    glActiveTexture(GL_TEXTURE0);
+    int srcTarget = srcImg->getTarget();
+    glBindTexture( srcTarget, srcImg->getIndex() );
+    glTexParameteri(srcTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(srcTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(srcTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(srcTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    GLuint programID;
-    // GLuint fragShaderID;
-    if ( !shaderTextCacheIDParam || (*shaderTextCacheIDParam != shaderCacheID) ) {
-        programID = glBuilder->buildProgram(g_fragShaderText);
+    // Step 6: Enable the fragment shader program, and all needed textures
+    glBuilder->useProgram();
+    glUniform1i(glGetUniformLocation(glBuilder->getProgramHandle(), "tex1"), 0); // image texture
 
-        glBuilder->useProgram();
-        glUniform1i(glGetUniformLocation(programID, "tex1"), 0);
-
-        glBuilder->useAllTextures();
-
-        // Bind textures and apply texture mapping
-        glEnable(GL_TEXTURE_2D);
-        glActiveTexture(GL_TEXTURE0);
-        int srcTarget = srcImg->getTarget();
-        glBindTexture( srcTarget, srcImg->getIndex() );
-        glTexParameteri(srcTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(srcTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(srcTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(srcTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        if (shaderProgramIDParam) {
-            *shaderProgramIDParam = programID;
-        }
-        if (fragShaderIDParam) {
-            *fragShaderIDParam = 1;
-        }
-        // update the cache ID
-        if (shaderTextCacheIDParam) {
-            *shaderTextCacheIDParam = shaderCacheID;
-        }
-    } else {
-        programID = *shaderProgramIDParam;
-        // fragShaderID = *fragShaderIDParam;
-    }
-
+    // Bind textures and apply texture mapping
+    glBuilder->useAllTextures(); // LUT textures
     glBuilder->useAllUniforms();
 
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_3D, lut3DTexID);
-
+    if (GL_NO_ERROR != glGetError()) {
+        throwSuiteStatusException(kOfxStatFailed);
+    }
     const OfxRectI& srcBounds = srcImg->getBounds();
 
     glPushMatrix();
@@ -314,9 +272,8 @@ GenericOCIO::applyGL(const Texture* srcImg,
     glTexCoord2f(1.0f, 0.0f); glVertex2f(srcBounds.x2, srcBounds.y1);
     glEnd();
     glPopMatrix();
-
-    if (!shaderProgramIDParam) {
-        glBuilder = OCIO::OpenGLBuilderRcPtr();
+    if (GL_NO_ERROR != glGetError()) {
+        throwSuiteStatusException(kOfxStatFailed);
     }
 #else
     // Reference code: https://github.com/imageworks/OpenColorIO/blob/RB-1.1/src/apps/ociodisplay/main.cpp
@@ -330,20 +287,20 @@ GenericOCIO::applyGL(const Texture* srcImg,
     // Allocate CPU lut + init lut 3D texture, this should be done only once
     GLuint lut3dTexID = 0;
     std::vector<float>* lut3D = 0;
-    if (lut3DParam) {
-        lut3D = lut3DParam;
+    if (contextData) {
+        lut3D = &contextData->procLut3D;
     } else {
         lut3D = new std::vector<float>;
     }
-    if (lut3DTexIDParam) {
-        lut3dTexID = *lut3DTexIDParam;
+    if (contextData) {
+        lut3dTexID = contextData->procLut3DID;
     }
     if (lut3D->size() == 0) {
         // The LUT was not allocated yet or the caller does not want to cache the lut
         // allocating at all
         allocateLut3D(&lut3dTexID, lut3D);
-        if (lut3DTexIDParam) {
-            *lut3DTexIDParam = lut3dTexID;
+        if (contextData) {
+            contextData->procLut3DCacheID = lut3dTexID;
         }
     }
 
@@ -352,12 +309,9 @@ GenericOCIO::applyGL(const Texture* srcImg,
     // Step 2: Compute the 3D LUT
     // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L568
     // The lut3D texture should be cached to avoid calling glTexSubImage3D again
-    string lut3dCacheID;
-    if (lut3DCacheIDParam) {
-        lut3dCacheID = processor->getGpuLut3DCacheID(shaderDesc);
-    }
+    string lut3dCacheID = processor->getGpuLut3DCacheID(shaderDesc);
 
-    if ( !lut3DCacheIDParam || (*lut3DCacheIDParam != lut3dCacheID) ) {
+    if ( !contextData || (contextData->procLut3DCacheID != lut3dCacheID) ) {
         // Unfortunately the LUT3D is not cached yet, or caller does not want caching
         processor->getGpuLut3D(&(*lut3D)[0], shaderDesc);
 
@@ -373,12 +327,12 @@ GenericOCIO::applyGL(const Texture* srcImg,
                         GL_RGB, GL_FLOAT, &(*lut3D)[0]);
 
         // update the cache ID
-        if (lut3DCacheIDParam) {
-            *lut3DCacheIDParam = lut3dCacheID;
+        if (contextData) {
+            contextData->procLut3DCacheID = lut3dCacheID;
         }
     }
 
-    if (!lut3DParam) {
+    if (!contextData) {
         // Ensure we free the vector if we allocated it
         delete lut3D;
     }
@@ -387,14 +341,11 @@ GenericOCIO::applyGL(const Texture* srcImg,
     // Step 3: Compute the Shader
     // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L584
     // The shader should be cached, to avoid generating it again
-    string shaderCacheID;
-    if (shaderTextCacheIDParam) {
-        shaderCacheID = processor->getGpuShaderTextCacheID(shaderDesc);
-    }
+    string shaderCacheID = processor->getGpuShaderTextCacheID(shaderDesc);
 
     GLuint programID;
     GLuint fragShaderID;
-    if ( !shaderTextCacheIDParam || (*shaderTextCacheIDParam != shaderCacheID) ) {
+    if ( !contextData || (contextData->procShaderCacheID != shaderCacheID) ) {
         // Unfortunately the shader is not cached yet, or caller does not want caching
         string shaderString;
         shaderString += processor->getGpuShaderText(shaderDesc);
@@ -403,19 +354,15 @@ GenericOCIO::applyGL(const Texture* srcImg,
 
         fragShaderID = compileShaderText( GL_FRAGMENT_SHADER, shaderString.c_str() );
         programID = linkShaders(fragShaderID);
-        if (shaderProgramIDParam) {
-            *shaderProgramIDParam = programID;
-        }
-        if (fragShaderIDParam) {
-            *fragShaderIDParam = fragShaderID;
-        }
-        // update the cache ID
-        if (shaderTextCacheIDParam) {
-            *shaderTextCacheIDParam = shaderCacheID;
+        if (contextData) {
+            contextData->procShaderProgramID = programID;
+            contextData->procFragmentShaderID = fragShaderID;
+            // update the cache ID
+            contextData->procShaderCacheID = shaderCacheID;
         }
     } else {
-        programID = *shaderProgramIDParam;
-        fragShaderID = *fragShaderIDParam;
+        programID = contextData->procShaderProgramID;
+        fragShaderID = contextData->procFragmentShaderID;
     }
 
     // https://github.com/imageworks/OpenColorIO/blame/RB-1.1/src/apps/ociodisplay/main.cpp#L603
@@ -456,10 +403,8 @@ GenericOCIO::applyGL(const Texture* srcImg,
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    if (!lut3DTexIDParam) {
+    if (!contextData) {
         glDeleteTextures(1, &lut3dTexID);
-    }
-    if (!shaderProgramIDParam) {
         glDeleteProgram(programID);
         glDeleteShader(fragShaderID);
     }

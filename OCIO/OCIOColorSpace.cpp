@@ -633,7 +633,7 @@ OCIOColorSpacePlugin::renderGPU(const RenderArguments &args)
         return;
     }
 
-    GenericOCIO::applyGL(srcImg.get(), proc, &contextData->procLut3D, &contextData->procLut3DID, &contextData->procShaderProgramID, &contextData->procFragmentShaderID, &contextData->procLut3DCacheID, &contextData->procShaderCacheID);
+    GenericOCIO::applyGL(srcImg.get(), proc, contextData);
 } // renderGPU
 
 #endif // defined(OFX_SUPPORTS_OPENGLRENDER)
