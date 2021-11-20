@@ -800,7 +800,8 @@ getProfileStringFromShortName(const string& name)
 //    :
 //    ret = swr_convert(_swrContext, avFrame->data, ...);
 //    :
-//    ret = avcodec_encode_audio2(avCodecContext, &pkt, avFrame, &gotPacket);
+//    ret = avcodec_send_frame(avCodecContext, avFrame);
+//    ret = avcodec_receive_packet(avCodecContext, pkt);
 //    :
 //
 // Video
@@ -1102,7 +1103,7 @@ private:
     int openCodec(AVFormatContext* avFormatContext, AVCodec* avCodec, MyAVStream* myAVStream);
     int writeAudio(AVFormatContext* avFormatContext, AVStream* avStream, bool flush);
     int writeVideo(AVFormatContext* avFormatContext, MyAVStream* myAVStream, bool flush, double time, const float *pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
-    int encodeVideo(AVCodecContext* avCodecContext, const AVFrame* avFrame, AVPacket& avPacketOut);
+    int encodeVideo(AVCodecContext* avCodecContext, const AVFrame* avFrame, AVPacket* avPacketOut);
 
     int writeToFile(AVFormatContext* avFormatContext, bool finalise, double time, const float *pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
 
@@ -3181,13 +3182,26 @@ mov64_av_encode(AVCodecContext *avctx,
                 const AVFrame *frame,
                 int *got_packet_ptr)
 {
-    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        return avcodec_encode_video2(avctx, avpkt, frame, got_packet_ptr);
-    } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-        return avcodec_encode_audio2(avctx, avpkt, frame, got_packet_ptr);
+    int ret;
+
+    ret = avcodec_send_frame(avctx, frame);
+    if (ret < 0) {
+        *got_packet_ptr = 0;
+        return ret;
     }
 
-    return -1;
+    ret = avcodec_receive_packet(avctx, avpkt);
+    if (avpkt->data && avpkt->size > 0) {
+        *got_packet_ptr = 1;
+    }
+    if (ret < 0) {
+        *got_packet_ptr = 0;
+        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+            return ret;
+        }
+    }
+
+    return 0;
 }
 
 #if OFX_FFMPEG_AUDIO
@@ -3221,8 +3235,7 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
     MyAVFrame avFrame;
     const int audioReaderResult = audioReader_->read(avFrame);
     if ( audioReaderResult > 0 ) { //read successful
-        AVPacket pkt = {nullptr}; // data and size must be 0
-        av_init_packet(&pkt);
+        AVPacket *pkt = av_packet_alloc();
         if (flush) {
             // A slight hack.
             // So that the durations of the video track and audio track will be
@@ -3246,10 +3259,10 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
 
         AVCodecContext* avCodecContext = myAVStream->codecContext;
         int gotPacket;
-        ret = mov64_av_encode(avCodecContext, &pkt, avFrame, &gotPacket);
+        ret = mov64_av_encode(avCodecContext, pkt, avFrame, &gotPacket);
         if (!ret && gotPacket) {
-            pkt.stream_index = myAVStream->stream->index;
-            ret = av_write_frame(avFormatContext, &pkt);
+            pkt->stream_index = myAVStream->stream->index;
+            ret = av_write_frame(avFormatContext, pkt);
         }
 
         if (ret < 0) {
@@ -3258,6 +3271,8 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
             av_strerror( ret, szError, sizeof(szError) );
             iop->error(szError);
         }
+
+        av_packet_free(&pkt);
     } else if ( audioReaderResult < 0 ) {
         //error in read from audio reader
         ret = audioReaderResult;
@@ -3504,17 +3519,8 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
     if (!ret) {
         bool error = false;
 
-        AVPacket pkt;
-        av_init_packet(&pkt);
-#if OFX_FFMPEG_SCRATCHBUFFER
-        // Use a contiguous block of memory. This is to scope the
-        // buffer allocation and ensure that memory is released even
-        // if errors or exceptions occur. A vector will allocate
-        // contiguous memory.
-        pkt.stream_index = avStream->index;
-        pkt.data = &_scratchBuffer[0];
-        pkt.size = _scratchBufferSize;
-#endif
+        AVPacket *pkt = av_packet_alloc();
+
         // NOTE: If |flush| is true, then avFrameOut will be NULL at this point as
         //       alloc will not have been called.
 
@@ -3523,26 +3529,26 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
         if (encodeSucceeded) {
             // Each of these packets should consist of a single frame therefore each one
             // must have a PTS in order to correctly set the frame-rate
-            if ((int64_t)(pkt.pts) != AV_NOPTS_VALUE) {
-                pkt.pts = av_rescale_q(pkt.pts, avCodecContext->time_base, avStream->time_base);
+            if ((int64_t)(pkt->dts) != AV_NOPTS_VALUE) {
+                pkt->dts = av_rescale_q(pkt->dts, avCodecContext->time_base, avStream->time_base);
             } else {
-                pkt.pts = av_rescale_q(_pts_counter, avCodecContext->time_base, avStream->time_base);
+                pkt->dts = av_rescale_q(_pts_counter, avCodecContext->time_base, avStream->time_base);
+            }
+
+            if ((int64_t)(pkt->pts) != AV_NOPTS_VALUE) {
+                pkt->pts = av_rescale_q(pkt->pts, avCodecContext->time_base, avStream->time_base);
+            } else {
+                pkt->pts = av_rescale_q(_pts_counter, avCodecContext->time_base, avStream->time_base);
                 _pts_counter++;
             }
 
-            pkt.dts = AV_NOPTS_VALUE;
-
-
-            if (!pkt.duration) {
-                pkt.duration = av_rescale_q(1, avCodecContext->time_base, avStream->time_base);
+            if (!pkt->duration) {
+                pkt->duration = av_rescale_q(1, avCodecContext->time_base, avStream->time_base);
             }
 
-            pkt.stream_index = avStream->index;
+            pkt->stream_index = avStream->index;
 
-            const int writeResult = av_write_frame(avFormatContext, &pkt);
-            if (pkt.data) {
-                av_free(pkt.data);
-            }
+            const int writeResult = av_write_frame(avFormatContext, pkt);
 
             const bool writeSucceeded = (writeResult == 0);
             if (!writeSucceeded) {
@@ -3552,19 +3558,18 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 setPersistentMessage(Message::eMessageError, "", string("Cannot write frame: ") + szError);
                 error = true;
             }
-        }
-        else {
+        } else {
             if (bytesEncoded == AVERROR(EAGAIN) && !flush) {
                 ret = 0;
-            }
-            else if (bytesEncoded < 0) {
+            } else if (bytesEncoded == AVERROR_EOF) {
+                ret = -10;
+            } else if (bytesEncoded < 0) {
                 // Report the error.
                 char szError[1024];
                 av_strerror(bytesEncoded, szError, 1024);
                 setPersistentMessage(Message::eMessageError, "", string("Cannot encode frame: ") + szError);
                 error = true;
-            }
-            else if (flush) {
+            } else if (flush) {
                 // Flag that the flush is complete.
                 ret = -10;
             }
@@ -3573,6 +3578,8 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
             av_log(avCodecContext, AV_LOG_ERROR, "error writing frame to file\n");
             ret = -2;
         }
+
+        av_packet_free(&pkt);
     }
 
     return ret;
@@ -3592,38 +3599,21 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 // @param avFrame A constant reference to an AVFrame that contains the source data
 //                to be encoded. This must be in an appropriate pixel format for
 //                the encoder.
-// @param avPacketOut A reference to an AVPacket to receive the encoded frame.
+// @param avPacketOut An AVPacket pointer to receive the encoded frame.
 //
 // @return <0 for any failure to encode the frame, otherwise the size in byte
 //         of the encoded frame.
 //
 int
-WriteFFmpegPlugin::encodeVideo(AVCodecContext* avCodecContext, const AVFrame* avFrame, AVPacket& avPacketOut)
+WriteFFmpegPlugin::encodeVideo(AVCodecContext* avCodecContext, const AVFrame* avFrame, AVPacket* avPacketOut)
 {
     int ret, got_packet = 0;
 
-    avPacketOut.data = nullptr;
-    avPacketOut.size = 0;
-#if OFX_FFMPEG_SCRATCHBUFFER
-    // Use a contiguous block of memory. This is to scope the
-    // buffer allocation and ensure that memory is released even
-    // if errors or exceptions occur. A vector will allocate
-    // contiguous memory.
-
-    AVPacket pkt;
-    av_init_packet(&pkt);
-    // NOTE: If |flush| is true, then avFrame will be NULL at this point as
-    //       alloc will not have been called.
-    // Encode a frame of video.
-    //
-    // Note that the uncompressed source frame to be encoded must be in an
-    // appropriate pixel format for the encoder prior to calling this method as
-    // this method does NOT perform an pixel format conversion, e.g. through using
-    // Sws_xxx.
-#endif
-    ret = mov64_av_encode(avCodecContext, &avPacketOut, avFrame, &got_packet);
+    avPacketOut->data = nullptr;
+    avPacketOut->size = 0;
+    ret = mov64_av_encode(avCodecContext, avPacketOut, avFrame, &got_packet);
     if (!ret && got_packet) {
-        ret = avPacketOut.size;
+        ret = avPacketOut->size;
     }
 
     return ret;

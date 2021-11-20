@@ -487,8 +487,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     std::cout << "      Determining stream start PTS:" << std::endl;
 #endif
 
-    AVPacket avPacket;
-    av_init_packet(&avPacket);
+    MyAVPacket avPacket(_pkt);
 
     // Read from stream. If the value read isn't valid, get it from the first frame in the stream that provides such a
     // value.
@@ -517,16 +516,16 @@ FFmpegFile::getStreamStartTime(Stream & stream)
         if (av_seek_frame(_context, stream._idx, startPTS, AVSEEK_FLAG_BACKWARD) >= 0) {
 
             // Read frames until we get one for the video stream that contains a valid PTS.
-            while (av_read_frame(_context, &avPacket) >= 0) {
-                if (avPacket.stream_index != stream._idx) {
+            while (av_read_frame(_context, avPacket.pkt()) >= 0) {
+                if (avPacket.pkt()->stream_index != stream._idx) {
                     continue;
                 }
                 // Packet read for video stream. Get its PTS.
-                startPTS = avPacket.pts;
-                startDTS = avPacket.dts;
+                startPTS = avPacket.pkt()->pts;
+                startDTS = avPacket.pkt()->dts;
 
                 // Loop will continue if the current packet doesn't end after 0
-                if (startPTS + avPacket.duration > 0) {
+                if (startPTS + avPacket.pkt()->duration > 0) {
                     break;
                 }
             }
@@ -555,7 +554,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     // frame timestamp is going to match the packet which starts just before 0 and ends after 0 if that exists. Otherwise
     // it will be 0.
     // For more information please have a look at TP 162519
-    const bool isStartPTSValid = (startPTS + avPacket.duration > 0);
+    const bool isStartPTSValid = (startPTS + avPacket.pkt()->duration > 0);
     if (!isStartPTSValid) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not found by searching frames, assuming ";
@@ -570,7 +569,6 @@ FFmpegFile::getStreamStartTime(Stream & stream)
 #endif
 
     stream._startDTS = startDTS;
-    av_packet_unref(&avPacket);
 
     return startPTS;
 } // FFmpegFile::getStreamStartTime
@@ -668,7 +666,7 @@ FFmpegFile::getStreamFrames(Stream & stream)
         av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
 
         // Read up to last frame, extending max PTS for every valid PTS value found for the video stream.
-        MyAVPacket avPacket;
+        MyAVPacket avPacket(_pkt);
         // Here, avPacket needs to be local as we don't need to keep any information outside this function context.
         // Do not replace this with _avPacket, which is global, because _avPacket is associated with the playback process
         // and that may produces inconsistencies. _avPacket is now used only in the |decode| method and we need to ensure
@@ -676,9 +674,9 @@ FFmpegFile::getStreamFrames(Stream & stream)
         // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
         // https://foundry.tpondemand.com/entity/162892
 
-        while (av_read_frame(_context, &avPacket) >= 0) {
-            if (avPacket.stream_index == stream._idx && avPacket.pts != int64_t(AV_NOPTS_VALUE) && avPacket.pts > maxPts)
-                maxPts = avPacket.pts;
+        while (av_read_frame(_context, avPacket.pkt()) >= 0) {
+            if (avPacket.pkt()->stream_index == stream._idx && avPacket.pkt()->pts != int64_t(AV_NOPTS_VALUE) && avPacket.pkt()->pts > maxPts)
+                maxPts = avPacket.pkt()->pts;
         }
 #if TRACE_FILE_OPEN
         std::cout << "          Start PTS=" << stream._startPTS << ", Max PTS found=" << maxPts << std::endl;
@@ -765,7 +763,6 @@ FFmpegFile::FFmpegFile(const string & filename)
     , _selectedStream(nullptr)
     , _errorMsg()
     , _invalidState(false)
-    , _avPacket()
 #ifdef OFX_IO_MT_FFMPEG
     , _lock()
     , _invalidStateLock()
@@ -810,6 +807,8 @@ FFmpegFile::FFmpegFile(const string & filename)
 
     // fill the array with all available video streams
     bool unsupported_codec = false;
+
+    _pkt = av_packet_alloc();
 
     // find all streams that the library is able to decode
     for (unsigned i = 0; i < _context->nb_streams; ++i) {
@@ -1059,6 +1058,8 @@ FFmpegFile::~FFmpegFile()
     AutoMutex guard(_lock);
 #endif
 
+    av_packet_free(&_pkt);
+
     for (unsigned int i = 0; i < _streams.size(); ++i) {
         delete _streams[i];
     }
@@ -1223,9 +1224,6 @@ FFmpegFile::seekFrame(int frame,
         return false;
     }
 
-    // We can't be re-using the existing _avPacket data because we've just had to seek
-    _avPacket.FreePacket();
-
     return true;
 }
 
@@ -1375,40 +1373,31 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 static int
 mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
-                int *got_frame, const AVPacket &pkt)
+                int *got_frame, const AVPacket *pkt)
 {
-#if 1
-    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        return avcodec_decode_video2(avctx, frame, got_frame, &pkt);
-    } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-        return avcodec_decode_audio4(avctx, frame, got_frame, &pkt);
+    int ret;
+
+    ret = avcodec_send_packet(avctx, pkt);
+    if (ret < 0) {
+        *got_frame = 0;
+        return ret;
     }
 
-    return -1;
-#else
-    AVPacket pkt_ = pkt;
-    int ret;
-    do {
-        if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-            ret = avcodec_decode_video2(avctx, frame, got_frame, &pkt_);
-        } else if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-            ret =  avcodec_decode_audio4(avctx, frame, got_frame, &pkt_);
-        }
-        if (ret < 0) {
-            break;
-        }
-        pkt_.data += ret;
-        pkt_.size -= ret;
-    } while (pkt_.size > 0);
+    ret = avcodec_receive_frame(avctx, frame);
+    if (ret < 0) {
+        *got_frame = 0;
+        return ret;
+    }
 
-    return ret;
-#endif
+    *got_frame = 1;
+
+    return 0;
 }
 
 bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
 {
     Stream* stream = _selectedStream;
-    MyAVPacket avPacket;
+    MyAVPacket avPacket(_pkt);
 
     av_frame_unref(stream->_avIntermediateFrame);
 
@@ -1448,11 +1437,11 @@ bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
     };
 
     // Begin reading from the newly seeked position
-    while ((res = av_read_frame(_context, &avPacket)) >= 0) {
+    while ((res = av_read_frame(_context, avPacket.pkt())) >= 0) {
 
-        if (avPacket.stream_index == stream->_idx) {
+        if (avPacket.pkt()->stream_index == stream->_idx) {
 
-            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, avPacket)) < 0) {
+            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, avPacket.pkt())) < 0) {
                 setInternalError(res, "FFmpeg Reader Failed to decode packet: ");
                 return false;
             }
@@ -1476,10 +1465,9 @@ bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
 
     // Flush the decoder of remaining frames
     if (res == AVERROR_EOF) {
-        AVPacket emptyPkt = {};
         while (1) {
 
-            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, emptyPkt)) < 0) {
+            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, nullptr)) < 0) {
                 setInternalError(res, "FFmpeg Reader Failed to flush the decoder of remaing frames: ");
                 return false;
             }
