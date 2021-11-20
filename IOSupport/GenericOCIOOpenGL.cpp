@@ -230,7 +230,8 @@ GenericOCIO::applyGL(const Texture* srcImg,
     OCIO::OpenGLBuilderRcPtr glBuilder;
     if (lut3DParam) {
         glBuilder = *lut3DParam;
-    } else {
+    }
+    if (!glBuilder) {
         glBuilder = OCIO::OpenGLBuilder::Create(shaderDesc);
     }
 
