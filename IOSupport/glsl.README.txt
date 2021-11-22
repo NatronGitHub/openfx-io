@@ -1,0 +1,8 @@
+glsl.cpp and glsl.h are from OpenCOlorIO 2.1.0:
+https://github.com/AcademySoftwareFoundation/OpenColorIO/tree/v2.1.0/src/libutils/oglapphelpers
+
+gsls.cpp was modified to use glad.h indlead of GL/glew.h, in order to avoid using another external library.
+
+These files are Copyright Contributors to the OpenColorIO Project.
+They are distributed under the BSD 3-Clause License:
+https://github.com/AcademySoftwareFoundation/OpenColorIO/blob/v2.1.0/LICENSE
