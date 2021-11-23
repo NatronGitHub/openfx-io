@@ -3,6 +3,11 @@
 
 #if 1
 #include <glad.h>
+#ifdef __APPLE__
+#include <OpenGL/glu.h>
+#else
+#include <GL/glu.h>
+#endif
 #else
 #ifdef __APPLE__
 
@@ -40,12 +45,7 @@ bool GetGLError(std::string & error)
     const GLenum glErr = glGetError();
     if(glErr!=GL_NO_ERROR)
     {
-#ifdef __APPLE__
-        // Unfortunately no gluErrorString equivalent on Mac.
-        error = "OpenGL Error";
-#else
         error = (const char*)gluErrorString(glErr);
-#endif
         return true;
     }
     return false;
