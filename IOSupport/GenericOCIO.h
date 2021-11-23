@@ -52,7 +52,11 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #if OCIO_VERSION_HEX >= 0x02000000
-#include <OpenColorIO/oglapphelpers/glsl.h>
+namespace OCIO_NAMESPACE
+{
+class OpenGLBuilder;
+typedef OCIO_SHARED_PTR<OpenGLBuilder> OpenGLBuilderRcPtr;
+}
 #endif
 #endif
 
