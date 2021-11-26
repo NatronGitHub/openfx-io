@@ -1152,7 +1152,7 @@ SeNoisePlugin::resetCenter(double time)
     OfxPointD newCenter;
     newCenter.x = (rod.x1 + rod.x2) / 2;
     newCenter.y = (rod.y1 + rod.y2) / 2;
-    beginEditBlock("resetCenter");
+    EditBlock(*this, "resetCenter");
     if (_center) {
         _center->setValue(newCenter.x, newCenter.y);
     }
@@ -1175,7 +1175,6 @@ SeNoisePlugin::resetCenter(double time)
         newTranslate.y = translate.y + dy - dyrot;
         _translate->setValue(newTranslate.x, newTranslate.y);
     }
-    endEditBlock();
 } // SeNoisePlugin::resetCenter
 
 void

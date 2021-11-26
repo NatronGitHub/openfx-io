@@ -186,11 +186,10 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
             OfxPointD origin = getProjectOffset();
             OfxPointD p;
             // we must denormalise all parameters for which setDefaultCoordinateSystem(eCoordinatesNormalised) couldn't be done
-            //beginEditBlock(kParamDefaultsNormalised);
+            //EditBlock(*this, kParamDefaultsNormalised);
             p = _position->getValue();
             _position->setValue(p.x * size.x + origin.x, p.y * size.y + origin.y);
             param->setValue(false);
-            //endEditBlock();
         }
     }
 }
