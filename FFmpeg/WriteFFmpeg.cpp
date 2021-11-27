@@ -3173,7 +3173,7 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
     return 0;
 }
 
-// compat_encode() replaces avcodec_decode_video2(), see
+// avcodec_send_frame() and avcodec_receive_packet() replace avcodec_encode_video2(), see
 // https://github.com/FFmpeg/FFmpeg/blob/9e30859cb60b915f237581e3ce91b0d31592edc0/libavcodec/encode.c#L360
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 static int
@@ -3187,7 +3187,8 @@ mov64_av_encode(AVCodecContext *avctx,
     ret = avcodec_send_frame(avctx, frame);
     if (ret < 0) {
         *got_packet_ptr = 0;
-        return ret;
+        if (ret != AVERROR_EOF)
+            return ret;
     }
 
     ret = avcodec_receive_packet(avctx, avpkt);
@@ -3196,9 +3197,8 @@ mov64_av_encode(AVCodecContext *avctx,
     }
     if (ret < 0) {
         *got_packet_ptr = 0;
-        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
             return ret;
-        }
     }
 
     return 0;
@@ -3235,7 +3235,7 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
     MyAVFrame avFrame;
     const int audioReaderResult = audioReader_->read(avFrame);
     if ( audioReaderResult > 0 ) { //read successful
-        AVPacket *pkt = av_packet_alloc();
+        MyAVPacket pkt;
         if (flush) {
             // A slight hack.
             // So that the durations of the video track and audio track will be
@@ -3259,10 +3259,10 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
 
         AVCodecContext* avCodecContext = myAVStream->codecContext;
         int gotPacket;
-        ret = mov64_av_encode(avCodecContext, pkt, avFrame, &gotPacket);
+        ret = mov64_av_encode(avCodecContext, pkt.pkt(), avFrame, &gotPacket);
         if (!ret && gotPacket) {
             pkt->stream_index = myAVStream->stream->index;
-            ret = av_write_frame(avFormatContext, pkt);
+            ret = av_write_frame(avFormatContext, pkt.pkt());
         }
 
         if (ret < 0) {
@@ -3271,8 +3271,6 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
             av_strerror( ret, szError, sizeof(szError) );
             iop->error(szError);
         }
-
-        av_packet_free(&pkt);
     } else if ( audioReaderResult < 0 ) {
         //error in read from audio reader
         ret = audioReaderResult;
@@ -3505,6 +3503,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     // MJPEG ignores global_quality, and only uses the quality setting in the pictures.
                     outputFrame_->quality = avCodecContext->global_quality;
                     outputFrame_->pict_type = AV_PICTURE_TYPE_NONE;
+                    outputFrame_->pts = _pts_counter;
                 } else {
                     // av_image_alloc failed.
                     ret = -1;
@@ -3519,12 +3518,22 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
     if (!ret) {
         bool error = false;
 
-        AVPacket *pkt = av_packet_alloc();
+        MyAVPacket pkt;
 
+#if OFX_FFMPEG_SCRATCHBUFFER
+        // Use a contiguous block of memory. This is to scope the
+        // buffer allocation and ensure that memory is released even
+        // if errors or exceptions occur. A vector will allocate
+        // contiguous memory.
+        pkt->stream_index = avStream->index;
+        pkt->data = &_scratchBuffer[0];
+        pkt->size = _scratchBufferSize;
+#endif
         // NOTE: If |flush| is true, then avFrameOut will be NULL at this point as
         //       alloc will not have been called.
 
-        const int bytesEncoded = encodeVideo(avCodecContext, outputFrame_.get(), pkt);
+        _pts_counter++;
+        const int bytesEncoded = encodeVideo(avCodecContext, outputFrame_.get(), pkt.pkt());
         const bool encodeSucceeded = (bytesEncoded > 0);
         if (encodeSucceeded) {
             // Each of these packets should consist of a single frame therefore each one
@@ -3539,8 +3548,8 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 pkt->pts = av_rescale_q(pkt->pts, avCodecContext->time_base, avStream->time_base);
             } else {
                 pkt->pts = av_rescale_q(_pts_counter, avCodecContext->time_base, avStream->time_base);
-                _pts_counter++;
             }
+
 
             if (!pkt->duration) {
                 pkt->duration = av_rescale_q(1, avCodecContext->time_base, avStream->time_base);
@@ -3548,7 +3557,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 
             pkt->stream_index = avStream->index;
 
-            const int writeResult = av_write_frame(avFormatContext, pkt);
+            const int writeResult = av_write_frame(avFormatContext, pkt.pkt());
 
             const bool writeSucceeded = (writeResult == 0);
             if (!writeSucceeded) {
@@ -3578,8 +3587,6 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
             av_log(avCodecContext, AV_LOG_ERROR, "error writing frame to file\n");
             ret = -2;
         }
-
-        av_packet_free(&pkt);
     }
 
     return ret;

@@ -99,6 +99,50 @@ namespace OFX {
 class ImageEffect;
 }
 
+class MyAVPacket
+{
+public:
+    MyAVPacket(AVPacket *avpkt = nullptr)
+    {
+        InitPacket(avpkt);
+    }
+    ~MyAVPacket()
+    {
+        FreePacket();
+    }
+
+public:
+    void InitPacket(AVPacket *avpkt)
+    {
+        _internalPkt = avpkt == nullptr;
+        if (_internalPkt) {
+            avpkt = av_packet_alloc();
+        }
+        _pkt = avpkt;
+    }
+    void FreePacket()
+    {
+        if (_internalPkt) {
+            av_packet_free(&_pkt);
+        } else {
+            if (_pkt != nullptr)
+                av_packet_unref(_pkt);
+            _pkt = nullptr;
+        }
+    }
+
+    inline AVPacket* pkt() const {
+        return _pkt;
+    }
+
+    AVPacket* operator->() const {
+        return _pkt;
+    }
+private:
+    AVPacket *_pkt;
+    bool _internalPkt;
+};
+
 class FFmpegFile
 {
 public:
@@ -289,37 +333,6 @@ private:
         }
     };
 
-    struct MyAVPacket
-    {
-    public:
-        MyAVPacket(AVPacket *avpkt)
-        {
-            InitPacket(avpkt);
-        }
-        ~MyAVPacket()
-        {
-            FreePacket();
-        }
-
-    public:
-        void InitPacket(AVPacket *avpkt)
-        {
-            _pkt = avpkt;
-        }
-        void FreePacket()
-        {
-            if (_pkt != nullptr)
-                av_packet_unref(_pkt); //av_free_packet(this);
-            _pkt = nullptr;
-        }
-
-        inline AVPacket* pkt() const {
-            return _pkt;
-        }
-    private:
-        AVPacket *_pkt;
-    };
-
     std::string _filename;
 
     // AV structure
@@ -335,7 +348,6 @@ private:
     // reader error state
     std::string _errorMsg;  // internal decoding error string
     bool _invalidState;     // true if the reader is in an invalid state
-    AVPacket *_pkt;
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access

@@ -487,7 +487,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     std::cout << "      Determining stream start PTS:" << std::endl;
 #endif
 
-    MyAVPacket avPacket(_pkt);
+    MyAVPacket avPacket;
 
     // Read from stream. If the value read isn't valid, get it from the first frame in the stream that provides such a
     // value.
@@ -666,7 +666,7 @@ FFmpegFile::getStreamFrames(Stream & stream)
         av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
 
         // Read up to last frame, extending max PTS for every valid PTS value found for the video stream.
-        MyAVPacket avPacket(_pkt);
+        MyAVPacket avPacket;
         // Here, avPacket needs to be local as we don't need to keep any information outside this function context.
         // Do not replace this with _avPacket, which is global, because _avPacket is associated with the playback process
         // and that may produces inconsistencies. _avPacket is now used only in the |decode| method and we need to ensure
@@ -807,8 +807,6 @@ FFmpegFile::FFmpegFile(const string & filename)
 
     // fill the array with all available video streams
     bool unsupported_codec = false;
-
-    _pkt = av_packet_alloc();
 
     // find all streams that the library is able to decode
     for (unsigned i = 0; i < _context->nb_streams; ++i) {
@@ -1057,8 +1055,6 @@ FFmpegFile::~FFmpegFile()
 #ifdef OFX_IO_MT_FFMPEG
     AutoMutex guard(_lock);
 #endif
-
-    av_packet_free(&_pkt);
 
     for (unsigned int i = 0; i < _streams.size(); ++i) {
         delete _streams[i];
@@ -1368,7 +1364,7 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
     return true;
 }
 
-// compat_decode() replaces avcodec_decode_video2(), see
+// avcodec_send_packet() and avcodec_receive_frame() replace avcodec_decode_video2(), see
 // https://github.com/FFmpeg/FFmpeg/blob/9e30859cb60b915f237581e3ce91b0d31592edc0/libavcodec/decode.c#L748
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 static int
@@ -1380,12 +1376,15 @@ mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
     ret = avcodec_send_packet(avctx, pkt);
     if (ret < 0) {
         *got_frame = 0;
-        return ret;
+        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
+            return ret;
     }
 
     ret = avcodec_receive_frame(avctx, frame);
     if (ret < 0) {
         *got_frame = 0;
+        if (ret == AVERROR(EAGAIN))
+            return 0;
         return ret;
     }
 
@@ -1397,7 +1396,7 @@ mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
 bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
 {
     Stream* stream = _selectedStream;
-    MyAVPacket avPacket(_pkt);
+    MyAVPacket avPacket;
 
     av_frame_unref(stream->_avIntermediateFrame);
 
