@@ -517,15 +517,15 @@ FFmpegFile::getStreamStartTime(Stream & stream)
 
             // Read frames until we get one for the video stream that contains a valid PTS.
             while (av_read_frame(_context, avPacket.pkt()) >= 0) {
-                if (avPacket.pkt()->stream_index != stream._idx) {
+                if (avPacket->stream_index != stream._idx) {
                     continue;
                 }
                 // Packet read for video stream. Get its PTS.
-                startPTS = avPacket.pkt()->pts;
-                startDTS = avPacket.pkt()->dts;
+                startPTS = avPacket->pts;
+                startDTS = avPacket->dts;
 
                 // Loop will continue if the current packet doesn't end after 0
-                if (startPTS + avPacket.pkt()->duration > 0) {
+                if (startPTS + avPacket->duration > 0) {
                     break;
                 }
             }
@@ -554,7 +554,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     // frame timestamp is going to match the packet which starts just before 0 and ends after 0 if that exists. Otherwise
     // it will be 0.
     // For more information please have a look at TP 162519
-    const bool isStartPTSValid = (startPTS + avPacket.pkt()->duration > 0);
+    const bool isStartPTSValid = (startPTS + avPacket->duration > 0);
     if (!isStartPTSValid) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not found by searching frames, assuming ";
@@ -675,8 +675,8 @@ FFmpegFile::getStreamFrames(Stream & stream)
         // https://foundry.tpondemand.com/entity/162892
 
         while (av_read_frame(_context, avPacket.pkt()) >= 0) {
-            if (avPacket.pkt()->stream_index == stream._idx && avPacket.pkt()->pts != int64_t(AV_NOPTS_VALUE) && avPacket.pkt()->pts > maxPts)
-                maxPts = avPacket.pkt()->pts;
+            if (avPacket->stream_index == stream._idx && avPacket->pts != int64_t(AV_NOPTS_VALUE) && avPacket->pts > maxPts)
+                maxPts = avPacket->pts;
         }
 #if TRACE_FILE_OPEN
         std::cout << "          Start PTS=" << stream._startPTS << ", Max PTS found=" << maxPts << std::endl;
@@ -1438,7 +1438,7 @@ bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
     // Begin reading from the newly seeked position
     while ((res = av_read_frame(_context, avPacket.pkt())) >= 0) {
 
-        if (avPacket.pkt()->stream_index == stream->_idx) {
+        if (avPacket->stream_index == stream->_idx) {
 
             if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, avPacket.pkt())) < 0) {
                 setInternalError(res, "FFmpeg Reader Failed to decode packet: ");

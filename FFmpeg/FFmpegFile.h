@@ -102,36 +102,16 @@ class ImageEffect;
 class MyAVPacket
 {
 public:
-    MyAVPacket(AVPacket *avpkt = nullptr)
+    MyAVPacket()
     {
-        InitPacket(avpkt);
+        _pkt = av_packet_alloc();
     }
     ~MyAVPacket()
     {
-        FreePacket();
+        av_packet_free(&_pkt);
     }
 
-public:
-    void InitPacket(AVPacket *avpkt)
-    {
-        _internalPkt = avpkt == nullptr;
-        if (_internalPkt) {
-            avpkt = av_packet_alloc();
-        }
-        _pkt = avpkt;
-    }
-    void FreePacket()
-    {
-        if (_internalPkt) {
-            av_packet_free(&_pkt);
-        } else {
-            if (_pkt != nullptr)
-                av_packet_unref(_pkt);
-            _pkt = nullptr;
-        }
-    }
-
-    inline AVPacket* pkt() const {
+    AVPacket* pkt() const {
         return _pkt;
     }
 
@@ -140,7 +120,6 @@ public:
     }
 private:
     AVPacket *_pkt;
-    bool _internalPkt;
 };
 
 class FFmpegFile
