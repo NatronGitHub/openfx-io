@@ -213,7 +213,7 @@ and change the include/lib paths in the visual studio project.
 
 I can only advice you download the pre-built binaries from [Zeranoe](http://ffmpeg.zeranoe.com/builds/).
 You will need to download the Shared to have the dlls and the Dev to have the .lib files allowing you to link with the dlls.
-Note that on this website you can only get shared versions of the ffmpeg libraries.
+Note that on this website you can only get shared versions of the ffmpeg libraries. Only version 4.0 and onwards are supported.
 
 ### Boost
 

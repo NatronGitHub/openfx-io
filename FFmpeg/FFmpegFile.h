@@ -99,6 +99,29 @@ namespace OFX {
 class ImageEffect;
 }
 
+class MyAVPacket
+{
+public:
+    MyAVPacket()
+    {
+        _pkt = av_packet_alloc();
+    }
+    ~MyAVPacket()
+    {
+        av_packet_free(&_pkt);
+    }
+
+    AVPacket* pkt() const {
+        return _pkt;
+    }
+
+    AVPacket* operator->() const {
+        return _pkt;
+    }
+private:
+    AVPacket *_pkt;
+};
+
 class FFmpegFile
 {
 public:
@@ -289,32 +312,6 @@ private:
         }
     };
 
-    struct MyAVPacket : public AVPacket
-    {
-    public:
-        MyAVPacket()
-        {
-            InitPacket();
-        }
-        ~MyAVPacket()
-        {
-            FreePacket();
-        }
-
-    public:
-        void InitPacket()
-        {
-            data = nullptr;
-            size = 0;
-
-            av_init_packet(this);
-        }
-        void FreePacket()
-        {
-            av_packet_unref(this); //av_free_packet(this);
-        }
-    };
-
     std::string _filename;
 
     // AV structure
@@ -330,7 +327,6 @@ private:
     // reader error state
     std::string _errorMsg;  // internal decoding error string
     bool _invalidState;     // true if the reader is in an invalid state
-    MyAVPacket _avPacket;
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
