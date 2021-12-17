@@ -1708,15 +1708,14 @@ GenericReaderPlugin::render(const RenderArguments &args)
 
     for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
         // Read into a temporary image, apply colorspace conversion, then copy
-        bool isOCIOIdentity;
+        bool isOCIOIdentity = true;
 
         // if components are custom, remap it to a OFX components with the same number of channels
-        PixelComponentEnum remappedComponents;
+        PixelComponentEnum remappedComponents = it->comps;
 
-        bool isColor = true;
-        bool isCustom;
-        if (it->comps == ePixelComponentCustom) {
-
+        bool isColor = (it->comps == ePixelComponentRGB) || (it->comps == ePixelComponentRGBA);
+        bool isCustom = false;
+        if (remappedComponents == ePixelComponentCustom) {
             MultiPlane::ImagePlaneDesc plane, pairedPlane;
             MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(it->rawComps, &plane, &pairedPlane);
             const std::vector<std::string>& channels = plane.getChannels();
@@ -1730,15 +1729,6 @@ GenericReaderPlugin::render(const RenderArguments &args)
                          channels[2] == "B" &&
                          channels[3] == "A") );
             isCustom = true;
-            if (isColor) {
-#ifdef OFX_IO_USING_OCIO
-                isOCIOIdentity = _ocio->isIdentity(args.time);
-#else
-                isOCIOIdentity = true;
-#endif
-            } else {
-                isOCIOIdentity = true;
-            }
 
             if (it->numChans == 3) {
                 remappedComponents = ePixelComponentRGB;
@@ -1746,24 +1736,21 @@ GenericReaderPlugin::render(const RenderArguments &args)
                 remappedComponents = ePixelComponentRGBA;
             } else if (it->numChans == 2) {
                 remappedComponents = ePixelComponentXY;
-            } else {
+            } else if (it->numChans == 1) {
                 remappedComponents = ePixelComponentAlpha;
             }
-        } else {
-            isCustom = false;
-#ifdef OFX_IO_USING_OCIO
-            isOCIOIdentity = _ocio->isIdentity(args.time);
-#else
-            isOCIOIdentity = true;
-#endif
-            remappedComponents = it->comps;
         }
+#ifdef OFX_IO_USING_OCIO
+        if (isColor) {
+            isOCIOIdentity = _ocio->isIdentity(args.time);
+        }
+#endif
 
         PreMultiplicationEnum filePremult = eImageUnPreMultiplied;
         PreMultiplicationEnum outputPremult = eImageUnPreMultiplied;
-        if ( (it->comps == ePixelComponentRGB) || (it->comps == ePixelComponentXY) || ( isCustom && isColor && (remappedComponents == ePixelComponentRGB) ) ) {
+        if ( (remappedComponents == ePixelComponentRGB) || (remappedComponents == ePixelComponentXY) ) {
             filePremult = outputPremult = eImageOpaque;
-        } else if ( (it->comps == ePixelComponentAlpha) || ( isCustom && isColor && (remappedComponents == ePixelComponentAlpha) ) ) {
+        } else if (remappedComponents == ePixelComponentAlpha) {
             filePremult = outputPremult = eImagePreMultiplied;
         } else if ( (it->comps == ePixelComponentRGBA) || ( isCustom && isColor && (remappedComponents == ePixelComponentRGBA) ) ) {
             int premult_i;
@@ -1782,7 +1769,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
         //   - buffer is PreMultiplied AND OCIO is not identity (OCIO works only on unpremultiplied data)
         //   OR
         //   - premult is unpremultiplied
-        bool mustPremult = ( (remappedComponents == ePixelComponentRGBA) &&
+        bool mustPremult = ( isColor && (remappedComponents == ePixelComponentRGBA) &&
                              ( (filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied ) );
 
 
@@ -1847,9 +1834,9 @@ GenericReaderPlugin::render(const RenderArguments &args)
             DBG( std::printf("decode (to tmp)\n") );
 
             if (!_isMultiPlanar) {
-                decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
+                decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
             } else {
-                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
+                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, it->rawComps, tmpRowBytes);
             }
 
             if ( abort() ) {
@@ -1857,7 +1844,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
             }
 
             ///do the color-space conversion
-            if ( !isOCIOIdentity && (it->comps != ePixelComponentAlpha) && (it->comps != ePixelComponentXY) ) {
+            if ( !isOCIOIdentity && isColor ) {
                 if (filePremult == eImagePreMultiplied) {
                     assert(remappedComponents == ePixelComponentRGBA);
                     DBG( std::printf("unpremult (tmp in-place)\n") );
