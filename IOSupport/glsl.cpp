@@ -4,9 +4,17 @@
 #if 1
 #include <glad.h>
 #ifdef __APPLE__
+#define HAVE_GLU 1
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+// https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560
+#undef HAVE_GLU
+#endif
+#if HAVE_GLU
+#ifdef __APPLE__
 #include <OpenGL/glu.h>
 #else
 #include <GL/glu.h>
+#endif
 #endif
 #else
 #ifdef __APPLE__
@@ -47,7 +55,11 @@ bool GetGLError(std::string & error)
     const GLenum glErr = glGetError();
     if(glErr!=GL_NO_ERROR)
     {
+#if HAVE_GLU
         error = (const char*)gluErrorString(glErr);
+#else
+        error = "OpenGL Error";
+#endif
         return true;
     }
     return false;
