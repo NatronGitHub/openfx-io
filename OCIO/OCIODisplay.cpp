@@ -100,15 +100,20 @@ enum ChannelSelectorEnum
     //eChannelSelectorMatteOverlay,
 };
 
-// OCIO's GPU render is not accurate enough.
-// see https://github.com/imageworks/OpenColorIO/issues/394
-// and https://github.com/imageworks/OpenColorIO/issues/456
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
 #define kParamEnableGPU "enableGPU"
 #define kParamEnableGPULabel "Enable GPU Render"
+#if OCIO_VERSION_HEX >= 0x02000000
+#define kParamEnableGPUHint_warn ""
+#else
+// OCIO1's GPU render is not accurate enough.
+// see https://github.com/imageworks/OpenColorIO/issues/394
+// and https://github.com/imageworks/OpenColorIO/issues/456
+#define kParamEnableGPUHint_warn "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n"
+#endif
 #define kParamEnableGPUHint \
     "Enable GPU-based OpenGL render (only available when \"(Un)premult\" is not checked).\n" \
-    "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n" \
+    kParamEnableGPUHint_warn \
     "If the checkbox is checked but is not enabled (i.e. it cannot be unchecked), GPU render can not be enabled or disabled from the plugin and is probably part of the host options.\n" \
     "If the checkbox is not checked and is not enabled (i.e. it cannot be checked), GPU render is not available on this host."
 #endif
