@@ -44,7 +44,10 @@
 #include "glad.h"
 
 #ifdef OFX_IO_USING_OCIO
+
+#if OCIO_VERSION_HEX >= 0x02000000
 #include "glsl.h"
+#endif
 
 namespace OCIO = OCIO_NAMESPACE;
 #endif

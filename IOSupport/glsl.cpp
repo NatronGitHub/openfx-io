@@ -31,6 +31,8 @@
 
 #include <OpenColorIO/OpenColorIO.h>
 
+#if OCIO_VERSION_HEX >= 0x02000000
+
 #include "glsl.h"
 
 
@@ -572,3 +574,5 @@ unsigned OpenGLBuilder::GetTextureMaxWidth()
 }
 
 } // namespace OCIO_NAMESPACE
+
+#endif // OCIO_VERSION_HEX >= 0x02000000
