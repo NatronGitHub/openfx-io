@@ -3,7 +3,6 @@
 
 #if 1
 #include <glad.h>
-#ifdef __APPLE__
 #define HAVE_GLU 1
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 // https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560
