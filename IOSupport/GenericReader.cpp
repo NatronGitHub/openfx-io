@@ -1780,7 +1780,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
             if (!_isMultiPlanar) {
                 decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
             } else {
-                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rawComps, it->rowBytes);
+                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
             }
         } else {
             int pixelBytes;
@@ -1836,7 +1836,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
             if (!_isMultiPlanar) {
                 decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
             } else {
-                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, it->rawComps, tmpRowBytes);
+                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
             }
 
             if ( abort() ) {
@@ -1939,6 +1939,7 @@ GenericReaderPlugin::decodePlane(const string& /*filename*/,
                                  float */*pixelData*/,
                                  const OfxRectI& /*bounds*/,
                                  PixelComponentEnum /*pixelComponents*/,
+                                 PixelComponentEnum /*remappedComponents*/,
                                  int /*pixelComponentCount*/,
                                  const string& /*rawComponents*/,
                                  int /*rowBytes*/)

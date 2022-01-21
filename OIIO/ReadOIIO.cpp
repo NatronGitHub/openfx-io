@@ -471,11 +471,12 @@ private:
 
             return;
         }
-        decodePlane(filename, time, view, isPlayback, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, rawComps, rowBytes);
+        decodePlane(filename, time, view, isPlayback, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponents, pixelComponentCount, rawComps, rowBytes);
     }
 
     virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds,
-                             PixelComponentEnum pixelComponents, int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
+                             PixelComponentEnum pixelComponents, PixelComponentEnum remappedComponents,
+                             int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
 
     void getOIIOChannelIndexesFromLayerName(const string& filename, int view, const string& layerName, PixelComponentEnum pixelComponents, const vector<ImageSpec>& subimages, vector<int>& channels, int& numChannels, int& subImageIndex);
 
@@ -2245,6 +2246,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                             float *pixelData,
                             const OfxRectI& bounds,
                             PixelComponentEnum pixelComponents,
+                            PixelComponentEnum remappedComponents,
                             int pixelComponentCount,
                             const string& rawComponents,
                             int rowBytes)

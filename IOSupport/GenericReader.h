@@ -253,7 +253,8 @@ private:
      **/
     virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
     virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds,
-                             OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, const std::string& rawComponents, int rowBytes);
+                             OFX::PixelComponentEnum pixelComponents, OFX::PixelComponentEnum remappedComponents,
+                             int pixelComponentCount, const std::string& rawComponents, int rowBytes);
 
 
     /**
