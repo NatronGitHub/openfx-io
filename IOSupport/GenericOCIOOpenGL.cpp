@@ -244,7 +244,7 @@ GenericOCIO::applyGL(const Texture* srcImg,
         glBuilder->allocateAllTextures(1);
 
         // Step 5: Build the fragment shader program
-        glBuilder->buildProgram(g_fragShaderText);
+        glBuilder->buildProgram(g_fragShaderText, false);
     }
 
     glEnable(GL_TEXTURE_2D);

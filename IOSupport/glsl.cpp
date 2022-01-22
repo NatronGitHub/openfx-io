@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright Contributors to the OpenColorIO Project.
 
+
 #if 1
 #include <glad.h>
 #define HAVE_GLU 1
@@ -460,20 +461,31 @@ void OpenGLBuilder::useAllUniforms()
 
 std::string OpenGLBuilder::getGLSLVersionString()
 {
-    if (m_shaderDesc->getLanguage() == GPU_LANGUAGE_GLSL_1_3)
+    switch (m_shaderDesc->getLanguage())
     {
+    case GPU_LANGUAGE_GLSL_1_2:
+    case GPU_LANGUAGE_MSL_2_0:
+        // That's the minimal version supported.
+        return "#version 120";
+    case GPU_LANGUAGE_GLSL_1_3:
         return "#version 130";
-    }
-    else if (m_shaderDesc->getLanguage() == GPU_LANGUAGE_GLSL_4_0)
-    {
+    case GPU_LANGUAGE_GLSL_4_0:
         return "#version 400 core";
+    case GPU_LANGUAGE_GLSL_ES_1_0:
+        return "#version 100";
+    case GPU_LANGUAGE_GLSL_ES_3_0:
+        return "#version 300 es";
+    case GPU_LANGUAGE_CG:
+    case GPU_LANGUAGE_HLSL_DX11:
+    case LANGUAGE_OSL_1:
+    default:
+        // These are all impossible in OpenGL contexts.
+        // The shader will be unusable, so let's throw
+        throw Exception("Invalid shader language for OpenGLBuilder");
     }
-
-    // That's the minimal version supported.
-    return "#version 120";
 }
 
-unsigned OpenGLBuilder::buildProgram(const std::string & clientShaderProgram)
+unsigned OpenGLBuilder::buildProgram(const std::string & clientShaderProgram, bool standaloneShader)
 {
     const std::string shaderCacheID = m_shaderDesc->getCacheID();
     if(shaderCacheID!=m_shaderCacheID)
@@ -486,7 +498,7 @@ unsigned OpenGLBuilder::buildProgram(const std::string & clientShaderProgram)
 
         std::ostringstream os;
         os  << getGLSLVersionString() << std::endl
-            << m_shaderDesc->getShaderText() << std::endl
+            << (!standaloneShader ? m_shaderDesc->getShaderText() : "") << std::endl
             << clientShaderProgram << std::endl;
 
         if(m_verbose)
