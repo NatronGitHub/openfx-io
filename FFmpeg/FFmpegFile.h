@@ -139,7 +139,7 @@ private:
         int _idx;                      // stream index
         AVStream* _avstream;           // video stream
         AVCodecContext* _codecContext; // video codec context
-        AVCodec* _videoCodec;
+        const AVCodec* _videoCodec;
         AVFrame* _avFrame;             // decoding frame
         AVFrame* _avIntermediateFrame; // decode into this if an image conversion is required
         SwsContext* _convertCtx;
