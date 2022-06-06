@@ -848,7 +848,7 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // find the codec
-        AVCodec* videoCodec = avcodec_find_decoder(codecCtx->codec_id);
+        const AVCodec* videoCodec = avcodec_find_decoder(codecCtx->codec_id);
         if (videoCodec == nullptr) {
 #if TRACE_FILE_OPEN
             std::cout << "Decoder not found, skipping..." << std::endl;

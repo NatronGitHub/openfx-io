@@ -1078,10 +1078,10 @@ private:
     void checkCodec();
     void freeFormat();
     void getColorInfo(AVColorPrimaries *color_primaries, AVColorTransferCharacteristic *color_trc) const;
-    AVOutputFormat*               initFormat(bool reportErrors) const;
-    bool                          initCodec(AVOutputFormat* fmt, AVCodecID& outCodecId, AVCodec*& outCodec) const;
+    const AVOutputFormat*         initFormat(bool reportErrors) const;
+    bool                          initCodec(const AVOutputFormat* fmt, AVCodecID& outCodecId, const AVCodec*& outCodec) const;
 
-    void getPixelFormats(AVCodec*          videoCodec,
+    void getPixelFormats(const AVCodec*    videoCodec,
                          FFmpeg::PixelCodingEnum pixelCoding,
                          int bitdepth,
                          bool alpha,
@@ -1096,11 +1096,11 @@ private:
     static AVPixelFormat  GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
     static void           GetCodecSupportedParams(const AVCodec* codec, CodecParams* p);
 
-    void configureAudioStream(AVCodec* avCodec, AVStream* avStream);
-    void configureVideoStream(AVCodec* avCodec, MyAVStream* avStream);
+    void configureAudioStream(const AVCodec* avCodec, AVStream* avStream);
+    void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
     void configureTimecodeStream(AVCodec* avCodec, AVStream* avStream);
-    void addStream(AVFormatContext* avFormatContext, enum AVCodecID avCodecId, AVCodec** pavCodec, MyAVStream* myStreamOut);
-    int openCodec(AVFormatContext* avFormatContext, AVCodec* avCodec, MyAVStream* myAVStream);
+    void addStream(AVFormatContext* avFormatContext, enum AVCodecID avCodecId, const AVCodec** pavCodec, MyAVStream* myStreamOut);
+    int openCodec(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myAVStream);
     int writeAudio(AVFormatContext* avFormatContext, AVStream* avStream, bool flush);
     int writeVideo(AVFormatContext* avFormatContext, MyAVStream* myAVStream, bool flush, double time, const float *pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
     int encodeVideo(AVCodecContext* avCodecContext, const AVFrame* avFrame, AVPacket* avPacketOut);
@@ -1680,12 +1680,12 @@ WriteFFmpegPlugin::getColorInfo(AVColorPrimaries *color_primaries,
 # endif // ifdef OFX_IO_USING_OCIO
 } // WriteFFmpegPlugin::getColorInfo
 
-AVOutputFormat*
+const AVOutputFormat*
 WriteFFmpegPlugin::initFormat(bool reportErrors) const
 {
     assert(_format);
     int format = _format->getValue();
-    AVOutputFormat* fmt = nullptr;
+    const AVOutputFormat* fmt = nullptr;
 
     if (!format) { // first item is "Default"
         const char* file = _filename.c_str();
@@ -1710,9 +1710,9 @@ WriteFFmpegPlugin::initFormat(bool reportErrors) const
 }
 
 bool
-WriteFFmpegPlugin::initCodec(AVOutputFormat* fmt,
+WriteFFmpegPlugin::initCodec(const AVOutputFormat* fmt,
                              AVCodecID& outCodecId,
-                             AVCodec*& outVideoCodec) const
+                             const AVCodec*& outVideoCodec) const
 {
     if (!fmt) {
         return false;
@@ -1724,7 +1724,7 @@ WriteFFmpegPlugin::initCodec(AVOutputFormat* fmt,
     int codec = _codec->getValue();
     assert( codec >= 0 && codec < (int)codecsShortNames.size() );
 
-    AVCodec* userCodec = avcodec_find_encoder_by_name( getCodecFromShortName(codecsShortNames[codec]) );
+    const AVCodec* userCodec = avcodec_find_encoder_by_name( getCodecFromShortName(codecsShortNames[codec]) );
     if (userCodec) {
         outCodecId = userCodec->id;
     }
@@ -1747,7 +1747,7 @@ WriteFFmpegPlugin::initCodec(AVOutputFormat* fmt,
 }
 
 void
-WriteFFmpegPlugin::getPixelFormats(AVCodec* videoCodec,
+WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
                                    FFmpeg::PixelCodingEnum prefPixelCoding,
                                    int prefBitDepth,
                                    bool prefAlpha,
@@ -2365,24 +2365,20 @@ WriteFFmpegPlugin::configureAudioStream(AVCodec* avCodec,
 // @param avStream A reference to an AVStream of a audio stream.
 //
 void
-WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
+WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
                                         MyAVStream* myAVStream)
 {
     assert(avCodec && myAVStream && myAVStream->stream && _formatContext);
     if (!avCodec || !myAVStream || !myAVStream->stream || !_formatContext) {
         return;
     }
-#if (LIBAVFORMAT_VERSION_MAJOR > 57) && !defined(FF_API_LAVF_AVCTX)
-//#if (LIBAVFORMAT_VERSION_INT) >= (AV_VERSION_INT(57, 41, 100 ) ) // appeared with ffmpeg 3.1.1
-#error "Using AVStream.codec to pass codec parameters to muxers is deprecated, use AVStream.codecpar instead."
-#endif
+
     AVCodecContext* avCodecContext = myAVStream->codecContext;
     AVStream* avStream = myAVStream->stream;
     assert(avCodecContext);
     if (!avCodecContext) {
         return;
     }
-    avcodec_get_context_defaults3(avCodecContext, avCodec);
     //avCodecContext->strict_std_compliance = FF_COMPLIANCE_STRICT;
 
     //Only update the relevant context variables where the user is able to set them.
@@ -3055,12 +3051,12 @@ WriteFFmpegPlugin::configureVideoStream(AVCodec* avCodec,
 void
 WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
                              enum AVCodecID avCodecId,
-                             AVCodec** pavCodec,
+                             const AVCodec** pavCodec,
                              MyAVStream* myStreamOut)
 {
     AVCodecContext* avCodecContext = nullptr;
     AVStream* avStream = nullptr;
-    AVCodec* avCodec = nullptr;
+    const AVCodec* avCodec = nullptr;
 
     // Find the encoder.
     if (avCodecId == AV_CODEC_ID_PRORES) {
@@ -3125,7 +3121,7 @@ WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
 //
 int
 WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
-                             AVCodec* avCodec,
+                             const AVCodec* avCodec,
                              MyAVStream* myAVStream)
 {
     assert(avFormatContext && avCodec && myAVStream && myAVStream->stream);
@@ -3728,7 +3724,11 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     _rodPixel = rodPixel;
     _pixelAspectRatio = pixelAspectRatio;
 
-    AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
+#if (LIBAVFORMAT_VERSION_MAJOR > 58)
+    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
+#else
+    auto avOutputFormat = const_cast<AVOutputFormat*>(initFormat(true));
+#endif
     if (!avOutputFormat) {
         setPersistentMessage(Message::eMessageError, "", "Invalid file extension");
         throwSuiteStatusException(kOfxStatFailed);
@@ -3762,7 +3762,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             //audioReader_->setSampleFormat(_avSampleFormat);
 
             if ( !audioReader_->open(_audioFile) ) {
-                AVCodec* audioCodec = nullptr;
+                const AVCodec* audioCodec = nullptr;
                 addStream(_formatContext, audioReader_->getCodecID(), &audioCodec, &_streamAudio);
                 if (!_streamAudio.stream || !audioCodec) {
                     freeFormat();
@@ -3828,7 +3828,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     // Create a video stream.
     AVCodecID codecId = AV_CODEC_ID_NONE;
-    AVCodec* videoCodec = nullptr;
+    const AVCodec* videoCodec = nullptr;
     if ( !initCodec(avOutputFormat, codecId, videoCodec) ) {
         setPersistentMessage(Message::eMessageError, "", "Unable to find codec");
         freeFormat();
@@ -4393,7 +4393,7 @@ WriteFFmpegPlugin::updateVisibility()
     }
 
 
-    AVCodec* codec = avcodec_find_encoder_by_name( getCodecFromShortName(codecShortName) );
+    const AVCodec* codec = avcodec_find_encoder_by_name( getCodecFromShortName(codecShortName) );
     CodecParams p;
     if (codec) {
         GetCodecSupportedParams(codec, &p);
@@ -4576,7 +4576,7 @@ WriteFFmpegPlugin::updatePixelFormat()
     ////////////////////                        ////////////////////
     //////////////////// INITIALIZE FORMAT       ////////////////////
 
-    AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
+    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
     if (!avOutputFormat) {
         _infoPixelFormat->setValue("none");
         _infoBitDepth->setValue(0);
@@ -4593,7 +4593,7 @@ WriteFFmpegPlugin::updatePixelFormat()
 
     // Create a video stream.
     AVCodecID codecId = AV_CODEC_ID_NONE;
-    AVCodec* videoCodec = nullptr;
+    const AVCodec* videoCodec = nullptr;
     if ( !initCodec(avOutputFormat, codecId, videoCodec) ) {
         setPersistentMessage(Message::eMessageError, "", "Unable to find codec");
         freeFormat();
@@ -4676,7 +4676,7 @@ WriteFFmpegPlugin::availPixelFormats()
     ////////////////////                        ////////////////////
     //////////////////// INITIALIZE FORMAT       ////////////////////
 
-    AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
+    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
     if (!avOutputFormat) {
         sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (cannot initialize container/format)", false);
 
@@ -4689,7 +4689,7 @@ WriteFFmpegPlugin::availPixelFormats()
 
     // Create a video stream.
     AVCodecID codecId = AV_CODEC_ID_NONE;
-    AVCodec* videoCodec = nullptr;
+    const AVCodec* videoCodec = nullptr;
     if ( !initCodec(avOutputFormat, codecId, videoCodec) ) {
         freeFormat();
         sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (cannot initialize codec)", false);
@@ -4815,7 +4815,7 @@ WriteFFmpegPlugin::onOutputFileChanged(const string &filename,
             }
             if (setFormat) {
                 _format->setValue(i);
-                AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[i].c_str(), nullptr, nullptr);
+                const AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[i].c_str(), nullptr, nullptr);
                 const vector<AVCodecID>& codecs = FFmpegSingleton::Instance().getCodecsIds();
                 // is the current codec compatible with this format ?
                 if ( !codecCompatible(fmt, codecs[_codec->getValue()]) ) {
@@ -4896,7 +4896,7 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs &args,
         updateVisibility();
         int format = _format->getValue();
         if (format > 0) {
-            AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[format].c_str(), nullptr, nullptr);
+            const AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[format].c_str(), nullptr, nullptr);
             if ( fmt && !codecCompatible(fmt, FFmpegSingleton::Instance().getCodecsIds()[codec]) ) {
                 setPersistentMessage(Message::eMessageError, "", string("The codec ") + codecsShortNames[codec] + " is not supported in container " + FFmpegSingleton::Instance().getFormatsShortNames()[format]);
             } else {
@@ -4909,7 +4909,7 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs &args,
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
         int format = _format->getValue();
         if (format > 0) {
-            AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[format].c_str(), nullptr, nullptr);
+            const AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[format].c_str(), nullptr, nullptr);
             if ( fmt && !codecCompatible(fmt, FFmpegSingleton::Instance().getCodecsIds()[codec]) ) {
                 setPersistentMessage(Message::eMessageError, "", string("The codec ") + codecsShortNames[codec] + " is not supported in container " + FFmpegSingleton::Instance().getFormatsShortNames()[format]);
             } else {
