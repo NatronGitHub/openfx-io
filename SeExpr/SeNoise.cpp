@@ -911,7 +911,7 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase &processor,
                    0, c, s,
                    0, -s, c);
     _yRotate->getValueAtTime(time, yRotate);
-    rads = xRotate * M_PI / 180.;
+    rads = yRotate * M_PI / 180.;
     c = std::cos(rads);
     s = std::sin(rads);
     Matrix3x3 rotY(0, 1, 0,
