@@ -1,0 +1,53 @@
+name: Continous Integration tests
+
+on:
+  push:
+    paths-ignore:
+      - LICENSE
+      - README.md
+  pull_request:
+    paths-ignore:
+      - LICENSE
+      - README.md
+
+jobs:
+  build:
+    name: Build Ubuntu 22.04
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Checkout SeExpr
+        uses: actions/checkout@v3
+        with:
+          repository: wdas/SeExpr
+          ref: v1-2.11
+          path: SeExprSrc
+      - name: Install Ubuntu system packages
+        run: |
+          sudo apt update
+          sudo apt-get install cmake libopencolorio-dev libopenimageio-dev libglu1-mesa-dev libgl-dev liblcms2-dev libraw-dev \
+            libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+      - name: Local SeExpr
+        run: |
+          cd SeExprSrc
+          sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
+          cmake . -B build -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11
+          cd ..
+          make -j2 -C SeExprSrc/build
+          make install -j2 -C SeExprSrc/build
+      - name: Build (release)
+        run: |
+          make -j2 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
+          mkdir -p Bundle
+          mv IO/Linux-64-release/IO.ofx.bundle Bundle
+      - name: Build (debug)
+        run: |
+          make -j2 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: openfx-io-build-ubuntu_22-release
+          path: Bundle
