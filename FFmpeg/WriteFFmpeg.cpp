@@ -5453,8 +5453,8 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         DoubleParamDescriptor* param = desc.defineDoubleParam(kParamFPS);
         param->setLabel(kParamFPSLabel);
         param->setHint(kParamFPSHint);
-        param->setRange(0., 100.);
-        param->setDisplayRange(0., 100.);
+        param->setRange(0., INT_MAX);
+        param->setDisplayRange(0., 120.);
         param->setDefault(24.); // should be set from the input FPS
         param->setAnimates(false);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
