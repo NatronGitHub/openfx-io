@@ -40,13 +40,12 @@
 #ifndef IO_Utility_h
 #define IO_Utility_h
 
-
-#include <cmath>
-#include <cassert>
 #include <algorithm>
-#include <string>
+#include <cassert>
+#include <cmath>
 #include <functional>
 #include <locale>
+#include <string>
 
 #include "ofxsImageEffect.h"
 
@@ -56,12 +55,11 @@
 #define NAMESPACE_OFX_IO_ENTER namespace IO {
 #define NAMESPACE_OFX_IO_EXIT }
 
-
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
 
 inline std::string
-basename( std::string const& pathname )
+basename(std::string const& pathname)
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
     std::size_t found = pathname.find_last_of("/\\");
@@ -73,7 +71,7 @@ basename( std::string const& pathname )
 }
 
 inline std::string
-dirname( std::string const& pathname )
+dirname(std::string const& pathname)
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
     std::size_t found = pathname.find_last_of("/\\");
@@ -87,28 +85,28 @@ dirname( std::string const& pathname )
 inline std::string
 extension(const std::string& filename)
 {
-    std::string::const_reverse_iterator pivot = std::find( filename.rbegin(), filename.rend(), '.' );
-    if ( pivot == filename.rend() ) {
+    std::string::const_reverse_iterator pivot = std::find(filename.rbegin(), filename.rend(), '.');
+    if (pivot == filename.rend()) {
         return "";
     }
     std::string ext;
     std::locale loc;
     for (std::string::const_iterator it = pivot.base(); it != filename.end(); ++it) {
-        ext.append( 1, std::tolower(*it, loc) );
+        ext.append(1, std::tolower(*it, loc));
     }
 
     return ext;
 }
 
 /// numvals should be 256 for byte, 65536 for 16-bits, etc.
-template<int numvals>
+template <int numvals>
 float
 intToFloat(int value)
 {
     return value / (float)(numvals - 1);
 }
 
-template<int numvals>
+template <int numvals>
 int
 floatToInt(float value)
 {
@@ -190,11 +188,11 @@ intersect(const OfxRectI& r1,
           const OfxRectI& r2,
           OfxRectI* intersection)
 {
-    if ( isRectNull(r1) || isRectNull(r2) ) {
+    if (isRectNull(r1) || isRectNull(r2)) {
         return false;
     }
 
-    if ( (r1.x1 > r2.x2) || (r2.x1 > r1.x2) || (r1.y1 > r2.y2) || (r2.y1 > r1.y2) ) {
+    if ((r1.x1 > r2.x2) || (r2.x1 > r1.x2) || (r1.y1 > r2.y2) || (r2.y1 > r1.y2)) {
         return false;
     }
 
@@ -333,7 +331,7 @@ getScaleFromMipMapLevel(unsigned int level)
 }
 
 #ifndef M_LN2
-#define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
+#define M_LN2 0.693147180559945309417232121458176568 /* loge(2)        */
 #endif
 inline unsigned int
 getLevelFromScale(double s)
@@ -348,12 +346,10 @@ getLevelFromScale(double s)
 /**
  * @brief Helper class to make fast buffers that are ensured to be deallocated in a RAII style
  **/
-class RamBuffer
-{
+class RamBuffer {
     unsigned char* data;
 
 public:
-
     RamBuffer(std::size_t nBytes)
         : data(0)
     {
@@ -374,6 +370,6 @@ public:
 };
 
 NAMESPACE_OFX_IO_EXIT
-    NAMESPACE_OFX_EXIT
+NAMESPACE_OFX_EXIT
 
 #endif // ifndef IO_Utility_h

@@ -22,15 +22,15 @@
  * Reads an image using the OpenImageIO library.
  */
 
+#include <algorithm>
+#include <climits>
+#include <cmath>
+#include <cstddef>
+#include <cstring> // memset
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <sstream>
-#include <fstream>
-#include <cmath>
-#include <cstring> // memset
-#include <cstddef>
-#include <climits>
-#include <algorithm>
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <IlmThreadPool.h>
@@ -39,15 +39,15 @@
 #include "ofxsMacros.h"
 
 #include "OIIOGlobal.h"
-GCC_DIAG_OFF(unused-parameter)
+GCC_DIAG_OFF(unused - parameter)
 #include <OpenImageIO/imagecache.h>
-GCC_DIAG_ON(unused-parameter)
+GCC_DIAG_ON(unused - parameter)
 
 #ifdef OFX_IO_USING_LIBRAW
-GCC_DIAG_OFF(deprecated-declarations)
+GCC_DIAG_OFF(deprecated - declarations)
 #include <libraw.h>
 #include <libraw_version.h>
-GCC_DIAG_ON(deprecated-declarations)
+GCC_DIAG_ON(deprecated - declarations)
 #else
 // default to a recent version
 #define LIBRAW_MAJOR_VERSION 0
@@ -55,16 +55,16 @@ GCC_DIAG_ON(deprecated-declarations)
 #define LIBRAW_PATCH_VERSION 2
 #define _LIBRAW_VERSION_MAKE(a, b, c, d) #a "." #b "." #c "-" #d
 #define LIBRAW_VERSION_MAKE(a, b, c, d) _LIBRAW_VERSION_MAKE(a, b, c, d)
-#define LIBRAW_VERSION_STR                                                     \
-  LIBRAW_VERSION_MAKE(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION,              \
-                      LIBRAW_PATCH_VERSION, LIBRAW_VERSION_TAIL)
-#define LIBRAW_MAKE_VERSION(major, minor, patch)                               \
-  (((major) << 16) | ((minor) << 8) | (patch))
-#define LIBRAW_VERSION                                                         \
-  LIBRAW_MAKE_VERSION(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION,              \
-                      LIBRAW_PATCH_VERSION)
+#define LIBRAW_VERSION_STR                                          \
+    LIBRAW_VERSION_MAKE(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION, \
+                        LIBRAW_PATCH_VERSION, LIBRAW_VERSION_TAIL)
+#define LIBRAW_MAKE_VERSION(major, minor, patch) \
+    (((major) << 16) | ((minor) << 8) | (patch))
+#define LIBRAW_VERSION                                              \
+    LIBRAW_MAKE_VERSION(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION, \
+                        LIBRAW_PATCH_VERSION)
 #endif // OFX_IO_USING_LIBRAW
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
 #pragma message WARN("ReadOIIO will not support advanced demosaicing options, because libraw .")
 #endif
 
@@ -74,9 +74,9 @@ GCC_DIAG_ON(deprecated-declarations)
 #include "GenericReader.h"
 #include "IOUtility.h"
 
+#include "ofxsMultiThread.h"
 #include <ofxsCoords.h>
 #include <ofxsMultiPlane.h>
-#include "ofxsMultiThread.h"
 #ifdef OFX_USE_MULTITHREAD_MUTEX
 namespace {
 typedef OFX::MultiThread::Mutex Mutex;
@@ -91,7 +91,6 @@ typedef tthread::fast_mutex Mutex;
 typedef OFX::MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
 }
 #endif
-
 
 #define OFX_READ_OIIO_USES_CACHE
 #define OFX_READ_OIIO_SUPPORTS_SUBIMAGES
@@ -108,11 +107,11 @@ using namespace OFX::IO;
 namespace OCIO = OCIO_NAMESPACE;
 #endif
 
+using std::make_pair;
+using std::pair;
 using std::string;
 using std::stringstream;
 using std::vector;
-using std::pair;
-using std::make_pair;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
@@ -125,9 +124,9 @@ typedef ImageInput* ImageInputPtr;
 
 #define kPluginName "ReadOIIO"
 #define kPluginGrouping "Image/Readers"
-#define kPluginDescription \
-    "Read images using OpenImageIO.\n\n" \
-    "Output is always Premultiplied (alpha is associated).\n\n" \
+#define kPluginDescription                                                        \
+    "Read images using OpenImageIO.\n\n"                                          \
+    "Output is always Premultiplied (alpha is associated).\n\n"                   \
     "The \"Image Premult\" parameter controls the file premultiplication state, " \
     "and can be used to fix wrong file metadata (see the help for that parameter)."
 #define kPluginIdentifier "fr.inria.openfx.ReadOIIO"
@@ -147,11 +146,9 @@ typedef ImageInput* ImageInputPtr;
 #endif
 #define kIsMultiPlanar true
 
-
 #define kParamShowMetadata "showMetadata"
 #define kParamShowMetadataLabel "Image Info..."
 #define kParamShowMetadataHint "Shows information and metadata from the image at current time."
-
 
 #define kGroupAdvanced "advanced"
 #define kGroupAdvancedLabel "Advanced Options", "Advanced format-specific option"
@@ -169,9 +166,9 @@ typedef ImageInput* ImageInputPtr;
 
 // float adjust_maximum_thr
 #define kParamRawAdjustMaximumThr "rawAdjustMaximumThr"
-#define kParamRawAdjustMaximumThrLabel "Adjust Maximum Thr.", "This parameters controls auto-adjusting of maximum value based on channel_maximum[] data, calculated from real frame data. If calculated maximum is greater than adjust_maximum_thr*maximum, than maximum is set to calculated_maximum.\n" \
-"Default: 0. If you set this value above 0.99999, then default value will be used. If you set this value below 0.00001, then no maximum adjustment will be performed. A value of 0.75 is reasonable for still shots, but sequences should always use 0.\n" \
-"Adjusting maximum should not damage any picture (esp. if you use default value) and is very useful for correcting channel overflow problems (magenta clouds on landscape shots, green-blue highlights for indoor shots)." // default: 0.
+#define kParamRawAdjustMaximumThrLabel "Adjust Maximum Thr.", "This parameters controls auto-adjusting of maximum value based on channel_maximum[] data, calculated from real frame data. If calculated maximum is greater than adjust_maximum_thr*maximum, than maximum is set to calculated_maximum.\n"                \
+                                                              "Default: 0. If you set this value above 0.99999, then default value will be used. If you set this value below 0.00001, then no maximum adjustment will be performed. A value of 0.75 is reasonable for still shots, but sequences should always use 0.\n" \
+                                                              "Adjusting maximum should not damage any picture (esp. if you use default value) and is very useful for correcting channel overflow problems (magenta clouds on landscape shots, green-blue highlights for indoor shots)." // default: 0.
 
 #if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
 #define kParamRawUserSat "rawUserSat"
@@ -187,18 +184,17 @@ typedef ImageInput* ImageInputPtr;
 #define kParamRawOutputColorWide "Wide", "Wide-gamut RGB color space (or Adobe Wide Gamut RGB)", "wide"
 #define kParamRawOutputColorProPhoto "ProPhoto", "Kodak ProPhoto RGB (or ROMM RGB)", "prophoto"
 #define kParamRawOutputColorXYZ "XYZ", "CIE XYZ", "xyz"
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
 #define kParamRawOutputColorACES "ACES", "AMPAS ACES", "aces"
 #endif
-enum RawOutputColorEnum
-{
+enum RawOutputColorEnum {
     eRawOutputColorRaw = 0,
     eRawOutputColorSRGB,
     eRawOutputColorAdobe,
     eRawOutputColorWide,
     eRawOutputColorProPhoto,
     eRawOutputColorXYZ,
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
     eRawOutputColorACES,
 #endif
 };
@@ -209,16 +205,15 @@ enum RawOutputColorEnum
 #endif
 
 // int use_camera_matrix;
-//0: do not use embedded color profile
-//1 (default): use embedded color profile (if present) for DNG files (always); for other files only if use_camera_wb is set;
-//3: use embedded color data (if present) regardless of white balance setting.
+// 0: do not use embedded color profile
+// 1 (default): use embedded color profile (if present) for DNG files (always); for other files only if use_camera_wb is set;
+// 3: use embedded color data (if present) regardless of white balance setting.
 #define kParamRawUseCameraMatrix "rawUseCameraMatrix"
 #define kParamRawUseCameraMatrixLabel "Camera Matrix", "Use/don't use an embedded color matrix."
 #define kParamRawUseCameraMatrixNone "None", "Do not use the embedded color matrix.", "none"
 #define kParamRawUseCameraMatrixDefault "Default", "Use embedded color profile (if present) for DNG files (always); for other files only if rawUseCameraWb is set.", "default"
 #define kParamRawUseCameraMatrixForce "Force", "Use embedded color data (if present) regardless of white balance setting.", "force"
-enum RawUseCameraMatrixEnum
-{
+enum RawUseCameraMatrixEnum {
     eRawUseCameraMatrixNone = 0,
     eRawUseCameraMatrixDefault,
     eRawUseCameraMatrixForce,
@@ -245,7 +240,6 @@ enum RawHighlightModeEnum {
 #define kParamRawHighlightRebuildLevelLabel "Rebuild Level", "Level of aggressiveness used to rebuild highlights. rawHighlightRebuildLevel=2 (which corresponds to -H 5 in LibRaw/dcraw) is a good compromise.  If that's not good enough, use rawHighlightRebuildLevel=6, cut out the non-white highlights, and paste them into an image generated with rawHighlightRebuildLevel=0. "
 #endif
 
-
 // int exp_correc; float exp_shift
 #define kParamRawExposure "rawExposure"
 #define kParamRawExposureLabel "Exposure", "Amount of exposure correction before de-mosaicing, from 0.25 (2-stop darken) to 8 (3-stop brighten). (Default: 1., meaning no correction.)" // default: 1
@@ -259,7 +253,7 @@ enum RawHighlightModeEnum {
 #define kParamRawDemosaicAHD "AHD", "AHD interpolation.", "ahd"
 #define kParamRawDemosaicDCB "DCB", "DCB interpolation.", "dcb"
 #define kParamRawDemosaicAHDMod "AHD-Mod", "Modified AHD interpolation by Paul Lee.", "ahdmod"
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
 #pragma message WARN("Some demosaicing algorithms (AFD, VCD, Mixed, LLMSE, AMaZE) will not be available because LibRaw is more recent than 0.18.3.")
 #define WARN_DEMOSAIC " Not available with this version of LibRaw (" LIBRAW_VERSION_STR "), AHD will be used instead."
 #else
@@ -270,13 +264,12 @@ enum RawHighlightModeEnum {
 #define kParamRawDemosaicMixed "Mixed", "Mixed VCD/Modified AHD interpolation." WARN_DEMOSAIC, "mixed"
 #define kParamRawDemosaicLMMSE "LMMSE", "LMMSE interpolation." WARN_DEMOSAIC, "lmmse"
 #define kParamRawDemosaicAMaZE "AMaZE", "AMaZE interpolation." WARN_DEMOSAIC, "amaze"
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
 // not available in OIIO 1.7.11:
 #define kParamRawDemosaicDHT "DHT", "DHT interpolation.", "dht"
 #define kParamRawDemosaicAAHD "AAHD", "Modified AHD interpolation by Anton Petrusevich.", "aahd"
 #endif
-enum RawDemosaicEnum
-{
+enum RawDemosaicEnum {
     eRawDemosaicNone = 0,
     eRawDemosaicLinear,
     eRawDemosaicVNG,
@@ -289,7 +282,7 @@ enum RawDemosaicEnum
     eRawDemosaicMixed,
     eRawDemosaicLMMSE,
     eRawDemosaicAMaZE,
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
     eRawDemosaicDHT,
     eRawDemosaicAAHD,
 #endif
@@ -305,15 +298,14 @@ RawDemosaicEnum libraw_demosaic[eRawDemosaicCount];
 #define kXChannelFirst 2
 
 #define kParamChannelOutputLayerHint "This is the layer that will be set to the the color plane. This is relevant only for image formats that can have multiple layers: " \
-"exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
-
+                                     "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
 
 #define kParamChannelOutputLayer "outputLayer"
 #define kParamChannelOutputLayerLabel "Output Layer"
 #define kParamChannelOutputLayerHint "This is the layer that will be set to the the color plane. This is relevant only for image formats that can have multiple layers: " \
-    "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
+                                     "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
 
-//The string param behind the dynamic choice menu
+// The string param behind the dynamic choice menu
 #define kParamChannelOutputLayerChoice kParamChannelOutputLayer "Choice"
 
 #define kParamAvailableViews "availableViews"
@@ -326,9 +318,9 @@ RawDemosaicEnum libraw_demosaic[eRawDemosaicCount];
 
 #define kParamOffsetNegativeDisplayWindow "offsetNegativeDispWindow"
 #define kParamOffsetNegativeDisplayWindowLabel "Offset Negative Display Window"
-#define kParamOffsetNegativeDisplayWindowHint "The EXR file format can have its \"display window\" origin at another location than (0,0). " \
-    "However in OpenFX, formats should have their origin at (0,0). If the left edge of the display window is not 0, either you can offset the " \
-    "display window so it goes to 0, or you can treat the negative portion as overscan and resize the format."
+#define kParamOffsetNegativeDisplayWindowHint "The EXR file format can have its \"display window\" origin at another location than (0,0). "                                               \
+                                              "However in OpenFX, formats should have their origin at (0,0). If the left edge of the display window is not 0, either you can offset the " \
+                                              "display window so it goes to 0, or you can treat the negative portion as overscan and resize the format."
 
 #define kParamEdgePixels "edgePixels"
 #define kParamEdgePixelsLabel "Edge Pixels", "Specifies how pixels in the border of the region of definition are handled"
@@ -337,8 +329,7 @@ RawDemosaicEnum libraw_demosaic[eRawDemosaicCount];
 #define kParamEdgePixelsRepeat "Repeat", "Repeat pixels outside the region of definition", "repeat"
 #define kParamEdgePixelsBlack "Black", "Add black pixels outside the region of definition", "black"
 
-enum EdgePixelsEnum
-{
+enum EdgePixelsEnum {
     eEdgePixelsAuto,
     eEdgePixelsEdgeDetect,
     eEdgePixelsRepeat,
@@ -348,62 +339,58 @@ enum EdgePixelsEnum
 #define kParamLibraryInfo "libraryInfo"
 #define kParamLibraryInfoLabel "OpenImageIO Info...", "Display information about the underlying library."
 
-
-template<typename T>
+template <typename T>
 static inline void
-unused(const T&) {}
-
-static bool gHostSupportsDynamicChoices   = false;
-static bool gHostSupportsMultiPlane = false;
-struct LayerChannelIndexes
+unused(const T&)
 {
-    //The index of the subimage in the file
+}
+
+static bool gHostSupportsDynamicChoices = false;
+static bool gHostSupportsMultiPlane = false;
+struct LayerChannelIndexes {
+    // The index of the subimage in the file
     int subImageIdx;
 
-    //The channel indexes in the subimage
-    //WARNING: We do NOT allow layers with more than 4 channels
+    // The channel indexes in the subimage
+    // WARNING: We do NOT allow layers with more than 4 channels
     vector<int> channelIndexes;
 
-    //A vector with the same size as channelIndexes
+    // A vector with the same size as channelIndexes
     vector<string> channelNames;
 };
 
-struct LayerUnionData
-{
-    //The data related to the layer
+struct LayerUnionData {
+    // The data related to the layer
     LayerChannelIndexes layer;
 
-    //the option as it appears in the choice menu
+    // the option as it appears in the choice menu
     string choiceOption;
 
-
-    //A list of the views that contain this layer
+    // A list of the views that contain this layer
     vector<string> views;
 };
 
-//This is a vector to remain the ordering imposed by the file <layer name, layer info>
-typedef vector<pair<string, LayerChannelIndexes> > LayersMap;
+// This is a vector to remain the ordering imposed by the file <layer name, layer info>
+typedef vector<pair<string, LayerChannelIndexes>> LayersMap;
 
-//For each view name, the layer availables. Note that they are ordered because the first one is the "Main" view
-typedef vector< pair<string, LayersMap> > ViewsLayersMap;
+// For each view name, the layer availables. Note that they are ordered because the first one is the "Main" view
+typedef vector<pair<string, LayersMap>> ViewsLayersMap;
 
 // <layer name, extended layer info>
-typedef vector<pair<string, LayerUnionData> > LayersUnionVect;
+typedef vector<pair<string, LayerUnionData>> LayersUnionVect;
 
 class ReadOIIOPlugin
-    : public GenericReaderPlugin
-{
+    : public GenericReaderPlugin {
 public:
-
     ReadOIIOPlugin(OfxImageEffectHandle handle,
                    const vector<string>& extensions,
                    bool useOIIOCache); // does the host prefer images to be cached by OIIO (e.g. Natron < 2.2)?
 
     virtual ~ReadOIIOPlugin();
 
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
     virtual OfxStatus getClipComponents(const ClipComponentsArguments& args, ClipComponentsSetter& clipComponents) OVERRIDE FINAL;
-    virtual void getClipPreferences(ClipPreferencesSetter &clipPreferences) OVERRIDE FINAL;
+    virtual void getClipPreferences(ClipPreferencesSetter& clipPreferences) OVERRIDE FINAL;
     virtual void clearAnyCache() OVERRIDE FINAL;
 
     /**
@@ -416,9 +403,7 @@ public:
     virtual void restoreStateFromParams() OVERRIDE FINAL;
 
 private:
-
-    virtual bool isIdentity(const OFX::IsIdentityArguments &args, OFX::Clip * &identityClip, double &identityTime, int& view, std::string& plane) OVERRIDE FINAL;
-
+    virtual bool isIdentity(const OFX::IsIdentityArguments& args, OFX::Clip*& identityClip, double& identityTime, int& view, std::string& plane) OVERRIDE FINAL;
 
     /**
      * @brief Called when the input image/video file changed.
@@ -439,7 +424,7 @@ private:
      * You must also return the premultiplication state and pixel components of the image.
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
-    virtual bool guessParamsFromFilename(const string& filename, string *colorspace, PreMultiplicationEnum *filePremult, PixelComponentEnum *components, int *componentCount) OVERRIDE FINAL;
+    virtual bool guessParamsFromFilename(const string& filename, string* colorspace, PreMultiplicationEnum* filePremult, PixelComponentEnum* components, int* componentCount) OVERRIDE FINAL;
     virtual bool isVideoStream(const string& /*filename*/) OVERRIDE FINAL { return false; }
 
     virtual void decode(const string& filename,
@@ -448,7 +433,7 @@ private:
                         bool isPlayback,
                         const OfxRectI& renderWindow,
                         const OfxPointD& renderScale,
-                        float *pixelData,
+                        float* pixelData,
                         const OfxRectI& bounds,
                         PixelComponentEnum pixelComponents,
                         int pixelComponentCount,
@@ -474,7 +459,7 @@ private:
         decodePlane(filename, time, view, isPlayback, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponents, pixelComponentCount, rawComps, rowBytes);
     }
 
-    virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              PixelComponentEnum pixelComponents, PixelComponentEnum remappedComponents,
                              int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
 
@@ -482,7 +467,7 @@ private:
 
     void openFile(const string& filename, bool useCache, ImageInputPtr* img, vector<ImageSpec>* subimages);
 
-    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error,  int* tile_width, int* tile_height) OVERRIDE FINAL;
+    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     string metadata(const string& filename);
 
@@ -490,11 +475,11 @@ private:
 
     void getSpecsFromCache(const string& filename, vector<ImageSpec>* subimages) const;
 
-    void getSpecs(const string &filename, vector<ImageSpec>* subimages, string* error = 0) const;
+    void getSpecs(const string& filename, vector<ImageSpec>* subimages, string* error = 0) const;
 
     void guessColorspace(const string& filename, const ImageSpec& imagespec, string* colorspace) const;
 
-    ///This may warn the user if some views do not exist in the project
+    /// This may warn the user if some views do not exist in the project
 
     static void getLayers(const vector<ImageSpec>& subimages, ViewsLayersMap* layersMap, LayersUnionVect* layersUnion);
 
@@ -525,17 +510,17 @@ private:
     Double2DParam* _rawAber;
 #endif
 
-    ///V2 params
+    /// V2 params
     ChoiceParam* _outputLayer;
     StringParam* _outputLayerString;
     StringParam* _availableViews;
     BooleanParam* _offsetNegativeDispWindow;
     ChoiceParam* _edgePixels;
 
-    //We keep the name of the last file read when not in playback so that
-    //if it changes we can invalidate the last file read from the OIIO cache since it is no longer useful.
-    //The host cache will back it up on most case. The only useful case for the OIIO cache is when there are
-    //multiple threads trying to read the same image.
+    // We keep the name of the last file read when not in playback so that
+    // if it changes we can invalidate the last file read from the OIIO cache since it is no longer useful.
+    // The host cache will back it up on most case. The only useful case for the OIIO cache is when there are
+    // multiple threads trying to read the same image.
     Mutex _lastFileReadNoPlaybackMutex;
     string _lastFileReadNoPlayback;
     Mutex _outputLayerMenuMutex;
@@ -565,11 +550,11 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 {
 #ifdef OFX_READ_OIIO_USES_CACHE
     if (useOIIOCache) {
-#     ifdef OFX_READ_OIIO_SHARED_CACHE
+#ifdef OFX_READ_OIIO_SHARED_CACHE
         _cache = ImageCache::create(true); // shared cache
-#     else
+#else
         _cache = ImageCache::create(false); // non-shared cache
-#     endif
+#endif
         // Always keep unassociated alpha.
         // Don't let OIIO premultiply, because if the image is 8bits,
         // it multiplies in 8bits (see TIFFInput::unassalpha_to_assocalpha()),
@@ -606,8 +591,8 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
     _offsetNegativeDispWindow = fetchBooleanParam(kParamOffsetNegativeDisplayWindow);
     _edgePixels = fetchChoiceParam(kParamEdgePixels);
 
-    //Don't try to restore any state in here, do so in restoreState instead which is called
-    //right away after the constructor.
+    // Don't try to restore any state in here, do so in restoreState instead which is called
+    // right away after the constructor.
 
     initOIIOThreads();
 }
@@ -615,11 +600,11 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 ReadOIIOPlugin::~ReadOIIOPlugin()
 {
     if (_cache) {
-#     ifdef OFX_READ_OIIO_SHARED_CACHE
+#ifdef OFX_READ_OIIO_SHARED_CACHE
         ImageCache::destroy(_cache); // don't teardown if it's a shared cache
-#     else
+#else
         ImageCache::destroy(_cache, true); // teardown non-shared cache
-#     endif
+#endif
     }
 }
 
@@ -627,11 +612,10 @@ void
 ReadOIIOPlugin::clearAnyCache()
 {
     if (_cache) {
-        ///flush the OIIO cache
+        /// flush the OIIO cache
         _cache->invalidate_all(true);
     }
 }
-
 
 static string
 oiio_versions()
@@ -640,26 +624,26 @@ oiio_versions()
     int ver = openimageio_version();
     oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
     oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100) << std::endl;
-# if OIIO_VERSION >= 10705
+#if OIIO_VERSION >= 10705
     string libs = OIIO::get_string_attribute("library_list");
     if (libs.size()) {
-        oss << std::endl << "Dependent libraries:" << std::endl;
+        oss << std::endl
+            << "Dependent libraries:" << std::endl;
         std::istringstream f(libs);
         string s;
         while (getline(f, s, ';')) {
             size_t pos = s.find(':');
-            oss << s.substr(pos+1) << std::endl;
+            oss << s.substr(pos + 1) << std::endl;
         }
     }
-# endif
+#endif
 
     return oss.str();
 }
 
-
 void
-ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
-                             const string &paramName)
+ReadOIIOPlugin::changedParam(const InstanceChangedArgs& args,
+                             const string& paramName)
 {
     if (paramName == kParamLibraryInfo) {
         string extensions_list;
@@ -670,14 +654,14 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
             stringstream formatss(extensions_list);
             string format;
             vector<string> extensions;
-            while ( std::getline(formatss, format, ';') ) {
+            while (std::getline(formatss, format, ';')) {
                 stringstream extensionss(format);
                 string extension;
                 std::getline(extensionss, extension, ':'); // extract the format
                 extensions_pretty += extension;
                 extensions_pretty += ": ";
                 bool first = true;
-                while ( std::getline(extensionss, extension, ',') ) {
+                while (std::getline(extensionss, extension, ',')) {
                     if (!first) {
                         extensions_pretty += ", ";
                     }
@@ -695,13 +679,13 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
         stringstream ss;
         if (st == kOfxStatOK) {
             ss << metadata(filename);
-        } else if ( filename.empty() ) {
+        } else if (filename.empty()) {
             ss << "Impossible to read image info:\nCould not get filename at time " << args.time << '.';
         } else {
             ss << "Impossible to read image info:\nCould not read file " << filename << " corresponding to time " << args.time << '.';
         }
-        sendMessage( Message::eMessageMessage, "", ss.str() );
-    } else if ( _outputLayerString && (paramName == kParamChannelOutputLayer) ) {
+        sendMessage(Message::eMessageMessage, "", ss.str());
+    } else if (_outputLayerString && (paramName == kParamChannelOutputLayer)) {
         int index;
         _outputLayer->getValue(index);
         string optionName;
@@ -713,7 +697,7 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
             for (LayersUnionVect::iterator it = _outputLayerMenu.begin(); it != _outputLayerMenu.end(); ++it) {
                 if (it->second.choiceOption == optionName) {
                     PixelComponentEnum comps;
-                    switch ( it->second.layer.channelNames.size() ) {
+                    switch (it->second.layer.channelNames.size()) {
                     case 1:
                         comps = ePixelComponentAlpha;
                         break;
@@ -730,18 +714,13 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
                 }
             }
         }
-    } else if ((paramName == kParamRawAutoBright) ||
-               (paramName == kParamRawUseCameraWB) ||
-               (paramName == kParamRawAdjustMaximumThr) ||
+    } else if ((paramName == kParamRawAutoBright) || (paramName == kParamRawUseCameraWB) || (paramName == kParamRawAdjustMaximumThr) ||
 #if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
                (paramName == kParamRawUserSat) ||
 #endif
-               (paramName == kParamRawOutputColor) ||
-               (paramName == kParamRawUseCameraMatrix) ||
-               (paramName == kParamRawExposure) ||
+               (paramName == kParamRawOutputColor) || (paramName == kParamRawUseCameraMatrix) || (paramName == kParamRawExposure) ||
 #if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
-               (paramName == kParamRawHighlightMode) ||
-               (paramName == kParamRawHighlightRebuildLevel) ||
+               (paramName == kParamRawHighlightMode) || (paramName == kParamRawHighlightRebuildLevel) ||
 #endif
 #if OIIO_VERSION >= 10904
                (paramName == kParamRawAber) ||
@@ -766,7 +745,7 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs &args,
 }
 
 void
-ReadOIIOPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
+ReadOIIOPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
 {
     GenericReaderPlugin::getClipPreferences(clipPreferences);
 }
@@ -775,8 +754,8 @@ OfxStatus
 ReadOIIOPlugin::getClipComponents(const ClipComponentsArguments& args,
                                   ClipComponentsSetter& clipComponents)
 {
-    //Should only be called if multi-planar
-    assert( isMultiPlanar() );
+    // Should only be called if multi-planar
+    assert(isMultiPlanar());
 
     // no pass-through
     clipComponents.setPassThroughClip(NULL, args.time, args.view);
@@ -801,23 +780,23 @@ ReadOIIOPlugin::getClipComponents(const ClipComponentsArguments& args,
     PixelComponentEnum outputPixelComponents = getOutputComponents();
     int nOutputComps = 0;
     switch (outputPixelComponents) {
-        case ePixelComponentAlpha:
-            nOutputComps = 1;
-            break;
-        case ePixelComponentRGB:
-            nOutputComps = 3;
-            break;
-        case ePixelComponentRGBA:
-            nOutputComps = 4;
-            break;
+    case ePixelComponentAlpha:
+        nOutputComps = 1;
+        break;
+    case ePixelComponentRGB:
+        nOutputComps = 3;
+        break;
+    case ePixelComponentRGBA:
+        nOutputComps = 4;
+        break;
 #ifdef OFX_EXTENSIONS_NATRON
-        case ePixelComponentXY:
-            nOutputComps = 2;
-            break;
+    case ePixelComponentXY:
+        nOutputComps = 2;
+        break;
 #endif
-        default:
-            nOutputComps = 0;
-            break;
+    default:
+        nOutputComps = 0;
+        break;
     }
 
     MultiPlane::ImagePlaneDesc colorPlane = MultiPlane::ImagePlaneDesc::mapNCompsToColorPlane(nOutputComps);
@@ -825,7 +804,7 @@ ReadOIIOPlugin::getClipComponents(const ClipComponentsArguments& args,
     return kOfxStatOK;
 }
 
-namespace  {
+namespace {
 /*static bool startsWith(const string& str,
                        const string& prefix)
    {
@@ -833,11 +812,10 @@ namespace  {
    }*/
 
 static bool
-endsWith(const string &str,
-         const string &suffix)
+endsWith(const string& str,
+         const string& suffix)
 {
-    return ( ( str.size() >= suffix.size() ) &&
-             (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0) );
+    return ((str.size() >= suffix.size()) && (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0));
 }
 
 /*
@@ -846,36 +824,36 @@ endsWith(const string &str,
 static string
 remapToKnownChannelName(const string& channel)
 {
-    if ( (channel == "r") || (channel == "red") || (channel == "RED") || (channel == "Red") ) {
+    if ((channel == "r") || (channel == "red") || (channel == "RED") || (channel == "Red")) {
         return "R";
     }
 
-    if ( (channel == "g") || (channel == "green") || (channel == "GREEN") || (channel == "Green") ) {
+    if ((channel == "g") || (channel == "green") || (channel == "GREEN") || (channel == "Green")) {
         return "G";
     }
 
-    if ( (channel == "b") || (channel == "blue") || (channel == "BLUE") || (channel == "Blue") ) {
+    if ((channel == "b") || (channel == "blue") || (channel == "BLUE") || (channel == "Blue")) {
         return "B";
     }
 
-    if ( (channel == "a") || (channel == "alpha") || (channel == "ALPHA") || (channel == "Alpha") ) {
+    if ((channel == "a") || (channel == "alpha") || (channel == "ALPHA") || (channel == "Alpha")) {
         return "A";
     }
 
-    if ( (channel == "z") || (channel == "depth") || (channel == "DEPTH") || (channel == "Depth") ) {
+    if ((channel == "z") || (channel == "depth") || (channel == "DEPTH") || (channel == "Depth")) {
         return "Z";
     }
 
     return channel;
 }
 
-///Returns true if one is found
+/// Returns true if one is found
 static bool
 hasDuplicate(const LayersMap& layers,
              const string& layer,
              const string& channel)
 {
-    //Try to find an existing layer, or a duplicate
+    // Try to find an existing layer, or a duplicate
     for (std::size_t c = 0; c < layers.size(); ++c) {
         if (layers[c].first == layer) {
             for (std::size_t i = 0; i < layers[c].second.channelNames.size(); ++i) {
@@ -897,7 +875,7 @@ toLowerString(const string& str)
 
     std::locale loc;
     for (std::size_t i = 0; i < str.size(); ++i) {
-        ret.push_back( std::tolower(str[i], loc) );
+        ret.push_back(std::tolower(str[i], loc));
     }
 
     return ret;
@@ -905,7 +883,7 @@ toLowerString(const string& str)
 
 static bool
 caseInsensitiveCompare(const string& lhs,
-                           const string& rhs)
+                       const string& rhs)
 {
     string lowerLhs = toLowerString(lhs);
     string lowerRhs = toLowerString(rhs);
@@ -913,7 +891,7 @@ caseInsensitiveCompare(const string& lhs,
     return lowerLhs == lowerRhs;
 }
 
-///encodedLayerName is in the format view.layer.channel
+/// encodedLayerName is in the format view.layer.channel
 static void
 extractLayerName(const string& encodedLayerName,
                  const vector<string>& viewsList,
@@ -921,7 +899,7 @@ extractLayerName(const string& encodedLayerName,
                  string* layerName,
                  string* channelName)
 {
-    ///if there is a layer/view prefix, this will be non empty
+    /// if there is a layer/view prefix, this will be non empty
     string layerDotPrefix;
     size_t lastdot = encodedLayerName.find_last_of(".");
 
@@ -975,7 +953,7 @@ extractLayerName(const string& encodedLayerName,
     }
 }
 
-//e.g: find "X" in view.layer.z
+// e.g: find "X" in view.layer.z
 static bool
 hasChannelName(const vector<string>& viewsList,
                const string& viewName,
@@ -986,7 +964,7 @@ hasChannelName(const vector<string>& viewsList,
     for (std::size_t i = 0; i < originalUnMappedNames.size(); ++i) {
         string view, layer, channel;
         extractLayerName(originalUnMappedNames[i], viewsList, &view, &layer, &channel);
-        if ( (viewName != view) || (layerName != layer) ) {
+        if ((viewName != view) || (layerName != layer)) {
             continue;
         }
         if (channel == mappedChannelName) {
@@ -996,7 +974,6 @@ hasChannelName(const vector<string>& viewsList,
 
     return false;
 }
-
 
 } // anon namespace
 
@@ -1009,45 +986,44 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                           ViewsLayersMap* layersMap,
                           LayersUnionVect* layersUnion)
 {
-    assert( !subimages.empty() );
+    assert(!subimages.empty());
 
     vector<string> views;
-
 
     /*
        First off, detect views.
      */
     vector<string> partsViewAttribute;
     if (subimages.size() == 1) {
-        //Check the "multiView" property
-        //We have to pass TypeDesc::UNKNOWN because if we pass TypeDesc::String OIIO will also check the type length which is encoded in the type
-        //but we do not know it yet
-        //See https://github.com/OpenImageIO/oiio/issues/1247
+        // Check the "multiView" property
+        // We have to pass TypeDesc::UNKNOWN because if we pass TypeDesc::String OIIO will also check the type length which is encoded in the type
+        // but we do not know it yet
+        // See https://github.com/OpenImageIO/oiio/issues/1247
         const ParamValue* multiviewValue = subimages[0].find_attribute("multiView", TypeDesc::UNKNOWN);
         if (multiviewValue) {
-            ///This is the only way to retrieve the array size currently, see issue above
+            /// This is the only way to retrieve the array size currently, see issue above
             int nValues = multiviewValue->type().arraylen;
             const ustring* dataPtr = (const ustring*)multiviewValue->data();
             for (int i = 0; i < nValues; ++i) {
-                string view( dataPtr[i].data() );
-                if ( !view.empty() ) {
-                    if ( std::find(views.begin(), views.end(), view) == views.end() ) {
+                string view(dataPtr[i].data());
+                if (!view.empty()) {
+                    if (std::find(views.begin(), views.end(), view) == views.end()) {
                         views.push_back(view);
                     }
                 }
             }
         }
     } else {
-        //Check for each subimage the "view" property
-        partsViewAttribute.resize( subimages.size() );
+        // Check for each subimage the "view" property
+        partsViewAttribute.resize(subimages.size());
         for (std::size_t i = 0; i < subimages.size(); ++i) {
             const ParamValue* viewValue = subimages[i].find_attribute("view", TypeDesc::STRING);
             bool viewPartAdded = false;
             if (viewValue) {
                 const char* dataPtr = *(const char**)viewValue->data();
                 string view = string(dataPtr);
-                if ( !view.empty() ) {
-                    if ( std::find(views.begin(), views.end(), view) == views.end() ) {
+                if (!view.empty()) {
+                    if (std::find(views.begin(), views.end(), view) == views.end()) {
                         views.push_back(view);
                     }
                     viewPartAdded = true;
@@ -1066,22 +1042,21 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
         if (i < views.size() - 1) {
             viewsEncoded.push_back(',');
         }
-        layersMap->push_back( make_pair( views[i], LayersMap() ) );
+        layersMap->push_back(make_pair(views[i], LayersMap()));
     }
 
-    if ( views.empty() ) {
-        layersMap->push_back( make_pair( "Main", LayersMap() ) );
+    if (views.empty()) {
+        layersMap->push_back(make_pair("Main", LayersMap()));
     }
 
-
-    ///Layers are considered to be named as view.layer.channels. If no view prefix then it is considered to be part of the "main" view
-    ///that is, the first view declared.
+    /// Layers are considered to be named as view.layer.channels. If no view prefix then it is considered to be part of the "main" view
+    /// that is, the first view declared.
 
     for (std::size_t i = 0; i < subimages.size(); ++i) {
         for (int j = 0; j < subimages[i].nchannels; ++j) {
             string layerChanName;
-            if ( j >= (int)subimages[i].channelnames.size() ) {
-                //give it a generic name since it's not in the channelnames
+            if (j >= (int)subimages[i].channelnames.size()) {
+                // give it a generic name since it's not in the channelnames
                 stringstream ss;
                 ss << "channel " << i;
                 layerChanName = ss.str();
@@ -1089,23 +1064,23 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                 layerChanName = subimages[i].channelnames[j];
             }
 
-            //Extract the view layer and channel to our format so we can compare strings
+            // Extract the view layer and channel to our format so we can compare strings
             string originalView, originalLayer, channel;
             extractLayerName(layerChanName, views, &originalView, &originalLayer, &channel);
             string view = originalView;
             string layer = originalLayer;
 
-            if ( view.empty() && !partsViewAttribute.empty() && ( i < partsViewAttribute.size() ) && !partsViewAttribute[i].empty() ) {
+            if (view.empty() && !partsViewAttribute.empty() && (i < partsViewAttribute.size()) && !partsViewAttribute[i].empty()) {
                 view = partsViewAttribute[i];
             }
-            if ( view.empty() && !layer.empty() ) {
-                ///Check if the layer we parsed is in fact not a view name
+            if (view.empty() && !layer.empty()) {
+                /// Check if the layer we parsed is in fact not a view name
                 // Note: This code was removed in commit https://github.com/NatronGitHub/openfx-io/commit/79ac6546e0a1aed7f14fd15fbc3dfd634b91d4c5
                 // but it is necessary to read all views of multiview EXRs such
                 // as https://github.com/openexr/openexr-images/raw/master/MultiView/Balls.exr
                 // see issue https://github.com/NatronGitHub/Natron/issues/429
                 for (std::size_t v = 0; v < views.size(); ++v) {
-                    if ( caseInsensitiveCompare(views[v], layer) ) {
+                    if (caseInsensitiveCompare(views[v], layer)) {
                         view = layer;
                         layer.clear();
                         break;
@@ -1114,8 +1089,8 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
             }
 
             ViewsLayersMap::iterator foundView = layersMap->end();
-            if ( view.empty() ) {
-                ///Set to main view (view 0)
+            if (view.empty()) {
+                /// Set to main view (view 0)
                 foundView = layersMap->begin();
             } else {
                 for (ViewsLayersMap::iterator it = layersMap->begin(); it != layersMap->end(); ++it) {
@@ -1125,9 +1100,9 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                     }
                 }
             }
-            if ( foundView == layersMap->end() ) {
-                //The view does not exist in the metadata, this is probably a channel named aaa.bbb.c, just concatenate aaa.bbb as a single layer name
-                //and put it in the "Main" view
+            if (foundView == layersMap->end()) {
+                // The view does not exist in the metadata, this is probably a channel named aaa.bbb.c, just concatenate aaa.bbb as a single layer name
+                // and put it in the "Main" view
                 layer = view + "." + layer;
                 view.clear();
                 foundView = layersMap->begin();
@@ -1142,22 +1117,22 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                 }
             }
 
-            assert( foundView != layersMap->end() );
+            assert(foundView != layersMap->end());
 
-            //If the layer name is empty, try to map it to something known
-            if ( layer.empty() ) {
-                //channel  has already been remapped to our formatting of channels, i.e: 1 upper-case letter
-                if ( (channel == "R") || (channel == "G") || (channel == "B") || (channel == "A") || (channel == "I") ) {
+            // If the layer name is empty, try to map it to something known
+            if (layer.empty()) {
+                // channel  has already been remapped to our formatting of channels, i.e: 1 upper-case letter
+                if ((channel == "R") || (channel == "G") || (channel == "B") || (channel == "A") || (channel == "I")) {
                     layer = kReadOIIOColorLayer;
                 } else if (channel == "X") {
-                    //try to put XYZ together, unless Z is alone
+                    // try to put XYZ together, unless Z is alone
                     bool hasY = hasChannelName(views, originalView, originalLayer, "Y", subimages[i].channelnames);
                     bool hasZ = hasChannelName(views, originalView, originalLayer, "Z", subimages[i].channelnames);
                     if (hasY && hasZ) {
                         layer = kReadOIIOXYZLayer;
                     }
                 } else if (channel == "Y") {
-                    //try to put XYZ together, unless Z is alone
+                    // try to put XYZ together, unless Z is alone
                     bool hasX = hasChannelName(views, originalView, originalLayer, "X", subimages[i].channelnames);
                     bool hasZ = hasChannelName(views, originalView, originalLayer, "Z", subimages[i].channelnames);
                     if (hasX && hasZ) {
@@ -1173,7 +1148,7 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                         }
                     }
                 } else if (channel == "Z") {
-                    //try to put XYZ together, unless Z is alone
+                    // try to put XYZ together, unless Z is alone
                     bool hasX = hasChannelName(views, originalView, originalLayer, "X", subimages[i].channelnames);
                     bool hasY = hasChannelName(views, originalView, originalLayer, "Y", subimages[i].channelnames);
                     if (hasX && hasY) {
@@ -1184,16 +1159,16 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                 }
             }
 
-            //The layer is still empty, put the channel alone in a new layer
-            if ( layer.empty() ) {
+            // The layer is still empty, put the channel alone in a new layer
+            if (layer.empty()) {
                 layer = channel;
             }
 
-            //There may be duplicates, e.g: 2 parts of a EXR file with same RGBA layer, we have no choice but to prepend the part index
+            // There may be duplicates, e.g: 2 parts of a EXR file with same RGBA layer, we have no choice but to prepend the part index
             {
                 int attempts = 1;
                 string baseLayerName = layer;
-                while ( hasDuplicate(foundView->second, layer, channel) ) {
+                while (hasDuplicate(foundView->second, layer, channel)) {
                     stringstream ss;
 
                     ss << "Part" << attempts;
@@ -1204,7 +1179,7 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                 }
             }
 
-            assert( !layer.empty() );
+            assert(!layer.empty());
 
             int layerIndex = -1;
             for (std::size_t c = 0; c < foundView->second.size(); ++c) {
@@ -1214,18 +1189,17 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                 }
             }
             if (layerIndex == -1) {
-                foundView->second.push_back( make_pair( layer, LayerChannelIndexes() ) );
+                foundView->second.push_back(make_pair(layer, LayerChannelIndexes()));
                 layerIndex = (int)foundView->second.size() - 1;
             }
-            //Now we are sure there are no duplicates
+            // Now we are sure there are no duplicates
             foundView->second[layerIndex].second.subImageIdx = i;
             foundView->second[layerIndex].second.channelIndexes.push_back(j);
             foundView->second[layerIndex].second.channelNames.push_back(channel);
         } // for (int j = 0; j < subimages[i].nchannels; ++j) {
     } // for (std::size_t i = 0; i < subimages.size(); ++i) {
 
-
-    ///Union all layers across views
+    /// Union all layers across views
     if (layersUnion) {
         for (ViewsLayersMap::iterator it = layersMap->begin(); it != layersMap->end(); ++it) {
             for (LayersMap::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
@@ -1237,17 +1211,16 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                     }
                 }
 
-
-                if ( found == layersUnion->end() ) {
+                if (found == layersUnion->end()) {
                     // We did not find a view in the layersUnion with this name
                     LayerUnionData d;
                     d.layer = it2->second;
                     d.views.push_back(it->first);
-                    layersUnion->push_back( make_pair(it2->first, d) );
+                    layersUnion->push_back(make_pair(it2->first, d));
                 } else {
                     // We already found a view in the layersUnion with this name
                     if (views.size() > 1) {
-                        //register views that have this layer
+                        // register views that have this layer
                         found->second.views.push_back(it->first);
                     }
                 }
@@ -1281,12 +1254,12 @@ ReadOIIOPlugin::buildOutputLayerMenu(const vector<ImageSpec>& subimages)
 
     _availableViews->setValue(viewsEncoded);
 
-    ///Now build the choice options
+    /// Now build the choice options
     for (std::size_t i = 0; i < _outputLayerMenu.size(); ++i) {
         const string& layerName = _outputLayerMenu[i].first;
         string choice;
         if (layerName == kReadOIIOColorLayer) {
-            switch ( _outputLayerMenu[i].second.layer.channelNames.size() ) {
+            switch (_outputLayerMenu[i].second.layer.channelNames.size()) {
             case 1:
                 choice = kReadOIIOColorLayer ".Alpha";
                 break;
@@ -1298,19 +1271,18 @@ ReadOIIOPlugin::buildOutputLayerMenu(const vector<ImageSpec>& subimages)
                 break;
             }
             }
-        } else if ( (_outputLayerMenu[i].second.layer.channelNames.size() == 1) && (layerName == _outputLayerMenu[i].second.layer.channelNames[0]) ) {
-            //Depth.Depth for instance
+        } else if ((_outputLayerMenu[i].second.layer.channelNames.size() == 1) && (layerName == _outputLayerMenu[i].second.layer.channelNames[0])) {
+            // Depth.Depth for instance
             for (std::size_t j = 0; j < _outputLayerMenu[i].second.layer.channelNames.size(); ++j) {
                 choice.append(_outputLayerMenu[i].second.layer.channelNames[j]);
             }
-        }   else {
+        } else {
             choice.append(layerName);
             choice.push_back('.');
             for (std::size_t j = 0; j < _outputLayerMenu[i].second.layer.channelNames.size(); ++j) {
                 choice.append(_outputLayerMenu[i].second.layer.channelNames[j]);
             }
         }
-
 
         string optionLabel;
         if (layersMap.size() > 1) {
@@ -1329,22 +1301,21 @@ ReadOIIOPlugin::buildOutputLayerMenu(const vector<ImageSpec>& subimages)
         _outputLayerMenu[i].second.choiceOption = choice;
     }
 
-    assert( options.size() == _outputLayerMenu.size() );
+    assert(options.size() == _outputLayerMenu.size());
 
-    ///Actually build the menu
+    /// Actually build the menu
     _outputLayer->resetOptions(options, optionsLabel);
 
-
-    ///synchronize with the value stored in the string param
+    /// synchronize with the value stored in the string param
     string valueStr;
     _outputLayerString->getValue(valueStr);
-    if ( valueStr.empty() ) {
+    if (valueStr.empty()) {
         int cur_i;
         _outputLayer->getValue(cur_i);
-        if ( (cur_i >= 0) && ( cur_i < (int)options.size() ) ) {
+        if ((cur_i >= 0) && (cur_i < (int)options.size())) {
             valueStr = options[cur_i];
-        } else if ( !options.empty() ) {
-            //No choice but to change the choice value
+        } else if (!options.empty()) {
+            // No choice but to change the choice value
             valueStr = options[0];
             _outputLayer->setValue(0);
         }
@@ -1373,7 +1344,7 @@ ReadOIIOPlugin::getSpecsFromImageInput(const ImageInputPtr& img,
     subimages->clear();
     int subImageIndex = 0;
     ImageSpec spec;
-    while ( img->seek_subimage(subImageIndex, 0, spec) ) {
+    while (img->seek_subimage(subImageIndex, 0, spec)) {
         subimages->push_back(spec);
         ++subImageIndex;
 #ifndef OFX_READ_OIIO_SUPPORTS_SUBIMAGES
@@ -1399,8 +1370,8 @@ ReadOIIOPlugin::getSpecsFromCache(const string& filename,
 
     ImageSpec spec;
     int subImageIndex = 0;
-    //use the thread-safe version of get_imagespec (i.e: make a copy of the imagespec)
-    while ( _cache->get_imagespec(ustring(filename), spec, subImageIndex) ) {
+    // use the thread-safe version of get_imagespec (i.e: make a copy of the imagespec)
+    while (_cache->get_imagespec(ustring(filename), spec, subImageIndex)) {
         subimages->push_back(spec);
         ++subImageIndex;
 #ifndef OFX_READ_OIIO_SUPPORTS_SUBIMAGES
@@ -1410,7 +1381,7 @@ ReadOIIOPlugin::getSpecsFromCache(const string& filename,
 }
 
 void
-ReadOIIOPlugin::getSpecs(const string &filename,
+ReadOIIOPlugin::getSpecs(const string& filename,
                          vector<ImageSpec>* subimages,
                          string* error) const
 {
@@ -1425,26 +1396,26 @@ ReadOIIOPlugin::getSpecs(const string &filename,
         ImageSpec config;
         getConfig(&config);
 
-#     if OIIO_PLUGIN_VERSION >= 22
+#if OIIO_PLUGIN_VERSION >= 22
         ImageInputPtr img = ImageInput::open(filename, &config);
-#     else
-        auto_ptr<ImageInput> img( ImageInput::open(filename, &config) );
-#     endif
-        if ( !img.get() ) {
+#else
+        auto_ptr<ImageInput> img(ImageInput::open(filename, &config));
+#endif
+        if (!img.get()) {
             if (error) {
                 *error = "Could node open file " + filename;
             }
 
             return;
         }
-#     if OIIO_PLUGIN_VERSION >= 22
+#if OIIO_PLUGIN_VERSION >= 22
         getSpecsFromImageInput(img, subimages);
-#     else
+#else
         getSpecsFromImageInput(img.get(), subimages);
-#     endif
+#endif
         img->close();
     }
-    if ( subimages->empty() ) {
+    if (subimages->empty()) {
         if (error) {
             *error = "Could node open file " + filename;
         }
@@ -1454,7 +1425,7 @@ ReadOIIOPlugin::getSpecs(const string &filename,
 
     // check that no subimage is deep
     for (std::size_t i = 0; i < subimages->size(); ++i) {
-        if ( (*subimages)[i].deep ) {
+        if ((*subimages)[i].deep) {
             if (error) {
                 *error = "Cannot read deep image file " + filename;
             }
@@ -1477,24 +1448,24 @@ ReadOIIOPlugin::restoreStateFromParams()
 {
     GenericReaderPlugin::restoreStateFromParams();
 
-    ///http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#SettingParams
-    ///The Create instance action is in the list of actions where you can set param values
+    /// http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#SettingParams
+    /// The Create instance action is in the list of actions where you can set param values
 
     string filename;
     _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
-    if ( filename.empty() ) {
+    if (filename.empty()) {
         return;
     }
     vector<ImageSpec> subimages;
     getSpecs(filename, &subimages);
 
-    if ( subimages.empty() ) {
+    if (subimages.empty()) {
         return;
     }
 
     buildOutputLayerMenu(subimages);
 
-    //Only support tiles if tile size is set
+    // Only support tiles if tile size is set
     const ImageSpec& spec = subimages[0];
     int width = /*spec.width == 0 ? spec.full_width :*/ spec.width;
     int height = /*spec.height == 0 ? spec.full_height :*/ spec.height;
@@ -1522,34 +1493,28 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
                                 const ImageSpec& imagespec,
                                 string* colorspace) const
 {
-    ///find-out the image color-space
+    /// find-out the image color-space
     const ParamValue* colorSpaceValue = imagespec.find_attribute("oiio:ColorSpace", TypeDesc::STRING);
     const ParamValue* photoshopICCProfileValue = imagespec.find_attribute("photoshop:ICCProfile", TypeDesc::STRING);
 
-    //photoshop:ICCProfile: "HDTV (Rec. 709)"
+    // photoshop:ICCProfile: "HDTV (Rec. 709)"
 
 #ifdef OFX_IO_USING_OCIO
     // make sure the OCIO config is const
-    GenericOCIO const *ocio = _ocio.get();
+    GenericOCIO const* ocio = _ocio.get();
 #endif
 
-    //we found a color-space hint, use it to do the color-space conversion
+    // we found a color-space hint, use it to do the color-space conversion
     const char* colorSpaceStr = NULL;
     if (colorSpaceValue) {
         colorSpaceStr = *(const char**)colorSpaceValue->data();
     } else if (photoshopICCProfileValue) {
         const char* ICCProfileStr = *(const char**)photoshopICCProfileValue->data();
-        if ( !strcmp(ICCProfileStr, "HDTV (Rec. 709)") ||
-             !strcmp(ICCProfileStr, "SDTV NTSC") ||
-             !strcmp(ICCProfileStr, "SDTV PAL") ||
-             !strcmp(ICCProfileStr, "HDTV (Rec. 709) 16-235") ||
-             !strcmp(ICCProfileStr, "SDTV NTSC 16-235") ||
-             !strcmp(ICCProfileStr, "SDTV PAL 16-235") ||
-             !strcmp(ICCProfileStr, "SDTV NTSC 16-235") ) {
+        if (!strcmp(ICCProfileStr, "HDTV (Rec. 709)") || !strcmp(ICCProfileStr, "SDTV NTSC") || !strcmp(ICCProfileStr, "SDTV PAL") || !strcmp(ICCProfileStr, "HDTV (Rec. 709) 16-235") || !strcmp(ICCProfileStr, "SDTV NTSC 16-235") || !strcmp(ICCProfileStr, "SDTV PAL 16-235") || !strcmp(ICCProfileStr, "SDTV NTSC 16-235")) {
             colorSpaceStr = "Rec709";
-        } else if ( !strcmp(ICCProfileStr, "sRGB IEC61966-2.1") ) {
+        } else if (!strcmp(ICCProfileStr, "sRGB IEC61966-2.1")) {
             colorSpaceStr = "sRGB";
-        } else if ( !strcmp(ICCProfileStr, "Universal Camera Film Printing Density)") ) {
+        } else if (!strcmp(ICCProfileStr, "Universal Camera Film Printing Density)")) {
             colorSpaceStr = "KodakLog";
         }
     }
@@ -1566,8 +1531,7 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
             break;
         case TypeDesc::USHORT:
         case TypeDesc::SHORT:
-            if ( endsWith(filename, ".cin") || endsWith(filename, ".dpx") ||
-                 endsWith(filename, ".CIN") || endsWith(filename, ".DPX") ) {
+            if (endsWith(filename, ".cin") || endsWith(filename, ".dpx") || endsWith(filename, ".CIN") || endsWith(filename, ".DPX")) {
                 // Cineon or DPX file
                 colorSpaceStr = "KodakLog";
             } else {
@@ -1580,9 +1544,9 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
         }
     }
     if (colorSpaceStr) {
-        if ( colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected") ) {
+        if (colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected")) {
             float gamma = imagespec.get_float_attribute("oiio:Gamma");
-            if ( endsWith(filename, ".cin") || endsWith(filename, ".CIN") ) {
+            if (endsWith(filename, ".cin") || endsWith(filename, ".CIN")) {
                 // Cineon files (e.g. Kodak Digital LAD, see link below) get wrongly attributed
                 // a GammaCorrected colorspace <https://github.com/OpenImageIO/oiio/issues/1463>
                 // The standard Kodak DLAD images get gamma=0 for example:
@@ -1594,7 +1558,7 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
                 colorSpaceStr = "KodakLog";
             } else if (std::fabs(gamma - 1.8) < 0.01) {
 #ifdef OFX_IO_USING_OCIO
-                if ( ocio->hasColorspace("Gamma1.8") ) {
+                if (ocio->hasColorspace("Gamma1.8")) {
                     // nuke-default
                     *colorspace = "Gamma1.8";
                     colorSpaceStr = NULL;
@@ -1602,15 +1566,15 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
 #endif
             } else if (std::fabs(gamma - 2.2) < 0.01) {
 #ifdef OFX_IO_USING_OCIO
-                if ( ocio->hasColorspace("Gamma2.2") ) {
+                if (ocio->hasColorspace("Gamma2.2")) {
                     // nuke-default
                     *colorspace = "Gamma2.2";
                     colorSpaceStr = NULL;
-                } else if ( ocio->hasColorspace("VD16") ) {
+                } else if (ocio->hasColorspace("VD16")) {
                     // VD16 in blender
                     *colorspace = "VD16";
                     colorSpaceStr = NULL;
-                } else if ( ocio->hasColorspace("vd16") ) {
+                } else if (ocio->hasColorspace("vd16")) {
                     // vd16 in spi-anim and spi-vfx
                     *colorspace = "vd16";
                     colorSpaceStr = NULL;
@@ -1622,117 +1586,117 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
             }
         }
 #ifdef OFX_IO_USING_OCIO
-        if ( colorSpaceStr && !strcmp(colorSpaceStr, "sRGB") ) {
-            if ( ocio->hasColorspace("sRGB") ) {
+        if (colorSpaceStr && !strcmp(colorSpaceStr, "sRGB")) {
+            if (ocio->hasColorspace("sRGB")) {
                 // nuke-default, blender, natron
                 *colorspace = "sRGB";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("sRGB D65") ) {
+            } else if (ocio->hasColorspace("sRGB D65")) {
                 // blender-cycles
                 *colorspace = "sRGB D65";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("sRGB (D60 sim.)") ) {
+            } else if (ocio->hasColorspace("sRGB (D60 sim.)")) {
                 // out_srgbd60sim or "sRGB (D60 sim.)" in aces 1.0.0
                 *colorspace = "sRGB (D60 sim.)";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("out_srgbd60sim") ) {
+            } else if (ocio->hasColorspace("out_srgbd60sim")) {
                 // out_srgbd60sim or "sRGB (D60 sim.)" in aces 1.0.0
                 *colorspace = "out_srgbd60sim";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("rrt_Gamma2.2") ) {
+            } else if (ocio->hasColorspace("rrt_Gamma2.2")) {
                 // rrt_Gamma2.2 in aces 0.7.1
                 *colorspace = "rrt_Gamma2.2";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("rrt_srgb") ) {
+            } else if (ocio->hasColorspace("rrt_srgb")) {
                 // rrt_srgb in aces 0.1.1
                 *colorspace = "rrt_srgb";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("srgb8") ) {
+            } else if (ocio->hasColorspace("srgb8")) {
                 // srgb8 in spi-vfx
                 *colorspace = "srgb8";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("Gamma2.2") ) {
+            } else if (ocio->hasColorspace("Gamma2.2")) {
                 // nuke-default
                 *colorspace = "Gamma2.2";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("srgb8") ) {
+            } else if (ocio->hasColorspace("srgb8")) {
                 // srgb8 in spi-vfx
                 *colorspace = "srgb8";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("vd16") ) {
+            } else if (ocio->hasColorspace("vd16")) {
                 // vd16 in spi-anim
                 *colorspace = "vd16";
                 colorSpaceStr = NULL;
             }
         }
-        if ( colorSpaceStr && !strcmp(colorSpaceStr, "AdobeRGB") ) {
-            if ( ocio->hasColorspace("AdobeRGB") ) {
+        if (colorSpaceStr && !strcmp(colorSpaceStr, "AdobeRGB")) {
+            if (ocio->hasColorspace("AdobeRGB")) {
                 // natron
                 *colorspace = "AdobeRGB";
                 colorSpaceStr = NULL;
             }
         }
-        if ( colorSpaceStr && !strcmp(colorSpaceStr, "Rec709") ) {
-            if ( ocio->hasColorspace("Rec709") ) {
+        if (colorSpaceStr && !strcmp(colorSpaceStr, "Rec709")) {
+            if (ocio->hasColorspace("Rec709")) {
                 // nuke-default
                 *colorspace = "Rec709";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("nuke_rec709") ) {
+            } else if (ocio->hasColorspace("nuke_rec709")) {
                 // blender
                 *colorspace = "nuke_rec709";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("Rec 709 Curve") ) {
+            } else if (ocio->hasColorspace("Rec 709 Curve")) {
                 // natron
                 *colorspace = "Rec 709 Curve";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("Rec.709 - Full") ) {
+            } else if (ocio->hasColorspace("Rec.709 - Full")) {
                 // out_rec709full or "Rec.709 - Full" in aces 1.0.0
                 *colorspace = "Rec.709 - Full";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("out_rec709full") ) {
+            } else if (ocio->hasColorspace("out_rec709full")) {
                 // out_rec709full or "Rec.709 - Full" in aces 1.0.0
                 *colorspace = "out_rec709full";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("rrt_rec709_full_100nits") ) {
+            } else if (ocio->hasColorspace("rrt_rec709_full_100nits")) {
                 // rrt_rec709_full_100nits in aces 0.7.1
                 *colorspace = "rrt_rec709_full_100nits";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("rrt_rec709") ) {
+            } else if (ocio->hasColorspace("rrt_rec709")) {
                 // rrt_rec709 in aces 0.1.1
                 *colorspace = "rrt_rec709";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("hd10") ) {
+            } else if (ocio->hasColorspace("hd10")) {
                 // hd10 in spi-anim and spi-vfx
                 *colorspace = "hd10";
                 colorSpaceStr = NULL;
             }
         }
-        if ( colorSpaceStr && !strcmp(colorSpaceStr, "KodakLog") ) {
-            if ( ocio->hasColorspace("Cineon") ) {
+        if (colorSpaceStr && !strcmp(colorSpaceStr, "KodakLog")) {
+            if (ocio->hasColorspace("Cineon")) {
                 // Cineon in nuke-default
                 *colorspace = "Cineon";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("Cineon Log Curve") ) {
+            } else if (ocio->hasColorspace("Cineon Log Curve")) {
                 // Curves/Cineon Log Curve in natron
                 *colorspace = "Cineon Log Curve";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("REDlogFilm") ) {
+            } else if (ocio->hasColorspace("REDlogFilm")) {
                 // REDlogFilm in aces 1.0.0
                 *colorspace = "REDlogFilm";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("cineon") ) {
+            } else if (ocio->hasColorspace("cineon")) {
                 // cineon in aces 0.7.1
                 *colorspace = "cineon";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("adx10") ) {
+            } else if (ocio->hasColorspace("adx10")) {
                 // adx10 in aces 0.1.1
                 *colorspace = "adx10";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("lg10") ) {
+            } else if (ocio->hasColorspace("lg10")) {
                 // lg10 in spi-vfx
                 *colorspace = "lg10";
                 colorSpaceStr = NULL;
-            } else if ( ocio->hasColorspace("lm10") ) {
+            } else if (ocio->hasColorspace("lm10")) {
                 // lm10 in spi-anim
                 *colorspace = "lm10";
                 colorSpaceStr = NULL;
@@ -1741,12 +1705,12 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
                 colorSpaceStr = NULL;
             }
         }
-        if ( colorSpaceStr && !strcmp(colorSpaceStr, "Linear") ) {
+        if (colorSpaceStr && !strcmp(colorSpaceStr, "Linear")) {
             *colorspace = OCIO::ROLE_SCENE_LINEAR;
             colorSpaceStr = NULL;
             // lnf in spi-vfx
         }
-        if ( colorSpaceStr && ocio->hasColorspace(colorSpaceStr) ) {
+        if (colorSpaceStr && ocio->hasColorspace(colorSpaceStr)) {
             // maybe we're lucky
             *colorspace = colorSpaceStr;
             colorSpaceStr = NULL;
@@ -1781,19 +1745,19 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
  * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
  **/
 bool
-ReadOIIOPlugin::guessParamsFromFilename(const string &filename,
-                                        string *colorspace,
-                                        PreMultiplicationEnum *filePremult,
-                                        PixelComponentEnum *components,
-                                        int *componentCount)
+ReadOIIOPlugin::guessParamsFromFilename(const string& filename,
+                                        string* colorspace,
+                                        PreMultiplicationEnum* filePremult,
+                                        PixelComponentEnum* components,
+                                        int* componentCount)
 {
     string error;
 
     vector<ImageSpec> subimages;
     getSpecs(filename, &subimages, &error);
 
-    if ( subimages.empty() ) {
-        //setPersistentMessage(Message::eMessageError, "", error);
+    if (subimages.empty()) {
+        // setPersistentMessage(Message::eMessageError, "", error);
 
         return false;
     }
@@ -1804,12 +1768,11 @@ ReadOIIOPlugin::guessParamsFromFilename(const string &filename,
     LayersUnionVect layersUnion;
     getLayers(subimages, &layersMap, &layersUnion);
 
-
-    if ( layersUnion.empty() ) {
+    if (layersUnion.empty()) {
         *components = ePixelComponentNone;
     } else {
         const vector<string>& channels = layersUnion[0].second.layer.channelNames;
-        switch ( channels.size() ) {
+        switch (channels.size()) {
         case 0:
             *components = ePixelComponentNone;
             *componentCount = 0;
@@ -1827,15 +1790,15 @@ ReadOIIOPlugin::guessParamsFromFilename(const string &filename,
             *componentCount = 4;
             break;
         case 2: {
-            //in OIIO, PNG with alpha are stored with as a 2-channel image
+            // in OIIO, PNG with alpha are stored with as a 2-channel image
             bool hasI = false;
             bool hasA = false;
             for (std::size_t i = 0; i < channels.size(); ++i) {
                 // luminance may be I or Y
-                if ( (channels[i] == "I") || (channels[i] == "i") || (channels[i] == "Y") || (channels[i] == "y") ) {
+                if ((channels[i] == "I") || (channels[i] == "i") || (channels[i] == "Y") || (channels[i] == "y")) {
                     hasI = true;
                 }
-                if ( (channels[i] == "A") || (channels[i] == "a") ) {
+                if ((channels[i] == "A") || (channels[i] == "a")) {
                     hasA = true;
                 }
             }
@@ -1856,7 +1819,7 @@ ReadOIIOPlugin::guessParamsFromFilename(const string &filename,
         //*componentCount = subimages[0].nchannels;
     }
 
-    if ( (*components != ePixelComponentRGBA) && (*components != ePixelComponentAlpha) ) {
+    if ((*components != ePixelComponentRGBA) && (*components != ePixelComponentAlpha)) {
         *filePremult = eImageOpaque;
     } else {
         bool unassociatedAlpha = subimages[0].get_int_attribute("oiio:UnassociatedAlpha", 0);
@@ -1903,30 +1866,30 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     // Check to see if the user has explicitly set the output colorspace primaries
     const char* cs = NULL;
     RawOutputColorEnum rawOutputColor = (RawOutputColorEnum)_rawOutputColor->getValue();
-    switch(rawOutputColor) {
-        case eRawOutputColorRaw:
-            cs = "raw";
-            break;
-        case eRawOutputColorSRGB:
-        default:
-            cs = "sRGB";
-            break;
-        case eRawOutputColorAdobe:
-            cs = "Adobe";
-            break;
-        case eRawOutputColorWide:
-            cs = "Wide";
-            break;
-        case eRawOutputColorProPhoto:
-            cs = "ProPhoto";
-            break;
-        case eRawOutputColorXYZ:
-            cs = "XYZ";
-            break;
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
-        case eRawOutputColorACES:
-            cs = "ACES";
-            break;
+    switch (rawOutputColor) {
+    case eRawOutputColorRaw:
+        cs = "raw";
+        break;
+    case eRawOutputColorSRGB:
+    default:
+        cs = "sRGB";
+        break;
+    case eRawOutputColorAdobe:
+        cs = "Adobe";
+        break;
+    case eRawOutputColorWide:
+        cs = "Wide";
+        break;
+    case eRawOutputColorProPhoto:
+        cs = "ProPhoto";
+        break;
+    case eRawOutputColorXYZ:
+        cs = "XYZ";
+        break;
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
+    case eRawOutputColorACES:
+        cs = "ACES";
+        break;
 #endif
     }
     if (cs != NULL) {
@@ -1941,15 +1904,15 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     //    balance setting.
     RawUseCameraMatrixEnum rawUseCameraMatrix = (RawUseCameraMatrixEnum)_rawUseCameraMatrix->getValue();
     switch (rawUseCameraMatrix) {
-        case eRawUseCameraMatrixNone:
-            config->attribute("raw:use_camera_matrix", 0);
-            break;
-        case eRawUseCameraMatrixDefault:
-            config->attribute("raw:use_camera_matrix", 1);
-            break;
-        case eRawUseCameraMatrixForce:
-            config->attribute("raw:use_camera_matrix", 3);
-            break;
+    case eRawUseCameraMatrixNone:
+        config->attribute("raw:use_camera_matrix", 0);
+        break;
+    case eRawUseCameraMatrixDefault:
+        config->attribute("raw:use_camera_matrix", 1);
+        break;
+    case eRawUseCameraMatrixForce:
+        config->attribute("raw:use_camera_matrix", 3);
+        break;
     }
 
     // Exposure adjustment
@@ -1969,7 +1932,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     // - the blue multiplier.
     OfxPointD rawAber = _rawAber->getValue();
     if (rawAber.x != 1. || rawAber.y != 1.) {
-        float floats[2] = {(float)rawAber.x, (float)rawAber.y};
+        float floats[2] = { (float)rawAber.x, (float)rawAber.y };
         config->attribute("raw:aber", TypeDesc(TypeDesc::FLOAT, 2), &floats[0]);
     }
 #endif
@@ -1989,7 +1952,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
             config->attribute("raw:HighlightMode", (int)rawHighlightMode);
         } else {
             // rebuild level, from 0 to 7
-            int rawHighlightRebuildLevel = (std::max)( 0,(std::min)(_rawHighlightRebuildLevel->getValue(), 7) );
+            int rawHighlightRebuildLevel = (std::max)(0, (std::min)(_rawHighlightRebuildLevel->getValue(), 7));
             config->attribute("raw:HighlightMode", (int)rawHighlightMode + rawHighlightRebuildLevel);
         }
     }
@@ -2003,51 +1966,51 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     int rawDemosaic = _rawDemosaic->getValue();
     const char* d = NULL;
     switch (libraw_demosaic[rawDemosaic]) {
-        case eRawDemosaicNone:
-            d = "none";
-            break;
-        case eRawDemosaicLinear:
-            d = "linear";
-            break;
-        case eRawDemosaicVNG:
-            d = "VNG";
-            break;
-        case eRawDemosaicPPG:
-            d = "PPG";
-            break;
-        case eRawDemosaicAHD:
-        default:
-            d = "AHD";
-            break;
-        case eRawDemosaicDCB:
-            d = "DCB";
-            break;
-        case eRawDemosaicAHDMod:
-            d = "AHD-Mod"; // new name since oiio 1.7.13
-            break;
-        case eRawDemosaicAFD:
-            d = "AFD";
-            break;
-        case eRawDemosaicVCD:
-            d = "VCD";
-            break;
-        case eRawDemosaicMixed:
-            d = "Mixed";
-            break;
-        case eRawDemosaicLMMSE:
-            d = "LMMSE";
-            break;
-        case eRawDemosaicAMaZE:
-            d = "AMaZE";
-            break;
-#     if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0) && OIIO_VERSION >= 10712
-        case eRawDemosaicDHT:
-            d = "DHT"; // available since oiio 1.7.13
-            break;
-        case eRawDemosaicAAHD:
-            d = "AAHD"; // available since oiio 1.7.13
-            break;
-#     endif
+    case eRawDemosaicNone:
+        d = "none";
+        break;
+    case eRawDemosaicLinear:
+        d = "linear";
+        break;
+    case eRawDemosaicVNG:
+        d = "VNG";
+        break;
+    case eRawDemosaicPPG:
+        d = "PPG";
+        break;
+    case eRawDemosaicAHD:
+    default:
+        d = "AHD";
+        break;
+    case eRawDemosaicDCB:
+        d = "DCB";
+        break;
+    case eRawDemosaicAHDMod:
+        d = "AHD-Mod"; // new name since oiio 1.7.13
+        break;
+    case eRawDemosaicAFD:
+        d = "AFD";
+        break;
+    case eRawDemosaicVCD:
+        d = "VCD";
+        break;
+    case eRawDemosaicMixed:
+        d = "Mixed";
+        break;
+    case eRawDemosaicLMMSE:
+        d = "LMMSE";
+        break;
+    case eRawDemosaicAMaZE:
+        d = "AMaZE";
+        break;
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
+    case eRawDemosaicDHT:
+        d = "DHT"; // available since oiio 1.7.13
+        break;
+    case eRawDemosaicAAHD:
+        d = "AAHD"; // available since oiio 1.7.13
+        break;
+#endif
     }
     if (d != NULL) {
         config->attribute("raw:Demosaic", d);
@@ -2071,7 +2034,7 @@ ReadOIIOPlugin::openFile(const string& filename,
     getConfig(&config);
 
     *img = ImageInput::open(filename, &config);
-    if ( !(*img) ) {
+    if (!(*img)) {
         setPersistentMessage(Message::eMessageError, "", string("Cannot open file ") + filename);
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2094,16 +2057,16 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
 
     getLayers(subimages, &layersMap, 0);
 
-    ///Find the view
+    /// Find the view
     string viewName = getViewName(view);
     ViewsLayersMap::iterator foundView = layersMap.end();
     for (ViewsLayersMap::iterator it = layersMap.begin(); it != layersMap.end(); ++it) {
-        if ( caseInsensitiveCompare(it->first, viewName) ) {
+        if (caseInsensitiveCompare(it->first, viewName)) {
             foundView = it;
             break;
         }
     }
-    if ( foundView == layersMap.end() ) {
+    if (foundView == layersMap.end()) {
         /*
            We did not find the view by name. To offer some sort of compatibility and not fail, just load the view corresponding to the given
            index, even though the names do not match.
@@ -2111,7 +2074,7 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
          */
 
         foundView = layersMap.begin();
-        if ( (view >= 0) && ( view < (int)layersMap.size() ) ) {
+        if ((view >= 0) && (view < (int)layersMap.size())) {
             std::advance(foundView, view);
         }
     }
@@ -2126,7 +2089,7 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
     if (foundLayer == -1) {
         stringstream ss;
         ss << "Could not find layer " << layerName << " in view " << viewName << " in " << filename;
-        setPersistentMessage( Message::eMessageError, "", ss.str() );
+        setPersistentMessage(Message::eMessageError, "", ss.str());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -2136,10 +2099,7 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
     subImageIndex = foundView->second[foundLayer].second.subImageIdx;
 
     // Some pngs are 2-channel intensity + alpha
-    bool isIA = (layerChannels.size() == 2 &&
-                 (foundView->second[foundLayer].second.channelNames[0] == "I" ||
-                  foundView->second[foundLayer].second.channelNames[0] == "Y") &&
-                 foundView->second[foundLayer].second.channelNames[1] == "A");
+    bool isIA = (layerChannels.size() == 2 && (foundView->second[foundLayer].second.channelNames[0] == "I" || foundView->second[foundLayer].second.channelNames[0] == "Y") && foundView->second[foundLayer].second.channelNames[1] == "A");
 
     switch (pixelComponents) {
     case ePixelComponentRGBA:
@@ -2197,7 +2157,7 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
         channels[0] = layerChannels[0] + kXChannelFirst;
         if (layerChannels.size() == 1) {
             channels[1] = layerChannels[0] + kXChannelFirst;
-        } else if ( ( layerChannels.size() == 2) || ( layerChannels.size() == 3) ) {
+        } else if ((layerChannels.size() == 2) || (layerChannels.size() == 3)) {
             channels[1] = layerChannels[1] + kXChannelFirst;
         } else {
             channels[1] = layerChannels[3] + kXChannelFirst;
@@ -2222,7 +2182,7 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
         }
         break;
     case ePixelComponentCustom:
-        //numChannels has been already set
+        // numChannels has been already set
         assert(numChannels != 0);
         channels.resize(numChannels);
         for (int i = 0; i < numChannels; ++i) {
@@ -2243,7 +2203,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                             bool isPlayback,
                             const OfxRectI& renderWindow,
                             const OfxPointD& renderScale,
-                            float *pixelData,
+                            float* pixelData,
                             const OfxRectI& bounds,
                             PixelComponentEnum pixelComponents,
                             PixelComponentEnum remappedComponents,
@@ -2262,15 +2222,14 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     const bool useCache = false;
 #endif
 
-
-    //assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == spec.full_width && renderWindow.y1 == 0 && renderWindow.y2 == spec.full_height));
-    //assert((renderWindow.x2 - renderWindow.x1) <= spec.width && (renderWindow.y2 - renderWindow.y1) <= spec.height);
+    // assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == spec.full_width && renderWindow.y1 == 0 && renderWindow.y2 == spec.full_height));
+    // assert((renderWindow.x2 - renderWindow.x1) <= spec.width && (renderWindow.y2 - renderWindow.y1) <= spec.height);
     assert(bounds.x1 <= renderWindow.x1 && renderWindow.x1 <= renderWindow.x2 && renderWindow.x2 <= bounds.x2);
     assert(bounds.y1 <= renderWindow.y1 && renderWindow.y1 <= renderWindow.y2 && renderWindow.y2 <= bounds.y2);
 
     // we only support RGBA, RGB or Alpha output clip on the color plane
-    if ( (pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentXY) && (pixelComponents != ePixelComponentAlpha)
-         && ( pixelComponents != ePixelComponentCustom) ) {
+    if ((pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentXY) && (pixelComponents != ePixelComponentAlpha)
+        && (pixelComponents != ePixelComponentCustom)) {
         setPersistentMessage(Message::eMessageError, "", "OIIO: can only read RGBA, RGB, RG, Alpha or custom components images");
         throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -2279,24 +2238,24 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
     vector<int> channels;
     int numChannels = 0;
-# if OIIO_PLUGIN_VERSION >= 22
+#if OIIO_PLUGIN_VERSION >= 22
     ImageInputPtr img;
-# else
+#else
     auto_ptr<ImageInput> img;
-# endif
+#endif
     vector<ImageSpec> subimages;
 
     ImageInputPtr rawImg = 0;
     openFile(filename, useCache, &rawImg, &subimages);
     if (rawImg) {
-# if OIIO_PLUGIN_VERSION >= 22
+#if OIIO_PLUGIN_VERSION >= 22
         img.swap(rawImg);
-# else
+#else
         img.reset(rawImg);
 #endif
     }
 
-    if ( subimages.empty() ) {
+    if (subimages.empty()) {
         setPersistentMessage(Message::eMessageError, "", string("Cannot open file ") + filename);
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2340,10 +2299,10 @@ ReadOIIOPlugin::decodePlane(const string& filename,
             }
         } else {
             // buildOutputLayerMenu should keep these in sync
-            assert( _outputLayer->getNOptions() == (int)_outputLayerMenu.size() );
+            assert(_outputLayer->getNOptions() == (int)_outputLayerMenu.size());
             int layer_i = _outputLayer->getValue();
             AutoMutex lock(_outputLayerMenuMutex);
-            if ( ( layer_i < (int)_outputLayerMenu.size() ) && (layer_i >= 0) ) {
+            if ((layer_i < (int)_outputLayerMenu.size()) && (layer_i >= 0)) {
                 const string& layerName = _outputLayerMenu[layer_i].first;
                 getOIIOChannelIndexesFromLayerName(filename, view, layerName, pixelComponents, subimages, channels, numChannels, subImageIndex);
             } else {
@@ -2359,7 +2318,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         MultiPlane::ImagePlaneDesc plane, pairedPlane;
         MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
         numChannels = (int)plane.getNumComponents();
-        if ( plane.getNumComponents() > 0) {
+        if (plane.getNumComponents() > 0) {
             channels.resize(numChannels);
             string layer = plane.getPlaneID();
 
@@ -2367,7 +2326,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 getOIIOChannelIndexesFromLayerName(filename, view, layer, pixelComponents, subimages, channels, numChannels, subImageIndex);
             } else {
                 const std::vector<std::string>& layerChannels = plane.getChannels();
-                if ( (numChannels == 1) && (layerChannels[0] == layer) ) {
+                if ((numChannels == 1) && (layerChannels[0] == layer)) {
                     layer.clear();
                 }
 
@@ -2375,7 +2334,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                     bool found = false;
                     for (std::size_t j = 0; j < subimages[0].channelnames.size(); ++j) {
                         string realChan;
-                        if ( !layer.empty() ) {
+                        if (!layer.empty()) {
                             realChan.append(layer);
                             realChan.push_back('.');
                         }
@@ -2398,11 +2357,10 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     }
 #endif
 
-
-    if ( img.get() && !img->seek_subimage(subImageIndex, 0, subimages[0]) ) {
+    if (img.get() && !img->seek_subimage(subImageIndex, 0, subimages[0])) {
         stringstream ss;
         ss << "Cannot seek subimage " << subImageIndex << " in " << filename;
-        setPersistentMessage( Message::eMessageError, "", ss.str() );
+        setPersistentMessage(Message::eMessageError, "", ss.str());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -2417,7 +2375,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     // Compute X offset as done in getFrameBounds
     int dataOffset = 0;
     if (spec.full_x != 0) {
-        if ( offsetNegativeDisplayWindow || (spec.full_x >= 0) ) {
+        if (offsetNegativeDisplayWindow || (spec.full_x >= 0)) {
             dataOffset = -spec.full_x;
         }
     }
@@ -2440,8 +2398,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     renderWindowUnPadded.y2 = (std::min)(renderWindow.y2, specBounds.y2);
 
     // The renderWindowUnPadded must be contained in the original render Window
-    assert(renderWindowUnPadded.x1 >= renderWindow.x1 && renderWindowUnPadded.x2 <= renderWindow.x2 &&
-           renderWindowUnPadded.y1 >= renderWindow.y1 && renderWindowUnPadded.y2 <= renderWindow.y2);
+    assert(renderWindowUnPadded.x1 >= renderWindow.x1 && renderWindowUnPadded.x2 <= renderWindow.x2 && renderWindowUnPadded.y1 >= renderWindow.y1 && renderWindowUnPadded.y2 <= renderWindow.y2);
 
     int zbegin = 0;
     int zend = 1;
@@ -2455,7 +2412,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     yend = spec.full_height + spec.full_y - renderWindowUnPadded.y1;
     ybegin = spec.full_height + spec.full_y - renderWindowUnPadded.y2;
 
-
     const int pixelBytes = numChannels * getComponentBytes(eBitDepthFloat);
     const int xStride = pixelBytes;
     const int yStride = -rowBytes;
@@ -2467,27 +2423,24 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
     // Clear scanlines out of data window to black
     // Usually the ImageCache does it for us, but here we may use the API directly
-    if ( !(_cache && useCache) ) {
-        float* topScanLineDataStartPtr =  (float*)( (char*)pixelData + topScanLineDataStartOffset );
+    if (!(_cache && useCache)) {
+        float* topScanLineDataStartPtr = (float*)((char*)pixelData + topScanLineDataStartOffset);
         char* yptr = (char*)topScanLineDataStartPtr;
         for (int y = ybegin; y < yend; ++y, yptr += -rowBytes) {
-            if ( (y < spec.y) || ( y >= (spec.y + spec.height) ) ) {
-                std::memset ( yptr, 0, pixelBytes * (xend - xbegin) );
+            if ((y < spec.y) || (y >= (spec.y + spec.height))) {
+                std::memset(yptr, 0, pixelBytes * (xend - xbegin));
                 continue;
             }
             if (xbegin < spec.x) {
-                std::memset (yptr, 0, pixelBytes * (spec.x - xbegin));
+                std::memset(yptr, 0, pixelBytes * (spec.x - xbegin));
             }
             if (xend > spec.x + spec.width) {
-                std::memset (yptr + spec.width * pixelBytes, 0, pixelBytes * (xend - (spec.x + spec.width)));
+                std::memset(yptr + spec.width * pixelBytes, 0, pixelBytes * (xend - (spec.x + spec.width)));
             }
         }
     }
 
-    if (renderWindowUnPadded.x1 > renderWindow.x1 ||
-        renderWindowUnPadded.y1 > renderWindow.y1 ||
-        renderWindowUnPadded.x2 < renderWindow.x2 ||
-        renderWindowUnPadded.y2 < renderWindow.y2) {
+    if (renderWindowUnPadded.x1 > renderWindow.x1 || renderWindowUnPadded.y1 > renderWindow.y1 || renderWindowUnPadded.x2 < renderWindow.x2 || renderWindowUnPadded.y2 < renderWindow.y2) {
         // Clear any padding we added outside of renderWindowUnPadded to black
         // Clear scanlines out of data window to black
         assert(bounds.y1 <= renderWindow.y1 && bounds.x1 <= renderWindow.x1);
@@ -2495,16 +2448,16 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         size_t dataOffset = (size_t)(renderWindow.y1 - bounds.y1) * rowBytes + (size_t)(renderWindow.x1 - bounds.x1) * pixelBytes;
         char* yptr = (char*)pixelData + dataOffset;
         for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
-            if ( (y < renderWindowUnPadded.y1) || (y >= renderWindowUnPadded.y2) ) {
-                memset ( yptr, 0, pixelBytes * (renderWindow.x2 - renderWindow.x1) );
+            if ((y < renderWindowUnPadded.y1) || (y >= renderWindowUnPadded.y2)) {
+                memset(yptr, 0, pixelBytes * (renderWindow.x2 - renderWindow.x1));
                 continue;
             }
 
             if (renderWindow.x1 < renderWindowUnPadded.x1) {
-                memset (yptr, 0, pixelBytes * (renderWindowUnPadded.x1 - renderWindow.x1));
+                memset(yptr, 0, pixelBytes * (renderWindowUnPadded.x1 - renderWindow.x1));
             }
             if (renderWindow.x2 > renderWindowUnPadded.x2) {
-                memset (yptr + (renderWindowUnPadded.x2 - renderWindow.x1) * pixelBytes, 0, pixelBytes * (renderWindow.x2 - renderWindowUnPadded.x2));
+                memset(yptr + (renderWindowUnPadded.x2 - renderWindow.x1) * pixelBytes, 0, pixelBytes * (renderWindow.x2 - renderWindowUnPadded.x2));
             }
         }
     }
@@ -2516,7 +2469,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         bool duplicate = false;
         for (std::size_t j = 0; !duplicate && j < i; ++j) {
             if (channels[i] == channels[j]) {
-                char* yptr = (char*)( (float*)( (char*)pixelData + dataOffset ) );
+                char* yptr = (char*)((float*)((char*)pixelData + dataOffset));
                 for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
                     float* xptr = (float*)yptr;
                     for (int x = renderWindow.x1; x < renderWindow.x2; ++x, xptr += numChannels) {
@@ -2535,15 +2488,14 @@ ReadOIIOPlugin::decodePlane(const string& filename,
             // fill channel with constant value
             char* lineStart = (char*)pixelData + bottomScanLineDataStartOffset;
             for (int y = renderWindow.y1; y < renderWindow.y2; ++y, lineStart += rowBytes) {
-                float *cur = (float*)lineStart;
+                float* cur = (float*)lineStart;
                 for (int x = renderWindow.x1; x < renderWindow.x2; ++x, cur += numChannels) {
                     cur[i] = float(channels[i]);
                 }
             }
         } else {
             // read as many contiguous channels as we can
-            while ( (i + incr) < channels.size() &&
-                    channels[i + incr] == channels[i + incr - 1] + 1 ) {
+            while ((i + incr) < channels.size() && channels[i + incr] == channels[i + incr - 1] + 1) {
                 ++incr;
             }
 
@@ -2553,40 +2505,40 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
             // Start on the last line to invert Y with a negative stride
             // Pass to OIIO the pointer to the first pixel of the last scan-line of the render window.
-            float* topScanLineDataStartPtr =  (float*)( (char*)pixelData + topScanLineDataStartOffset ) + outputChannelBegin;
+            float* topScanLineDataStartPtr = (float*)((char*)pixelData + topScanLineDataStartOffset) + outputChannelBegin;
             bool gotPixels = false;
             if (_cache && useCache) {
                 gotPixels = _cache->get_pixels(ustring(filename),
-                                               subImageIndex, //subimage
-                                               0, //miplevel
-                                               xbegin, //x begin
-                                               xend, //x end
-                                               ybegin, //y begin
-                                               yend, //y end
-                                               zbegin, //z begin
-                                               zend, //z end
-                                               chbegin, //chan begin
+                                               subImageIndex, // subimage
+                                               0, // miplevel
+                                               xbegin, // x begin
+                                               xend, // x end
+                                               ybegin, // y begin
+                                               yend, // y end
+                                               zbegin, // z begin
+                                               zend, // z end
+                                               chbegin, // chan begin
                                                chend, // chan end
                                                TypeDesc::FLOAT, // data type
-                                               topScanLineDataStartPtr,// output buffer
-                                               xStride, //x stride
-                                               yStride, //y stride < make it invert Y
-                                               AutoStride //z stride
-#                                            if OIIO_VERSION >= 10605
+                                               topScanLineDataStartPtr, // output buffer
+                                               xStride, // x stride
+                                               yStride, // y stride < make it invert Y
+                                               AutoStride // z stride
+#if OIIO_VERSION >= 10605
                                                ,
                                                chbegin, // only cache these channels
                                                chend
-#                                            endif
-                                               );
+#endif
+                );
                 if (!gotPixels) {
-                    setPersistentMessage( Message::eMessageError, "", _cache->geterror() );
+                    setPersistentMessage(Message::eMessageError, "", _cache->geterror());
                     throwSuiteStatusException(kOfxStatFailed);
 
                     return;
                 }
             }
             if (!gotPixels) { // !useCache
-                assert( kSupportsTiles || (!kSupportsTiles && (renderWindow.x2 - renderWindow.x1) == spec.width && (renderWindow.y2 - renderWindow.y1) == spec.height) );
+                assert(kSupportsTiles || (!kSupportsTiles && (renderWindow.x2 - renderWindow.x1) == spec.width && (renderWindow.y2 - renderWindow.y1) == spec.height));
 
                 // We clamp to the valid scanlines portion.
                 int ybeginClamped = (std::min)((std::max)(spec.y, ybegin), spec.y + spec.height);
@@ -2599,16 +2551,16 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 if (spec.tile_width == 0) {
                     // Read by scanlines
 
-                    if ( !img->read_scanlines(ybeginClamped, //y begin
-                                              yendClamped, //y end
-                                              zbegin, // z
-                                              chbegin, // chan begin
-                                              chend, // chan end
-                                              TypeDesc::FLOAT, // data type
-                                              topScanLineDataStartPtr,
-                                              xStride, //x stride
-                                              yStride) ) { //y stride < make it invert Y;
-                        setPersistentMessage( Message::eMessageError, "", img->geterror() );
+                    if (!img->read_scanlines(ybeginClamped, // y begin
+                                             yendClamped, // y end
+                                             zbegin, // z
+                                             chbegin, // chan begin
+                                             chend, // chan end
+                                             TypeDesc::FLOAT, // data type
+                                             topScanLineDataStartPtr,
+                                             xStride, // x stride
+                                             yStride)) { // y stride < make it invert Y;
+                        setPersistentMessage(Message::eMessageError, "", img->geterror());
                         throwSuiteStatusException(kOfxStatFailed);
 
                         return;
@@ -2634,16 +2586,16 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                         // If the tile range is invalid, expand to the closest enclosing valid tile range.
 
                         // tiledXBegin must be at a valid multiple of tile_width from spec.x
-                        tiledXBegin = spec.x +  (int)std::floor((double)(xbeginClamped - spec.x) / spec.tile_width ) * spec.tile_width;
+                        tiledXBegin = spec.x + (int)std::floor((double)(xbeginClamped - spec.x) / spec.tile_width) * spec.tile_width;
 
                         // tiledYBegin must be at a valid multiple of tile_height from spec.y
-                        tiledYBegin = spec.y + (int)std::floor((double)(ybeginClamped - spec.y) / spec.tile_height ) * spec.tile_height;
+                        tiledYBegin = spec.y + (int)std::floor((double)(ybeginClamped - spec.y) / spec.tile_height) * spec.tile_height;
 
                         // tiledXEnd must be at a valid multiple of tile_width from spec.x
-                        tiledXEnd = spec.x + (int)std::ceil((double)(xendClamped - spec.x)  / spec.tile_width ) * spec.tile_width;
+                        tiledXEnd = spec.x + (int)std::ceil((double)(xendClamped - spec.x) / spec.tile_width) * spec.tile_width;
 
                         // tiledYEnd must be at a valid multiple of tile_height from spec.y
-                        tiledYEnd = spec.y + (int)std::ceil((double)(yendClamped - spec.y) / spec.tile_height ) * spec.tile_height;
+                        tiledYEnd = spec.y + (int)std::ceil((double)(yendClamped - spec.y) / spec.tile_height) * spec.tile_height;
 
                         tiledXBegin = (std::max)(spec.x, tiledXBegin);
                         tiledYBegin = (std::max)(spec.y, tiledYBegin);
@@ -2651,7 +2603,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                         tiledYEnd = (std::min)(spec.y + spec.height, tiledYEnd);
 
                         // Check that we made up a correct tile range
-                        assert( spec.valid_tile_range(tiledXBegin, tiledXEnd, tiledYBegin, tiledYEnd, zbegin, zend) );
+                        assert(spec.valid_tile_range(tiledXBegin, tiledXEnd, tiledYBegin, tiledYEnd, zbegin, zend));
 
                         xBeginPadToTileSize = xbeginClamped - tiledXBegin;
                         yBeginPadToTileSize = ybeginClamped - tiledYBegin;
@@ -2667,25 +2619,25 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                         }
 
                         // Make tile buffer point to the first pixel of the last scan-line of our temporary tile-adjusted buffer.
-                        tiledBuffer = (float*)( (char*)tiledBufferToFree + (tiledYEnd - tiledYBegin - 1) * tiledBufferRowSize );
+                        tiledBuffer = (float*)((char*)tiledBufferToFree + (tiledYEnd - tiledYBegin - 1) * tiledBufferRowSize);
                     }
 
                     // Pass the valid tile range and buffer to OIIO and decode with a negative Y stride from
                     // top to bottom
-                    if ( !img->read_tiles(tiledXBegin, //x begin
-                                          tiledXEnd,//x end
-                                          tiledYBegin,//y begin
-                                          tiledYEnd,//y end
-                                          zbegin, // z begin
-                                          zend, // z end
-                                          chbegin, // chan begin
-                                          chend, // chan end
-                                          TypeDesc::FLOAT, // data type
-                                          tiledBuffer,
-                                          tiledBufferPixelSize, //x stride
-                                          -tiledBufferRowSize, //y stride < make it invert Y
-                                          AutoStride) ) { //z stride
-                        setPersistentMessage( Message::eMessageError, "", img->geterror() );
+                    if (!img->read_tiles(tiledXBegin, // x begin
+                                         tiledXEnd, // x end
+                                         tiledYBegin, // y begin
+                                         tiledYEnd, // y end
+                                         zbegin, // z begin
+                                         zend, // z end
+                                         chbegin, // chan begin
+                                         chend, // chan end
+                                         TypeDesc::FLOAT, // data type
+                                         tiledBuffer,
+                                         tiledBufferPixelSize, // x stride
+                                         -tiledBufferRowSize, // y stride < make it invert Y
+                                         AutoStride)) { // z stride
+                        setPersistentMessage(Message::eMessageError, "", img->geterror());
                         throwSuiteStatusException(kOfxStatFailed);
 
                         return;
@@ -2704,23 +2656,23 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                         // To retrieve the position of the original range, we substract the number of extra lines that were decoded
                         // from the tiledBuffer: tiledBuffer points to tiledYend - tiledYBegin - 1, so we make it point to tiledYend - tiledYbegin - 1 - yEndPadToTileSize
 
-                        assert( (tiledYBegin + yBeginPadToTileSize) == ybeginClamped );
-                        assert( (tiledXBegin + xBeginPadToTileSize) == xbeginClamped );
-                        const char* src_pix = (const char*)( (char*)tiledBuffer - yBeginPadToTileSize * tiledBufferRowSize + xBeginPadToTileSize * tiledBufferPixelSize );
+                        assert((tiledYBegin + yBeginPadToTileSize) == ybeginClamped);
+                        assert((tiledXBegin + xBeginPadToTileSize) == xbeginClamped);
+                        const char* src_pix = (const char*)((char*)tiledBuffer - yBeginPadToTileSize * tiledBufferRowSize + xBeginPadToTileSize * tiledBufferPixelSize);
 
                         for (int y = ybeginClamped; y < yendClamped;
                              ++y,
-                             src_pix -= tiledBufferRowSize,
-                             dst_pix -= rowBytes) {
+                                 src_pix -= tiledBufferRowSize,
+                                 dst_pix -= rowBytes) {
 
                             const float* srcPtr = (const float*)src_pix;
                             float* dstPtr = (float*)dst_pix;
                             for (int x = xbeginClamped; x < xendClamped;
                                  ++x,
-                                 srcPtr += (chend - chbegin),
-                                 dstPtr += numChannels) {
+                                     srcPtr += (chend - chbegin),
+                                     dstPtr += numChannels) {
                                 for (int c = 0; c < (chend - chbegin); ++c) {
-                                    assert( !OFX::IsNaN(srcPtr[c]) ); // Check for NaNs
+                                    assert(!OFX::IsNaN(srcPtr[c])); // Check for NaNs
                                     dstPtr[c] = srcPtr[c];
                                 }
                             }
@@ -2741,10 +2693,10 @@ bool
 ReadOIIOPlugin::getFrameBounds(const string& filename,
                                OfxTime /*time*/,
                                int /*view*/,
-                               OfxRectI *bounds,
-                               OfxRectI *format,
-                               double *par,
-                               string */*error*/,
+                               OfxRectI* bounds,
+                               OfxRectI* format,
+                               double* par,
+                               string* /*error*/,
                                int* tile_width,
                                int* tile_height)
 {
@@ -2764,8 +2716,8 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
 
     // Union bounds across all specs to get the RoD
     // Intersect formats across all specs to get the format
-    OfxRectI mergeBounds = {0, 0, 0, 0}; // start with empty bounds - rectBoundingBox grows them
-    OfxRectI formatIntersection = {0, 0, 0, 0};
+    OfxRectI mergeBounds = { 0, 0, 0, 0 }; // start with empty bounds - rectBoundingBox grows them
+    OfxRectI formatIntersection = { 0, 0, 0, 0 };
     for (std::size_t i = 0; i < specs.size(); ++i) {
         const ImageSpec& spec = specs[i];
         OfxRectI specFormat;
@@ -2781,7 +2733,7 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
 
         int dataOffset = 0;
         if (spec.full_x != 0) {
-            if ( !offsetNegativeDisplayWindow && (spec.full_x < 0) ) {
+            if (!offsetNegativeDisplayWindow && (spec.full_x < 0)) {
                 // Leave data where it is and shrink the format by the negative
                 // amount on both sides so that it starts at (0,0)
                 specFormat.x2 = spec.full_width + spec.full_x - (-spec.full_x);
@@ -2791,7 +2743,6 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
                 specFormat.x2 = spec.full_width;
             }
         }
-
 
         // Remember that exr boxes start at top left, and OpenFX at bottom left
         // so we need to flip the bbox relative to the frame.
@@ -2803,7 +2754,7 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
 
         switch (edgePixelsMode) {
         case eEdgePixelsAuto:
-            if ( ( spec.x != spec.full_x) || ( spec.y != spec.full_y) || ( spec.width != spec.full_width) || ( spec.height != spec.full_height) ) {
+            if ((spec.x != spec.full_x) || (spec.y != spec.full_y) || (spec.width != spec.full_width) || (spec.height != spec.full_height)) {
                 specBounds.x1 -= 1;
                 specBounds.y1 -= 1;
                 specBounds.x2 += 1;
@@ -2811,7 +2762,7 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
             }
             break;
         case eEdgePixelsEdgeDetect:
-            if ( ( spec.x != spec.full_x) && ( spec.y != spec.full_y) && ( spec.width != spec.full_width) && ( spec.height != spec.full_height) ) {
+            if ((spec.x != spec.full_x) && (spec.y != spec.full_y) && (spec.width != spec.full_width) && (spec.height != spec.full_height)) {
                 specBounds.x1 -= 1;
                 specBounds.y1 -= 1;
                 specBounds.x2 += 1;
@@ -2842,7 +2793,6 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
             specBounds.y2 += 1;
             break;
         }
-
 
         if (i == 0) {
             mergeBounds = specBounds;
@@ -2877,23 +2827,23 @@ ReadOIIOPlugin::metadata(const string& filename)
 {
     stringstream ss;
 
-# if OIIO_PLUGIN_VERSION >= 22
+#if OIIO_PLUGIN_VERSION >= 22
     ImageInputPtr img;
-# else
+#else
     auto_ptr<ImageInput> img;
-# endif
+#endif
 
     if (!_cache) {
         // use the right config
         ImageSpec config;
         getConfig(&config);
-        
-#     if OIIO_PLUGIN_VERSION >= 22
+
+#if OIIO_PLUGIN_VERSION >= 22
         img = ImageInput::open(filename, &config);
-#     else
-        img.reset( ImageInput::open(filename, &config) );
-#     endif
-        if ( !img.get() ) {
+#else
+        img.reset(ImageInput::open(filename, &config));
+#endif
+        if (!img.get()) {
             setPersistentMessage(Message::eMessageError, "", string("ReadOIIO: cannot open file ") + filename);
             throwSuiteStatusException(kOfxStatFailed);
 
@@ -2902,7 +2852,7 @@ ReadOIIOPlugin::metadata(const string& filename)
     }
     vector<ImageSpec> subImages;
     getSpecs(filename, &subImages);
-    if ( subImages.empty() ) {
+    if (subImages.empty()) {
         setPersistentMessage(Message::eMessageError, "", string("No information found in") + filename);
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2917,7 +2867,7 @@ ReadOIIOPlugin::metadata(const string& filename)
     for (std::size_t sIt = 0; sIt < subImages.size() && !movie; ++sIt) {
         if (sIt == 0) {
             // only print the info about the first subimage in movies
-            movie = subImages[sIt].get_int_attribute ("oiio:Movie");
+            movie = subImages[sIt].get_int_attribute("oiio:Movie");
         }
         if (!movie && subImages.size() > 1) {
             ss << "subimage " << sIt << ":" << std::endl;
@@ -2926,7 +2876,7 @@ ReadOIIOPlugin::metadata(const string& filename)
         if (subImages[sIt].depth > 1) {
             ss << " x " << subImages[sIt].depth;
         }
-        int bits = subImages[sIt].get_int_attribute ("oiio:BitsPerSample", 0);
+        int bits = subImages[sIt].get_int_attribute("oiio:BitsPerSample", 0);
         ss << ", " << subImages[sIt].nchannels << " channel, ";
         if (subImages[sIt].deep) {
             ss << "deep ";
@@ -2935,26 +2885,24 @@ ReadOIIOPlugin::metadata(const string& filename)
             ss << "volume ";
         }
         TypeDesc type = subImages[sIt].format;
-        if (bits && bits < (int)type.size()*8) {
+        if (bits && bits < (int)type.size() * 8) {
             // The "oiio:BitsPerSample" betrays a different bit depth in the
             // file than the data type we are passing.
-            if (type == TypeDesc::UINT8 || type == TypeDesc::UINT16 ||
-                type == TypeDesc::UINT32 || type == TypeDesc::UINT64) {
+            if (type == TypeDesc::UINT8 || type == TypeDesc::UINT16 || type == TypeDesc::UINT32 || type == TypeDesc::UINT64) {
                 ss << "uint" << bits;
-            } else if (type == TypeDesc::INT8 || type == TypeDesc::INT16 ||
-                       type == TypeDesc::INT32 || type == TypeDesc::INT64) {
+            } else if (type == TypeDesc::INT8 || type == TypeDesc::INT16 || type == TypeDesc::INT32 || type == TypeDesc::INT64) {
                 ss << "int" << bits;
             } else {
-                ss << type.c_str();  // use the name implied by type
+                ss << type.c_str(); // use the name implied by type
             }
         } else {
-            ss << type.c_str();  // use the name implied by type
+            ss << type.c_str(); // use the name implied by type
         }
         ss << " " << img->format_name() << std::endl;
 
         ss << "    channel list: ";
         for (int i = 0; i < subImages[sIt].nchannels; ++i) {
-            if ( i < (int)subImages[sIt].channelnames.size() ) {
+            if (i < (int)subImages[sIt].channelnames.size()) {
                 ss << subImages[sIt].channelnames[i];
                 if (i == subImages[sIt].alpha_channel) {
                     ss << " - alpha channel";
@@ -2962,14 +2910,15 @@ ReadOIIOPlugin::metadata(const string& filename)
             } else {
                 ss << "unknown";
             }
-            if ( i < (int)subImages[sIt].channelformats.size() ) {
+            if (i < (int)subImages[sIt].channelformats.size()) {
                 ss << " (" << subImages[sIt].channelformats[i].c_str() << ")";
             }
             if (i < subImages[sIt].nchannels - 1) {
                 if (subImages[sIt].nchannels <= 4) {
                     ss << ", ";
                 } else {
-                    ss << std::endl << "                  ";
+                    ss << std::endl
+                       << "                  ";
                 }
             }
         }
@@ -2982,10 +2931,7 @@ ReadOIIOPlugin::metadata(const string& filename)
             }
             ss << std::endl;
         }
-        if ( subImages[sIt].full_x || subImages[sIt].full_y || subImages[sIt].full_z ||
-             ( ( subImages[sIt].full_width != subImages[sIt].width) && ( subImages[sIt].full_width != 0) ) ||
-             ( ( subImages[sIt].full_height != subImages[sIt].height) && ( subImages[sIt].full_height != 0) ) ||
-             ( ( subImages[sIt].full_depth != subImages[sIt].depth) && ( subImages[sIt].full_depth != 0) ) ) {
+        if (subImages[sIt].full_x || subImages[sIt].full_y || subImages[sIt].full_z || ((subImages[sIt].full_width != subImages[sIt].width) && (subImages[sIt].full_width != 0)) || ((subImages[sIt].full_height != subImages[sIt].height) && (subImages[sIt].full_height != 0)) || ((subImages[sIt].full_depth != subImages[sIt].depth) && (subImages[sIt].full_depth != 0))) {
             ss << "    full/display size: " << subImages[sIt].full_width << " x " << subImages[sIt].full_height;
             if (subImages[sIt].depth > 1) {
                 ss << " x " << subImages[sIt].full_depth;
@@ -3006,7 +2952,7 @@ ReadOIIOPlugin::metadata(const string& filename)
         }
 
         for (ImageIOParameterList::const_iterator p = subImages[sIt].extra_attribs.begin(); p != subImages[sIt].extra_attribs.end(); ++p) {
-            string s = subImages[sIt].metadata_val (*p, true);
+            string s = subImages[sIt].metadata_val(*p, true);
             ss << "    " << p->name() << ": ";
             if (s == "1.#INF") {
                 ss << "inf";
@@ -3016,12 +2962,12 @@ ReadOIIOPlugin::metadata(const string& filename)
             ss << std::endl;
         }
 
-        if ( (subImages.size() > 1) && (sIt < subImages.size() - 1) ) {
+        if ((subImages.size() > 1) && (sIt < subImages.size() - 1)) {
             ss << std::endl;
         }
     }
     if (!_cache) {
-        assert( img.get() );
+        assert(img.get());
         img->close();
     }
 
@@ -3032,13 +2978,13 @@ inline bool
 startsWith(const std::string& str,
            const std::string& prefix)
 {
-    return str.substr( 0, prefix.size() ) == prefix;
+    return str.substr(0, prefix.size()) == prefix;
     // case insensitive version:
-    //return ci_string(str.substr(0,prefix.size()).c_str()) == prefix.c_str();
+    // return ci_string(str.substr(0,prefix.size()).c_str()) == prefix.c_str();
 }
 
 bool
-ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments &args, OFX::Clip * &identityClip, double &identityTime, int& view, std::string& plane)
+ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments& args, OFX::Clip*& identityClip, double& identityTime, int& view, std::string& plane)
 {
     if (GenericReaderPlugin::isIdentity(args, identityClip, identityTime, view, plane)) {
         return true;
@@ -3065,15 +3011,17 @@ ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments &args, OFX::Clip * &id
 } // isIdentity
 
 class ReadOIIOPluginFactory
-: public PluginFactoryHelper<ReadOIIOPluginFactory>
-{
+    : public PluginFactoryHelper<ReadOIIOPluginFactory> {
 public:
     ReadOIIOPluginFactory(const string& id,
                           unsigned int verMaj,
-                          unsigned int verMin) : PluginFactoryHelper<ReadOIIOPluginFactory>(id, verMaj, verMin) {}
+                          unsigned int verMin)
+        : PluginFactoryHelper<ReadOIIOPluginFactory>(id, verMaj, verMin)
+    {
+    }
 
-    virtual void describe(ImageEffectDescriptor &desc) OVERRIDE FINAL;
-    virtual void describeInContext(ImageEffectDescriptor &desc, ContextEnum context) OVERRIDE FINAL;
+    virtual void describe(ImageEffectDescriptor& desc) OVERRIDE FINAL;
+    virtual void describeInContext(ImageEffectDescriptor& desc, ContextEnum context) OVERRIDE FINAL;
     virtual ImageEffect* createInstance(OfxImageEffectHandle handle, ContextEnum context) OVERRIDE FINAL;
     virtual void load() OVERRIDE FINAL;
     virtual void unload() OVERRIDE FINAL;
@@ -3087,10 +3035,10 @@ ReadOIIOPluginFactory::load()
 {
     {
         int i = 0;
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
         bool libraw_gpl2 = false;
         bool libraw_gpl3 = false;
-#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
         unsigned caps = libraw_capabilities();
         bool libraw_gpl2 = caps & LIBRAW_CAPS_DEMOSAICSGPL2;
         bool libraw_gpl3 = caps & LIBRAW_CAPS_DEMOSAICSGPL3;
@@ -3115,7 +3063,7 @@ ReadOIIOPluginFactory::load()
         if (libraw_gpl3) {
             libraw_demosaic[i++] = eRawDemosaicAMaZE;
         }
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
         libraw_demosaic[i++] = eRawDemosaicDHT;
         libraw_demosaic[i++] = eRawDemosaicAAHD;
 #endif
@@ -3127,15 +3075,15 @@ ReadOIIOPluginFactory::load()
     const char* extensionsl[] = {
         /*"bmp",*/ // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp
         "cin", "dds", "dpx", "f3d", "fits", "hdr",
-#     if OIIO_VERSION >= 20100
+#if OIIO_VERSION >= 20100
         "heic", "heif",
-#     endif
+#endif
         "ico",
         "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
         "pbm", "pgm", "ppm",
-#     if OIIO_VERSION >= 10605
+#if OIIO_VERSION >= 10605
         "pfm", // PFM was flipped before 1.6.5
-#     endif
+#endif
         "psd", "pdd", "psb", "ptex", "rla", "sgi", "rgb", "rgba", "bw", "int", "inta", "pic", "tga", "tpic", "tif", "tiff", "tx", "env", "sm", "vsm", "zfile", NULL
     };
     for (const char** ext = extensionsl; *ext != NULL; ++ext) {
@@ -3148,27 +3096,36 @@ ReadOIIOPluginFactory::load()
     stringstream formatss(extensions_list);
     string format;
     std::list<string> extensionsl;
-    while ( std::getline(formatss, format, ';') ) {
+    while (std::getline(formatss, format, ';')) {
         stringstream extensionss(format);
         string extension;
         std::getline(extensionss, extension, ':'); // extract the format
-        while ( std::getline(extensionss, extension, ',') ) {
+        while (std::getline(extensionss, extension, ',')) {
             extensionsl.push_back(extension);
         }
     }
     const char* extensions_blacklist[] = {
-#     if OIIO_VERSION < 10605
+#if OIIO_VERSION < 10605
         "pfm", // PFM was flipped before 1.6.5
-#     endif
-        "avi", "mov", "qt", "mp4", "m4a", "3gp", "3g2", "mj2", "m4v", "mpg", // FFmpeg extensions - better supported by ReadFFmpeg
+#endif
+        "avi",
+        "mov",
+        "qt",
+        "mp4",
+        "m4a",
+        "3gp",
+        "3g2",
+        "mj2",
+        "m4v",
+        "mpg", // FFmpeg extensions - better supported by ReadFFmpeg
         "gif", // animated GIFs are only supported by FFmpeg
         "bmp", // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp, which is better handled by ImageMagick/ReadMisc from Arena.ofx
         NULL
     };
-    for (const char*const* e = extensions_blacklist; *e != NULL; ++e) {
+    for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
         extensionsl.remove(*e);
     }
-    _extensions.assign( extensionsl.begin(), extensionsl.end() );
+    _extensions.assign(extensionsl.begin(), extensionsl.end());
 #endif
 }
 
@@ -3177,80 +3134,79 @@ ReadOIIOPluginFactory::unload()
 {
     _extensions.clear();
 
-#  ifdef OFX_READ_OIIO_SHARED_CACHE
+#ifdef OFX_READ_OIIO_SHARED_CACHE
     // get the shared image cache (may be shared with other plugins using OIIO)
     ImageCache* sharedcache = ImageCache::create(true);
     // purge it
     // teardown is dangerous if there are other users
     ImageCache::destroy(sharedcache);
-#  endif
+#endif
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    //Kill all threads otherwise when the static global thread pool joins it threads there is a deadlock on Mingw
+    // Kill all threads otherwise when the static global thread pool joins it threads there is a deadlock on Mingw
     IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
 
     // Workaround to a bug: https://github.com/OpenImageIO/oiio/issues/1795
     // see also https://github.com/LuxCoreRender/LuxCore/commit/607bfc9bff519ecc32c02ff3203b7ec71d201fde
-    OIIO::attribute ("threads", 1);
+    OIIO::attribute("threads", 1);
 #endif
 }
 
-
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-ReadOIIOPluginFactory::describe(ImageEffectDescriptor &desc)
+ReadOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     GenericReaderDescribe(desc, _extensions, kPluginEvaluation, kSupportsTiles, kIsMultiPlanar);
 
     // basic labels
     desc.setLabel(kPluginName);
-    desc.setPluginDescription( kPluginDescription
-                               "\n\n"
-                               "OpenImageIO supports reading/writing the following file formats:\n"
-                               "BMP (*.bmp)\n"
-                               "Cineon (*.cin)\n"
-                               "Direct Draw Surface (*.dds)\n"
-                               "DPX (*.dpx)\n"
-                               "Field3D (*.f3d)\n"
-                               "FITS (*.fits)\n"
-                               "GIF (*.gif)\n"
-                               "HDR/RGBE (*.hdr)\n"
-#                           if OIIO_VERSION >= 20100
-                               "HEIC/HEIF (*.heic *.heif)\n"
-#                           endif
-                               "ICO (*.ico)\n"
-                               "IFF (*.iff)\n"
-                               "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
-                               "JPEG-2000 (*.jp2 *.j2k)\n"
-                               "OpenEXR (*.exr)\n"
-                               "PNG / Portable Network Graphics (*.png)\n"
-#                           if OIIO_VERSION >= 10400
-                               "PNM / Netpbm (*.pbm *.pgm *.ppm *.pfm)\n"
-#                           else
+    desc.setPluginDescription(kPluginDescription
+                              "\n\n"
+                              "OpenImageIO supports reading/writing the following file formats:\n"
+                              "BMP (*.bmp)\n"
+                              "Cineon (*.cin)\n"
+                              "Direct Draw Surface (*.dds)\n"
+                              "DPX (*.dpx)\n"
+                              "Field3D (*.f3d)\n"
+                              "FITS (*.fits)\n"
+                              "GIF (*.gif)\n"
+                              "HDR/RGBE (*.hdr)\n"
+#if OIIO_VERSION >= 20100
+                              "HEIC/HEIF (*.heic *.heif)\n"
+#endif
+                              "ICO (*.ico)\n"
+                              "IFF (*.iff)\n"
+                              "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
+                              "JPEG-2000 (*.jp2 *.j2k)\n"
+                              "OpenEXR (*.exr)\n"
+                              "PNG / Portable Network Graphics (*.png)\n"
+#if OIIO_VERSION >= 10400
+                              "PNM / Netpbm (*.pbm *.pgm *.ppm *.pfm)\n"
+#else
                                "PNM / Netpbm (*.pbm *.pgm *.ppm)\n"
-#                           endif
-                               "PSD (*.psd *.pdd *.psb)\n"
-                               "Ptex (*.ptex)\n"
-                               "RAW digital camera files (*.crw *.cr2 *.nef *.raf *.dng and others)\n"
-                               "RLA (*.rla)\n"
-                               "SGI (*.sgi *.rgb *.rgba *.bw *.int *.inta)\n"
-                               "Softimage PIC (*.pic)\n"
-                               "Targa (*.tga *.tpic)\n"
-                               "TIFF (*.tif *.tiff *.tx *.env *.sm *.vsm)\n"
-                               "Webp (*.webp)\n"
-                               "Zfile (*.zfile)" );
+#endif
+                              "PSD (*.psd *.pdd *.psb)\n"
+                              "Ptex (*.ptex)\n"
+                              "RAW digital camera files (*.crw *.cr2 *.nef *.raf *.dng and others)\n"
+                              "RLA (*.rla)\n"
+                              "SGI (*.sgi *.rgb *.rgba *.bw *.int *.inta)\n"
+                              "Softimage PIC (*.pic)\n"
+                              "Targa (*.tga *.tpic)\n"
+                              "TIFF (*.tif *.tiff *.tx *.env *.sm *.vsm)\n"
+                              "Webp (*.webp)\n"
+                              "Zfile (*.zfile)");
 } // ReadOIIOPluginFactory::describe
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                          ContextEnum context)
 {
     gHostSupportsDynamicChoices = (getImageEffectHostDescription()->supportsDynamicChoices);
-    gHostSupportsMultiPlane = ( fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true) ) != 0;
+    gHostSupportsMultiPlane = (fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true)) != 0;
 
     // make some pages and to things in
-    PageParamDescriptor *page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin(), kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false);
+    PageParamDescriptor* page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin(), kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false);
 
     {
         PushButtonParamDescriptor* param = desc.definePushButtonParam(kParamShowMetadata);
@@ -3352,10 +3308,10 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 param->appendOption(kParamRawOutputColorProPhoto);
                 assert(param->getNOptions() == eRawOutputColorXYZ);
                 param->appendOption(kParamRawOutputColorXYZ);
-#             if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
                 assert(param->getNOptions() == eRawOutputColorACES);
                 param->appendOption(kParamRawOutputColorACES);
-#             endif
+#endif
                 param->setDefault(eRawOutputColorSRGB);
                 param->setAnimates(false);
                 if (group) {
@@ -3436,17 +3392,17 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawDemosaic);
                 param->setLabelAndHint(kParamRawDemosaicLabel);
-#             if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,19,0)
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
                 bool libraw_gpl2 = false;
                 bool libraw_gpl3 = false;
-#             elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,18,0)
+#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
                 unsigned caps = libraw_capabilities();
                 bool libraw_gpl2 = caps & LIBRAW_CAPS_DEMOSAICSGPL2;
                 bool libraw_gpl3 = caps & LIBRAW_CAPS_DEMOSAICSGPL3;
-#             else
+#else
                 bool libraw_gpl2 = true;
                 bool libraw_gpl3 = true;
-#             endif
+#endif
                 // AHD-Mod, AFD, VCD, Mixed, LMMSE are GPL2, AMaZE is GPL3
                 assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicNone);
                 param->appendOption(kParamRawDemosaicNone);
@@ -3476,12 +3432,12 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                     assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicAMaZE);
                     param->appendOption(kParamRawDemosaicAMaZE);
                 }
-#             if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0,16,0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
                 assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicDHT);
                 param->appendOption(kParamRawDemosaicDHT);
                 assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicAAHD);
                 param->appendOption(kParamRawDemosaicAAHD);
-#             endif
+#endif
                 param->setDefault(eRawDemosaicAHD);
                 param->setAnimates(false);
                 if (group) {
@@ -3507,7 +3463,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 }
             }
 #endif
-
         }
     }
 
@@ -3559,7 +3514,7 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         param->appendOption(kParamEdgePixelsRepeat);
         assert(param->getNOptions() == eEdgePixelsBlack);
         param->appendOption(kParamEdgePixelsBlack);
-        param->setDefault( (int)eEdgePixelsAuto );
+        param->setDefault((int)eEdgePixelsAuto);
         param->setLayoutHint(eLayoutHintNoNewLine);
         if (page) {
             page->addChild(*param);
@@ -3596,7 +3551,7 @@ ReadOIIOPluginFactory::createInstance(OfxImageEffectHandle handle,
     const ImageEffectHostDescription* h = getImageEffectHostDescription();
     // use OIIO Cache exclusively on Natron < 2.2 (renderscale support has been disabled since Natron 2.2.6)
     bool useOIIOCache = h->isNatron && (h->versionMajor < 2 || (h->versionMajor == 2 && h->versionMinor < 2));
-    ReadOIIOPlugin* ret =  new ReadOIIOPlugin(handle, _extensions, useOIIOCache);
+    ReadOIIOPlugin* ret = new ReadOIIOPlugin(handle, _extensions, useOIIOCache);
 
     ret->restoreStateFromParams();
 
@@ -3606,4 +3561,4 @@ ReadOIIOPluginFactory::createInstance(OfxImageEffectHandle handle,
 static ReadOIIOPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

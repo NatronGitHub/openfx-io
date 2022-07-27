@@ -22,10 +22,9 @@
  * Writes an image in the PNG format
  */
 
-
+#include <algorithm>
 #include <cstdio> // fopen, fwrite...
 #include <vector>
-#include <algorithm>
 
 #include <png.h>
 #include <zlib.h>
@@ -33,9 +32,9 @@
 #include "GenericOCIO.h"
 
 #include "GenericWriter.h"
-#include "ofxsMacros.h"
 #include "ofxsFileOpen.h"
 #include "ofxsLut.h"
+#include "ofxsMacros.h"
 #include "ofxsMultiThread.h"
 
 using namespace OFX;
@@ -65,16 +64,16 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kWritePNGParamCompression "compression"
 #define kWritePNGParamCompressionLabel "Compression"
 #define kWritePNGParamCompressionHint "Compression used by the internal zlib library when encoding the file. This parameter is used to tune the compression algorithm.\n" \
-    "Filtered data consists mostly of small values with a somewhat " \
-    "random distribution.  In this case, the compression algorithm is tuned to " \
-    "compress them better.  The effect of Filtered is to force more Huffman " \
-    "coding and less string matching; it is somewhat intermediate between " \
-    "Default and Huffman Only.  RLE is designed to be almost as " \
-    "fast as Huffman Only, but give better compression for PNG image data.  The " \
-    "strategy parameter only affects the compression ratio but not the " \
-    "correctness of the compressed output even if it is not set appropriately. " \
-    "Fixed prevents the use of dynamic Huffman codes, allowing for a simpler " \
-    "decoder for special applications."
+                                      "Filtered data consists mostly of small values with a somewhat "                                                                    \
+                                      "random distribution.  In this case, the compression algorithm is tuned to "                                                        \
+                                      "compress them better.  The effect of Filtered is to force more Huffman "                                                           \
+                                      "coding and less string matching; it is somewhat intermediate between "                                                             \
+                                      "Default and Huffman Only.  RLE is designed to be almost as "                                                                       \
+                                      "fast as Huffman Only, but give better compression for PNG image data.  The "                                                       \
+                                      "strategy parameter only affects the compression ratio but not the "                                                                \
+                                      "correctness of the compressed output even if it is not set appropriately. "                                                        \
+                                      "Fixed prevents the use of dynamic Huffman codes, allowing for a simpler "                                                          \
+                                      "decoder for special applications."
 #define kWritePNGParamCompressionDefault "Default", "Use this for normal data", "default"
 #define kWritePNGParamCompressionFiltered "Filtered", "Use this for data produced by a filter (or predictor)", "filtered"
 #define kWritePNGParamCompressionHuffmanOnly "Huffman Only", "Forces Huffman encoding only (nostring match)", "huffman"
@@ -83,10 +82,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kWritePNGParamCompressionLevel "compressionLevel"
 #define kWritePNGParamCompressionLevelLabel "Compression Level"
-#define kWritePNGParamCompressionLevelHint "Between 0 and 9:\n " \
-    "1 gives best speed, 9 gives best compression, 0 gives no compression at all " \
-    "(the input data is simply copied a block at a time). Default compromise between speed and compression is 6."
-
+#define kWritePNGParamCompressionLevelHint "Between 0 and 9:\n "                                                          \
+                                           "1 gives best speed, 9 gives best compression, 0 gives no compression at all " \
+                                           "(the input data is simply copied a block at a time). Default compromise between speed and compression is 6."
 
 #define kWritePNGParamBitDepth "bitDepth"
 #define kWritePNGParamBitDepthLabel "Depth"
@@ -117,17 +115,16 @@ typedef MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
 
 static Color::LutManager<Mutex>* gLutManager;
 
-
 // Try to deduce endianness
-#if (defined(_WIN32) || defined(__i386__) || defined(__x86_64__ ) )
-#  ifndef __LITTLE_ENDIAN__
-#    define __LITTLE_ENDIAN__ 1
-#    undef __BIG_ENDIAN__
-#  endif
+#if (defined(_WIN32) || defined(__i386__) || defined(__x86_64__))
+#ifndef __LITTLE_ENDIAN__
+#define __LITTLE_ENDIAN__ 1
+#undef __BIG_ENDIAN__
+#endif
 #endif
 
 inline bool
-littleendian (void)
+littleendian(void)
 {
 #if defined(__BIG_ENDIAN__)
 
@@ -139,29 +136,29 @@ littleendian (void)
     // Otherwise, do something quick to compute it
     int i = 1;
 
-    return *( (char *) &i );
+    return *((char*)&i);
 #endif
 }
 
 /// Change endian-ness of one or more data items that are each 2, 4,
 /// or 8 bytes.  This should work for any of short, unsigned short, int,
 /// unsigned int, float, long long, pointers.
-template<class T>
+template <class T>
 inline void
-swap_endian (T *f,
-             int len = 1)
+swap_endian(T* f,
+            int len = 1)
 {
-    for ( char *c = (char *) f; len--; c += sizeof(T) ) {
+    for (char* c = (char*)f; len--; c += sizeof(T)) {
         if (sizeof(T) == 2) {
-            std::swap (c[0], c[1]);
+            std::swap(c[0], c[1]);
         } else if (sizeof(T) == 4) {
-            std::swap (c[0], c[3]);
-            std::swap (c[1], c[2]);
+            std::swap(c[0], c[3]);
+            std::swap(c[1], c[2]);
         } else if (sizeof(T) == 8) {
-            std::swap (c[0], c[7]);
-            std::swap (c[1], c[6]);
-            std::swap (c[2], c[5]);
-            std::swap (c[3], c[4]);
+            std::swap(c[0], c[7]);
+            std::swap(c[1], c[6]);
+            std::swap(c[2], c[5]);
+            std::swap(c[3], c[4]);
         }
     }
 }
@@ -170,36 +167,40 @@ swap_endian (T *f,
 /// \return empty string on success, C-string error message on failure.
 ///
 inline void
-create_write_struct (png_structp& sp,
-                     png_infop& ip,
-                     int nChannels,
-                     int* color_type)
+create_write_struct(png_structp& sp,
+                    png_infop& ip,
+                    int nChannels,
+                    int* color_type)
 {
     switch (nChannels) {
     case 1:
-        *color_type = PNG_COLOR_TYPE_GRAY; break;
+        *color_type = PNG_COLOR_TYPE_GRAY;
+        break;
     case 2:
-        *color_type = PNG_COLOR_TYPE_GRAY_ALPHA; break;
+        *color_type = PNG_COLOR_TYPE_GRAY_ALPHA;
+        break;
     case 3:
-        *color_type = PNG_COLOR_TYPE_RGB; break;
+        *color_type = PNG_COLOR_TYPE_RGB;
+        break;
     case 4:
-        *color_type = PNG_COLOR_TYPE_RGB_ALPHA; break;
+        *color_type = PNG_COLOR_TYPE_RGB_ALPHA;
+        break;
     default:
         throw std::runtime_error("PNG only supports 1-4 channels");
     }
 
-    sp = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    sp = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!sp) {
         throw std::runtime_error("Could not create PNG write structure");
     }
 
-    ip = png_create_info_struct (sp);
+    ip = png_create_info_struct(sp);
     if (!ip) {
         throw std::runtime_error("Could not create PNG info structure");
     }
 
     // Must call this setjmp in every function that does PNG writes
-    if ( setjmp ( png_jmpbuf(sp) ) ) {
+    if (setjmp(png_jmpbuf(sp))) {
         throw std::runtime_error("PNG library error");
     }
 }
@@ -207,26 +208,26 @@ create_write_struct (png_structp& sp,
 /// Helper function - finalizes writing the image.
 ///
 inline void
-finish_image (png_structp& sp,
-              png_infop& ip)
+finish_image(png_structp& sp,
+             png_infop& ip)
 {
     // Must call this setjmp in every function that does PNG writes
-    if ( setjmp ( png_jmpbuf(sp) ) ) {
-        //error ("PNG library error");
+    if (setjmp(png_jmpbuf(sp))) {
+        // error ("PNG library error");
         return;
     }
-    png_write_end (sp, ip);
+    png_write_end(sp, ip);
 }
 
 /// Destroys a PNG write struct.
 ///
 inline void
-destroy_write_struct (png_structp& sp,
-                      png_infop& ip)
+destroy_write_struct(png_structp& sp,
+                     png_infop& ip)
 {
     if (sp && ip) {
-        //finish_image (sp, ip); // already done! finish_image was called before destroiy_write_struct, see also https://github.com/OpenImageIO/oiio/issues/1607
-        png_destroy_write_struct (&sp, &ip);
+        // finish_image (sp, ip); // already done! finish_image was called before destroiy_write_struct, see also https://github.com/OpenImageIO/oiio/issues/1607
+        png_destroy_write_struct(&sp, &ip);
         sp = NULL;
         ip = NULL;
     }
@@ -300,22 +301,17 @@ hashFunction(unsigned int a)
     return a;
 }
 
-struct alias_cast_float
-{
+struct alias_cast_float {
     alias_cast_float()
-        : raw(0)
-    {
-    };                          // initialize to 0 in case sizeof(T) < 8
+        : raw(0) {}; // initialize to 0 in case sizeof(T) < 8
 
-    union
-    {
+    union {
         unsigned int raw;
         float data;
     };
 };
 
-inline
-unsigned int
+inline unsigned int
 pseudoRandomHashSeed(OfxTime time,
                      unsigned int seed)
 {
@@ -331,37 +327,32 @@ pseudoRandomHashSeed(OfxTime time,
     return hash32;
 }
 
-inline
-unsigned int
+inline unsigned int
 generatePseudoRandomHash(unsigned int lastRandomHash)
 {
     return hashFunction(lastRandomHash);
 }
 
-inline
-int
+inline int
 convertPseudoRandomHashToRange(unsigned int lastRandomHash,
                                int min,
                                int max)
 {
-    return ( (double)lastRandomHash / (double)0x100000000LL ) * (max - min)  + min;
+    return ((double)lastRandomHash / (double)0x100000000LL) * (max - min) + min;
 }
 
 class WritePNGPlugin
-    : public GenericWriterPlugin
-{
+    : public GenericWriterPlugin {
 public:
-
     WritePNGPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
 
     virtual ~WritePNGPlugin();
 
 private:
-
     virtual void encode(const string& filename,
                         const OfxTime time,
                         const string& viewName,
-                        const float *pixelData,
+                        const float* pixelData,
                         const OfxRectI& bounds,
                         const float pixelAspectRatio,
                         const int pixelDataNComps,
@@ -373,7 +364,7 @@ private:
 
     virtual void onOutputFileChanged(const string& newFile, bool setColorSpace) OVERRIDE FINAL;
 
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
     /**
      * @brief Does the given filename support alpha channel.
@@ -385,22 +376,22 @@ private:
                   png_structp* png,
                   png_infop* info,
                   FILE** file,
-                  int *color_type) const;
+                  int* color_type) const;
 
-    void write_info (png_structp& sp,
-                     png_infop& ip,
-                     int color_type,
-                     int x1, int y1,
-                     int width,
-                     int height,
-                     double par,
-                     const string& outputColorspace,
-                     PNGBitDepthEnum bitdepth);
+    void write_info(png_structp& sp,
+                    png_infop& ip,
+                    int color_type,
+                    int x1, int y1,
+                    int width,
+                    int height,
+                    double par,
+                    const string& outputColorspace,
+                    PNGBitDepthEnum bitdepth);
 
     template <int srcNComps, int dstNComps>
     void add_dither_for_components(OfxTime time,
                                    unsigned int seed,
-                                   const float *src_pixels,
+                                   const float* src_pixels,
                                    const OfxRectI& bounds,
                                    unsigned char* dst_pixels,
                                    int srcRowElements,
@@ -409,7 +400,7 @@ private:
 
     void add_dither(OfxTime time,
                     unsigned int seed,
-                    const float *src_pixels,
+                    const float* src_pixels,
                     const OfxRectI& bounds,
                     unsigned char* dst_pixels,
                     int srcRowElements,
@@ -417,7 +408,6 @@ private:
                     int dstNCompsStartIndex,
                     int srcNComps,
                     int dstNComps);
-
 
     ChoiceParam* _compression;
     IntParam* _compressionLevel;
@@ -433,7 +423,7 @@ WritePNGPlugin::WritePNGPlugin(OfxImageEffectHandle handle,
     , _compressionLevel(NULL)
     , _bitdepth(NULL)
     , _ditherEnabled(NULL)
-    , _ditherLut( gLutManager->linearLut() )
+    , _ditherLut(gLutManager->linearLut())
 {
     _compression = fetchChoiceParam(kWritePNGParamCompression);
     _compressionLevel = fetchIntParam(kWritePNGParamCompressionLevel);
@@ -446,16 +436,12 @@ WritePNGPlugin::~WritePNGPlugin()
 {
 }
 
-
 void
-WritePNGPlugin::changedParam(const InstanceChangedArgs &args,
-                             const string &paramName)
+WritePNGPlugin::changedParam(const InstanceChangedArgs& args,
+                             const string& paramName)
 {
     if (paramName == kParamLibraryInfo) {
-        string msg = (string() +
-                      "libpng version (compiled with / running with): " + PNG_LIBPNG_VER_STRING + '/' + png_libpng_ver + '\n' +
-                      "zlib version (compiled with / running with): " + ZLIB_VERSION + '/' + zlib_version + '\n' +
-                      png_get_copyright(NULL));
+        string msg = (string() + "libpng version (compiled with / running with): " + PNG_LIBPNG_VER_STRING + '/' + png_libpng_ver + '\n' + "zlib version (compiled with / running with): " + ZLIB_VERSION + '/' + zlib_version + '\n' + png_get_copyright(NULL));
         sendMessage(Message::eMessageMessage, "", msg);
     } else {
         GenericWriterPlugin::changedParam(args, paramName);
@@ -468,7 +454,7 @@ WritePNGPlugin::openFile(const string& filename,
                          png_structp* png,
                          png_infop* info,
                          std::FILE** file,
-                         int *color_type) const
+                         int* color_type) const
 {
     *file = fopen_utf8(filename.c_str(), "wb");
     if (!*file) {
@@ -479,7 +465,7 @@ WritePNGPlugin::openFile(const string& filename,
     *info = NULL;
 
     try {
-        create_write_struct (*png, *info, nChannels, color_type);
+        create_write_struct(*png, *info, nChannels, color_type);
     } catch (const std::exception& e) {
         std::fclose(*file);
         if (*png != NULL) {
@@ -492,61 +478,47 @@ WritePNGPlugin::openFile(const string& filename,
 /// Writes PNG header according to the ImageSpec.
 ///
 void
-WritePNGPlugin::write_info (png_structp& sp,
-                            png_infop& ip,
-                            int color_type,
-                            int x1,
-                            int y1,
-                            int width,
-                            int height,
-                            double par,
-                            const string& ocioColorspace,
-                            PNGBitDepthEnum bitdepth)
+WritePNGPlugin::write_info(png_structp& sp,
+                           png_infop& ip,
+                           int color_type,
+                           int x1,
+                           int y1,
+                           int width,
+                           int height,
+                           double par,
+                           const string& ocioColorspace,
+                           PNGBitDepthEnum bitdepth)
 {
     int pixelBytes = bitdepth == ePNGBitDepthUByte ? sizeof(unsigned char) : sizeof(unsigned short);
 
-    png_set_IHDR (sp, ip, width, height, pixelBytes * 8, color_type, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_set_IHDR(sp, ip, width, height, pixelBytes * 8, color_type, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     if (x1 != 0 || y1 != 0) {
-        png_set_oFFs (sp, ip, x1, y1, PNG_OFFSET_PIXEL);
+        png_set_oFFs(sp, ip, x1, y1, PNG_OFFSET_PIXEL);
     }
 
 #if defined(PNG_GAMMA_SUPPORTED)
-    if ( (ocioColorspace == "sRGB") ||
-         (ocioColorspace == "sRGB D65") ||
-         (ocioColorspace == "sRGB (D60 sim.)") ||
-         (ocioColorspace == "out_srgbd60sim") ||
-         (ocioColorspace == "rrt_srgb") ||
-         (ocioColorspace == "srgb8") ) {
-        png_set_sRGB_gAMA_and_cHRM (sp, ip, PNG_sRGB_INTENT_ABSOLUTE);
+    if ((ocioColorspace == "sRGB") || (ocioColorspace == "sRGB D65") || (ocioColorspace == "sRGB (D60 sim.)") || (ocioColorspace == "out_srgbd60sim") || (ocioColorspace == "rrt_srgb") || (ocioColorspace == "srgb8")) {
+        png_set_sRGB_gAMA_and_cHRM(sp, ip, PNG_sRGB_INTENT_ABSOLUTE);
     } else if (ocioColorspace == "Gamma1.8") {
 #ifdef PNG_GAMMA_MAC_18 // appeared in libpng 1.5.4
         png_set_gAMA_fixed(sp, ip, PNG_GAMMA_MAC_18);
 #else
         png_set_gAMA(sp, ip, 1.0f / 1.8);
 #endif
-    } else if ( (ocioColorspace == "Gamma2.2") ||
-                (ocioColorspace == "vd8") ||
-                (ocioColorspace == "vd10") ||
-                (ocioColorspace == "vd16") ||
-                (ocioColorspace == "VD16") ) {
-        png_set_gAMA (sp, ip, 1.0f / 2.2);
+    } else if ((ocioColorspace == "Gamma2.2") || (ocioColorspace == "vd8") || (ocioColorspace == "vd10") || (ocioColorspace == "vd16") || (ocioColorspace == "VD16")) {
+        png_set_gAMA(sp, ip, 1.0f / 2.2);
     } else if (
 #ifdef OFX_IO_USING_OCIO
-                (ocioColorspace == OCIO::ROLE_SCENE_LINEAR) ||
+        (ocioColorspace == OCIO::ROLE_SCENE_LINEAR) ||
 #else
-                (ocioColorspace == "scene_linear") ||
+        (ocioColorspace == "scene_linear") ||
 #endif
-                (ocioColorspace == "Linear") ||
-                (ocioColorspace == "linear") ||
-                (ocioColorspace == "ACES2065-1") ||
-                (ocioColorspace == "aces") ||
-                (ocioColorspace == "lnf") ||
-                (ocioColorspace == "ln16") ) {
+        (ocioColorspace == "Linear") || (ocioColorspace == "linear") || (ocioColorspace == "ACES2065-1") || (ocioColorspace == "aces") || (ocioColorspace == "lnf") || (ocioColorspace == "ln16")) {
 #ifdef PNG_GAMMA_LINEAR // appeared in libpng 1.5.4
         png_set_gAMA_fixed(sp, ip, PNG_GAMMA_LINEAR);
 #else
         png_set_gAMA_fixed(sp, ip, PNG_FP_1);
-        //png_set_gAMA(sp, ip, 1.0);
+        // png_set_gAMA(sp, ip, 1.0);
 #endif
     }
 #endif
@@ -593,7 +565,7 @@ WritePNGPlugin::write_info (png_structp& sp,
         // HDV is 4:3
         // We scale by the least common multiple of all the denominators, eg 9*6*9*11 = 5346
         // in order to get integer values in most cases.
-        png_set_pHYs (sp, ip, (png_uint_32)(5346), (png_uint_32)(5346 * par + 0.5), PNG_RESOLUTION_UNKNOWN);
+        png_set_pHYs(sp, ip, (png_uint_32)(5346), (png_uint_32)(5346 * par + 0.5), PNG_RESOLUTION_UNKNOWN);
     }
 #endif
 
@@ -608,15 +580,15 @@ WritePNGPlugin::write_info (png_structp& sp,
     /*if (text.size())
        png_set_text (sp, ip, &text[0], text.size());*/
 
-    png_write_info (sp, ip);
-    png_set_packing (sp);   // Pack 1, 2, 4 bit into bytes
+    png_write_info(sp, ip);
+    png_set_packing(sp); // Pack 1, 2, 4 bit into bytes
 }
 
 template <int srcNComps, int dstNComps>
 void
 WritePNGPlugin::add_dither_for_components(OfxTime time,
                                           unsigned int seed,
-                                          const float *src_pixels,
+                                          const float* src_pixels,
                                           const OfxRectI& bounds,
                                           unsigned char* dst_pixels,
                                           int srcRowElements,
@@ -625,20 +597,19 @@ WritePNGPlugin::add_dither_for_components(OfxTime time,
 {
     unsigned int randHash = pseudoRandomHashSeed(time, seed);
 
-
     assert(srcNComps >= 3 && dstNComps >= 3);
 
     int width = bounds.x2 - bounds.x1;
 
     for (int y = bounds.y1; y < bounds.y2; ++y,
-         src_pixels += srcRowElements,
-         dst_pixels += dstRowElements) {
+             src_pixels += srcRowElements,
+             dst_pixels += dstRowElements) {
         randHash = generatePseudoRandomHash(randHash);
-        int start = convertPseudoRandomHashToRange( randHash, 0, (bounds.x2 - bounds.x1) );
+        int start = convertPseudoRandomHashToRange(randHash, 0, (bounds.x2 - bounds.x1));
 
         for (int backward = 0; backward < 2; ++backward) {
             int index = backward ? start - 1 : start;
-            assert( backward == 1 || ( index >= 0 && index < width ) );
+            assert(backward == 1 || (index >= 0 && index < width));
             unsigned error_r = 0x80;
             unsigned error_g = 0x80;
             unsigned error_b = 0x80;
@@ -651,7 +622,6 @@ WritePNGPlugin::add_dither_for_components(OfxTime time,
                 error_b = (error_b & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_pixels[src_col + 2]);
                 assert(error_r < 0x10000 && error_g < 0x10000 && error_b < 0x10000);
 
-
                 dst_pixels[dst_col] = (unsigned char)(error_r >> 8);
                 dst_pixels[dst_col + 1] = (unsigned char)(error_g >> 8);
                 dst_pixels[dst_col + 2] = (unsigned char)(error_b >> 8);
@@ -659,7 +629,6 @@ WritePNGPlugin::add_dither_for_components(OfxTime time,
                 if (dstNComps == 4) {
                     dst_pixels[dst_col + 3] = (srcNComps == 4) ? Color::floatToInt<256>(src_pixels[src_col + 3]) : 255;
                 }
-
 
                 if (backward) {
                     --index;
@@ -674,7 +643,7 @@ WritePNGPlugin::add_dither_for_components(OfxTime time,
 void
 WritePNGPlugin::add_dither(OfxTime time,
                            unsigned int seed,
-                           const float *src_pixels,
+                           const float* src_pixels,
                            const OfxRectI& bounds,
                            unsigned char* dst_pixels,
                            int srcRowElements,
@@ -702,7 +671,7 @@ void
 WritePNGPlugin::encode(const string& filename,
                        const OfxTime time,
                        const string& /*viewName*/,
-                       const float *pixelData,
+                       const float* pixelData,
                        const OfxRectI& bounds,
                        const float pixelAspectRatio,
                        const int pixelDataNComps,
@@ -710,7 +679,7 @@ WritePNGPlugin::encode(const string& filename,
                        const int dstNComps,
                        const int rowBytes)
 {
-    if ( (dstNComps != 4) && (dstNComps != 3) && (dstNComps != 2) && (dstNComps != 1) ) {
+    if ((dstNComps != 4) && (dstNComps != 3) && (dstNComps != 2) && (dstNComps != 1)) {
         setPersistentMessage(Message::eMessageError, "", "PFM: can only write RGBA, RGB, IA or Alpha components images");
         throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -719,8 +688,8 @@ WritePNGPlugin::encode(const string& filename,
 
     // If the file exists (which means "overwrite" was checked), remove it first.
     // See https://github.com/NatronGitHub/Natron/issues/666
-    if (OFX::exists_utf8( filename.c_str() )) {
-        OFX::remove_utf8( filename.c_str() );
+    if (OFX::exists_utf8(filename.c_str())) {
+        OFX::remove_utf8(filename.c_str());
     }
 
     png_structp png = NULL;
@@ -730,12 +699,11 @@ WritePNGPlugin::encode(const string& filename,
     try {
         openFile(filename, dstNComps, &png, &info, &file, &color_type);
     } catch (const std::exception& e) {
-        setPersistentMessage( Message::eMessageError, "", e.what() );
+        setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }
 
-
-    png_init_io (png, file);
+    png_init_io(png, file);
 
     int compressionLevelParam;
     _compressionLevel->getValue(compressionLevelParam);
@@ -771,11 +739,11 @@ WritePNGPlugin::encode(const string& filename,
 #endif
     write_info(png, info, color_type, bounds.x1, bounds.y1, bounds.x2 - bounds.x1, bounds.y2 - bounds.y1, pixelAspectRatio, ocioColorspace, pngDepth);
 
-    int bitDepthSize = ( (pngDepth == ePNGBitDepthUShort) ? sizeof(unsigned short) : sizeof(unsigned char) );
+    int bitDepthSize = ((pngDepth == ePNGBitDepthUShort) ? sizeof(unsigned short) : sizeof(unsigned char));
 
     // Convert the float buffer to the buffer used by PNG
     int dstRowElements = (bounds.x2 - bounds.x1) * dstNComps;
-    std::size_t pngRowBytes =  dstRowElements * bitDepthSize;
+    std::size_t pngRowBytes = dstRowElements * bitDepthSize;
     std::size_t scratchBufBytes = (bounds.y2 - bounds.y1) * pngRowBytes;
 
     RamBuffer scratchBuffer(scratchBufBytes);
@@ -795,16 +763,15 @@ WritePNGPlugin::encode(const string& filename,
         unsigned char* dst_pixels = dstPixelData;
 
         // no dither
-        if ( !ditherEnabled || (nComps < 3) ) {
-            for ( size_t i = 0; i < numPixels; ++i,
-                 dst_pixels += dstNComps,
-                 src_pixels += pixelDataNComps) {
+        if (!ditherEnabled || (nComps < 3)) {
+            for (size_t i = 0; i < numPixels; ++i,
+                        dst_pixels += dstNComps,
+                        src_pixels += pixelDataNComps) {
                 assert(src_pixels == pixelData + i * pixelDataNComps);
                 assert(dst_pixels == dstPixelData + i * dstNComps);
                 for (int c = 0; c < nComps; ++c) {
                     dst_pixels[c] = floatToInt<256>(src_pixels[dstNCompsStartIndex + c]);
                 }
-
             }
         } else {
             assert(nComps >= 3);
@@ -814,12 +781,12 @@ WritePNGPlugin::encode(const string& filename,
     } else {
         assert(pngDepth == ePNGBitDepthUShort);
 
-        unsigned short* dstPixelData = reinterpret_cast<unsigned short*>( scratchBuffer.getData() );
+        unsigned short* dstPixelData = reinterpret_cast<unsigned short*>(scratchBuffer.getData());
         unsigned short* dst_pixels = dstPixelData;
 
-        for ( size_t i = 0; i < numPixels; ++i,
-             dst_pixels += dstNComps,
-             src_pixels += pixelDataNComps) {
+        for (size_t i = 0; i < numPixels; ++i,
+                    dst_pixels += dstNComps,
+                    src_pixels += pixelDataNComps) {
             assert(src_pixels == pixelData + i * pixelDataNComps);
             assert(dst_pixels == dstPixelData + i * dstNComps);
             for (int c = 0; c < nComps; ++c) {
@@ -827,21 +794,20 @@ WritePNGPlugin::encode(const string& filename,
             }
         }
         // PNG is always big endian
-        if ( littleendian() ) {
-            swap_endian ( dstPixelData, numPixels * dstNComps );
+        if (littleendian()) {
+            swap_endian(dstPixelData, numPixels * dstNComps);
         }
     }
 
-
     // Y is top down in PNG, so invert it now
     for (int y = (bounds.y2 - bounds.y1 - 1); y >= 0; --y) {
-        if ( setjmp ( png_jmpbuf(png) ) ) {
+        if (setjmp(png_jmpbuf(png))) {
             destroy_write_struct(png, info);
             std::fclose(file);
             setPersistentMessage(Message::eMessageError, "", "PNG library error");
             throwSuiteStatusException(kOfxStatFailed);
         }
-        png_write_row (png, (png_byte*)scratchBuffer.getData() + y * pngRowBytes);
+        png_write_row(png, (png_byte*)scratchBuffer.getData() + y * pngRowBytes);
     }
 
     finish_image(png, info);
@@ -856,34 +822,34 @@ WritePNGPlugin::isImageFile(const string& /*fileExtension*/) const
 }
 
 void
-WritePNGPlugin::onOutputFileChanged(const string & /*filename*/,
+WritePNGPlugin::onOutputFileChanged(const string& /*filename*/,
                                     bool setColorSpace)
 {
     if (setColorSpace) {
         PNGBitDepthEnum bitdepth = (PNGBitDepthEnum)_bitdepth->getValue();
-#     ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
         switch (bitdepth) {
         case ePNGBitDepthUByte: {
             // use sRGB for PNG
-            if ( _ocio->hasColorspace("sRGB") ) {
+            if (_ocio->hasColorspace("sRGB")) {
                 // nuke-default, blender, natron
                 _ocio->setOutputColorspace("sRGB");
-            } else if ( _ocio->hasColorspace("sRGB D65") ) {
+            } else if (_ocio->hasColorspace("sRGB D65")) {
                 // blender-cycles
                 _ocio->setOutputColorspace("sRGB D65");
-            } else if ( _ocio->hasColorspace("sRGB (D60 sim.)") ) {
+            } else if (_ocio->hasColorspace("sRGB (D60 sim.)")) {
                 // out_srgbd60sim or "sRGB (D60 sim.)" in aces 1.0.0
                 _ocio->setOutputColorspace("sRGB (D60 sim.)");
-            } else if ( _ocio->hasColorspace("out_srgbd60sim") ) {
+            } else if (_ocio->hasColorspace("out_srgbd60sim")) {
                 // out_srgbd60sim or "sRGB (D60 sim.)" in aces 1.0.0
                 _ocio->setOutputColorspace("out_srgbd60sim");
-            } else if ( _ocio->hasColorspace("rrt_Gamma2.2") ) {
+            } else if (_ocio->hasColorspace("rrt_Gamma2.2")) {
                 // rrt_Gamma2.2 in aces 0.7.1
                 _ocio->setOutputColorspace("rrt_Gamma2.2");
-            } else if ( _ocio->hasColorspace("rrt_srgb") ) {
+            } else if (_ocio->hasColorspace("rrt_srgb")) {
                 // rrt_srgb in aces 0.1.1
                 _ocio->setOutputColorspace("rrt_srgb");
-            } else if ( _ocio->hasColorspace("srgb8") ) {
+            } else if (_ocio->hasColorspace("srgb8")) {
                 // srgb8 in spi-vfx
                 _ocio->setOutputColorspace("srgb8");
             }
@@ -894,15 +860,13 @@ WritePNGPlugin::onOutputFileChanged(const string & /*filename*/,
             break;
         }
         }
-#     endif
+#endif
     }
 } // WritePNGPlugin::onOutputFileChanged
 
 class WritePNGPluginFactory
-    : public PluginFactoryHelper<WritePNGPluginFactory>
-{
+    : public PluginFactoryHelper<WritePNGPluginFactory> {
 public:
-
     WritePNGPluginFactory(const string& id,
                           unsigned int verMaj,
                           unsigned int verMin)
@@ -916,8 +880,8 @@ public:
     virtual ImageEffect* createInstance(OfxImageEffectHandle handle, ContextEnum context);
     bool isVideoStreamPlugin() const { return false; }
 
-    virtual void describe(ImageEffectDescriptor &desc);
-    virtual void describeInContext(ImageEffectDescriptor &desc, ContextEnum context);
+    virtual void describe(ImageEffectDescriptor& desc);
+    virtual void describeInContext(ImageEffectDescriptor& desc, ContextEnum context);
 
 private:
     vector<string> _extensions;
@@ -939,7 +903,7 @@ WritePNGPluginFactory::unload()
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-WritePNGPluginFactory::describe(ImageEffectDescriptor &desc)
+WritePNGPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     GenericWriterDescribe(desc, eRenderFullySafe, _extensions, kPluginEvaluation, false, false);
     // basic labels
@@ -949,11 +913,11 @@ WritePNGPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-WritePNGPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+WritePNGPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                          ContextEnum context)
 {
     // make some pages and to things in
-    PageParamDescriptor *page = GenericWriterDescribeInContextBegin(desc, context,
+    PageParamDescriptor* page = GenericWriterDescribeInContextBegin(desc, context,
                                                                     kSupportsRGBA,
                                                                     kSupportsRGB,
                                                                     kSupportsXY,
@@ -1038,4 +1002,4 @@ WritePNGPluginFactory::createInstance(OfxImageEffectHandle handle,
 static WritePNGPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

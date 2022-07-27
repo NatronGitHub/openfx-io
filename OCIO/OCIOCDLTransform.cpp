@@ -27,16 +27,15 @@
 #include <cstdio> // fopen...
 #include <fstream> // std::ofstream
 
-#include "ofxsProcessing.H"
-#include "ofxsThreadSuite.h"
-#include "ofxsCopier.h"
 #include "IOUtility.h"
 #include "ofxNatron.h"
 #include "ofxsCoords.h"
+#include "ofxsCopier.h"
 #include "ofxsMacros.h"
+#include "ofxsProcessing.H"
+#include "ofxsThreadSuite.h"
 
 #include "GenericOCIO.h"
-
 
 namespace OCIO = OCIO_NAMESPACE;
 
@@ -49,14 +48,14 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginName "OCIOCDLTransformOFX"
 #define kPluginGrouping "Color/OCIO"
-#define kPluginDescription \
-    "Use OpenColorIO to apply an ASC Color Decision List (CDL) grade.\n" \
-    "The formula applied for each channel is:\nout = (in * slope + offset)^power.\n" \
+#define kPluginDescription                                                                               \
+    "Use OpenColorIO to apply an ASC Color Decision List (CDL) grade.\n"                                 \
+    "The formula applied for each channel is:\nout = (in * slope + offset)^power.\n"                     \
     "The saturation is then applied to all channel using the standard rec709 saturation coefficients:\n" \
-    "luma = 0.2126 * inR + 0.7152 * inG + 0.0722 * inB\n" \
-    "outR = Clamp( luma + sat * (inR - luma) )\n" \
-    "outG = Clamp( luma + sat * (inG - luma) )\n" \
-    "outB = Clamp( luma + sat * (inB - luma) ).\n\n" \
+    "luma = 0.2126 * inR + 0.7152 * inG + 0.0722 * inB\n"                                                \
+    "outR = Clamp( luma + sat * (inR - luma) )\n"                                                        \
+    "outG = Clamp( luma + sat * (inG - luma) )\n"                                                        \
+    "outB = Clamp( luma + sat * (inB - luma) ).\n\n"                                                     \
     "The grade can be loaded from an ASC .ccc (Color Correction Collection) or .cc (Color Correction) file."
 //, and saved to a .cc file."
 
@@ -106,7 +105,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kParamFile "file"
 #define kParamFileLabel "File"
-#define kParamFileHint \
+#define kParamFileHint                                                   \
     "Specify the src ASC CDL file, on disk, to use for this transform. " \
     "This can be either a .cc or .ccc file. If .ccc is specified, the cccid is required."
 
@@ -119,7 +118,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamCCCID "cccId"
 #define kParamCCCIDLabel "CCC Id"
 #define kParamCCCIDHint "If the source file is an ASC CDL CCC (color correction collection), " \
-    "this specifies the id to lookup. OpenColorIO::Contexts (envvars) are obeyed."
+                        "this specifies the id to lookup. OpenColorIO::Contexts (envvars) are obeyed."
 #define kParamCCCIDChoice "cccIdIndex"
 
 #define kParamExport "export"
@@ -138,9 +137,8 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 // and https://github.com/imageworks/OpenColorIO/issues/456
 #define kParamEnableGPUHint_warn "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n"
 #endif
-#define kParamEnableGPUHint \
-    "Enable GPU-based OpenGL render (only available when \"(Un)premult\" is not checked).\n" \
-    kParamEnableGPUHint_warn \
+#define kParamEnableGPUHint                                                                                                                                                              \
+    "Enable GPU-based OpenGL render (only available when \"(Un)premult\" is not checked).\n" kParamEnableGPUHint_warn                                                                    \
     "If the checkbox is checked but is not enabled (i.e. it cannot be unchecked), GPU render can not be enabled or disabled from the plugin and is probably part of the host options.\n" \
     "If the checkbox is not checked and is not enabled (i.e. it cannot be checked), GPU render is not available on this host."
 #endif
@@ -148,34 +146,32 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 static bool gHostIsNatron = false; // TODO: generate a CCCId choice param kParamCCCIDChoice from available IDs
 
 class OCIOCDLTransformPlugin
-    : public ImageEffect
-{
+    : public ImageEffect {
 public:
-
     OCIOCDLTransformPlugin(OfxImageEffectHandle handle);
 
     virtual ~OCIOCDLTransformPlugin();
 
     /* Override the render */
-    virtual void render(const RenderArguments &args) OVERRIDE FINAL;
+    virtual void render(const RenderArguments& args) OVERRIDE FINAL;
 
     /* override is identity */
-    virtual bool isIdentity(const IsIdentityArguments &args, Clip * &identityClip, double &identityTime, int& view, std::string& plane) OVERRIDE FINAL;
+    virtual bool isIdentity(const IsIdentityArguments& args, Clip*& identityClip, double& identityTime, int& view, std::string& plane) OVERRIDE FINAL;
 
     /** @brief the effect is about to be actively edited by a user, called when the first user interface is opened on an instance */
     virtual void beginEdit(void) OVERRIDE FINAL;
 
     /* override changedParam */
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
     /* override changed clip */
-    virtual void changedClip(const InstanceChangedArgs &args, const string &clipName) OVERRIDE FINAL;
+    virtual void changedClip(const InstanceChangedArgs& args, const string& clipName) OVERRIDE FINAL;
 
     // override the rod call
-    //virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments &args, OfxRectD &rod) OVERRIDE FINAL;
+    // virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments &args, OfxRectD &rod) OVERRIDE FINAL;
 
     // override the roi call
-    //virtual void getRegionsOfInterest(const RegionsOfInterestArguments &args, RegionOfInterestSetter &rois) OVERRIDE FINAL;
+    // virtual void getRegionsOfInterest(const RegionsOfInterestArguments &args, RegionOfInterestSetter &rois) OVERRIDE FINAL;
 
 private:
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
@@ -187,7 +183,7 @@ private:
        decouples a plugin from an OpenGL context. */
     virtual void contextDetached(void* contextData) OVERRIDE FINAL;
 
-    void renderGPU(const RenderArguments &args);
+    void renderGPU(const RenderArguments& args);
 #endif
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
@@ -200,7 +196,7 @@ private:
                        bool premult,
                        bool maskmix,
                        double time,
-                       const OfxRectI &renderWindow,
+                       const OfxRectI& renderWindow,
                        const OfxPointD& renderScale,
                        const Image* srcImg,
                        Image* dstImg)
@@ -233,9 +229,9 @@ private:
                        bool premult,
                        bool maskmix,
                        double time,
-                       const OfxRectI &renderWindow,
+                       const OfxRectI& renderWindow,
                        const OfxPointD& renderScale,
-                       const void *srcPixelData,
+                       const void* srcPixelData,
                        const OfxRectI& srcBounds,
                        PixelComponentEnum srcPixelComponents,
                        int srcPixelComponentCount,
@@ -264,10 +260,10 @@ private:
                        bool premult,
                        bool maskmix,
                        double time,
-                       const OfxRectI &renderWindow,
+                       const OfxRectI& renderWindow,
                        const OfxPointD& renderScale,
                        const Image* srcImg,
-                       void *dstPixelData,
+                       void* dstPixelData,
                        const OfxRectI& dstBounds,
                        PixelComponentEnum dstPixelComponents,
                        int dstPixelComponentCount,
@@ -295,34 +291,34 @@ private:
                        bool premult,
                        bool maskmix,
                        double time,
-                       const OfxRectI &renderWindow,
+                       const OfxRectI& renderWindow,
                        const OfxPointD& renderScale,
-                       const void *srcPixelData,
+                       const void* srcPixelData,
                        const OfxRectI& srcBounds,
                        PixelComponentEnum srcPixelComponents,
                        int srcPixelComponentCount,
                        BitDepthEnum srcPixelDepth,
                        int srcRowBytes,
-                       void *dstPixelData,
+                       void* dstPixelData,
                        const OfxRectI& dstBounds,
                        PixelComponentEnum dstPixelComponents,
                        int dstPixelComponentCount,
                        BitDepthEnum dstBitDepth,
                        int dstRowBytes);
 
-    void apply(double time, const OfxRectI& renderWindow,  const OfxPointD& renderScale,float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
+    void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
 
-    void setupAndCopy(PixelProcessorFilterBase & processor,
+    void setupAndCopy(PixelProcessorFilterBase& processor,
                       double time,
-                      const OfxRectI &renderWindow,
+                      const OfxRectI& renderWindow,
                       const OfxPointD& renderScale,
-                      const void *srcPixelData,
+                      const void* srcPixelData,
                       const OfxRectI& srcBounds,
                       PixelComponentEnum srcPixelComponents,
                       int srcPixelComponentCount,
                       BitDepthEnum srcPixelDepth,
                       int srcRowBytes,
-                      void *dstPixelData,
+                      void* dstPixelData,
                       const OfxRectI& dstBounds,
                       PixelComponentEnum dstPixelComponents,
                       int dstPixelComponentCount,
@@ -331,20 +327,20 @@ private:
 
 private:
     // do not need to delete these, the ImageEffect is managing them for us
-    Clip *_dstClip;
-    Clip *_srcClip;
-    Clip *_maskClip;
+    Clip* _dstClip;
+    Clip* _srcClip;
+    Clip* _maskClip;
     bool _firstLoad;
-    RGBParam *_slope;
-    RGBParam *_offset;
-    RGBParam *_power;
-    DoubleParam *_saturation;
-    ChoiceParam *_direction;
+    RGBParam* _slope;
+    RGBParam* _offset;
+    RGBParam* _power;
+    DoubleParam* _saturation;
+    ChoiceParam* _direction;
     BooleanParam* _readFromFile;
-    StringParam *_file;
-    IntParam *_version;
-    StringParam *_cccid;
-    StringParam *_export;
+    StringParam* _file;
+    IntParam* _version;
+    StringParam* _cccid;
+    StringParam* _export;
     BooleanParam* _premult;
     ChoiceParam* _premultChannel;
     DoubleParam* _mix;
@@ -409,12 +405,9 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
 #endif
 {
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
-    assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA ||
-                         _dstClip->getPixelComponents() == ePixelComponentRGB) );
+    assert(_dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA || _dstClip->getPixelComponents() == ePixelComponentRGB));
     _srcClip = getContext() == eContextGenerator ? NULL : fetchClip(kOfxImageEffectSimpleSourceClipName);
-    assert( (!_srcClip && getContext() == eContextGenerator) ||
-            ( _srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA ||
-                           _srcClip->getPixelComponents() == ePixelComponentRGB) ) );
+    assert((!_srcClip && getContext() == eContextGenerator) || (_srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA || _srcClip->getPixelComponents() == ePixelComponentRGB)));
     _maskClip = fetchClip(getContext() == eContextPaint ? "Brush" : "Mask");
     assert(!_maskClip || !_maskClip->isConnected() || _maskClip->getPixelComponents() == ePixelComponentAlpha);
     _slope = fetchRGBParam(kParamSlope);
@@ -439,7 +432,7 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     _enableGPU = fetchBooleanParam(kParamEnableGPU);
     assert(_enableGPU);
-    const ImageEffectHostDescription &gHostDescription = *getImageEffectHostDescription();
+    const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
     if (!gHostDescription.supportsOpenGLRender) {
         _enableGPU->setEnabled(false);
     }
@@ -462,17 +455,17 @@ OCIOCDLTransformPlugin::~OCIOCDLTransformPlugin()
 
 /* set up and run a copy processor */
 void
-OCIOCDLTransformPlugin::setupAndCopy(PixelProcessorFilterBase & processor,
+OCIOCDLTransformPlugin::setupAndCopy(PixelProcessorFilterBase& processor,
                                      double time,
-                                     const OfxRectI &renderWindow,
+                                     const OfxRectI& renderWindow,
                                      const OfxPointD& renderScale,
-                                     const void *srcPixelData,
+                                     const void* srcPixelData,
                                      const OfxRectI& srcBounds,
                                      PixelComponentEnum srcPixelComponents,
                                      int srcPixelComponentCount,
                                      BitDepthEnum srcPixelDepth,
                                      int srcRowBytes,
-                                     void *dstPixelData,
+                                     void* dstPixelData,
                                      const OfxRectI& dstBounds,
                                      PixelComponentEnum dstPixelComponents,
                                      int dstPixelComponentCount,
@@ -482,16 +475,15 @@ OCIOCDLTransformPlugin::setupAndCopy(PixelProcessorFilterBase & processor,
     assert(srcPixelData && dstPixelData);
 
     // make sure bit depths are sane
-    if ( (srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents) ) {
+    if ((srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
     }
 
-    auto_ptr<const Image> orig( ( _srcClip && _srcClip->isConnected() ) ?
-                                     _srcClip->fetchImage(time) : 0 );
+    auto_ptr<const Image> orig((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : 0);
 
-    bool doMasking = ( ( !_maskApply || _maskApply->getValueAtTime(time) ) && _maskClip && _maskClip->isConnected() );
+    bool doMasking = ((!_maskApply || _maskApply->getValueAtTime(time)) && _maskClip && _maskClip->isConnected());
     auto_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : 0);
     if (doMasking) {
         bool maskInvert;
@@ -502,7 +494,7 @@ OCIOCDLTransformPlugin::setupAndCopy(PixelProcessorFilterBase & processor,
 
     // set the images
     assert(orig.get() && dstPixelData && srcPixelData);
-    processor.setOrigImg( orig.get() );
+    processor.setOrigImg(orig.get());
     processor.setDstImg(dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstPixelDepth, dstRowBytes);
     processor.setSrcImg(srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, 0);
 
@@ -528,13 +520,13 @@ OCIOCDLTransformPlugin::copyPixelData(bool unpremult,
                                       double time,
                                       const OfxRectI& renderWindow,
                                       const OfxPointD& renderScale,
-                                      const void *srcPixelData,
+                                      const void* srcPixelData,
                                       const OfxRectI& srcBounds,
                                       PixelComponentEnum srcPixelComponents,
                                       int srcPixelComponentCount,
                                       BitDepthEnum srcBitDepth,
                                       int srcRowBytes,
-                                      void *dstPixelData,
+                                      void* dstPixelData,
                                       const OfxRectI& dstBounds,
                                       PixelComponentEnum dstPixelComponents,
                                       int dstPixelComponentCount,
@@ -543,7 +535,7 @@ OCIOCDLTransformPlugin::copyPixelData(bool unpremult,
 {
     assert(srcPixelData && dstPixelData);
     // do the rendering
-    if ( (dstBitDepth != eBitDepthFloat) || ( (dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha) ) ) {
+    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -563,7 +555,7 @@ OCIOCDLTransformPlugin::copyPixelData(bool unpremult,
             setupAndCopy(fred, time, renderWindow, renderScale,
                          srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                          dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-        }  else if (dstPixelComponents == ePixelComponentAlpha) {
+        } else if (dstPixelComponents == ePixelComponentAlpha) {
             PixelCopierUnPremult<float, 1, 1, float, 1, 1> fred(*this);
             setupAndCopy(fred, time, renderWindow, renderScale,
                          srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
@@ -580,7 +572,7 @@ OCIOCDLTransformPlugin::copyPixelData(bool unpremult,
             setupAndCopy(fred, time, renderWindow, renderScale,
                          srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                          dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-        }  else if (dstPixelComponents == ePixelComponentAlpha) {
+        } else if (dstPixelComponents == ePixelComponentAlpha) {
             PixelCopierMaskMix<float, 1, 1, true> fred(*this);
             setupAndCopy(fred, time, renderWindow, renderScale,
                          srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
@@ -597,7 +589,7 @@ OCIOCDLTransformPlugin::copyPixelData(bool unpremult,
             setupAndCopy(fred, time, renderWindow, renderScale,
                          srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                          dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-        }  else if (dstPixelComponents == ePixelComponentAlpha) {
+        } else if (dstPixelComponents == ePixelComponentAlpha) {
             PixelCopierPremultMaskMix<float, 1, 1, float, 1, 1> fred(*this);
             setupAndCopy(fred, time, renderWindow, renderScale,
                          srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
@@ -631,18 +623,7 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
 
     try {
         GenericOCIO::AutoMutex guard(_procMutex);
-        if ( !_proc ||
-             ( _procSlope_r != slope_r) ||
-             ( _procSlope_g != slope_g) ||
-             ( _procSlope_b != slope_b) ||
-             ( _procOffset_r != offset_r) ||
-             ( _procOffset_g != offset_g) ||
-             ( _procOffset_b != offset_b) ||
-             ( _procPower_r != power_r) ||
-             ( _procPower_g != power_g) ||
-             ( _procPower_b != power_b) ||
-             ( _procSaturation != saturation) ||
-             ( _procDirection != directioni) ) {
+        if (!_proc || (_procSlope_r != slope_r) || (_procSlope_g != slope_g) || (_procSlope_b != slope_b) || (_procOffset_r != offset_r) || (_procOffset_g != offset_g) || (_procOffset_b != offset_b) || (_procPower_r != power_r) || (_procPower_g != power_g) || (_procPower_b != power_b) || (_procSaturation != saturation) || (_procDirection != directioni)) {
             AutoSetAndRestoreThreadLocale locale;
             OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
             assert(config);
@@ -673,7 +654,7 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
             };
 #endif
             cc->setSOP(sop);
-            cc->setSat( (float)saturation );
+            cc->setSat((float)saturation);
 
             if (directioni == 0) {
                 cc->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
@@ -694,8 +675,8 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
             _procSaturation = saturation;
             _procDirection = directioni;
         }
-    } catch (const OCIO::Exception &e) {
-        setPersistentMessage( Message::eMessageError, "", e.what() );
+    } catch (const OCIO::Exception& e) {
+        setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }
 
@@ -706,18 +687,17 @@ void
 OCIOCDLTransformPlugin::apply(double time,
                               const OfxRectI& renderWindow,
                               const OfxPointD& renderScale,
-                              float *pixelData,
+                              float* pixelData,
                               const OfxRectI& bounds,
                               PixelComponentEnum pixelComponents,
                               int pixelComponentCount,
                               int rowBytes)
 {
     // are we in the image bounds
-    if ( (renderWindow.x1 < bounds.x1) || (renderWindow.x1 >= bounds.x2) || (renderWindow.y1 < bounds.y1) || (renderWindow.y1 >= bounds.y2) ||
-         ( renderWindow.x2 <= bounds.x1) || ( renderWindow.x2 > bounds.x2) || ( renderWindow.y2 <= bounds.y1) || ( renderWindow.y2 > bounds.y2) ) {
+    if ((renderWindow.x1 < bounds.x1) || (renderWindow.x1 >= bounds.x2) || (renderWindow.y1 < bounds.y1) || (renderWindow.y1 >= bounds.y2) || (renderWindow.x2 <= bounds.x1) || (renderWindow.x2 > bounds.x2) || (renderWindow.y2 <= bounds.y1) || (renderWindow.y2 > bounds.y2)) {
         throw std::runtime_error("OCIO: render window outside of image bounds");
     }
-    if ( (pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) ) {
+    if ((pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB)) {
         throw std::runtime_error("OCIO: invalid components (only RGB and RGBA are supported)");
     }
 
@@ -725,7 +705,7 @@ OCIOCDLTransformPlugin::apply(double time,
     // set the images
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
 
-    processor.setProcessor( getProcessor(time) );
+    processor.setProcessor(getProcessor(time));
 
     // set the render window
     processor.setRenderWindow(renderWindow, renderScale);
@@ -759,9 +739,9 @@ OCIOCDLTransformPlugin::contextAttached(bool createContextData)
         return new OCIOOpenGLContextData;
     } else {
         if (_openGLContextData) {
-#         ifdef DEBUG
+#ifdef DEBUG
             std::printf("ERROR: contextAttached() called but context already attached\n");
-#         endif
+#endif
             contextDetached(NULL);
         }
         _openGLContextData = new OCIOOpenGLContextData;
@@ -788,9 +768,9 @@ OCIOCDLTransformPlugin::contextDetached(void* contextData)
         delete myData;
     } else {
         if (!_openGLContextData) {
-#         ifdef DEBUG
+#ifdef DEBUG
             std::printf("ERROR: contextDetached() called but no context attached\n");
-#         endif
+#endif
         }
         delete _openGLContextData;
         _openGLContextData = NULL;
@@ -798,10 +778,10 @@ OCIOCDLTransformPlugin::contextDetached(void* contextData)
 }
 
 void
-OCIOCDLTransformPlugin::renderGPU(const RenderArguments &args)
+OCIOCDLTransformPlugin::renderGPU(const RenderArguments& args)
 {
-    auto_ptr<Texture> srcImg( _srcClip->loadTexture(args.time) );
-    if ( !srcImg.get() ) {
+    auto_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
+    if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -809,8 +789,8 @@ OCIOCDLTransformPlugin::renderGPU(const RenderArguments &args)
 
     checkBadRenderScaleOrField(srcImg, args);
 
-    auto_ptr<Texture> dstImg( _dstClip->loadTexture(args.time) );
-    if ( !dstImg.get() ) {
+    auto_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
+    if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -820,15 +800,14 @@ OCIOCDLTransformPlugin::renderGPU(const RenderArguments &args)
     BitDepthEnum srcBitDepth = srcImg->getPixelDepth();
     PixelComponentEnum srcComponents = srcImg->getPixelComponents();
     BitDepthEnum dstBitDepth = dstImg->getPixelDepth();
-    if ( (dstBitDepth != eBitDepthFloat) || (dstBitDepth != srcBitDepth) ) {
+    if ((dstBitDepth != eBitDepthFloat) || (dstBitDepth != srcBitDepth)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
     }
 
-    PixelComponentEnum dstComponents  = dstImg->getPixelComponents();
-    if ( ( (dstComponents != ePixelComponentRGBA) && (dstComponents != ePixelComponentRGB) && (dstComponents != ePixelComponentAlpha) ) ||
-         ( dstComponents != srcComponents) ) {
+    PixelComponentEnum dstComponents = dstImg->getPixelComponents();
+    if (((dstComponents != ePixelComponentRGBA) && (dstComponents != ePixelComponentRGB) && (dstComponents != ePixelComponentAlpha)) || (dstComponents != srcComponents)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -836,19 +815,18 @@ OCIOCDLTransformPlugin::renderGPU(const RenderArguments &args)
 
     // are we in the image bounds
     OfxRectI dstBounds = dstImg->getBounds();
-    if ( (args.renderWindow.x1 < dstBounds.x1) || (args.renderWindow.x1 >= dstBounds.x2) || (args.renderWindow.y1 < dstBounds.y1) || (args.renderWindow.y1 >= dstBounds.y2) ||
-         ( args.renderWindow.x2 <= dstBounds.x1) || ( args.renderWindow.x2 > dstBounds.x2) || ( args.renderWindow.y2 <= dstBounds.y1) || ( args.renderWindow.y2 > dstBounds.y2) ) {
+    if ((args.renderWindow.x1 < dstBounds.x1) || (args.renderWindow.x1 >= dstBounds.x2) || (args.renderWindow.y1 < dstBounds.y1) || (args.renderWindow.y1 >= dstBounds.y2) || (args.renderWindow.x2 <= dstBounds.x1) || (args.renderWindow.x2 > dstBounds.x2) || (args.renderWindow.y2 <= dstBounds.y1) || (args.renderWindow.y2 > dstBounds.y2)) {
         throwSuiteStatusException(kOfxStatErrValue);
 
         return;
-        //throw std::runtime_error("render window outside of image bounds");
+        // throw std::runtime_error("render window outside of image bounds");
     }
 
     OCIOOpenGLContextData* contextData = NULL;
     if (getImageEffectHostDescription()->isNatron && !args.openGLContextData) {
-#     ifdef DEBUG
+#ifdef DEBUG
         std::printf("ERROR: Natron did not provide the contextData pointer to the OpenGL render func.\n");
-#     endif
+#endif
     }
     if (args.openGLContextData) {
         // host provided kNatronOfxImageEffectPropOpenGLContextData,
@@ -857,9 +835,9 @@ OCIOCDLTransformPlugin::renderGPU(const RenderArguments &args)
     } else {
         if (!_openGLContextData) {
             // Sony Catalyst Edit never calls kOfxActionOpenGLContextAttached
-#         ifdef DEBUG
-            std::printf( ("ERROR: OpenGL render() called without calling contextAttached() first. Calling it now.\n") );
-#         endif
+#ifdef DEBUG
+            std::printf(("ERROR: OpenGL render() called without calling contextAttached() first. Calling it now.\n"));
+#endif
             contextAttached(false);
             assert(_openGLContextData);
         }
@@ -877,10 +855,9 @@ OCIOCDLTransformPlugin::renderGPU(const RenderArguments &args)
 
 #endif // defined(OFX_SUPPORTS_OPENGLRENDER)
 
-
 /* Override the render */
 void
-OCIOCDLTransformPlugin::render(const RenderArguments &args)
+OCIOCDLTransformPlugin::render(const RenderArguments& args)
 {
     if (!_srcClip) {
         throwSuiteStatusException(kOfxStatFailed);
@@ -902,8 +879,8 @@ OCIOCDLTransformPlugin::render(const RenderArguments &args)
     }
 #endif
 
-    auto_ptr<const Image> srcImg( _srcClip->fetchImage(args.time) );
-    if ( !srcImg.get() ) {
+    auto_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
+    if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -919,8 +896,8 @@ OCIOCDLTransformPlugin::render(const RenderArguments &args)
         return;
     }
     assert(_dstClip);
-    auto_ptr<Image> dstImg( _dstClip->fetchImage(args.time) );
-    if ( !dstImg.get() ) {
+    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -928,15 +905,14 @@ OCIOCDLTransformPlugin::render(const RenderArguments &args)
     checkBadRenderScaleOrField(dstImg, args);
 
     BitDepthEnum dstBitDepth = dstImg->getPixelDepth();
-    if ( (dstBitDepth != eBitDepthFloat) || (dstBitDepth != srcBitDepth) ) {
+    if ((dstBitDepth != eBitDepthFloat) || (dstBitDepth != srcBitDepth)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
     }
 
-    PixelComponentEnum dstComponents  = dstImg->getPixelComponents();
-    if ( ( (dstComponents != ePixelComponentRGBA) && (dstComponents != ePixelComponentRGB) && (dstComponents != ePixelComponentAlpha) ) ||
-         ( dstComponents != srcComponents) ) {
+    PixelComponentEnum dstComponents = dstImg->getPixelComponents();
+    if (((dstComponents != ePixelComponentRGBA) && (dstComponents != ePixelComponentRGB) && (dstComponents != ePixelComponentAlpha)) || (dstComponents != srcComponents)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -944,12 +920,11 @@ OCIOCDLTransformPlugin::render(const RenderArguments &args)
 
     // are we in the image bounds
     OfxRectI dstBounds = dstImg->getBounds();
-    if ( (args.renderWindow.x1 < dstBounds.x1) || (args.renderWindow.x1 >= dstBounds.x2) || (args.renderWindow.y1 < dstBounds.y1) || (args.renderWindow.y1 >= dstBounds.y2) ||
-         ( args.renderWindow.x2 <= dstBounds.x1) || ( args.renderWindow.x2 > dstBounds.x2) || ( args.renderWindow.y2 <= dstBounds.y1) || ( args.renderWindow.y2 > dstBounds.y2) ) {
+    if ((args.renderWindow.x1 < dstBounds.x1) || (args.renderWindow.x1 >= dstBounds.x2) || (args.renderWindow.y1 < dstBounds.y1) || (args.renderWindow.y1 >= dstBounds.y2) || (args.renderWindow.x2 <= dstBounds.x1) || (args.renderWindow.x2 > dstBounds.x2) || (args.renderWindow.y2 <= dstBounds.y1) || (args.renderWindow.y2 > dstBounds.y2)) {
         throwSuiteStatusException(kOfxStatErrValue);
 
         return;
-        //throw std::runtime_error("render window outside of image bounds");
+        // throw std::runtime_error("render window outside of image bounds");
     }
 
     const void* srcPixelData = NULL;
@@ -965,25 +940,26 @@ OCIOCDLTransformPlugin::render(const RenderArguments &args)
     int tmpRowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * pixelBytes;
     size_t memSize = (args.renderWindow.y2 - args.renderWindow.y1) * tmpRowBytes;
     ImageMemory mem(memSize, this);
-    float *tmpPixelData = (float*)mem.lock();
+    float* tmpPixelData = (float*)mem.lock();
     bool premult;
     _premult->getValueAtTime(args.time, premult);
 
     // copy renderWindow to the temporary image
     copyPixelData(premult, false, false, args.time, args.renderWindow, args.renderScale, srcPixelData, bounds, pixelComponents, pixelComponentCount, bitDepth, srcRowBytes, tmpPixelData, args.renderWindow, pixelComponents, pixelComponentCount, bitDepth, tmpRowBytes);
 
-    ///do the color-space conversion
+    /// do the color-space conversion
     apply(args.time, args.renderWindow, args.renderScale, tmpPixelData, args.renderWindow, pixelComponents, pixelComponentCount, tmpRowBytes);
 
     // copy the color-converted window
-    copyPixelData( false, premult, true, args.time, args.renderWindow, args.renderScale, tmpPixelData, args.renderWindow, pixelComponents, pixelComponentCount, bitDepth, tmpRowBytes, dstImg.get() );
+    copyPixelData(false, premult, true, args.time, args.renderWindow, args.renderScale, tmpPixelData, args.renderWindow, pixelComponents, pixelComponentCount, bitDepth, tmpRowBytes, dstImg.get());
 } // OCIOCDLTransformPlugin::render
 
 bool
-OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
-                                   Clip * &identityClip,
-                                   double & /*identityTime*/
-                                   , int& /*view*/, std::string& /*plane*/)
+OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments& args,
+                                   Clip*& identityClip,
+                                   double& /*identityTime*/
+                                   ,
+                                   int& /*view*/, std::string& /*plane*/)
 {
     const double time = args.time;
     double saturation;
@@ -1034,7 +1010,7 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
         };
 #endif
         cc->setSOP(sop);
-        cc->setSat( (float)saturation );
+        cc->setSat((float)saturation);
 
         if (_directioni == 0) {
             cc->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
@@ -1043,13 +1019,13 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
         }
 
         OCIO::ConstProcessorRcPtr proc = config->getProcessor(cc);
-        if ( proc->isNoOp() ) {
+        if (proc->isNoOp()) {
             identityClip = _srcClip;
 
             return true;
         }
-    } catch (const std::exception &e) {
-        setPersistentMessage( Message::eMessageError, "", e.what() );
+    } catch (const std::exception& e) {
+        setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }
 
@@ -1062,7 +1038,7 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
         return true;
     }
 
-    bool doMasking = ( ( !_maskApply || _maskApply->getValueAtTime(args.time) ) && _maskClip && _maskClip->isConnected() );
+    bool doMasking = ((!_maskApply || _maskApply->getValueAtTime(args.time)) && _maskClip && _maskClip->isConnected());
     if (doMasking) {
         bool maskInvert;
         _maskInvert->getValueAtTime(args.time, maskInvert);
@@ -1070,7 +1046,7 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
             OfxRectI maskRoD;
             Coords::toPixelEnclosing(_maskClip->getRegionOfDefinition(args.time), args.renderScale, _maskClip->getPixelAspectRatio(), &maskRoD);
             // effect is identity if the renderWindow doesn't intersect the mask RoD
-            if ( !Coords::rectIntersection<OfxRectI>(args.renderWindow, maskRoD, 0) ) {
+            if (!Coords::rectIntersection<OfxRectI>(args.renderWindow, maskRoD, 0)) {
                 identityClip = _srcClip;
 
                 return true;
@@ -1080,7 +1056,6 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
 
     return false;
 } // OCIOCDLTransformPlugin::isIdentity
-
 
 void
 OCIOCDLTransformPlugin::refreshKnobEnabledState(bool readFromFile)
@@ -1092,8 +1067,8 @@ OCIOCDLTransformPlugin::refreshKnobEnabledState(bool readFromFile)
         _saturation->setEnabled(false);
 
         // We leave these active to allow knob re-use with the import/export buttons
-        //m_fileKnob->enable();
-        //m_cccidKnob->enable();
+        // m_fileKnob->enable();
+        // m_cccidKnob->enable();
 
         loadCDLFromFile();
     } else {
@@ -1103,8 +1078,8 @@ OCIOCDLTransformPlugin::refreshKnobEnabledState(bool readFromFile)
         _saturation->setEnabled(true);
 
         // We leave these active to allow knob re-use with the import/export buttons
-        //m_fileKnob->disable();
-        //m_cccidKnob->disable();
+        // m_fileKnob->disable();
+        // m_cccidKnob->disable();
     }
 }
 
@@ -1120,14 +1095,13 @@ OCIOCDLTransformPlugin::loadCDLFromFile()
         _file->getValue(file);
         string cccid;
         _cccid->getValue(cccid);
-        transform = OCIO::CDLTransform::CreateFromFile( file.c_str(), cccid.c_str() );
-    } catch (const OCIO::Exception &e) {
-        setPersistentMessage( Message::eMessageError, "", e.what() );
+        transform = OCIO::CDLTransform::CreateFromFile(file.c_str(), cccid.c_str());
+    } catch (const OCIO::Exception& e) {
+        setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
     }
-
 
 #if OCIO_VERSION_HEX >= 0x02000000
     double sop[9];
@@ -1143,7 +1117,7 @@ OCIOCDLTransformPlugin::loadCDLFromFile()
     _power->deleteAllKeys();
     _power->setValue(sop[6], sop[7], sop[8]);
     _saturation->deleteAllKeys();
-    _saturation->setValue( transform->getSat() );
+    _saturation->setValue(transform->getSat());
 }
 
 void
@@ -1160,13 +1134,13 @@ OCIOCDLTransformPlugin::beginEdit()
 }
 
 void
-OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
-                                     const string &paramName)
+OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
+                                     const string& paramName)
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
 
-    if ( _firstLoad || (paramName == kParamReadFromFile) || (paramName == kParamFile) || (paramName == kParamCCCID) ) {
+    if (_firstLoad || (paramName == kParamReadFromFile) || (paramName == kParamFile) || (paramName == kParamCCCID)) {
         _firstLoad = false;
         bool readFromFile;
         _readFromFile->getValue(readFromFile);
@@ -1182,14 +1156,14 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
     if (paramName == kParamReload) {
         _version->setValue(_version->getValue() + 1); // invalidate the node cache
         OCIO::ClearAllCaches();
-    } else if ( (paramName == kParamExport) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamExport) && (args.reason == eChangeUserEdit)) {
         string exportName;
         _export->getValueAtTime(args.time, exportName);
         // if file already exists, don't overwrite it
-        if ( exportName.empty() ) {
+        if (exportName.empty()) {
             sendMessage(Message::eMessageError, "", "Export file name is empty, please enter a valid non-existing file name.");
         } else {
-            std::FILE *file = std::fopen(exportName.c_str(), "r");
+            std::FILE* file = std::fopen(exportName.c_str(), "r");
             if (file) {
                 std::fclose(file);
                 sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
@@ -1239,7 +1213,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                     };
 #endif
                     cc->setSOP(sop);
-                    cc->setSat( (float)saturation );
+                    cc->setSat((float)saturation);
 
                     if (_directioni == 0) {
                         cc->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
@@ -1247,18 +1221,18 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                         cc->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
                     }
 
-#                 if OCIO_VERSION_HEX >= 0x02000000
+#if OCIO_VERSION_HEX >= 0x02000000
                     OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
                     std::ofstream ofs;
                     ofs.open(exportName.c_str(), std::ofstream::out);
-                    if ( !ofs.is_open() ) {
+                    if (!ofs.is_open()) {
                         sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
                         throwSuiteStatusException(kOfxStatFailed);
 
                         return;
                     }
                     g->write(config, "CDL", ofs);
-#                 else
+#else
                     file = std::fopen(exportName.c_str(), "w");
                     if (!file) {
                         sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
@@ -1267,9 +1241,9 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                         return;
                     }
                     std::fputs(cc->getXML(), file);
-#                 endif
-                } catch (const std::exception &e) {
-                    setPersistentMessage( Message::eMessageError, "", e.what() );
+#endif
+                } catch (const std::exception& e) {
+                    setPersistentMessage(Message::eMessageError, "", e.what());
                     std::fclose(file);
                     throwSuiteStatusException(kOfxStatFailed);
 
@@ -1294,14 +1268,14 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
 } // OCIOCDLTransformPlugin::changedParam
 
 void
-OCIOCDLTransformPlugin::changedClip(const InstanceChangedArgs &args,
-                                    const string &clipName)
+OCIOCDLTransformPlugin::changedClip(const InstanceChangedArgs& args,
+                                    const string& clipName)
 {
-    if ( (clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && (args.reason == eChangeUserEdit) ) {
+    if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && (args.reason == eChangeUserEdit)) {
         if (_srcClip->getPixelComponents() != ePixelComponentRGBA) {
             _premult->setValue(false);
         } else {
-            switch ( _srcClip->getPreMultiplication() ) {
+            switch (_srcClip->getPreMultiplication()) {
             case eImageOpaque:
                 _premult->setValue(false);
                 break;
@@ -1316,11 +1290,11 @@ OCIOCDLTransformPlugin::changedClip(const InstanceChangedArgs &args,
     }
 }
 
-mDeclarePluginFactory(OCIOCDLTransformPluginFactory, {ofxsThreadSuiteCheck();}, {});
+mDeclarePluginFactory(OCIOCDLTransformPluginFactory, { ofxsThreadSuiteCheck(); }, {});
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-OCIOCDLTransformPluginFactory::describe(ImageEffectDescriptor &desc)
+OCIOCDLTransformPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     // basic labels
     desc.setLabel(kPluginName);
@@ -1346,13 +1320,13 @@ OCIOCDLTransformPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                                  ContextEnum context)
 {
     gHostIsNatron = (getImageEffectHostDescription()->isNatron);
     // Source clip only in the filter context
     // create the mandated source clip
-    ClipDescriptor *srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
+    ClipDescriptor* srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     srcClip->addSupportedComponent(ePixelComponentRGBA);
     srcClip->addSupportedComponent(ePixelComponentRGB);
     srcClip->setTemporalClipAccess(false);
@@ -1360,12 +1334,12 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     srcClip->setIsMask(false);
 
     // create the mandated output clip
-    ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
+    ClipDescriptor* dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
     dstClip->addSupportedComponent(ePixelComponentRGBA);
     dstClip->addSupportedComponent(ePixelComponentRGB);
     dstClip->setSupportsTiles(kSupportsTiles);
 
-    ClipDescriptor *maskClip = (context == eContextPaint) ? desc.defineClip("Brush") : desc.defineClip("Mask");
+    ClipDescriptor* maskClip = (context == eContextPaint) ? desc.defineClip("Brush") : desc.defineClip("Mask");
     maskClip->addSupportedComponent(ePixelComponentAlpha);
     maskClip->setTemporalClipAccess(false);
     if (context != eContextPaint) {
@@ -1375,11 +1349,11 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     maskClip->setIsMask(true);
 
     // make some pages and to things in
-    PageParamDescriptor *page = desc.definePageParam("Controls");
+    PageParamDescriptor* page = desc.definePageParam("Controls");
 
     // ASC CDL grade numbers
     {
-        RGBParamDescriptor *param = desc.defineRGBParam(kParamSlope);
+        RGBParamDescriptor* param = desc.defineRGBParam(kParamSlope);
         param->setLabel(kParamSlopeLabel);
         param->setHint(kParamSlopeHint);
         param->setRange(kParamSlopeMin, kParamSlopeMin, kParamSlopeMin, kParamSlopeMax, kParamSlopeMax, kParamSlopeMax);
@@ -1390,7 +1364,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        RGBParamDescriptor *param = desc.defineRGBParam(kParamOffset);
+        RGBParamDescriptor* param = desc.defineRGBParam(kParamOffset);
         param->setLabel(kParamOffsetLabel);
         param->setHint(kParamOffsetHint);
         param->setRange(kParamOffsetMin, kParamOffsetMin, kParamOffsetMin, kParamOffsetMax, kParamOffsetMax, kParamOffsetMax);
@@ -1401,7 +1375,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        RGBParamDescriptor *param = desc.defineRGBParam(kParamPower);
+        RGBParamDescriptor* param = desc.defineRGBParam(kParamPower);
         param->setLabel(kParamPowerLabel);
         param->setHint(kParamPowerHint);
         param->setRange(kParamPowerMin, kParamPowerMin, kParamPowerMin, kParamPowerMax, kParamPowerMax, kParamPowerMax);
@@ -1412,7 +1386,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        DoubleParamDescriptor *param = desc.defineDoubleParam(kParamSaturation);
+        DoubleParamDescriptor* param = desc.defineDoubleParam(kParamSaturation);
         param->setLabel(kParamSaturationLabel);
         param->setHint(kParamSaturationHint);
         param->setRange(kParamSaturationMin, kParamSaturationMax);
@@ -1423,7 +1397,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        ChoiceParamDescriptor *param = desc.defineChoiceParam(kParamDirection);
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamDirection);
         param->setLabel(kParamDirectionLabel);
         param->setHint(kParamDirectionHint);
         param->appendOption(kParamDirectionOptionForward);
@@ -1434,7 +1408,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        BooleanParamDescriptor *param = desc.defineBooleanParam(kParamReadFromFile);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamReadFromFile);
         param->setLabel(kParamReadFromFileLabel);
         param->setHint(kParamReadFromFileHint);
         param->setAnimates(false);
@@ -1444,7 +1418,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        StringParamDescriptor *param = desc.defineStringParam(kParamFile);
+        StringParamDescriptor* param = desc.defineStringParam(kParamFile);
         param->setLabel(kParamFileLabel);
         param->setHint(kParamFileHint);
         param->setStringType(eStringTypeFilePath);
@@ -1455,7 +1429,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        PushButtonParamDescriptor *param = desc.definePushButtonParam(kParamReload);
+        PushButtonParamDescriptor* param = desc.definePushButtonParam(kParamReload);
         param->setLabel(kParamReloadLabel);
         param->setHint(kParamReloadHint);
         if (page) {
@@ -1463,7 +1437,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        IntParamDescriptor *param = desc.defineIntParam(kParamVersion);
+        IntParamDescriptor* param = desc.defineIntParam(kParamVersion);
         param->setIsSecretAndDisabled(true); // always secret
         param->setDefault(1);
         if (page) {
@@ -1471,7 +1445,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        StringParamDescriptor *param = desc.defineStringParam(kParamCCCID);
+        StringParamDescriptor* param = desc.defineStringParam(kParamCCCID);
         param->setLabel(kParamCCCIDLabel);
         param->setHint(kParamCCCIDHint);
         if (page) {
@@ -1479,7 +1453,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
     {
-        StringParamDescriptor *param = desc.defineStringParam(kParamExport);
+        StringParamDescriptor* param = desc.defineStringParam(kParamExport);
         param->setLabel(kParamExportLabel);
         param->setHint(kParamExportHint);
         param->setStringType(eStringTypeFilePath);
@@ -1493,18 +1467,17 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         }
     }
 
-
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     {
         BooleanParamDescriptor* param = desc.defineBooleanParam(kParamEnableGPU);
         param->setLabel(kParamEnableGPULabel);
         param->setHint(kParamEnableGPUHint);
-        const ImageEffectHostDescription &gHostDescription = *getImageEffectHostDescription();
+        const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
         // Resolve advertises OpenGL support in its host description, but never calls render with OpenGL enabled
-        if ( gHostDescription.supportsOpenGLRender && (gHostDescription.hostName != "DaVinciResolveLite") ) {
+        if (gHostDescription.supportsOpenGLRender && (gHostDescription.hostName != "DaVinciResolveLite")) {
             // OCIO's GPU render is not accurate enough.
             // see https://github.com/imageworks/OpenColorIO/issues/394
-            param->setDefault(/*true*/false);
+            param->setDefault(/*true*/ false);
             if (gHostDescription.APIVersionMajor * 100 + gHostDescription.APIVersionMinor < 104) {
                 // Switching OpenGL render from the plugin was introduced in OFX 1.4
                 param->setEnabled(false);
@@ -1535,6 +1508,6 @@ OCIOCDLTransformPluginFactory::createInstance(OfxImageEffectHandle handle,
 static OCIOCDLTransformPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT
 
 #endif // OFX_IO_USING_OCIO

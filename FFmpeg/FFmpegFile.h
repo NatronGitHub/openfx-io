@@ -25,30 +25,30 @@
 #ifndef __Io__FFmpegHandler__
 #define __Io__FFmpegHandler__
 
-#if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_ ) ) && !defined(UINT64_C)
+#if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_)) && !defined(UINT64_C)
 #warning "__STDC_CONSTANT_MACROS has to be defined before including <stdint.h>, this file will probably not compile."
 #endif
 #ifndef __STDC_CONSTANT_MACROS
 #define __STDC_CONSTANT_MACROS // ...or stdint.h wont' define UINT64_C, needed by libavutil
 #endif
 
-#include <vector>
-#include <string>
-#include <map>
-#include <list>
 #include <algorithm>
-#include <locale>
 #include <cstdio>
+#include <list>
+#include <locale>
+#include <map>
+#include <string>
+#include <vector>
 extern "C" {
 #include <errno.h>
-#include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
-#include <libavformat/avio.h>
 #include <libavcodec/avcodec.h>
-#include <libavutil/opt.h>
-#include <libswscale/swscale.h>
+#include <libavformat/avformat.h>
+#include <libavformat/avio.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
 }
 
 #include "ofxsMultiThread.h"
@@ -58,17 +58,17 @@ extern "C" {
 #include "fast_mutex.h"
 #endif
 
-#define CHECKMSG(x, msg) \
-    { \
-        int error = (x); \
-        if (error < 0) { \
-            setError( (msg), "" ); \
-            close(); \
-            return; \
-        } \
+#define CHECKMSG(x, msg)         \
+    {                            \
+        int error = (x);         \
+        if (error < 0) {         \
+            setError((msg), ""); \
+            close();             \
+            return;              \
+        }                        \
     }
 
-//Used in ffmpeg metadata dicts to stash values written to and from nclc atom.
+// Used in ffmpeg metadata dicts to stash values written to and from nclc atom.
 #define kNCLCPrimariesKey "fn_primaries"
 #define kNCLCTransferKey "fn_transfer_function"
 #define kNCLCMatrixKey "fn_matrix"
@@ -79,13 +79,13 @@ extern "C" {
 #define kACLRYuvRange "fn_aclr_yuv_range"
 
 // metadata keys used by Nuke
-#define kMetaKeyApplication        "uk.co.thefoundry.Application"
+#define kMetaKeyApplication "uk.co.thefoundry.Application"
 #define kMetaKeyApplicationVersion "uk.co.thefoundry.ApplicationVersion"
-#define kMetaKeyYCbCrMatrix        "uk.co.thefoundry.YCbCrMatrix"
-#define kMetaKeyPixelFormat        "uk.co.thefoundry.PixelFormat"
-#define kMetaKeyColorspace         "uk.co.thefoundry.Colorspace"
-#define kMetaKeyWriter             "uk.co.thefoundry.Writer"
-#define kMetaValueWriter64         "mov64"
+#define kMetaKeyYCbCrMatrix "uk.co.thefoundry.YCbCrMatrix"
+#define kMetaKeyPixelFormat "uk.co.thefoundry.PixelFormat"
+#define kMetaKeyColorspace "uk.co.thefoundry.Colorspace"
+#define kMetaKeyWriter "uk.co.thefoundry.Writer"
+#define kMetaValueWriter64 "mov64"
 
 #define OFX_FFMPEG_MAX_THREADS 16 // MAX_AUTO_THREADS in libavcodec/pthread_internal.h. 32 in libavcodec/mpegvideo.h, 16 in libavcodec/hevcdec.h, 8 in libavcodec/vp8.h
 
@@ -99,8 +99,7 @@ namespace OFX {
 class ImageEffect;
 }
 
-class MyAVPacket
-{
+class MyAVPacket {
 public:
     MyAVPacket()
     {
@@ -111,19 +110,21 @@ public:
         av_packet_free(&_pkt);
     }
 
-    AVPacket* pkt() const {
+    AVPacket* pkt() const
+    {
         return _pkt;
     }
 
-    AVPacket* operator->() const {
+    AVPacket* operator->() const
+    {
         return _pkt;
     }
+
 private:
-    AVPacket *_pkt;
+    AVPacket* _pkt;
 };
 
-class FFmpegFile
-{
+class FFmpegFile {
 public:
 #ifdef OFX_USE_MULTITHREAD_MUTEX
     typedef OFX::MultiThread::Mutex Mutex;
@@ -134,13 +135,12 @@ public:
 #endif
 
 private:
-    struct Stream
-    {
-        int _idx;                      // stream index
-        AVStream* _avstream;           // video stream
+    struct Stream {
+        int _idx; // stream index
+        AVStream* _avstream; // video stream
         AVCodecContext* _codecContext; // video codec context
         const AVCodec* _videoCodec;
-        AVFrame* _avFrame;             // decoding frame
+        AVFrame* _avFrame; // decoding frame
         AVFrame* _avIntermediateFrame; // decode into this if an image conversion is required
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
@@ -148,11 +148,11 @@ private:
         int _fpsNum;
         int _fpsDen;
 
-        int64_t _startPTS;     // PTS of the first frame in the stream
-        int64_t _startDTS;     // DTS of the first frame in the stream
-        int64_t _frames;       // video duration in frames
+        int64_t _startPTS; // PTS of the first frame in the stream
+        int64_t _startDTS; // DTS of the first frame in the stream
+        int64_t _frames; // video duration in frames
 
-        bool _ptsSeen;                      // True if a read AVPacket has ever contained a valid PTS during this stream's decode,
+        bool _ptsSeen; // True if a read AVPacket has ever contained a valid PTS during this stream's decode,
         // indicating that this stream does contain PTSs.
         int64_t AVPacket::*_timestampField; // Pointer to member of AVPacket from which timestamps are to be retrieved. Enables
         // fallback to using DTSs for a stream if PTSs turn out not to be available.
@@ -163,7 +163,7 @@ private:
         int _numberOfComponents;
         enum AVPixelFormat _outputPixelFormat;
         uint8_t _componentPosition[4];
-        int _colorMatrixTypeOverride;                       // Option to override the default YCbCr color matrix. 0 means no override (default).
+        int _colorMatrixTypeOverride; // Option to override the default YCbCr color matrix. 0 means no override (default).
         bool _doNotAttachPrefix;
         bool _matchMetaFormat;
         int _decodeNextFrameIn; // The 0-based index of the next frame to be fed into decode. Negative before any
@@ -235,12 +235,12 @@ private:
 
         static void destroy(Stream* s)
         {
-            delete(s);
+            delete (s);
         }
 
         int64_t frameToDts(int frame) const
         {
-            int64_t numerator = int64_t(frame) * _fpsDen *  _avstream->time_base.den;
+            int64_t numerator = int64_t(frame) * _fpsDen * _avstream->time_base.den;
             int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
 
             // guard against division by zero
@@ -249,9 +249,9 @@ private:
             return _startDTS + (numerator / denominator);
         }
 
-       int64_t frameToPts(int frame) const
+        int64_t frameToPts(int frame) const
         {
-            int64_t numerator = int64_t(frame) * _fpsDen *  _avstream->time_base.den;
+            int64_t numerator = int64_t(frame) * _fpsDen * _avstream->time_base.den;
             int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
 
             // guard against division by zero
@@ -289,7 +289,7 @@ private:
         bool isYUV() const
         {
             // from swscale_internal.h
-            const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(_codecContext->pix_fmt);
+            const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(_codecContext->pix_fmt);
 
             return !(desc->flags & AV_PIX_FMT_FLAG_RGB) && desc->nb_components >= 2;
         }
@@ -306,9 +306,9 @@ private:
         // I needed to add the thread_count onto the codec delay - pickles
         int getCodecDelay() const
         {
-            return ( ( (_videoCodec->capabilities & AV_CODEC_CAP_DELAY) ? _codecContext->delay : 0 )
-                     + _codecContext->has_b_frames
-                     + _codecContext->thread_count );
+            return (((_videoCodec->capabilities & AV_CODEC_CAP_DELAY) ? _codecContext->delay : 0)
+                    + _codecContext->has_b_frames
+                    + _codecContext->thread_count);
         }
     };
 
@@ -325,8 +325,8 @@ private:
     Stream* _selectedStream;
 
     // reader error state
-    std::string _errorMsg;  // internal decoding error string
-    bool _invalidState;     // true if the reader is in an invalid state
+    std::string _errorMsg; // internal decoding error string
+    bool _invalidState; // true if the reader is in an invalid state
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
@@ -343,7 +343,7 @@ private:
     {
         char errorBuf[1024];
 
-        av_strerror( error, errorBuf, sizeof(errorBuf) );
+        av_strerror(error, errorBuf, sizeof(errorBuf));
         setError(errorBuf, prefix);
     }
 
@@ -356,8 +356,7 @@ private:
     bool seekFrame(int frame, Stream* stream);
 
 public:
-
-    //FFmpegFile();
+    // FFmpegFile();
 
     // constructor
     FFmpegFile(const std::string& filename);
@@ -386,7 +385,7 @@ public:
 
     void setColorMatrixTypeOverride(int colorMatrixType) const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return;
         }
 
@@ -398,7 +397,7 @@ public:
 
     void setDoNotAttachPrefix(bool doNotAttachPrefix) const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return;
         }
 
@@ -409,7 +408,7 @@ public:
 
     void setMatchMetaFormat(bool matchMetaFormat) const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return;
         }
 
@@ -420,7 +419,7 @@ public:
 
     bool isRec709Format() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return false;
         }
 
@@ -432,7 +431,7 @@ public:
 
     bool isYUV() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return false;
         }
 
@@ -444,7 +443,7 @@ public:
 
     int getBitDepth() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return 0;
         }
 
@@ -457,7 +456,7 @@ public:
 
     int getNumberOfComponents() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return 0;
         }
 
@@ -467,7 +466,7 @@ public:
 
     int getComponentPosition(int componentIndex) const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return 0;
         }
 
@@ -477,7 +476,7 @@ public:
 
     int getWidth() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return 0;
         }
 
@@ -487,7 +486,7 @@ public:
 
     int getHeight() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return 0;
         }
 
@@ -497,7 +496,7 @@ public:
 
     std::size_t getSizeOfData() const
     {
-        if ( _streams.empty() ) {
+        if (_streams.empty()) {
             return 0;
         }
 
@@ -532,35 +531,30 @@ public:
     static bool isCodecWhitelistedForWriting(const char* name);
 
 private:
+    bool seekToFrame(int64_t frame, int seekFlags);
 
-  bool seekToFrame(int64_t frame, int seekFlags);
+    bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame);
 
-  bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame);
-
-  bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
+    bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
 };
 
-
-class FFmpegFileManager
-{
-    ///For each plug-in instance, a list of opened files
-    typedef std::map<void const *, std::list<FFmpegFile*> > FilesMap;
+class FFmpegFileManager {
+    /// For each plug-in instance, a list of opened files
+    typedef std::map<void const*, std::list<FFmpegFile*>> FilesMap;
     mutable FilesMap _files;
     mutable FFmpegFile::Mutex* _lock;
 
 public:
-
     FFmpegFileManager();
 
     ~FFmpegFileManager();
 
     void init();
 
-    void clear(void const * plugin);
+    void clear(void const* plugin);
 
-    FFmpegFile* get(void const * plugin, const std::string &filename) const;
-    FFmpegFile* getOrCreate(void const * plugin, const std::string &filename) const;
+    FFmpegFile* get(void const* plugin, const std::string& filename) const;
+    FFmpegFile* getOrCreate(void const* plugin, const std::string& filename) const;
 };
-
 
 #endif /* defined(__Io__FFmpegHandler__) */

@@ -26,7 +26,7 @@
 #define IO_GenericOCIO_h
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-#  include <windows.h>
+#include <windows.h>
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <locale.h>
 #ifdef __APPLE__
@@ -37,8 +37,8 @@
 #include <vector>
 
 #include "ofxsImageEffect.h"
-#include "ofxsPixelProcessor.h"
 #include "ofxsMultiThread.h"
+#include "ofxsPixelProcessor.h"
 #ifndef OFX_USE_MULTITHREAD_MUTEX
 // some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
 // prefer using the fast mutex by Marcus Geelnard http://tinythreadpp.bitsnbites.eu/
@@ -52,8 +52,7 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #if OCIO_VERSION_HEX >= 0x02000000
-namespace OCIO_NAMESPACE
-{
+namespace OCIO_NAMESPACE {
 class OpenGLBuilder;
 typedef OCIO_SHARED_PTR<OpenGLBuilder> OpenGLBuilderRcPtr;
 }
@@ -63,8 +62,7 @@ typedef OCIO_SHARED_PTR<OpenGLBuilder> OpenGLBuilderRcPtr;
 #include "IOUtility.h"
 
 NAMESPACE_OFX_ENTER
-    NAMESPACE_OFX_IO_ENTER
-
+NAMESPACE_OFX_IO_ENTER
 
 #ifdef OFX_IO_USING_OCIO
 #define kOCIOParamConfigFile "ocioConfigFile"
@@ -91,9 +89,9 @@ NAMESPACE_OFX_ENTER
 
 #define kOCIOParamContext "Context"
 #define kOCIOParamContextLabel "OCIO Context"
-#define kOCIOParamContextHint \
-    "OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n" \
-    "Here you can specify the context name (key) and its corresponding value.\n" \
+#define kOCIOParamContextHint                                                                                             \
+    "OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n"                                      \
+    "Here you can specify the context name (key) and its corresponding value.\n"                                          \
     "Full details of how to set up contexts and add them to your config can be found in the OpenColorIO documentation:\n" \
     "http://opencolorio.org/userguide/contexts.html"
 
@@ -107,19 +105,18 @@ NAMESPACE_OFX_ENTER
 #define kOCIOParamContextValue4 "value4"
 
 #if defined(OFX_IO_USING_OCIO)
-class OCIOOpenGLContextData
-{
+class OCIOOpenGLContextData {
 public:
 #if OCIO_VERSION_HEX >= 0x02000000
     std::string processorCacheID;
     OCIO_NAMESPACE::OpenGLBuilderRcPtr glBuilder;
 #else
-    std::vector<float> procLut3D;  //!< storage for the LUT3D so that the allocation of the LUT only occurs once.
-    std::string procShaderCacheID;  //!< pass a string that will be used as a key to cache the shader so that internally the function may determine if generating and compiling the shader again is required. If the shader cache ID did not change, the shader passed by shaderProgramIDParam will be used as-is.
-    std::string procLut3DCacheID;  //!< a string that will be used as a key to cache the LUT3D so that internally the function may determine if computing the LUT again is required. If the cache ID did not change, no call to glTexSubImage3D will be made
-    unsigned int procLut3DID;  //!< ID of the texture 3D that will contain the LUT3D so that its allocation occurs only once, and subsequent calls only have to call glTexSubImage3D
-    unsigned int procShaderProgramID;  //!< the ID of the shader program that will be used to do the processing so that it is only compiled once. Note that to cache the shaderProgramID, you also need to set the procShaderCacheID parameter.
-    unsigned int procFragmentShaderID;  //!< the ID of the fragment shader program that will be used by the OCIO shader program
+    std::vector<float> procLut3D; //!< storage for the LUT3D so that the allocation of the LUT only occurs once.
+    std::string procShaderCacheID; //!< pass a string that will be used as a key to cache the shader so that internally the function may determine if generating and compiling the shader again is required. If the shader cache ID did not change, the shader passed by shaderProgramIDParam will be used as-is.
+    std::string procLut3DCacheID; //!< a string that will be used as a key to cache the LUT3D so that internally the function may determine if computing the LUT again is required. If the cache ID did not change, no call to glTexSubImage3D will be made
+    unsigned int procLut3DID; //!< ID of the texture 3D that will contain the LUT3D so that its allocation occurs only once, and subsequent calls only have to call glTexSubImage3D
+    unsigned int procShaderProgramID; //!< the ID of the shader program that will be used to do the processing so that it is only compiled once. Note that to cache the shaderProgramID, you also need to set the procShaderCacheID parameter.
+    unsigned int procFragmentShaderID; //!< the ID of the fragment shader program that will be used by the OCIO shader program
 #endif
 
 public:
@@ -129,9 +126,7 @@ public:
 };
 #endif
 
-
-class GenericOCIO
-{
+class GenericOCIO {
     friend class OCIOProcessor;
 
 public:
@@ -145,15 +140,15 @@ public:
 #endif
 
     void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, OFX::Image* dstImg);
-    void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
-    void changedParam(const OFX::InstanceChangedArgs &args, const std::string &paramName);
+    void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
+    void changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName);
     void purgeCaches();
-    void getInputColorspaceDefault(std::string &v) const;
-    void getInputColorspace(std::string &v) const;
-    void getInputColorspaceAtTime(double time, std::string &v) const;
-    void getOutputColorspaceDefault(std::string &v) const;
-    void getOutputColorspace(std::string &v) const;
-    void getOutputColorspaceAtTime(double time, std::string &v) const;
+    void getInputColorspaceDefault(std::string& v) const;
+    void getInputColorspace(std::string& v) const;
+    void getInputColorspaceAtTime(double time, std::string& v) const;
+    void getOutputColorspaceDefault(std::string& v) const;
+    void getOutputColorspace(std::string& v) const;
+    void getOutputColorspaceAtTime(double time, std::string& v) const;
     bool hasColorspace(const char* name) const;
     void setInputColorspace(const char* name);
     void setOutputColorspace(const char* name);
@@ -167,13 +162,13 @@ public:
     bool configIsDefault() const;
 
     // Each of the following functions re-reads the OCIO config: Not optimal but more clear.
-    static void describeInContextInput(OFX::ImageEffectDescriptor &desc, OFX::ContextEnum context, OFX::PageParamDescriptor *page, const char* inputSpaceNameDefault, const char* inputSpaceLabel = kOCIOParamInputSpaceLabel);
-    static void describeInContextOutput(OFX::ImageEffectDescriptor &desc, OFX::ContextEnum context, OFX::PageParamDescriptor *page, const char* outputSpaceNameDefault, const char* outputSpaceLabel = kOCIOParamOutputSpaceLabel);
-    static void describeInContextContext(OFX::ImageEffectDescriptor &desc, OFX::ContextEnum context, OFX::PageParamDescriptor *page);
+    static void describeInContextInput(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page, const char* inputSpaceNameDefault, const char* inputSpaceLabel = kOCIOParamInputSpaceLabel);
+    static void describeInContextOutput(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page, const char* outputSpaceNameDefault, const char* outputSpaceLabel = kOCIOParamOutputSpaceLabel);
+    static void describeInContextContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page);
 
 #ifdef OFX_IO_USING_OCIO
     void setValues(const std::string& inputSpace, const std::string& outputSpace);
-    void setValues(const OCIO_NAMESPACE::ConstContextRcPtr &context, const std::string& inputSpace, const std::string& outputSpace);
+    void setValues(const OCIO_NAMESPACE::ConstContextRcPtr& context, const std::string& inputSpace, const std::string& outputSpace);
 #endif
 
     // Calls inputCheck and outputCheck
@@ -201,7 +196,7 @@ private:
     bool _created;
 #ifdef OFX_IO_USING_OCIO
     std::string _ocioConfigFileName;
-    OFX::StringParam *_ocioConfigFile; //< filepath of the OCIO config file
+    OFX::StringParam* _ocioConfigFile; //< filepath of the OCIO config file
     OFX::StringParam* _inputSpace;
     OFX::StringParam* _outputSpace;
 #ifdef OFX_OCIO_CHOICE
@@ -226,21 +221,21 @@ private:
     OCIO_NAMESPACE::ConstContextRcPtr _procContext;
     std::string _procInputSpace;
     std::string _procOutputSpace;
-    //OCIO_NAMESPACE::ConstTransformRcPtr _procTransform;
+    // OCIO_NAMESPACE::ConstTransformRcPtr _procTransform;
 #endif
 };
 
 #ifdef OFX_IO_USING_OCIO
 class OCIOProcessor
-    : public OFX::PixelProcessor
-{
+    : public OFX::PixelProcessor {
 public:
     // ctor
-    OCIOProcessor(OFX::ImageEffect &instance)
+    OCIOProcessor(OFX::ImageEffect& instance)
         : OFX::PixelProcessor(instance)
         , _proc()
         , _instance(&instance)
-    {}
+    {
+    }
 
     // and do some processing
     void multiThreadProcessImages(const OfxRectI& procWindow, const OfxPointD& rs);
@@ -258,8 +253,7 @@ private:
 
 // Helper class to set the C locale when doing OCIO calls.
 // See https://github.com/AcademySoftwareFoundation/OpenColorIO/issues/297#issuecomment-505636123
-class AutoSetAndRestoreThreadLocale
-{
+class AutoSetAndRestoreThreadLocale {
 public:
     AutoSetAndRestoreThreadLocale();
     ~AutoSetAndRestoreThreadLocale();
@@ -275,6 +269,6 @@ private:
 };
 
 NAMESPACE_OFX_IO_EXIT
-    NAMESPACE_OFX_EXIT
+NAMESPACE_OFX_EXIT
 
 #endif // ifndef IO_GenericOCIO_h

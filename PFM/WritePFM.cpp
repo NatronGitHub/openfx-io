@@ -22,15 +22,15 @@
  * Writes an image in the Portable Float Map (PFM) format.
  */
 
+#include <algorithm>
 #include <cstdio> // fopen, fwrite, fprintf...
 #include <vector>
-#include <algorithm>
 
 #include "GenericOCIO.h"
 
 #include "GenericWriter.h"
-#include "ofxsMacros.h"
 #include "ofxsFileOpen.h"
+#include "ofxsMacros.h"
 
 using namespace OFX;
 using namespace IO;
@@ -64,24 +64,21 @@ endianness()
 {
     const int x = 1;
 
-    return ( (unsigned char *)&x )[0] ? false : true;
+    return ((unsigned char*)&x)[0] ? false : true;
 }
 
 class WritePFMPlugin
-    : public GenericWriterPlugin
-{
+    : public GenericWriterPlugin {
 public:
-
     WritePFMPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
 
     virtual ~WritePFMPlugin();
 
 private:
-
     virtual void encode(const string& filename,
                         const OfxTime time,
                         const string& viewName,
-                        const float *pixelData,
+                        const float* pixelData,
                         const OfxRectI& bounds,
                         const float pixelAspectRatio,
                         const int pixelDataNComps,
@@ -93,12 +90,10 @@ private:
 
     virtual void onOutputFileChanged(const string& newFile, bool setColorSpace) OVERRIDE FINAL;
 
-
     /**
      * @brief Does the given filename support alpha channel.
      **/
     virtual bool supportsAlpha(const std::string&) const OVERRIDE FINAL { return kSupportsRGBA; }
-
 };
 
 WritePFMPlugin::WritePFMPlugin(OfxImageEffectHandle handle,
@@ -120,12 +115,12 @@ copyLine(const PIX* pixelData,
          int dstNCompsStartIndex,
          int C,
          int y,
-         PIX *image)
+         PIX* image)
 {
     assert(dstC == 3 || dstC == 1);
 
-    const PIX *srcPix = (const PIX*)( (char*)pixelData + y * rowbytes );
-    PIX *dstPix = image;
+    const PIX* srcPix = (const PIX*)((char*)pixelData + y * rowbytes);
+    PIX* dstPix = image;
 
     for (int x = 0; x < W; ++x) {
         if (srcC == 1) {
@@ -149,7 +144,7 @@ void
 WritePFMPlugin::encode(const string& filename,
                        const OfxTime /*time*/,
                        const string& /*viewName*/,
-                       const float *pixelData,
+                       const float* pixelData,
                        const OfxRectI& bounds,
                        const float /*pixelAspectRatio*/,
                        const int pixelDataNComps,
@@ -157,7 +152,7 @@ WritePFMPlugin::encode(const string& filename,
                        const int dstNComps,
                        const int rowBytes)
 {
-    if ( (dstNComps != 4) && (dstNComps != 3) && (dstNComps != 1) ) {
+    if ((dstNComps != 4) && (dstNComps != 3) && (dstNComps != 1)) {
         setPersistentMessage(Message::eMessageError, "", "PFM: can only write RGBA, RGB or Alpha components images");
         throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -166,11 +161,11 @@ WritePFMPlugin::encode(const string& filename,
 
     // If the file exists (which means "overwrite" was checked), remove it first.
     // See https://github.com/NatronGitHub/Natron/issues/666
-    if (OFX::exists_utf8( filename.c_str() )) {
-        OFX::remove_utf8( filename.c_str() );
+    if (OFX::exists_utf8(filename.c_str())) {
+        OFX::remove_utf8(filename.c_str());
     }
 
-    std::FILE *const nfile = fopen_utf8(filename.c_str(), "wb");
+    std::FILE* const nfile = fopen_utf8(filename.c_str(), "wb");
     if (!nfile) {
         setPersistentMessage(Message::eMessageError, "", "Cannot open file \"" + filename + "\"");
         throwSuiteStatusException(kOfxStatFailed);
@@ -190,13 +185,13 @@ WritePFMPlugin::encode(const string& filename,
         // now copy to the dstImg
         if (depth == 1) {
             assert(dstNComps == 1);
-            copyLine<float, 1, 1>( pixelData, rowBytes, width, height,  dstNCompsStartIndex, pixelDataNComps, y, &buffer.front() );
+            copyLine<float, 1, 1>(pixelData, rowBytes, width, height, dstNCompsStartIndex, pixelDataNComps, y, &buffer.front());
         } else if (depth == 3) {
             assert(dstNComps == 3 || dstNComps == 4);
             if (dstNComps == 3) {
-                copyLine<float, 3, 3>( pixelData, rowBytes, width, height, dstNCompsStartIndex, pixelDataNComps, y, &buffer.front() );
+                copyLine<float, 3, 3>(pixelData, rowBytes, width, height, dstNCompsStartIndex, pixelDataNComps, y, &buffer.front());
             } else if (dstNComps == 4) {
-                copyLine<float, 4, 3>( pixelData, rowBytes, width, height, dstNCompsStartIndex, pixelDataNComps, y, &buffer.front() );
+                copyLine<float, 4, 3>(pixelData, rowBytes, width, height, dstNCompsStartIndex, pixelDataNComps, y, &buffer.front());
             }
         }
 
@@ -212,14 +207,14 @@ WritePFMPlugin::isImageFile(const string& /*fileExtension*/) const
 }
 
 void
-WritePFMPlugin::onOutputFileChanged(const string & /*filename*/,
+WritePFMPlugin::onOutputFileChanged(const string& /*filename*/,
                                     bool setColorSpace)
 {
     if (setColorSpace) {
-#     ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
         // Unless otherwise specified, pfm files are assumed to be linear.
         _ocio->setOutputColorspace(OCIO::ROLE_SCENE_LINEAR);
-#     endif
+#endif
     }
 }
 
@@ -233,7 +228,7 @@ WritePFMPluginFactory::load()
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-WritePFMPluginFactory::describe(ImageEffectDescriptor &desc)
+WritePFMPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     GenericWriterDescribe(desc, eRenderFullySafe, _extensions, kPluginEvaluation, false, false);
     // basic labels
@@ -243,11 +238,11 @@ WritePFMPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-WritePFMPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+WritePFMPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                          ContextEnum context)
 {
     // make some pages and to things in
-    PageParamDescriptor *page = GenericWriterDescribeInContextBegin(desc, context,
+    PageParamDescriptor* page = GenericWriterDescribeInContextBegin(desc, context,
                                                                     kSupportsRGBA,
                                                                     kSupportsRGB,
                                                                     kSupportsXY,
@@ -272,4 +267,4 @@ WritePFMPluginFactory::createInstance(OfxImageEffectHandle handle,
 static WritePFMPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

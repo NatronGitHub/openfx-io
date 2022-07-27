@@ -24,12 +24,12 @@
 
 #include "GenericReader.h"
 
+#include <algorithm>
+#include <cfloat> // DBL_MAX
 #include <climits>
 #include <cmath>
-#include <cfloat> // DBL_MAX
-#include <memory>
-#include <algorithm>
 #include <fstream>
+#include <memory>
 #if defined(DEBUG) && defined(DEBUG_READER)
 #include <cstdio>
 #define DBG(x) x
@@ -41,9 +41,9 @@
 #include <windows.h>
 #endif
 
-#include "ofxsLog.h"
-#include "ofxsCopier.h"
 #include "ofxsCoords.h"
+#include "ofxsCopier.h"
+#include "ofxsLog.h"
 #include "ofxsMacros.h"
 
 #ifdef OFX_EXTENSIONS_TUTTLE
@@ -62,8 +62,8 @@
 namespace OCIO = OCIO_NAMESPACE;
 #endif
 
-using std::string;
 using std::size_t;
+using std::string;
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
@@ -77,17 +77,17 @@ NAMESPACE_OFX_IO_ENTER
 
 #define kParamProxy kOfxImageEffectProxyParamName
 #define kParamProxyLabel "Proxy File"
-#define kParamProxyHint \
+#define kParamProxyHint                                                                                   \
     "Filename of the proxy images. They will be used instead of the images read from the File parameter " \
     "when the proxy mode (downscaling of the images) is activated."
 
 #define kParamProxyThreshold "proxyThreshold"
 #define kParamProxyThresholdLabel "Proxy threshold"
-#define kParamProxyThresholdHint \
-    "The scale of the proxy images. By default it will be automatically computed out of the " \
+#define kParamProxyThresholdHint                                                                   \
+    "The scale of the proxy images. By default it will be automatically computed out of the "      \
     "images headers when you set the proxy file(s) path. When the render scale (proxy) is set to " \
     "a scale lower or equal to this value then the proxy image files will be used instead of the " \
-    "original images. You can change this parameter by checking the \"Custom scale\" checkbox " \
+    "original images. You can change this parameter by checking the \"Custom scale\" checkbox "    \
     "so that you can change the scale at which the proxy images should be used instead of the original images."
 
 #define kParamOriginalProxyScale "originalProxyScale"
@@ -107,8 +107,7 @@ NAMESPACE_OFX_IO_ENTER
 
 #define kParamFrameMode "frameMode"
 #define kParamFrameModeLabel "Frame Mode"
-enum FrameModeEnum
-{
+enum FrameModeEnum {
     eFrameModeStartingTime,
     eFrameModeTimeOffset,
 };
@@ -131,18 +130,18 @@ enum FrameModeEnum
 
 #define kParamFirstFrame "firstFrame"
 #define kParamFirstFrameLabel "First Frame"
-#define kParamFirstFrameHint \
-    "The first frame number to read from this image sequence or video file. This cannot be less " \
+#define kParamFirstFrameHint                                                                         \
+    "The first frame number to read from this image sequence or video file. This cannot be less "    \
     " than the first frame of the image sequence or video file, and cannot be greater than the last" \
-    " frame of the image sequence or video file. The first frame of a video file is numbered 1. " \
+    " frame of the image sequence or video file. The first frame of a video file is numbered 1. "    \
     "If startingTime is 1 or timeOffset is 0, this is also the first output frame."
 
 #define kParamLastFrame "lastFrame"
 #define kParamLastFrameLabel "Last Frame"
-#define kParamLastFrameHint \
-    "The last frame number to read from this image sequence or video file. This cannot be less " \
+#define kParamLastFrameHint                                                                          \
+    "The last frame number to read from this image sequence or video file. This cannot be less "     \
     "than the first frame of the image sequence or video file, and cannot be greater than the last " \
-    "frame of the image sequence or video file. The first frame of a video file is numbered 1. "\
+    "frame of the image sequence or video file. The first frame of a video file is numbered 1. "     \
     "If startingTime is 1 or timeOffset is 0, this is also the last output frame."
 
 #define kParamBefore "before"
@@ -157,9 +156,7 @@ enum FrameModeEnum
 
 #define kParamTimeDomainUserEdited "timeDomainUserEdited"
 
-
-enum MissingEnum
-{
+enum MissingEnum {
     eMissingPrevious,
     eMissingNext,
     eMissingNearest,
@@ -178,16 +175,16 @@ enum MissingEnum
 
 #define kParamFilePremult "filePremult"
 #define kParamFilePremultLabel "File Premult"
-#define kParamFilePremultHint \
-    "The image file being read is considered to have this premultiplication state.\n" \
-    "To get UnPremultiplied (or \"unassociated alpha\") images, set the \"Output Premult\" parameter to Unpremultiplied. \n" \
+#define kParamFilePremultHint                                                                                                                               \
+    "The image file being read is considered to have this premultiplication state.\n"                                                                       \
+    "To get UnPremultiplied (or \"unassociated alpha\") images, set the \"Output Premult\" parameter to Unpremultiplied. \n"                                \
     "By default the value should be correctly be guessed by the image file, but this parameter can be edited if the metadatas inside the file are wrong.\n" \
-    "- Opaque means that the alpha channel is considered to be 1 (one), and it is not taken into account in colorspace conversion.\n" \
-    "- Premultiplied, red, green and blue channels are divided by the alpha channel " \
-    "before applying the colorspace conversion, and re-multiplied by alpha after colorspace conversion.\n" \
-    "- UnPremultiplied, means that red, green and blue channels are not modified " \
-    "before applying the colorspace conversion, and are multiplied by alpha after colorspace conversion.\n" \
-    "This is set automatically from the image file and the plugin, but can be adjusted if this information is wrong in the file metadata.\n" \
+    "- Opaque means that the alpha channel is considered to be 1 (one), and it is not taken into account in colorspace conversion.\n"                       \
+    "- Premultiplied, red, green and blue channels are divided by the alpha channel "                                                                       \
+    "before applying the colorspace conversion, and re-multiplied by alpha after colorspace conversion.\n"                                                  \
+    "- UnPremultiplied, means that red, green and blue channels are not modified "                                                                          \
+    "before applying the colorspace conversion, and are multiplied by alpha after colorspace conversion.\n"                                                 \
+    "This is set automatically from the image file and the plugin, but can be adjusted if this information is wrong in the file metadata.\n"                \
     "RGB images can only be Opaque, and Alpha images can only be Premultiplied (the value of this parameter doesn't matter)."
 #define kParamFilePremultOptionOpaqueHint \
     "The image is opaque and so has no premultiplication state, as if the alpha component in all pixels were set to the white point.", "opaque"
@@ -203,7 +200,7 @@ enum MissingEnum
 #define kParamOutputComponents "outputComponents"
 #define kParamOutputComponentsLabel "Output Components"
 #define kParamOutputComponentsHint "What type of components this effect should output when the main color plane is requested." \
-    " For the Read node it will map (in number of components) the Output Layer choice to these."
+                                   " For the Read node it will map (in number of components) the Output Layer choice to these."
 #define kParamOutputComponentsOptionRGBA "RGBA"
 #define kParamOutputComponentsOptionRGB "RGB"
 #define kParamOutputComponentsOptionXY "RG"
@@ -214,12 +211,12 @@ enum MissingEnum
 #define kParamFrameRate "frameRate"
 #define kParamFrameRateLabel "Frame rate"
 #define kParamFrameRateHint "By default this value is guessed from the file. You can override it by checking the Custom fps parameter. " \
-    "The value of this parameter is what will be visible by the effects down-stream."
+                            "The value of this parameter is what will be visible by the effects down-stream."
 
 #define kParamCustomFps "customFps"
 #define kParamCustomFpsLabel "Custom FPS"
 #define kParamCustomFpsHint "If checked, you can freely force the value of the frame rate parameter. The frame-rate is just the meta-data that will be passed " \
-    "downstream to the graph, no retime will actually take place."
+                            "downstream to the graph, no retime will actually take place."
 
 #define kParamGuessedParams "ParamExistingInstance" // was guessParamsFromFilename already successfully called once on this instance
 
@@ -234,11 +231,11 @@ enum MissingEnum
 
 #define GENERIC_READER_USE_MULTI_THREAD
 
-static bool gHostIsNatron   = false;
-static bool gHostSupportsRGBA   = false;
-static bool gHostSupportsRGB    = false;
-static bool gHostSupportsXY    = false;
-static bool gHostSupportsAlpha  = false;
+static bool gHostIsNatron = false;
+static bool gHostSupportsRGBA = false;
+static bool gHostSupportsRGB = false;
+static bool gHostSupportsXY = false;
+static bool gHostSupportsAlpha = false;
 static const char*
 premultString(PreMultiplicationEnum e)
 {
@@ -269,7 +266,7 @@ GenericReaderPlugin::GenericReaderPlugin(OfxImageEffectHandle handle,
     , _missingFrameParam(NULL)
 #ifdef OFX_IO_USING_OCIO
     , _inputSpaceSet(NULL)
-    , _ocio( new GenericOCIO(this) )
+    , _ocio(new GenericOCIO(this))
 #endif
     , _syncClip(NULL)
     , _outputClip(NULL)
@@ -368,13 +365,11 @@ GenericReaderPlugin::refreshSubLabel(OfxTime time)
     assert(_sublabel);
     double sequenceTime;
     GetSequenceTimeRetEnum getTimeRet = getSequenceTime(time, &sequenceTime);
-    if ( (getTimeRet == eGetSequenceTimeWithinSequence) ||
-         ( getTimeRet == eGetSequenceTimeBeforeSequence) ||
-         ( getTimeRet == eGetSequenceTimeAfterSequence) ) {
+    if ((getTimeRet == eGetSequenceTimeWithinSequence) || (getTimeRet == eGetSequenceTimeBeforeSequence) || (getTimeRet == eGetSequenceTimeAfterSequence)) {
         string filename;
         GetFilenameRetCodeEnum getFileNameRet = getFilenameAtSequenceTime(sequenceTime, false, false, &filename);
         if (getFileNameRet == eGetFileNameReturnedFullRes) {
-            _sublabel->setValue( basename(filename) );
+            _sublabel->setValue(basename(filename));
         } else {
             _sublabel->setValue("");
         }
@@ -398,20 +393,20 @@ GenericReaderPlugin::restoreStateFromParams()
     _frameMode->getValue(frameMode_i);
     FrameModeEnum frameMode = FrameModeEnum(frameMode_i);
     switch (frameMode) {
-    case eFrameModeStartingTime:     //starting frame
+    case eFrameModeStartingTime: // starting frame
         _startingTime->setIsSecretAndDisabled(false);
         _timeOffset->setIsSecretAndDisabled(true);
         break;
-    case eFrameModeTimeOffset:     //time offset
+    case eFrameModeTimeOffset: // time offset
         _startingTime->setIsSecretAndDisabled(true);
         _timeOffset->setIsSecretAndDisabled(false);
         break;
     }
 
-    ///Detect the scale of the proxy.
+    /// Detect the scale of the proxy.
     string proxyFile;
     _proxyFileParam->getValue(proxyFile);
-    if ( !proxyFile.empty() ) {
+    if (!proxyFile.empty()) {
         _proxyThreshold->setIsSecretAndDisabled(false);
         _enableCustomScale->setIsSecretAndDisabled(false);
     } else {
@@ -423,18 +418,18 @@ GenericReaderPlugin::restoreStateFromParams()
     _fps->setEnabled(customFps);
 
     if (gHostIsNatron) {
-        refreshSubLabel( timeLineGetTime() );
+        refreshSubLabel(timeLineGetTime());
     }
 }
 
 bool
-GenericReaderPlugin::getTimeDomain(OfxRangeD &range)
+GenericReaderPlugin::getTimeDomain(OfxRangeD& range)
 {
     OfxRangeI rangeI;
     bool ret = getSequenceTimeDomainInternal(rangeI, false);
 
     if (ret) {
-        ///these are the value held by the "First frame" and "Last frame" param
+        /// these are the value held by the "First frame" and "Last frame" param
         OfxRangeI sequenceTimeDomain;
         sequenceTimeDomain.min = _firstFrame->getValue();
         sequenceTimeDomain.max = _lastFrame->getValue();
@@ -452,13 +447,13 @@ GenericReaderPlugin::getSequenceTimeDomainInternal(OfxRangeI& range,
                                                    bool canSetOriginalFrameRange)
 {
     ////first-off check if the original frame range param has valid values, in which
-    ///case we don't bother calculating the frame range
+    /// case we don't bother calculating the frame range
     int originalMin, originalMax;
 
     _originalFrameRange->getValue(originalMin, originalMax);
 
     // test if the host (probably Natron) set kParamOriginalFrameRange
-    if ( (originalMin != INT_MIN) && (originalMax != INT_MAX) ) {
+    if ((originalMin != INT_MIN) && (originalMax != INT_MAX)) {
         range.min = originalMin;
         range.max = originalMax;
 
@@ -468,9 +463,9 @@ GenericReaderPlugin::getSequenceTimeDomainInternal(OfxRangeI& range,
     string filename;
     _fileParam->getValue(filename);
 
-    ///call the plugin specific getTimeDomain (if it is a video-stream , it is responsible to
-    ///find-out the time domain. If this function return false, it means this is an image sequence
-    ///in which case our sequence parser will give us the sequence range
+    /// call the plugin specific getTimeDomain (if it is a video-stream , it is responsible to
+    /// find-out the time domain. If this function return false, it means this is an image sequence
+    /// in which case our sequence parser will give us the sequence range
     bool gotRange = getSequenceTimeDomain(filename, range);
 
     if (!gotRange) {
@@ -478,9 +473,9 @@ GenericReaderPlugin::getSequenceTimeDomainInternal(OfxRangeI& range,
 
         SequenceParsing::FileNameContent content(filename);
         string pattern;
-        ///We try to match all the files in the same directory that match the pattern with the frame number
-        ///assumed to be in the last part of the filename. This is a harsh assumption but we can't just verify
-        ///everything as it would take too much time.
+        /// We try to match all the files in the same directory that match the pattern with the frame number
+        /// assumed to be in the last part of the filename. This is a harsh assumption but we can't just verify
+        /// everything as it would take too much time.
         string noStr;
         int nbFrameNumbers = content.getPotentialFrameNumbersCount();
         content.getNumberByIndex(nbFrameNumbers - 1, &noStr);
@@ -488,13 +483,13 @@ GenericReaderPlugin::getSequenceTimeDomainInternal(OfxRangeI& range,
         int numHashes = content.getLeadingZeroes();
         string noStrWithoutZeroes;
         for (std::size_t i = 0; i < noStr.size(); ++i) {
-            if ( (noStr[i] == '0') && noStrWithoutZeroes.empty() ) {
+            if ((noStr[i] == '0') && noStrWithoutZeroes.empty()) {
                 continue;
             }
             noStrWithoutZeroes.push_back(noStr[i]);
         }
 
-        if ( (int)noStr.size() > numHashes ) {
+        if ((int)noStr.size() > numHashes) {
             numHashes += noStrWithoutZeroes.size();
         } else {
             numHashes = 1;
@@ -502,7 +497,6 @@ GenericReaderPlugin::getSequenceTimeDomainInternal(OfxRangeI& range,
         content.generatePatternWithFrameNumberAtIndex(nbFrameNumbers - 1,
                                                       numHashes,
                                                       &pattern);
-
 
         SequenceParsing::SequenceFromPattern sequenceFromFiles;
         SequenceParsing::filesListFromPattern_slow(pattern, &sequenceFromFiles);
@@ -513,7 +507,6 @@ GenericReaderPlugin::getSequenceTimeDomainInternal(OfxRangeI& range,
             range.max = sequenceFromFiles.rbegin()->first;
         }
     }
-
 
     //// From http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#SettingParams
     //    Plugins are free to set parameters in limited set of circumstances, typically relating to user interaction. You can only set parameters in the following actions passed to the plug-in's main entry function...
@@ -542,19 +535,19 @@ GenericReaderPlugin::timeDomainFromSequenceTimeDomain(const OfxRangeI& sequenceT
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
                                            BeforeAfterEnum beforeChoice,
-                                           double *sequenceTime) const
+                                           double* sequenceTime) const
 {
-    ///get the offset from the starting time of the sequence in case we bounce or loop
-    int timeOffsetFromStart = (int)*sequenceTime -  sequenceTimeDomain.min;
+    /// get the offset from the starting time of the sequence in case we bounce or loop
+    int timeOffsetFromStart = (int)*sequenceTime - sequenceTimeDomain.min;
     int seqFrames = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
 
     switch (beforeChoice) {
-    case eBeforeAfterHold:     //hold
+    case eBeforeAfterHold: // hold
         *sequenceTime = sequenceTimeDomain.min;
 
         return eGetSequenceTimeBeforeSequence;
 
-    case eBeforeAfterLoop: {     //loop
+    case eBeforeAfterLoop: { // loop
         if (seqFrames <= 1) {
             *sequenceTime = sequenceTimeDomain.min;
         } else {
@@ -565,7 +558,7 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
 
         return eGetSequenceTimeBeforeSequence;
     }
-    case eBeforeAfterBounce: {     //bounce
+    case eBeforeAfterBounce: { // bounce
         if (seqFrames <= 1) {
             *sequenceTime = sequenceTimeDomain.min;
         } else {
@@ -582,12 +575,12 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
 
         return eGetSequenceTimeBeforeSequence;
     }
-    case eBeforeAfterBlack:     //black
+    case eBeforeAfterBlack: // black
         return eGetSequenceTimeBlack;
 
-    case eBeforeAfterError:     //error
+    case eBeforeAfterError: // error
 
-        //setPersistentMessage(Message::eMessageError, "", "Out of frame range");
+        // setPersistentMessage(Message::eMessageError, "", "Out of frame range");
         return eGetSequenceTimeError;
     }
 
@@ -597,19 +590,19 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
                                           BeforeAfterEnum afterChoice,
-                                          double *sequenceTime) const
+                                          double* sequenceTime) const
 {
-    ///get the offset from the starting time of the sequence in case we bounce or loop
-    int timeOffsetFromStart = (int)*sequenceTime -  sequenceTimeDomain.min;
+    /// get the offset from the starting time of the sequence in case we bounce or loop
+    int timeOffsetFromStart = (int)*sequenceTime - sequenceTimeDomain.min;
     int seqFrames = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
 
     switch (afterChoice) {
-    case eBeforeAfterHold: {     //hold
+    case eBeforeAfterHold: { // hold
         *sequenceTime = sequenceTimeDomain.max;
 
         return eGetSequenceTimeAfterSequence;
     }
-    case eBeforeAfterLoop: {     //loop
+    case eBeforeAfterLoop: { // loop
         if (seqFrames <= 1) {
             *sequenceTime = sequenceTimeDomain.min;
         } else {
@@ -620,7 +613,7 @@ GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
 
         return eGetSequenceTimeAfterSequence;
     }
-    case eBeforeAfterBounce: {     //bounce
+    case eBeforeAfterBounce: { // bounce
         if (seqFrames <= 1) {
             *sequenceTime = sequenceTimeDomain.min;
         } else {
@@ -637,11 +630,11 @@ GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
 
         return eGetSequenceTimeAfterSequence;
     }
-    case eBeforeAfterBlack: {     //black
+    case eBeforeAfterBlack: { // black
         return eGetSequenceTimeBlack;
     }
-    case eBeforeAfterError: {     //error
-        //setPersistentMessage(Message::eMessageError, "", "Out of frame range");
+    case eBeforeAfterError: { // error
+        // setPersistentMessage(Message::eMessageError, "", "Out of frame range");
 
         return eGetSequenceTimeError;
     }
@@ -685,24 +678,22 @@ GenericReaderPlugin::getSequenceTimeHold(double t,
 
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTime(double t,
-                                     double *sequenceTime) const
+                                     double* sequenceTime) const
 {
     int timeOffset;
 
     _timeOffset->getValue(timeOffset);
 
-
-    ///get the time sequence domain
+    /// get the time sequence domain
     OfxRangeI sequenceTimeDomain;
     _firstFrame->getValue(sequenceTimeDomain.min);
     _lastFrame->getValue(sequenceTimeDomain.max);
 
-
-    ///the return value
+    /// the return value
     *sequenceTime = t - timeOffset;
 
-    ///if the time given is before the sequence
-    if ( (sequenceTimeDomain.min <= *sequenceTime) && (*sequenceTime <= sequenceTimeDomain.max) ) {
+    /// if the time given is before the sequence
+    if ((sequenceTimeDomain.min <= *sequenceTime) && (*sequenceTime <= sequenceTimeDomain.max)) {
         return eGetSequenceTimeWithinSequence;
     } else if (*sequenceTime < sequenceTimeDomain.min) {
         /////if we're before the first frame
@@ -712,7 +703,7 @@ GenericReaderPlugin::getSequenceTime(double t,
 
         return getSequenceTimeBefore(sequenceTimeDomain, beforeChoice, sequenceTime);
     } else {
-        assert(*sequenceTime > sequenceTimeDomain.max); ///the time given is after the sequence
+        assert(*sequenceTime > sequenceTimeDomain.max); /// the time given is after the sequence
         /////if we're after the last frame
         int afterChoice_i;
         _afterLast->getValue(afterChoice_i);
@@ -726,12 +717,12 @@ GenericReaderPlugin::getSequenceTime(double t,
 
 #if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
 std::wstring
-utf8ToUtf16 (const string& str)
+utf8ToUtf16(const string& str)
 {
     std::wstring native;
 
-    native.resize( MultiByteToWideChar (CP_UTF8, 0, str.c_str(), -1, NULL, 0) );
-    MultiByteToWideChar ( CP_UTF8, 0, str.c_str(), -1, &native[0], (int)native.size() );
+    native.resize(MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, NULL, 0));
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &native[0], (int)native.size());
 
     return native;
 }
@@ -739,11 +730,11 @@ utf8ToUtf16 (const string& str)
 #endif
 
 static bool
-checkIfFileExists (const string& path)
+checkIfFileExists(const string& path)
 {
 #if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
     WIN32_FIND_DATAW FindFileData;
-    std::wstring wpath = utf8ToUtf16 (path);
+    std::wstring wpath = utf8ToUtf16(path);
     HANDLE handle = FindFirstFileW(wpath.c_str(), &FindFileData);
     if (handle != INVALID_HANDLE_VALUE) {
         FindClose(handle);
@@ -754,7 +745,7 @@ checkIfFileExists (const string& path)
     return false;
 #else
     // on Unix platforms passing in UTF-8 works
-    std::ifstream fs( path.c_str() );
+    std::ifstream fs(path.c_str());
 
     return fs.is_open() && fs.good();
 #endif
@@ -764,7 +755,7 @@ GenericReaderPlugin::GetFilenameRetCodeEnum
 GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
                                                bool proxyFiles,
                                                bool checkForExistingFile,
-                                               string *filename) const
+                                               string* filename) const
 {
     GetFilenameRetCodeEnum ret;
     const MissingEnum missingFrame = (MissingEnum)_missingFrameParam->getValue();
@@ -774,17 +765,14 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
 
     sequenceTime = std::floor(sequenceTime + 0.5); // round to the nearest frame
 
-    const bool searchOtherFrame = ( (missingFrame == eMissingPrevious) ||
-                                    (missingFrame == eMissingNearest) ||
-                                    (missingFrame == eMissingNext) ||
-                                    (missingFrame == eMissingNearest) );
+    const bool searchOtherFrame = ((missingFrame == eMissingPrevious) || (missingFrame == eMissingNearest) || (missingFrame == eMissingNext) || (missingFrame == eMissingNearest));
     do {
         _fileParam->getValueAtTime(sequenceTime + offset, *filename); // the time in _fileParam is the *file* time
         if (offset == 0) {
             filename0 = *filename; // for error reporting
         }
-        if ( filename->empty() ) {
-            //filenameGood = false;
+        if (filename->empty()) {
+            // filenameGood = false;
             return eGetFileNameBlack; // if filename is empty, just return a black frame. this happens eg when the plugin is created
         } else {
             if (checkForExistingFile) {
@@ -798,7 +786,7 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
                 string proxyFileName;
                 bool proxyGood = true;
                 _proxyFileParam->getValueAtTime(sequenceTime + offset, proxyFileName);
-                if ( proxyFileName.empty() ) {
+                if (proxyFileName.empty()) {
                     proxyGood = false;
                 } else {
                     if (checkForExistingFile) {
@@ -825,26 +813,26 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
                 ++offset;
             }
         }
-    } while ( searchOtherFrame &&                     // only loop if searchOtherFrame
-              !filenameGood &&                       // and no valid file was found
-              std::abs(offset) <= MISSING_FRAME_NEAREST_RANGE && // and we are within range
+    } while (searchOtherFrame && // only loop if searchOtherFrame
+             !filenameGood && // and no valid file was found
+             std::abs(offset) <= MISSING_FRAME_NEAREST_RANGE && // and we are within range
 
-              (sequenceTime + offset >= 0) ); // and index is positive
+             (sequenceTime + offset >= 0)); // and index is positive
     if (filenameGood) {
         // ret is already set (see above)
     } else {
         *filename = filename0; // reset to the original frame name;
         switch (missingFrame) {
-        case eMissingPrevious:     // Hold previous
-        case eMissingNext:        // Load next
-        case eMissingNearest:     // Load nearest
-        case eMissingError:       // Error
+        case eMissingPrevious: // Hold previous
+        case eMissingNext: // Load next
+        case eMissingNearest: // Load nearest
+        case eMissingError: // Error
             /// For images sequences, we can safely say this is  a missing frame. For video-streams we do not know and the derived class
             // will have to handle the case itself.
             ret = eGetFileNameFailed;
             // return a black image
             break;
-        case eMissingBlack:      // Black image
+        case eMissingBlack: // Black image
             /// For images sequences, we can safely say this is  a missing frame. For video-streams we do not know and the derived class
             // will have to handle the case itself.
             ret = eGetFileNameBlack;
@@ -857,7 +845,7 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
 
 OfxStatus
 GenericReaderPlugin::getFilenameAtTime(double t,
-                                       string *filename) const
+                                       string* filename) const
 {
     double sequenceTime;
     GetSequenceTimeRetEnum getSequenceTimeRet = getSequenceTime(t, &sequenceTime);
@@ -908,13 +896,13 @@ GenericReaderPlugin::getStartingTime() const
 void
 GenericReaderPlugin::copyPixelData(const OfxRectI& renderWindow,
                                    const OfxPointD& renderScale,
-                                   const void *srcPixelData,
+                                   const void* srcPixelData,
                                    const OfxRectI& srcBounds,
                                    PixelComponentEnum srcPixelComponents,
                                    int srcPixelComponentCount,
                                    BitDepthEnum srcBitDepth,
                                    int srcRowBytes,
-                                   void *dstPixelData,
+                                   void* dstPixelData,
                                    const OfxRectI& dstBounds,
                                    PixelComponentEnum dstPixelComponents,
                                    int dstPixelComponentCount,
@@ -951,11 +939,10 @@ halveWindow(const OfxRectI& nextRenderWindow,
 {
     int srcRowSize = srcRowBytes / sizeof(PIX);
     int dstRowSize = dstRowBytes / sizeof(PIX);
-    const PIX* srcData =  srcPixels - (srcBounds.x1 * nComponents + srcRowSize * srcBounds.y1);
+    const PIX* srcData = srcPixels - (srcBounds.x1 * nComponents + srcRowSize * srcBounds.y1);
     PIX* dstData = dstPixels - (dstBounds.x1 * nComponents + dstRowSize * dstBounds.y1);
 
-    assert(nextRenderWindow.x1 * 2 >= (srcBounds.x1 - 1) && (nextRenderWindow.x2 - 1) * 2 < srcBounds.x2 &&
-           nextRenderWindow.y1 * 2 >= (srcBounds.y1 - 1) && (nextRenderWindow.y2 - 1) * 2 < srcBounds.y2);
+    assert(nextRenderWindow.x1 * 2 >= (srcBounds.x1 - 1) && (nextRenderWindow.x2 - 1) * 2 < srcBounds.x2 && nextRenderWindow.y1 * 2 >= (srcBounds.y1 - 1) && (nextRenderWindow.y2 - 1) * 2 < srcBounds.y2);
     for (int y = nextRenderWindow.y1; y < nextRenderWindow.y2; ++y) {
         const PIX* srcLineStart = srcData + y * 2 * srcRowSize;
         PIX* dstLineStart = dstData + y * dstRowSize;
@@ -969,20 +956,20 @@ halveWindow(const OfxRectI& nextRenderWindow,
             int sumW = (int)pickThisCol + (int)pickNextCol;
             assert(sumW == 1 || sumW == 2);
             for (int k = 0; k < nComponents; ++k) {
-                ///a b
-                ///c d
+                /// a b
+                /// c d
 
                 PIX a = (pickThisCol && pickThisRow) ? srcLineStart[x * 2 * nComponents + k] : 0;
                 PIX b = (pickNextCol && pickThisRow) ? srcLineStart[(x * 2 + 1) * nComponents + k] : 0;
                 PIX c = (pickThisCol && pickNextRow) ? srcLineStart[(x * 2 * nComponents) + srcRowSize + k] : 0;
                 PIX d = (pickNextCol && pickNextRow) ? srcLineStart[(x * 2 + 1) * nComponents + srcRowSize + k] : 0;
 
-                assert( sumW == 2 || ( sumW == 1 && ( (a == 0 && c == 0) || (b == 0 && d == 0) ) ) );
-                assert( sumH == 2 || ( sumH == 1 && ( (a == 0 && b == 0) || (c == 0 && d == 0) ) ) );
+                assert(sumW == 2 || (sumW == 1 && ((a == 0 && c == 0) || (b == 0 && d == 0))));
+                assert(sumH == 2 || (sumH == 1 && ((a == 0 && b == 0) || (c == 0 && d == 0))));
                 int sum = sumH * sumW;
                 // guard against division by zero
                 assert(sum);
-                dstLineStart[x * nComponents + k] = sum ? ( (a + b + c + d) / sum ) : 0;
+                dstLineStart[x * nComponents + k] = sum ? ((a + b + c + d) / sum) : 0;
             }
         }
     }
@@ -1012,36 +999,36 @@ buildMipMapLevelGeneric(ImageEffect* instance,
     int previousRowBytes = srcRowBytes;
     OfxRectI nextRenderWindow = renderWindowFullRes;
 
-    ///Build all the mipmap levels until we reach the one we are interested in
+    /// Build all the mipmap levels until we reach the one we are interested in
     for (unsigned int i = 1; i < level; ++i) {
         // loop invariant:
         // - previousImg, previousBounds, previousRowBytes describe the data ate the level before i
         // - nextRenderWindow contains the renderWindow at the level before i
         //
-        ///Halve the smallest enclosing po2 rect as we need to render a minimum of the renderWindow
+        /// Halve the smallest enclosing po2 rect as we need to render a minimum of the renderWindow
         nextRenderWindow = downscalePowerOfTwoSmallestEnclosing(nextRenderWindow, 1);
-#     ifdef DEBUG
+#ifdef DEBUG
         {
             // check that doing i times 1 level is the same as doing i levels
             OfxRectI nrw = downscalePowerOfTwoSmallestEnclosing(renderWindowFullRes, i);
             assert(nrw.x1 == nextRenderWindow.x1 && nrw.x2 == nextRenderWindow.x2 && nrw.y1 == nextRenderWindow.y1 && nrw.y2 == nextRenderWindow.y2);
         }
-#     endif
-        ///Allocate a temporary image if necessary, or reuse the previously allocated buffer
-        int nextRowBytes =  (nextRenderWindow.x2 - nextRenderWindow.x1)  * nComponents * sizeof(PIX);
-        size_t newMemSize =  (size_t)(nextRenderWindow.y2 - nextRenderWindow.y1) * (size_t)nextRowBytes;
-        if ( !tmpMem.get() ) {
+#endif
+        /// Allocate a temporary image if necessary, or reuse the previously allocated buffer
+        int nextRowBytes = (nextRenderWindow.x2 - nextRenderWindow.x1) * nComponents * sizeof(PIX);
+        size_t newMemSize = (size_t)(nextRenderWindow.y2 - nextRenderWindow.y1) * (size_t)nextRowBytes;
+        if (!tmpMem.get()) {
             // there should be enough memory: no need to reallocate
             assert(tmpMemSize >= newMemSize);
         } else {
-            tmpMem.reset( new ImageMemory(newMemSize, instance) );
+            tmpMem.reset(new ImageMemory(newMemSize, instance));
             tmpMemSize = newMemSize;
         }
         nextImg = (float*)tmpMem->lock();
 
         halveWindow<PIX>(nextRenderWindow, previousImg, previousBounds, previousRowBytes, nextImg, nextRenderWindow, nextRowBytes, nComponents);
 
-        ///Switch for next pass
+        /// Switch for next pass
         previousBounds = nextRenderWindow;
         previousRowBytes = nextRowBytes;
         previousImg = nextImg;
@@ -1050,11 +1037,10 @@ buildMipMapLevelGeneric(ImageEffect* instance,
     // - previousImg, previousBounds, previousRowBytes describe the data ate the level before 'level'
     // - nextRenderWindow contains the renderWindow at the level before 'level'
 
-    ///On the last iteration halve directly into the dstPixels
-    ///The nextRenderWindow should be equal to the original render window.
+    /// On the last iteration halve directly into the dstPixels
+    /// The nextRenderWindow should be equal to the original render window.
     nextRenderWindow = downscalePowerOfTwoSmallestEnclosing(nextRenderWindow, 1);
-    assert(originalRenderWindow.x1 == nextRenderWindow.x1 && originalRenderWindow.x2 == nextRenderWindow.x2 &&
-           originalRenderWindow.y1 == nextRenderWindow.y1 && originalRenderWindow.y2 == nextRenderWindow.y2);
+    assert(originalRenderWindow.x1 == nextRenderWindow.x1 && originalRenderWindow.x2 == nextRenderWindow.x2 && originalRenderWindow.y1 == nextRenderWindow.y1 && originalRenderWindow.y2 == nextRenderWindow.y2);
 
     halveWindow<PIX>(nextRenderWindow, previousImg, previousBounds, previousRowBytes, dstPixels, dstBounds, dstRowBytes, nComponents);
     // mem and tmpMem are freed at destruction
@@ -1075,8 +1061,7 @@ buildMipMapLevel(ImageEffect* instance,
                  const OfxRectI& dstBounds,
                  int dstRowBytes)
 {
-    buildMipMapLevelGeneric<PIX>(instance, originalRenderWindow, renderWindowFullRes, level, srcPixels, srcBounds, srcRowBytes
-                                 , dstPixels, dstBounds, dstRowBytes, nComponents);
+    buildMipMapLevelGeneric<PIX>(instance, originalRenderWindow, renderWindowFullRes, level, srcPixels, srcBounds, srcRowBytes, dstPixels, dstBounds, dstRowBytes, nComponents);
 }
 
 void
@@ -1101,15 +1086,7 @@ GenericReaderPlugin::scalePixelData(const OfxRectI& originalRenderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ( (dstPixelDepth != eBitDepthFloat) ||
-         ( ( dstPixelComponents != ePixelComponentRGBA) &&
-           ( dstPixelComponents != ePixelComponentRGB) &&
-           ( dstPixelComponents != ePixelComponentXY) &&
-           ( dstPixelComponents != ePixelComponentAlpha) &&
-           ( dstPixelComponents != ePixelComponentCustom) ) ||
-         ( dstPixelDepth != srcPixelDepth) ||
-         ( dstPixelComponents != srcPixelComponents) ||
-         ( dstPixelComponentCount != srcPixelComponentCount) ) {
+    if ((dstPixelDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentXY) && (dstPixelComponents != ePixelComponentAlpha) && (dstPixelComponents != ePixelComponentCustom)) || (dstPixelDepth != srcPixelDepth) || (dstPixelComponents != srcPixelComponents) || (dstPixelComponentCount != srcPixelComponentCount)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1139,7 +1116,7 @@ GenericReaderPlugin::scalePixelData(const OfxRectI& originalRenderWindow,
         }
         buildMipMapLevel<float, 2>(this, originalRenderWindow, renderWindow, levels, (const float*)srcPixelData,
                                    srcBounds, srcRowBytes, (float*)dstPixelData, dstBounds, dstRowBytes);
-    }  else if (dstPixelComponents == ePixelComponentAlpha) {
+    } else if (dstPixelComponents == ePixelComponentAlpha) {
         if (!_supportsAlpha) {
             throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -1157,10 +1134,10 @@ GenericReaderPlugin::scalePixelData(const OfxRectI& originalRenderWindow,
 
 /* set up and run a copy processor */
 static void
-setupAndFillWithBlack(PixelProcessorFilterBase & processor,
-                      const OfxRectI &renderWindow,
+setupAndFillWithBlack(PixelProcessorFilterBase& processor,
+                      const OfxRectI& renderWindow,
                       const OfxPointD& renderScale,
-                      void *dstPixelData,
+                      void* dstPixelData,
                       const OfxRectI& dstBounds,
                       PixelComponentEnum dstPixelComponents,
                       int dstPixelComponentCount,
@@ -1178,9 +1155,9 @@ setupAndFillWithBlack(PixelProcessorFilterBase & processor,
 }
 
 void
-GenericReaderPlugin::fillWithBlack(const OfxRectI &renderWindow,
+GenericReaderPlugin::fillWithBlack(const OfxRectI& renderWindow,
                                    const OfxPointD& renderScale,
-                                   void *dstPixelData,
+                                   void* dstPixelData,
                                    const OfxRectI& dstBounds,
                                    PixelComponentEnum dstPixelComponents,
                                    int dstPixelComponentCount,
@@ -1192,17 +1169,17 @@ GenericReaderPlugin::fillWithBlack(const OfxRectI &renderWindow,
 }
 
 static void
-setupAndProcess(PixelProcessorFilterBase & processor,
+setupAndProcess(PixelProcessorFilterBase& processor,
                 int premultChannel,
-                const OfxRectI &renderWindow,
+                const OfxRectI& renderWindow,
                 const OfxPointD& renderScale,
-                const void *srcPixelData,
+                const void* srcPixelData,
                 const OfxRectI& srcBounds,
                 PixelComponentEnum srcPixelComponents,
                 int srcPixelComponentCount,
                 BitDepthEnum srcPixelDepth,
                 int srcRowBytes,
-                void *dstPixelData,
+                void* dstPixelData,
                 const OfxRectI& dstBounds,
                 PixelComponentEnum dstPixelComponents,
                 int dstPixelComponentCount,
@@ -1212,7 +1189,7 @@ setupAndProcess(PixelProcessorFilterBase & processor,
     assert(srcPixelData && dstPixelData);
 
     // make sure bit depths are sane
-    if ( (srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents) ) {
+    if ((srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1232,15 +1209,15 @@ setupAndProcess(PixelProcessorFilterBase & processor,
 }
 
 void
-GenericReaderPlugin::unPremultPixelData(const OfxRectI &renderWindow,
+GenericReaderPlugin::unPremultPixelData(const OfxRectI& renderWindow,
                                         const OfxPointD& renderScale,
-                                        const void *srcPixelData,
+                                        const void* srcPixelData,
                                         const OfxRectI& srcBounds,
                                         PixelComponentEnum srcPixelComponents,
                                         int srcPixelComponentCount,
                                         BitDepthEnum srcPixelDepth,
                                         int srcRowBytes,
-                                        void *dstPixelData,
+                                        void* dstPixelData,
                                         const OfxRectI& dstBounds,
                                         PixelComponentEnum dstPixelComponents,
                                         int dstPixelComponentCount,
@@ -1250,7 +1227,7 @@ GenericReaderPlugin::unPremultPixelData(const OfxRectI &renderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ( (dstBitDepth != eBitDepthFloat) || ( (dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha) ) ) {
+    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1264,21 +1241,21 @@ GenericReaderPlugin::unPremultPixelData(const OfxRectI &renderWindow,
         PixelCopierUnPremult<float, 4, 1, float, 4, 1> fred(*this);
         setupAndProcess(fred, 3, renderWindow, renderScale, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     } else {
-        ///other pixel components means you want to copy only...
+        /// other pixel components means you want to copy only...
         assert(false);
     }
 }
 
 void
-GenericReaderPlugin::premultPixelData(const OfxRectI &renderWindow,
+GenericReaderPlugin::premultPixelData(const OfxRectI& renderWindow,
                                       const OfxPointD& renderScale,
-                                      const void *srcPixelData,
+                                      const void* srcPixelData,
                                       const OfxRectI& srcBounds,
                                       PixelComponentEnum srcPixelComponents,
                                       int srcPixelComponentCount,
                                       BitDepthEnum srcPixelDepth,
                                       int srcRowBytes,
-                                      void *dstPixelData,
+                                      void* dstPixelData,
                                       const OfxRectI& dstBounds,
                                       PixelComponentEnum dstPixelComponents,
                                       int dstPixelComponentCount,
@@ -1288,7 +1265,7 @@ GenericReaderPlugin::premultPixelData(const OfxRectI &renderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ( (dstBitDepth != eBitDepthFloat) || ( (dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha) ) ) {
+    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1303,16 +1280,16 @@ GenericReaderPlugin::premultPixelData(const OfxRectI &renderWindow,
         PixelCopierPremult<float, 4, 1, float, 4, 1> fred(*this);
         setupAndProcess(fred, 3, renderWindow, renderScale, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     } else {
-        ///other pixel components means you want to copy only...
+        /// other pixel components means you want to copy only...
         assert(false);
     }
 }
 
 bool
-GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
-                                           OfxRectD &rod)
+GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
+                                           OfxRectD& rod)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return false;
@@ -1341,7 +1318,7 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
     GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, &filename);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
-        if ( _syncClip && _syncClip->isConnected() ){
+        if (_syncClip && _syncClip->isConnected()) {
             // if the Sync input is connected, just return the RoD from this input
             // Because Natron calls getRoD() before render(), so the image may not yet be here.
             return false;
@@ -1380,21 +1357,19 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
     rod.y1 = bounds.y1;
     rod.y2 = bounds.y2;
 
-//    if (getFilenameAtSequenceTimeRet == eGetFileNameReturnedProxy) {
-//        ///upscale the proxy RoD to be in canonical coords.
-//        unsigned int mipmapLvl = getLevelFromScale(args.renderScale.x);
-//        rod = upscalePowerOfTwo(rod, (double)mipmapLvl);
-//    }
+    //    if (getFilenameAtSequenceTimeRet == eGetFileNameReturnedProxy) {
+    //        ///upscale the proxy RoD to be in canonical coords.
+    //        unsigned int mipmapLvl = getLevelFromScale(args.renderScale.x);
+    //        rod = upscalePowerOfTwo(rod, (double)mipmapLvl);
+    //    }
 
     return true;
 } // GenericReaderPlugin::getRegionOfDefinition
 
-class OutputImagesHolder_RAII
-{
+class OutputImagesHolder_RAII {
     std::vector<Image*> dstImages;
 
 public:
-
     OutputImagesHolder_RAII()
         : dstImages()
     {
@@ -1419,7 +1394,7 @@ public:
 };
 
 void
-GenericReaderPlugin::render(const RenderArguments &args)
+GenericReaderPlugin::render(const RenderArguments& args)
 {
     if (!_outputClip) {
         throwSuiteStatusException(kOfxStatFailed);
@@ -1427,59 +1402,59 @@ GenericReaderPlugin::render(const RenderArguments &args)
         return;
     }
 
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
     }
 
-    assert( kSupportsRenderScale || (args.renderScale.x == 1. && args.renderScale.y == 1.) );
-    ///The image will have the appropriate size since we support the render scale (multi-resolution)
+    assert(kSupportsRenderScale || (args.renderScale.x == 1. && args.renderScale.y == 1.));
+    /// The image will have the appropriate size since we support the render scale (multi-resolution)
     OutputImagesHolder_RAII outputImagesHolder;
 #ifdef OFX_EXTENSIONS_NUKE
-    if ( !isMultiPlanar() ) {
+    if (!isMultiPlanar()) {
 #endif
 
-    Image* dstImg = _outputClip->fetchImage(args.time);
-    if (!dstImg) {
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-#ifndef NDEBUG
-    if (!_supportsTiles) {
-        // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
-        //  If a clip or plugin does not support tiled images, then the host should supply full RoD images to the effect whenever it fetches one.
-        OfxRectI dstRod;     // = dst->getRegionOfDefinition(); //  Nuke's image RoDs are wrong
-        Coords::toPixelEnclosing(_outputClip->getRegionOfDefinition(args.time), args.renderScale, _outputClip->getPixelAspectRatio(), &dstRod);
-        const OfxRectI& dstBounds = dstImg->getBounds();
-
-        assert(dstRod.x1 == dstBounds.x1);
-        assert(dstRod.x2 == dstBounds.x2);
-        assert(dstRod.y1 == dstBounds.y1);
-        assert(dstRod.y2 == dstBounds.y2);     // crashes on Natron if kSupportsTiles=0 & kSupportsMultiResolution=1
-    }
-#endif
-
-    outputImagesHolder.appendImage(dstImg);
-#ifdef OFX_EXTENSIONS_NUKE
-} else {
-    assert(getImageEffectHostDescription()->isMultiPlanar);
-
-    for (std::list<string>::const_iterator it = args.planes.begin(); it != args.planes.end(); ++it) {
-        Image* dstPlane = _outputClip->fetchImagePlane( args.time, args.renderView, it->c_str() );
-        if (!dstPlane) {
+        Image* dstImg = _outputClip->fetchImage(args.time);
+        if (!dstImg) {
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
         }
-        outputImagesHolder.appendImage(dstPlane);
+#ifndef NDEBUG
+        if (!_supportsTiles) {
+            // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
+            //  If a clip or plugin does not support tiled images, then the host should supply full RoD images to the effect whenever it fetches one.
+            OfxRectI dstRod; // = dst->getRegionOfDefinition(); //  Nuke's image RoDs are wrong
+            Coords::toPixelEnclosing(_outputClip->getRegionOfDefinition(args.time), args.renderScale, _outputClip->getPixelAspectRatio(), &dstRod);
+            const OfxRectI& dstBounds = dstImg->getBounds();
+
+            assert(dstRod.x1 == dstBounds.x1);
+            assert(dstRod.x2 == dstBounds.x2);
+            assert(dstRod.y1 == dstBounds.y1);
+            assert(dstRod.y2 == dstBounds.y2); // crashes on Natron if kSupportsTiles=0 & kSupportsMultiResolution=1
+        }
+#endif
+
+        outputImagesHolder.appendImage(dstImg);
+#ifdef OFX_EXTENSIONS_NUKE
+    } else {
+        assert(getImageEffectHostDescription()->isMultiPlanar);
+
+        for (std::list<string>::const_iterator it = args.planes.begin(); it != args.planes.end(); ++it) {
+            Image* dstPlane = _outputClip->fetchImagePlane(args.time, args.renderView, it->c_str());
+            if (!dstPlane) {
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            outputImagesHolder.appendImage(dstPlane);
+        }
     }
-}
 
 #endif
 
-    OfxRectI firstBounds = {0, 0, 0, 0};
+    OfxRectI firstBounds = { 0, 0, 0, 0 };
     BitDepthEnum firstDepth = eBitDepthNone;
     bool firstImageSet = false;
 
@@ -1504,8 +1479,8 @@ GenericReaderPlugin::render(const RenderArguments &args)
             firstDepth = bitDepth;
             firstImageSet = true;
         } else {
-            if ( (firstBounds.x1 != bounds.x1) || (firstBounds.x2 != bounds.x2) || (firstBounds.y1 != bounds.y1) || (firstBounds.y2 != bounds.y2)
-                 || ( firstDepth != bitDepth) ) {
+            if ((firstBounds.x1 != bounds.x1) || (firstBounds.x2 != bounds.x2) || (firstBounds.y1 != bounds.y1) || (firstBounds.y2 != bounds.y2)
+                || (firstDepth != bitDepth)) {
                 setPersistentMessage(Message::eMessageError, "", "OFX Host gave image plane with wrong bounds/bitdepth");
                 throwSuiteStatusException(kOfxStatFailed);
 
@@ -1519,40 +1494,34 @@ GenericReaderPlugin::render(const RenderArguments &args)
 
         plane.rawComps = outputImages[i]->getPixelComponentsProperty();
 
-
 #ifdef OFX_EXTENSIONS_NUKE
         if (plane.comps != ePixelComponentCustom) {
 #endif
 #ifdef OFX_EXTENSIONS_NATRON
-        assert(plane.rawComps == kOfxImageComponentAlpha ||
-               plane.rawComps == kNatronOfxImageComponentXY ||
-               plane.rawComps == kOfxImageComponentRGB || plane.rawComps == kOfxImageComponentRGBA);
+            assert(plane.rawComps == kOfxImageComponentAlpha || plane.rawComps == kNatronOfxImageComponentXY || plane.rawComps == kOfxImageComponentRGB || plane.rawComps == kOfxImageComponentRGBA);
 #else
-        assert(plane.rawComps == kOfxImageComponentAlpha ||
-               plane.rawComps == kOfxImageComponentRGB || plane.rawComps == kOfxImageComponentRGBA);
+        assert(plane.rawComps == kOfxImageComponentAlpha || plane.rawComps == kOfxImageComponentRGB || plane.rawComps == kOfxImageComponentRGBA);
 #endif
-        PixelComponentEnum outputComponents = getOutputComponents();
-        if (plane.comps != outputComponents) {
-            setPersistentMessage(Message::eMessageError, "", "OFX Host dit not take into account output components");
-            throwSuiteStatusException(kOfxStatErrImageFormat);
+            PixelComponentEnum outputComponents = getOutputComponents();
+            if (plane.comps != outputComponents) {
+                setPersistentMessage(Message::eMessageError, "", "OFX Host dit not take into account output components");
+                throwSuiteStatusException(kOfxStatErrImageFormat);
 
-            return;
-        }
+                return;
+            }
 #ifdef OFX_EXTENSIONS_NUKE
-    }
+        }
 #endif
 
         plane.numChans = outputImages[i]->getPixelComponentCount();
         planes.push_back(plane);
     }
 
-
     // are we in the image bounds
-    if ( (args.renderWindow.x1 < firstBounds.x1) || (args.renderWindow.x1 >= firstBounds.x2) || (args.renderWindow.y1 < firstBounds.y1) || (args.renderWindow.y1 >= firstBounds.y2) ||
-         ( args.renderWindow.x2 <= firstBounds.x1) || ( args.renderWindow.x2 > firstBounds.x2) || ( args.renderWindow.y2 <= firstBounds.y1) || ( args.renderWindow.y2 > firstBounds.y2) ) {
+    if ((args.renderWindow.x1 < firstBounds.x1) || (args.renderWindow.x1 >= firstBounds.x2) || (args.renderWindow.y1 < firstBounds.y1) || (args.renderWindow.y1 >= firstBounds.y2) || (args.renderWindow.x2 <= firstBounds.x1) || (args.renderWindow.x2 > firstBounds.x2) || (args.renderWindow.y2 <= firstBounds.y1) || (args.renderWindow.y2 > firstBounds.y2)) {
         throwSuiteStatusException(kOfxStatErrValue);
 
-        //throw std::runtime_error("render window outside of image bounds");
+        // throw std::runtime_error("render window outside of image bounds");
         return;
     }
 
@@ -1584,12 +1553,12 @@ GenericReaderPlugin::render(const RenderArguments &args)
     OfxPointD proxyOriginalScale;
     _originalProxyScale->getValue(proxyOriginalScale.x, proxyOriginalScale.y);
 
-    ///We only support downscaling at a power of two.
-    unsigned int renderMipmapLevel = getLevelFromScale( (std::min)(args.renderScale.x, args.renderScale.y) );
-    unsigned int proxyMipMapThresholdLevel = (proxyScaleThreshold.x == 0 || proxyScaleThreshold.y == 0) ? renderMipmapLevel :  getLevelFromScale( (std::min)(proxyScaleThreshold.x, proxyScaleThreshold.y) );
-    unsigned int originalProxyMipMapLevel = (proxyOriginalScale.x == 0 || proxyOriginalScale.y == 0) ? renderMipmapLevel : getLevelFromScale( (std::min)(proxyOriginalScale.x, proxyOriginalScale.y) );
+    /// We only support downscaling at a power of two.
+    unsigned int renderMipmapLevel = getLevelFromScale((std::min)(args.renderScale.x, args.renderScale.y));
+    unsigned int proxyMipMapThresholdLevel = (proxyScaleThreshold.x == 0 || proxyScaleThreshold.y == 0) ? renderMipmapLevel : getLevelFromScale((std::min)(proxyScaleThreshold.x, proxyScaleThreshold.y));
+    unsigned int originalProxyMipMapLevel = (proxyOriginalScale.x == 0 || proxyOriginalScale.y == 0) ? renderMipmapLevel : getLevelFromScale((std::min)(proxyOriginalScale.x, proxyOriginalScale.y));
 
-    if ( kSupportsRenderScale && (renderMipmapLevel >= proxyMipMapThresholdLevel) ) {
+    if (kSupportsRenderScale && (renderMipmapLevel >= proxyMipMapThresholdLevel)) {
         useProxy = true;
     }
 
@@ -1624,7 +1593,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
 
     string proxyFile;
     if (useProxy) {
-        ///Use the proxy only if getFilenameAtSequenceTime returned a valid proxy filename different from the original file
+        /// Use the proxy only if getFilenameAtSequenceTime returned a valid proxy filename different from the original file
         GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(sequenceTime, true, true, &proxyFile);
         switch (getFilenameAtSequenceTimeRetPx) {
         case eGetFileNameFailed:
@@ -1649,12 +1618,11 @@ GenericReaderPlugin::render(const RenderArguments &args)
             break;
 
         case eGetFileNameReturnedProxy:
-            assert( !proxyFile.empty() );
+            assert(!proxyFile.empty());
             useProxy = (proxyFile != filename);
             break;
         }
     }
-
 
     // The args.renderWindow is already in pixels coordinate (render scale is already taken into account).
     // If the filename IS NOT a proxy file we have to make sure the renderWindow is
@@ -1663,13 +1631,13 @@ GenericReaderPlugin::render(const RenderArguments &args)
     // When in proxy mode renderWindowFullRes is the render window at the proxy mip map level
     int downscaleLevels = renderMipmapLevel; // the number of mipmap levels from the actual file (proxy or not) to the renderWindow
 
-    if ( useProxy && !proxyFile.empty() ) {
+    if (useProxy && !proxyFile.empty()) {
         filename = proxyFile;
         downscaleLevels -= originalProxyMipMapLevel;
     }
     assert(downscaleLevels >= 0);
 
-    if ( filename.empty() || !checkIfFileExists(filename) ) {
+    if (filename.empty() || !checkIfFileExists(filename)) {
         for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
             fillWithBlack(args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, firstDepth, it->rowBytes);
         }
@@ -1683,9 +1651,9 @@ GenericReaderPlugin::render(const RenderArguments &args)
     int tile_width, tile_height;
     string error;
 
-    ///if the plug-in doesn't support tiles, just render the full rod
+    /// if the plug-in doesn't support tiles, just render the full rod
     bool success = getFrameBounds(filename, sequenceTime, args.renderView, &frameBounds, &format, &par, &error, &tile_width, &tile_height);
-    ///We shouldve checked above for any failure, now this is too late.
+    /// We shouldve checked above for any failure, now this is too late.
     if (!success) {
         setPersistentMessage(Message::eMessageError, "", error);
         throwSuiteStatusException(kOfxStatFailed);
@@ -1697,13 +1665,10 @@ GenericReaderPlugin::render(const RenderArguments &args)
 
     // Intersect the full res renderwindow to the real rod,
     // because we may have gone a few pixels too far (but never more than 2^downscaleLevels-1 pixels)
-    assert(renderWindowFullRes.x1 >= frameBounds.x1 - std::pow(2., (double)downscaleLevels) + 1 &&
-           renderWindowFullRes.x2 <= frameBounds.x2 + std::pow(2., (double)downscaleLevels) - 1 &&
-           renderWindowFullRes.y1 >= frameBounds.y1 - std::pow(2., (double)downscaleLevels) + 1 &&
-           renderWindowFullRes.y2 <= frameBounds.y2 + std::pow(2., (double)downscaleLevels) - 1);
+    assert(renderWindowFullRes.x1 >= frameBounds.x1 - std::pow(2., (double)downscaleLevels) + 1 && renderWindowFullRes.x2 <= frameBounds.x2 + std::pow(2., (double)downscaleLevels) - 1 && renderWindowFullRes.y1 >= frameBounds.y1 - std::pow(2., (double)downscaleLevels) + 1 && renderWindowFullRes.y2 <= frameBounds.y2 + std::pow(2., (double)downscaleLevels) - 1);
     intersect(renderWindowFullRes, frameBounds, &renderWindowFullRes);
 
-    //See below: we round the render window to the tile size
+    // See below: we round the render window to the tile size
     renderWindowNotRounded = renderWindowFullRes;
 
     for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -1719,15 +1684,7 @@ GenericReaderPlugin::render(const RenderArguments &args)
             MultiPlane::ImagePlaneDesc plane, pairedPlane;
             MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(it->rawComps, &plane, &pairedPlane);
             const std::vector<std::string>& channels = plane.getChannels();
-            isColor = ( (channels.size() == 3 &&
-                         channels[0] == "R" &&
-                         channels[1] == "G" &&
-                         channels[2] == "B") ||
-                        (channels.size() == 4 &&
-                         channels[0] == "R" &&
-                         channels[1] == "G" &&
-                         channels[2] == "B" &&
-                         channels[3] == "A") );
+            isColor = ((channels.size() == 3 && channels[0] == "R" && channels[1] == "G" && channels[2] == "B") || (channels.size() == 4 && channels[0] == "R" && channels[1] == "G" && channels[2] == "B" && channels[3] == "A"));
             isCustom = true;
 
             if (it->numChans == 3) {
@@ -1748,11 +1705,11 @@ GenericReaderPlugin::render(const RenderArguments &args)
 
         PreMultiplicationEnum filePremult = eImageUnPreMultiplied;
         PreMultiplicationEnum outputPremult = eImageUnPreMultiplied;
-        if ( (remappedComponents == ePixelComponentRGB) || (remappedComponents == ePixelComponentXY) ) {
+        if ((remappedComponents == ePixelComponentRGB) || (remappedComponents == ePixelComponentXY)) {
             filePremult = outputPremult = eImageOpaque;
         } else if (remappedComponents == ePixelComponentAlpha) {
             filePremult = outputPremult = eImagePreMultiplied;
-        } else if ( (it->comps == ePixelComponentRGBA) || ( isCustom && isColor && (remappedComponents == ePixelComponentRGBA) ) ) {
+        } else if ((it->comps == ePixelComponentRGBA) || (isCustom && isColor && (remappedComponents == ePixelComponentRGBA))) {
             int premult_i;
             _filePremult->getValue(premult_i);
             filePremult = (PreMultiplicationEnum)premult_i;
@@ -1762,20 +1719,17 @@ GenericReaderPlugin::render(const RenderArguments &args)
             outputPremult = (PreMultiplicationEnum)oPremult_i;
         }
 
-
         // we have to do the final premultiplication if:
         // - pixelComponents is RGBA
         //  AND
         //   - buffer is PreMultiplied AND OCIO is not identity (OCIO works only on unpremultiplied data)
         //   OR
         //   - premult is unpremultiplied
-        bool mustPremult = ( isColor && (remappedComponents == ePixelComponentRGBA) &&
-                             ( (filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied ) );
+        bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
 
-
-        if ( !mustPremult && isOCIOIdentity && ( !kSupportsRenderScale || (renderMipmapLevel == 0) ) ) {
+        if (!mustPremult && isOCIOIdentity && (!kSupportsRenderScale || (renderMipmapLevel == 0))) {
             // no colorspace conversion, no premultiplication, no proxy, just read file
-            DBG( std::printf("decode (to dst)\n") );
+            DBG(std::printf("decode (to dst)\n"));
 
             if (!_isMultiPlanar) {
                 decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
@@ -1795,31 +1749,31 @@ GenericReaderPlugin::render(const RenderArguments &args)
                If tile_width and tile_height is set, round the renderWindow to the enclosing tile size to make sure the plug-in has a buffer
                large enough to decode tiles. This is needed for OpenImageIO. Note that
              */
-            if ( (tile_width > 0) && (tile_height > 0) ) {
+            if ((tile_width > 0) && (tile_height > 0)) {
                 double frameHeight = frameBounds.y2 - frameBounds.y1;
-                if ( isTileOrientationTopDown() ) {
-                    //invert Y before rounding
+                if (isTileOrientationTopDown()) {
+                    // invert Y before rounding
 
-                    renderWindowFullRes.y1 = frameHeight -  renderWindowFullRes.y1;
-                    renderWindowFullRes.y2 = frameHeight  - renderWindowFullRes.y2;
-                    frameBounds.y1 = frameHeight  - frameBounds.y1;
-                    frameBounds.y2 = frameHeight  - frameBounds.y2;
+                    renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
+                    renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
+                    frameBounds.y1 = frameHeight - frameBounds.y1;
+                    frameBounds.y2 = frameHeight - frameBounds.y2;
 
-                    renderWindowFullRes.x1 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.x1 / tile_width ) * tile_width, (double)frameBounds.x1 );
-                    renderWindowFullRes.y1 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.y1 / tile_height ) * tile_height, (double)frameBounds.y1 );
-                    renderWindowFullRes.x2 = (std::max)( (double)std::floor( (double)renderWindowFullRes.x2 / tile_width ) * tile_width, (double)frameBounds.x2 );
-                    renderWindowFullRes.y2 = (std::max)( (double)std::floor( (double)renderWindowFullRes.y2 / tile_height ) * tile_height, (double)frameBounds.y2 );
+                    renderWindowFullRes.x1 = (std::min)((double)std::ceil((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
+                    renderWindowFullRes.y1 = (std::min)((double)std::ceil((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
+                    renderWindowFullRes.x2 = (std::max)((double)std::floor((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
+                    renderWindowFullRes.y2 = (std::max)((double)std::floor((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
                 } else {
-                    renderWindowFullRes.x1 = (std::max)( (double)std::floor( (double)renderWindowFullRes.x1 / tile_width ) * tile_width, (double)frameBounds.x1 );
-                    renderWindowFullRes.y1 = (std::max)( (double)std::floor( (double)renderWindowFullRes.y1 / tile_height ) * tile_height, (double)frameBounds.y1 );
-                    renderWindowFullRes.x2 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.x2 / tile_width ) * tile_width, (double)frameBounds.x2 );
-                    renderWindowFullRes.y2 = (std::min)( (double)std::ceil( (double)renderWindowFullRes.y2 / tile_height ) * tile_height, (double)frameBounds.y2 );
+                    renderWindowFullRes.x1 = (std::max)((double)std::floor((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
+                    renderWindowFullRes.y1 = (std::max)((double)std::floor((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
+                    renderWindowFullRes.x2 = (std::min)((double)std::ceil((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
+                    renderWindowFullRes.y2 = (std::min)((double)std::ceil((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
                 }
 
-                if ( isTileOrientationTopDown() ) {
-                    //invert back Y
+                if (isTileOrientationTopDown()) {
+                    // invert back Y
                     renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
-                    renderWindowFullRes.y2 = frameHeight  - renderWindowFullRes.y2;
+                    renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
                     frameBounds.y1 = frameHeight - frameBounds.y1;
                     frameBounds.y2 = frameHeight - frameBounds.y2;
                 }
@@ -1828,10 +1782,10 @@ GenericReaderPlugin::render(const RenderArguments &args)
             int tmpRowBytes = (renderWindowFullRes.x2 - renderWindowFullRes.x1) * pixelBytes;
             size_t memSize = (size_t)(renderWindowFullRes.y2 - renderWindowFullRes.y1) * (size_t)tmpRowBytes;
             ImageMemory mem(memSize, this);
-            float *tmpPixelData = (float*)mem.lock();
+            float* tmpPixelData = (float*)mem.lock();
 
             // read file
-            DBG( std::printf("decode (to tmp)\n") );
+            DBG(std::printf("decode (to tmp)\n"));
 
             if (!_isMultiPlanar) {
                 decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
@@ -1839,35 +1793,35 @@ GenericReaderPlugin::render(const RenderArguments &args)
                 decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
             }
 
-            if ( abort() ) {
+            if (abort()) {
                 return;
             }
 
-            ///do the color-space conversion
-            if ( !isOCIOIdentity && isColor ) {
+            /// do the color-space conversion
+            if (!isOCIOIdentity && isColor) {
                 if (filePremult == eImagePreMultiplied) {
                     assert(remappedComponents == ePixelComponentRGBA);
-                    DBG( std::printf("unpremult (tmp in-place)\n") );
-                    //tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = tmpPixelData[3] = 0.5;
+                    DBG(std::printf("unpremult (tmp in-place)\n"));
+                    // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = tmpPixelData[3] = 0.5;
                     unPremultPixelData(renderWindowNotRounded, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes);
 
-                    if ( abort() ) {
+                    if (abort()) {
                         return;
                     }
 
-                    //assert(tmpPixelData[0] == 1. && tmpPixelData[1] == 1. && tmpPixelData[2] == 1. && tmpPixelData[3] == 0.5);
+                    // assert(tmpPixelData[0] == 1. && tmpPixelData[1] == 1. && tmpPixelData[2] == 1. && tmpPixelData[3] == 0.5);
                 }
 #ifdef OFX_IO_USING_OCIO
-                DBG( std::printf("OCIO (tmp in-place)\n") );
+                DBG(std::printf("OCIO (tmp in-place)\n"));
                 _ocio->apply(args.time, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
 #endif
             }
 
-            if ( kSupportsRenderScale && (downscaleLevels > 0) ) {
+            if (kSupportsRenderScale && (downscaleLevels > 0)) {
                 if (!mustPremult) {
                     // we can write directly to dstPixelData
                     /// adjust the scale to match the given output image
-                    DBG( std::printf("scale (no premult, tmp to dst)\n") );
+                    DBG(std::printf("scale (no premult, tmp to dst)\n"));
                     scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
                                    it->numChans, firstDepth, renderWindowFullRes, tmpRowBytes, it->pixelData,
                                    remappedComponents, it->numChans, firstDepth, firstBounds, it->rowBytes);
@@ -1876,35 +1830,35 @@ GenericReaderPlugin::render(const RenderArguments &args)
                     int mem2RowBytes = (firstBounds.x2 - firstBounds.x1) * pixelBytes;
                     size_t mem2Size = (size_t)(firstBounds.y2 - firstBounds.y1) * (size_t)mem2RowBytes;
                     ImageMemory mem2(mem2Size, this);
-                    float *scaledPixelData = (float*)mem2.lock();
+                    float* scaledPixelData = (float*)mem2.lock();
 
                     /// adjust the scale to match the given output image
-                    DBG( std::printf("scale (tmp to scaled)\n") );
+                    DBG(std::printf("scale (tmp to scaled)\n"));
                     scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
                                    remappedComponents, it->numChans, firstDepth,
                                    renderWindowFullRes, tmpRowBytes, scaledPixelData,
                                    remappedComponents, it->numChans, firstDepth,
                                    firstBounds, mem2RowBytes);
 
-                    if ( abort() ) {
+                    if (abort()) {
                         return;
                     }
 
                     // apply premult
-                    DBG( std::printf("premult (scaled to dst)\n") );
-                    //scaledPixelData[0] = scaledPixelData[1] = scaledPixelData[2] = 1.; scaledPixelData[3] = 0.5;
-                    premultPixelData(args.renderWindow, args.renderScale, scaledPixelData, firstBounds, remappedComponents,  it->numChans, firstDepth, mem2RowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
-                    //assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
+                    DBG(std::printf("premult (scaled to dst)\n"));
+                    // scaledPixelData[0] = scaledPixelData[1] = scaledPixelData[2] = 1.; scaledPixelData[3] = 0.5;
+                    premultPixelData(args.renderWindow, args.renderScale, scaledPixelData, firstBounds, remappedComponents, it->numChans, firstDepth, mem2RowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                    // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
                 }
             } else {
                 // copy
                 if (mustPremult) {
-                    DBG( std::printf("premult (no scale, tmp to dst)\n") );
-                    //tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = 1.; tmpPixelData[3] = 0.5;
+                    DBG(std::printf("premult (no scale, tmp to dst)\n"));
+                    // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = 1.; tmpPixelData[3] = 0.5;
                     premultPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
-                    //assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
+                    // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
                 } else {
-                    DBG( std::printf("copy (no premult no scale, tmp to dst)\n") );
+                    DBG(std::printf("copy (no premult no scale, tmp to dst)\n"));
                     copyPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
                 }
             }
@@ -1920,13 +1874,13 @@ GenericReaderPlugin::decode(const string& /*filename*/,
                             bool /*isPlayback*/,
                             const OfxRectI& /*renderWindow*/,
                             const OfxPointD& /*renderScale*/,
-                            float */*pixelData*/,
+                            float* /*pixelData*/,
                             const OfxRectI& /*bounds*/,
                             PixelComponentEnum /*pixelComponents*/,
                             int /*pixelComponentCount*/,
                             int /*rowBytes*/)
 {
-    //does nothing
+    // does nothing
 }
 
 void
@@ -1936,7 +1890,7 @@ GenericReaderPlugin::decodePlane(const string& /*filename*/,
                                  bool /*isPlayback*/,
                                  const OfxRectI& /*renderWindow*/,
                                  const OfxPointD& /*renderScale*/,
-                                 float */*pixelData*/,
+                                 float* /*pixelData*/,
                                  const OfxRectI& /*bounds*/,
                                  PixelComponentEnum /*pixelComponents*/,
                                  PixelComponentEnum /*remappedComponents*/,
@@ -1944,13 +1898,13 @@ GenericReaderPlugin::decodePlane(const string& /*filename*/,
                                  const string& /*rawComponents*/,
                                  int /*rowBytes*/)
 {
-    //does nothing
+    // does nothing
 }
 
 bool
 GenericReaderPlugin::checkExtension(const string& ext)
 {
-    if ( ext.empty() ) {
+    if (ext.empty()) {
         // no extension
         return false;
     }
@@ -1965,7 +1919,7 @@ GenericReaderPlugin::checkExtension(const string& ext)
  * Any derived implementation must call GenericReaderPlugin::changedFilename() first
  **/
 void
-GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
+GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
 {
     assert(args.reason != eChangeTime);
     if (args.reason == eChangeTime) {
@@ -1977,7 +1931,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
 
     clearPersistentMessage();
 
-    if ( filename.empty() ) {
+    if (filename.empty()) {
         // if the file name is set to an empty string,
         // reset so that values are automatically set on next call to changedFilename()
         _guessedParams->resetToDefault();
@@ -2017,14 +1971,14 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
     restoreStateFromParams();
 
     // should we guess some parameters? only if it's user-set and it's the first time
-    if ( (args.reason == eChangeUserEdit) && !_guessedParams->getValue() ) {
+    if ((args.reason == eChangeUserEdit) && !_guessedParams->getValue()) {
         _startingTime->setValue(timeDomain.min);
 
-        ///We call guessParamsFromFilename with the first frame of the sequence so we're almost sure it will work
-        ///unless the user did a mistake. We are also safe to assume that images specs are the same for
-        ///all the sequence
+        /// We call guessParamsFromFilename with the first frame of the sequence so we're almost sure it will work
+        /// unless the user did a mistake. We are also safe to assume that images specs are the same for
+        /// all the sequence
         _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
-        if ( filename.empty() ) {
+        if (filename.empty()) {
             // no need to trigger a useless error or a persistent message
 
             return;
@@ -2041,7 +1995,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         int componentCount = 0;
         PreMultiplicationEnum filePremult = eImageOpaque;
 
-        assert( !_guessedParams->getValue() );
+        assert(!_guessedParams->getValue());
         bool success = guessParamsFromFilename(filename, &colorspace, &filePremult, &components, &componentCount);
         if (!success) {
             return;
@@ -2050,7 +2004,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         bool setColorSpace = true;
 #ifdef OFX_IO_USING_OCIO
         // if inputSpaceSet == true (input space was manually set by user) then setColorSpace = false
-        if ( _inputSpaceSet->getValue() ) {
+        if (_inputSpaceSet->getValue()) {
             setColorSpace = false;
         }
         // Colorspace parsed from filename overrides the file colorspace,
@@ -2065,11 +2019,11 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         if (setColorSpace && ocioConfig) {
             string name = filename;
             (void)SequenceParsing::removePath(name); // only use the file NAME
-#         if OCIO_VERSION_HEX >= 0x02000000
-            const char* colorSpaceStr = ocioConfig->getColorSpaceFromFilepath( name.c_str() );
-#         else
-            const char* colorSpaceStr = ocioConfig->parseColorSpaceFromString( name.c_str() );
-#         endif
+#if OCIO_VERSION_HEX >= 0x02000000
+            const char* colorSpaceStr = ocioConfig->getColorSpaceFromFilepath(name.c_str());
+#else
+            const char* colorSpaceStr = ocioConfig->parseColorSpaceFromString(name.c_str());
+#endif
             size_t colorSpaceStrLen = colorSpaceStr ? std::strlen(colorSpaceStr) : 0;
             if (colorSpaceStrLen == 0) {
                 colorSpaceStr = NULL;
@@ -2080,28 +2034,24 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
                 // as in http://opencolorio.org/configurations/spi_pipeline.html
                 // https://github.com/imageworks/OpenColorIO/pull/413
                 size_t pos = name.find_last_of('.');
-                if ( pos == string::npos || pos < (colorSpaceStrLen + 1) ) { // +1 for the delimiter
+                if (pos == string::npos || pos < (colorSpaceStrLen + 1)) { // +1 for the delimiter
                     // no dot, or the colorspace name and the delimiter cannot hold before the dot
                     colorSpaceStr = NULL;
                     colorSpaceStrLen = 0;
-                } else if ( (name.compare(pos - colorSpaceStrLen, colorSpaceStrLen, colorSpaceStr) != 0) ||
-                            ( (name[pos - colorSpaceStrLen - 1] != '_') &&
-                              (name[pos - colorSpaceStrLen - 1] != '-') &&
-                              (name[pos - colorSpaceStrLen - 1] != ' ') &&
-                              (name[pos - colorSpaceStrLen - 1] != '.') ) ) {
-                               // the colorspace name is not before the last dot or is not preceded by a valid delimiter
+                } else if ((name.compare(pos - colorSpaceStrLen, colorSpaceStrLen, colorSpaceStr) != 0) || ((name[pos - colorSpaceStrLen - 1] != '_') && (name[pos - colorSpaceStrLen - 1] != '-') && (name[pos - colorSpaceStrLen - 1] != ' ') && (name[pos - colorSpaceStrLen - 1] != '.'))) {
+                    // the colorspace name is not before the last dot or is not preceded by a valid delimiter
                     colorSpaceStr = NULL;
                     colorSpaceStrLen = 0;
                 }
             }
             if (colorSpaceStr && colorSpaceStrLen > 0) {
-                assert( _ocio->hasColorspace(colorSpaceStr) ); // parseColorSpaceFromString always returns an existing colorspace
+                assert(_ocio->hasColorspace(colorSpaceStr)); // parseColorSpaceFromString always returns an existing colorspace
                 // we're lucky
                 _ocio->setInputColorspace(colorSpaceStr);
                 setColorSpace = false;
             }
             if (setColorSpace) {
-                _ocio->setInputColorspace( colorspace.c_str() );
+                _ocio->setInputColorspace(colorspace.c_str());
             }
         }
 
@@ -2118,7 +2068,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
         if (components != ePixelComponentNone) {
             setOutputComponents(components);
         }
-        _filePremult->setValue( (int)filePremult );
+        _filePremult->setValue((int)filePremult);
 
         if (components == ePixelComponentRGB) {
             // RGB is always opaque
@@ -2133,12 +2083,12 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs &args)
 } // GenericReaderPlugin::changedFilename
 
 void
-GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
-                                  const string &paramName)
+GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
+                                  const string& paramName)
 {
     const double time = args.time;
 
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -2152,11 +2102,11 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
             clearPersistentMessage();
             changedFilename(args);
         }
-        if ( _sublabel && (args.reason != eChangePluginEdit) ) {
+        if (_sublabel && (args.reason != eChangePluginEdit)) {
             refreshSubLabel(args.time);
         }
     } else if (paramName == kParamProxy) {
-        ///Detect the scale of the proxy.
+        /// Detect the scale of the proxy.
         string proxyFile, originalFileName;
         double sequenceTime;
         GetSequenceTimeRetEnum getSequenceTimeRet = getSequenceTime(args.time, &sequenceTime);
@@ -2168,14 +2118,12 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         case eGetSequenceTimeBeforeSequence:
         case eGetSequenceTimeWithinSequence:
         case eGetSequenceTimeAfterSequence: {
-            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet   = getFilenameAtSequenceTime(sequenceTime, false, true, &originalFileName);
+            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, &originalFileName);
             GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(sequenceTime, true, true, &proxyFile);
 
-            if ( ( getFilenameAtSequenceTimeRet == eGetFileNameReturnedFullRes) &&
-                 ( getFilenameAtSequenceTimeRetPx == eGetFileNameReturnedProxy) &&
-                 ( proxyFile != originalFileName) ) {
-                assert( !proxyFile.empty() );
-                ///show the scale param
+            if ((getFilenameAtSequenceTimeRet == eGetFileNameReturnedFullRes) && (getFilenameAtSequenceTimeRetPx == eGetFileNameReturnedProxy) && (proxyFile != originalFileName)) {
+                assert(!proxyFile.empty());
+                /// show the scale param
                 _proxyThreshold->setIsSecretAndDisabled(false);
                 _enableCustomScale->setIsSecretAndDisabled(false);
 
@@ -2197,7 +2145,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         _originalFrameRange->getValue(oFirst, oLast);
         string filename;
         _fileParam->getValueAtTime(oFirst, filename); // the time in _fileParam is the *file* time
-        if ( isVideoStream(filename) ) {
+        if (isVideoStream(filename)) {
             return;
         }
 
@@ -2211,7 +2159,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
 
         _startingTime->setValue(oFirst);
         _startingTime->setDefault(oFirst);
-    } else if ( (paramName == kParamFirstFrame) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamFirstFrame) && (args.reason == eChangeUserEdit)) {
         int first;
         int oFirst, oLast;
         _originalFrameRange->getValue(oFirst, oLast);
@@ -2223,7 +2171,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         _startingTime->setValue(first + offset); // will be called with reason == eChangePluginEdit
 
         _timeDomainUserSet->setValue(true);
-    } else if ( (paramName == kParamLastFrame) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamLastFrame) && (args.reason == eChangeUserEdit)) {
         int first;
         int last;
         int oFirst, oLast;
@@ -2233,56 +2181,56 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
         _firstFrame->setDisplayRange(oFirst, last);
 
         _timeDomainUserSet->setValue(true);
-    } else if ( (paramName == kParamFrameMode) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamFrameMode) && (args.reason == eChangeUserEdit)) {
         FrameModeEnum frameMode = (FrameModeEnum)_frameMode->getValueAtTime(time);
         switch (frameMode) {
-        case eFrameModeStartingTime:     //starting frame
+        case eFrameModeStartingTime: // starting frame
             _startingTime->setIsSecretAndDisabled(false);
             _timeOffset->setIsSecretAndDisabled(true);
             break;
-        case eFrameModeTimeOffset:     //time offset
+        case eFrameModeTimeOffset: // time offset
             _startingTime->setIsSecretAndDisabled(true);
             _timeOffset->setIsSecretAndDisabled(false);
             break;
         }
-    } else if ( (paramName == kParamStartingTime) && (args.reason == eChangeUserEdit) ) {
-        ///recompute the timedomain
+    } else if ((paramName == kParamStartingTime) && (args.reason == eChangeUserEdit)) {
+        /// recompute the timedomain
         OfxRangeI sequenceTimeDomain;
         getSequenceTimeDomainInternal(sequenceTimeDomain, true);
 
-        //also update the time offset
+        // also update the time offset
         int startingTime = _startingTime->getValueAtTime(time);
         int firstFrame = _firstFrame->getValueAtTime(time);
 
         _timeOffset->setValue(startingTime - firstFrame);
         _timeDomainUserSet->setValue(true);
-    } else if ( (paramName == kParamTimeOffset) && (args.reason == eChangeUserEdit) ) {
-        //also update the starting frame
+    } else if ((paramName == kParamTimeOffset) && (args.reason == eChangeUserEdit)) {
+        // also update the starting frame
         int offset = _timeOffset->getValueAtTime(time);
         int first = _firstFrame->getValueAtTime(time);
 
         _startingTime->setValue(offset + first);
         _timeDomainUserSet->setValue(true);
-    } else if ( (paramName == kParamOutputComponents) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamOutputComponents) && (args.reason == eChangeUserEdit)) {
         PixelComponentEnum comps = getOutputComponents();
         PreMultiplicationEnum premult = (PreMultiplicationEnum)_outputPremult->getValueAtTime(time);
-        if ( (comps == ePixelComponentRGB) && (premult != eImageOpaque) ) {
+        if ((comps == ePixelComponentRGB) && (premult != eImageOpaque)) {
             // RGB is always opaque
             _outputPremult->setValue(eImageOpaque);
-        } else if ( (comps == ePixelComponentAlpha) && (premult != eImagePreMultiplied) ) {
+        } else if ((comps == ePixelComponentAlpha) && (premult != eImagePreMultiplied)) {
             // Alpha is always premultiplied
             _outputPremult->setValue(eImagePreMultiplied);
         }
-    } else if ( (paramName == kParamOutputPremult) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamOutputPremult) && (args.reason == eChangeUserEdit)) {
         PreMultiplicationEnum premult = (PreMultiplicationEnum)_outputPremult->getValueAtTime(time);
         PixelComponentEnum comps = getOutputComponents();
         // reset to authorized values if necessary
-        if ( (comps == ePixelComponentRGB) && (premult != eImageOpaque) ) {
+        if ((comps == ePixelComponentRGB) && (premult != eImageOpaque)) {
             // RGB is always opaque
-            _outputPremult->setValue( (int)eImageOpaque );
-        } else if ( (comps == ePixelComponentAlpha) && (premult != eImagePreMultiplied) ) {
+            _outputPremult->setValue((int)eImageOpaque);
+        } else if ((comps == ePixelComponentAlpha) && (premult != eImagePreMultiplied)) {
             // Alpha is always premultiplied
-            _outputPremult->setValue( (int)eImagePreMultiplied );
+            _outputPremult->setValue((int)eImagePreMultiplied);
         }
     } else if (paramName == kParamCustomFps) {
         bool customFps = _customFPS->getValueAtTime(time);
@@ -2290,31 +2238,30 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs &args,
 
         if (!customFps) {
             OfxRangeI sequenceTimeDomain;
-            if ( getSequenceTimeDomainInternal(sequenceTimeDomain, false) ) {
+            if (getSequenceTimeDomainInternal(sequenceTimeDomain, false)) {
                 OfxRangeI timeDomain;
-                ///these are the value held by the "First frame" and "Last frame" param
+                /// these are the value held by the "First frame" and "Last frame" param
                 sequenceTimeDomain.min = _firstFrame->getValue();
                 sequenceTimeDomain.max = _lastFrame->getValue();
                 int startingTime = _startingTime->getValue();
                 timeDomainFromSequenceTimeDomain(sequenceTimeDomain, startingTime, &timeDomain);
                 _startingTime->setValue(timeDomain.min);
 
-                ///We call guessParamsFromFilename with the first frame of the sequence so we're almost sure it will work
-                ///unless the user did a mistake. We are also safe to assume that images specs are the same for
-                ///all the sequence
+                /// We call guessParamsFromFilename with the first frame of the sequence so we're almost sure it will work
+                /// unless the user did a mistake. We are also safe to assume that images specs are the same for
+                /// all the sequence
                 string filename;
                 _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
 
                 double fps;
                 bool gotFps = getFrameRate(filename, &fps);
-                if  (gotFps) {
+                if (gotFps) {
                     _fps->setValue(fps);
                 }
             }
         }
 #ifdef OFX_IO_USING_OCIO
-    } else if ( ( (paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice) ) &&
-               ( args.reason == eChangeUserEdit) ) {
+    } else if (((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit)) {
         // set the inputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
         _inputSpaceSet->setValue(true);
 #endif
@@ -2344,13 +2291,13 @@ GenericReaderPlugin::setOutputComponents(PixelComponentEnum comps)
         // not found, set the first supported component
         i = 0;
     }
-    assert( i < _outputComponents->getNOptions() );
+    assert(i < _outputComponents->getNOptions());
     _outputComponents->setValue(i);
 }
 
 /* Override the clip preferences */
 void
-GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
+GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
 {
     // if there is only one frame and before/after behaviour is hold, then
     // the output is not framevarying
@@ -2365,7 +2312,7 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
         int afterChoice_i;
         _afterLast->getValue(afterChoice_i);
         BeforeAfterEnum afterChoice = BeforeAfterEnum(afterChoice_i);
-        if ( (beforeChoice == eBeforeAfterHold) && (afterChoice == eBeforeAfterHold) ) {
+        if ((beforeChoice == eBeforeAfterHold) && (afterChoice == eBeforeAfterHold)) {
             frameVarying = false;
         }
     }
@@ -2405,7 +2352,7 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
     // get the pixel aspect ratio from the first frame
     if (gotSequenceTimeDomain) {
         OfxRangeI timeDomain;
-        ///these are the value held by the "First frame" and "Last frame" param
+        /// these are the value held by the "First frame" and "Last frame" param
         sequenceTimeDomain.min = _firstFrame->getValue();
         sequenceTimeDomain.max = _lastFrame->getValue();
         int startingTime = _startingTime->getValue();
@@ -2451,12 +2398,11 @@ GenericReaderPlugin::purgeCaches()
 }
 
 bool
-GenericReaderPlugin::isIdentity(const IsIdentityArguments &args,
-                                Clip * &identityClip,
-                                double &identityTime
-                                , int& /*view*/, std::string& /*plane*/)
+GenericReaderPlugin::isIdentity(const IsIdentityArguments& args,
+                                Clip*& identityClip,
+                                double& identityTime, int& /*view*/, std::string& /*plane*/)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return false;
@@ -2481,10 +2427,10 @@ GenericReaderPlugin::isIdentity(const IsIdentityArguments &args,
 
     case eGetSequenceTimeBeforeSequence:
     case eGetSequenceTimeAfterSequence: {
-        ///Transform the sequence time to "real" time
+        /// Transform the sequence time to "real" time
         int timeOffset;
         _timeOffset->getValue(timeOffset);
-        identityTime = std::floor(sequenceTime + 0.5) + timeOffset;     // round to the nearest frame
+        identityTime = std::floor(sequenceTime + 0.5) + timeOffset; // round to the nearest frame
         identityClip = _outputClip;
 
         return true;
@@ -2494,8 +2440,8 @@ GenericReaderPlugin::isIdentity(const IsIdentityArguments &args,
             return false;
         }
         // fractional time, round to nearest frame
-        sequenceTime = std::floor(sequenceTime + 0.5);     // round to the nearest frame
-        ///Transform the sequence time to "real" time
+        sequenceTime = std::floor(sequenceTime + 0.5); // round to the nearest frame
+        /// Transform the sequence time to "real" time
         int timeOffset;
         _timeOffset->getValue(timeOffset);
         identityTime = sequenceTime + timeOffset;
@@ -2522,11 +2468,7 @@ GenericReaderPlugin::detectProxyScale(const string& originalFileName,
     proxyBounds.x1 = proxyBounds.x2 = proxyBounds.y1 = proxyBounds.y2 = 0.f;
     success = success && getFrameBounds(proxyFileName, time, /*view=*/0, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
     OfxPointD ret;
-    if ( !success ||
-         (originalBounds.x1 == originalBounds.x2) ||
-         (originalBounds.y1 == originalBounds.y2) ||
-         (proxyBounds.x1 == proxyBounds.x2) ||
-         (proxyBounds.y1 == proxyBounds.y2) ) {
+    if (!success || (originalBounds.x1 == originalBounds.x2) || (originalBounds.y1 == originalBounds.y2) || (proxyBounds.x1 == proxyBounds.x2) || (proxyBounds.y1 == proxyBounds.y2)) {
         ret.x = 1.;
         ret.y = 1.;
         setPersistentMessage(Message::eMessageError, "", "Cannot read the proxy file.");
@@ -2535,16 +2477,15 @@ GenericReaderPlugin::detectProxyScale(const string& originalFileName,
     }
     assert(originalBounds.x2 - originalBounds.x1);
     assert(originalBounds.y2 - originalBounds.y1);
-    ret.x = ( (proxyBounds.x2 - proxyBounds.x1)  * proxyPAR ) / ( (originalBounds.x2 - originalBounds.x1) * originalPAR );
+    ret.x = ((proxyBounds.x2 - proxyBounds.x1) * proxyPAR) / ((originalBounds.x2 - originalBounds.x1) * originalPAR);
     ret.y = (proxyBounds.y2 - proxyBounds.y1) / (double)(originalBounds.y2 - originalBounds.y1);
 
     return ret;
 }
 
-template<typename SRCPIX, int srcMaxValue, int nSrcComp, int nDstComp>
+template <typename SRCPIX, int srcMaxValue, int nSrcComp, int nDstComp>
 class PixelConverterProcessor
-    : public PixelProcessor
-{
+    : public PixelProcessor {
     const SRCPIX* _srcPixelData;
     int _dstBufferRowBytes;
     int _srcBufferRowBytes;
@@ -2552,7 +2493,7 @@ class PixelConverterProcessor
 
 public:
     // ctor
-    PixelConverterProcessor(ImageEffect &instance)
+    PixelConverterProcessor(ImageEffect& instance)
         : PixelProcessor(instance)
         , _srcPixelData(NULL)
         , _dstBufferRowBytes(0)
@@ -2563,11 +2504,11 @@ public:
     }
 
     void setValues(const SRCPIX* srcPixelData,
-                   const OfxRectI &srcBufferBounds,
+                   const OfxRectI& srcBufferBounds,
                    int srcBufferRowBytes,
                    float* dstPixelData,
                    int dstBufferRowBytes,
-                   const OfxRectI &dstBufferBounds)
+                   const OfxRectI& dstBufferBounds)
     {
         _srcPixelData = srcPixelData;
         _srcBufferBounds = srcBufferBounds;
@@ -2586,16 +2527,15 @@ public:
         assert(nDstComp == 1 || nDstComp == 2 || nDstComp == 3 || nDstComp == 4);
 
         for (int dsty = procWindow.y1; dsty < procWindow.y2; ++dsty) {
-            if ( _effect.abort() ) {
+            if (_effect.abort()) {
                 break;
             }
 
             int srcY = _dstBounds.y2 - dsty - 1;
-            float* dst_pixels = (float*)( (char*)_dstPixelData + (size_t)_dstBufferRowBytes * (dsty - _dstBounds.y1) )
-                                + (_dstBounds.x1 * nDstComp);
-            const SRCPIX* src_pixels = (const SRCPIX*)( (const char*)_srcPixelData + (size_t)_srcBufferRowBytes * (srcY - _srcBufferBounds.y1) )
-                                       + (_srcBufferBounds.x1 * nSrcComp);
-
+            float* dst_pixels = (float*)((char*)_dstPixelData + (size_t)_dstBufferRowBytes * (dsty - _dstBounds.y1))
+                + (_dstBounds.x1 * nDstComp);
+            const SRCPIX* src_pixels = (const SRCPIX*)((const char*)_srcPixelData + (size_t)_srcBufferRowBytes * (srcY - _srcBufferBounds.y1))
+                + (_srcBufferBounds.x1 * nSrcComp);
 
             assert(dst_pixels && src_pixels);
 
@@ -2734,7 +2674,7 @@ public:
     } // multiThreadProcessImages
 };
 
-template<typename SRCPIX, int srcMaxValue, int nSrcComp, int nDstComp>
+template <typename SRCPIX, int srcMaxValue, int nSrcComp, int nDstComp>
 void
 convertForDstNComps(ImageEffect* effect,
                     const SRCPIX* srcPixelData,
@@ -2742,17 +2682,17 @@ convertForDstNComps(ImageEffect* effect,
                     const OfxPointD& renderScale,
                     const OfxRectI& srcBounds,
                     int srcRowBytes,
-                    float *dstPixelData,
+                    float* dstPixelData,
                     const OfxRectI& dstBounds,
                     int dstRowBytes)
 {
     PixelConverterProcessor<SRCPIX, srcMaxValue, nSrcComp, nDstComp> p(*effect);
-    p.setValues(srcPixelData, srcBounds, srcRowBytes, dstPixelData,  dstRowBytes,  dstBounds);
+    p.setValues(srcPixelData, srcBounds, srcRowBytes, dstPixelData, dstRowBytes, dstBounds);
     p.setRenderWindow(renderWindow, renderScale);
     p.process();
 }
 
-template<typename SRCPIX, int srcMaxValue, int nSrcComp>
+template <typename SRCPIX, int srcMaxValue, int nSrcComp>
 void
 convertForSrcNComps(ImageEffect* effect,
                     const SRCPIX* srcPixelData,
@@ -2760,7 +2700,7 @@ convertForSrcNComps(ImageEffect* effect,
                     const OfxPointD& renderScale,
                     const OfxRectI& srcBounds,
                     int srcRowBytes,
-                    float *dstPixelData,
+                    float* dstPixelData,
                     const OfxRectI& dstBounds,
                     PixelComponentEnum dstPixelComponents,
                     int dstRowBytes)
@@ -2788,7 +2728,7 @@ convertForSrcNComps(ImageEffect* effect,
     }
 }
 
-template<typename SRCPIX, int srcMaxValue>
+template <typename SRCPIX, int srcMaxValue>
 void
 convertForDepth(ImageEffect* effect,
                 const SRCPIX* srcPixelData,
@@ -2797,7 +2737,7 @@ convertForDepth(ImageEffect* effect,
                 const OfxRectI& srcBounds,
                 PixelComponentEnum srcPixelComponents,
                 int srcRowBytes,
-                float *dstPixelData,
+                float* dstPixelData,
                 const OfxRectI& dstBounds,
                 PixelComponentEnum dstPixelComponents,
                 int dstRowBytes)
@@ -2829,7 +2769,7 @@ GenericReaderPlugin::convertDepthAndComponents(const void* srcPixelData,
                                                PixelComponentEnum srcPixelComponents,
                                                BitDepthEnum srcBitDepth,
                                                int srcRowBytes,
-                                               float *dstPixelData,
+                                               float* dstPixelData,
                                                const OfxRectI& dstBounds,
                                                PixelComponentEnum dstPixelComponents,
                                                int dstRowBytes)
@@ -2851,7 +2791,7 @@ GenericReaderPlugin::convertDepthAndComponents(const void* srcPixelData,
 }
 
 void
-GenericReaderDescribe(ImageEffectDescriptor &desc,
+GenericReaderDescribe(ImageEffectDescriptor& desc,
                       const std::vector<string>& extensions,
                       int evaluation,
                       bool supportsTiles,
@@ -2866,8 +2806,8 @@ GenericReaderDescribe(ImageEffectDescriptor &desc,
     desc.addSupportedContext(eContextGeneral);
 
     // add supported pixel depths
-    //desc.addSupportedBitDepth( eBitDepthUByte );
-    //desc.addSupportedBitDepth( eBitDepthUShort );
+    // desc.addSupportedBitDepth( eBitDepthUByte );
+    // desc.addSupportedBitDepth( eBitDepthUShort );
     desc.addSupportedBitDepth(eBitDepthFloat);
 
     // set a few flags
@@ -2887,7 +2827,7 @@ GenericReaderDescribe(ImageEffectDescriptor &desc,
         && getImageEffectHostDescription()->isMultiPlanar) {
         desc.setIsMultiPlanar(multiPlanar);
         if (multiPlanar) {
-            //We let all un-rendered planes pass-through so that they can be retrieved below by a shuffle node
+            // We let all un-rendered planes pass-through so that they can be retrieved below by a shuffle node
             desc.setPassThroughForNotProcessedPlanes(ePassThroughLevelPassThroughNonRenderedPlanes);
         }
         desc.setIsViewAware(true);
@@ -2903,8 +2843,8 @@ GenericReaderDescribe(ImageEffectDescriptor &desc,
 #endif
 }
 
-PageParamDescriptor *
-GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
+PageParamDescriptor*
+GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
                                     ContextEnum /*context*/,
                                     bool /*isVideoStreamPlugin*/,
                                     bool supportsRGBA,
@@ -2921,7 +2861,7 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
          ++it) {
         switch (*it) {
         case ePixelComponentRGBA:
-            gHostSupportsRGBA  = true;
+            gHostSupportsRGBA = true;
             break;
         case ePixelComponentRGB:
             gHostSupportsRGB = true;
@@ -2939,10 +2879,10 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
     }
 
     // make some pages and to things in
-    PageParamDescriptor *page = desc.definePageParam("Controls");
+    PageParamDescriptor* page = desc.definePageParam("Controls");
 
     // create the optional source clip
-    ClipDescriptor *srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
+    ClipDescriptor* srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     if (supportsRGBA) {
         srcClip->addSupportedComponent(ePixelComponentRGBA);
     }
@@ -2959,7 +2899,7 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
     srcClip->setOptional(true);
 
     // create the mandated output clip
-    ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
+    ClipDescriptor* dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
     if (supportsRGBA) {
         dstClip->addSupportedComponent(ePixelComponentRGBA);
     }
@@ -2973,7 +2913,6 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         dstClip->addSupportedComponent(ePixelComponentAlpha);
     }
     dstClip->setSupportsTiles(supportsTiles);
-
 
     //////////Input file
     {
@@ -3115,7 +3054,7 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         param->setHint(kParamTimeOffsetHint);
         param->setDefault(0);
         param->setAnimates(false);
-        //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+        // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         if (page) {
             page->addChild(*param);
         }
@@ -3186,7 +3125,7 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         param->setDefault(1., 1.);
         param->setRange(0.01, 0.01, 1., 1.);
         param->setDisplayRange(0.01, 0.01, 1., 1.);
-        //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+        // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setHint(kParamProxyThresholdHint);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
         param->setDoubleType(eDoubleTypeScale);
@@ -3196,11 +3135,11 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         }
     }
 
-    ///Enable custom proxy scale
+    /// Enable custom proxy scale
     {
         BooleanParamDescriptor* param = desc.defineBooleanParam(kParamCustomProxyScale);
         param->setLabel(kParamCustomProxyScaleLabel);
-        //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+        // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setDefault(false);
         param->setHint(kParamCustomProxyScaleHint);
         param->setAnimates(false);
@@ -3254,7 +3193,7 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
 
     //// Output components
     {
-        ChoiceParamDescriptor *param = desc.defineChoiceParam(kParamOutputComponents);
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputComponents);
         param->setLabel(kParamOutputComponentsLabel);
         param->setHint(kParamOutputComponentsHint);
 
@@ -3281,14 +3220,14 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         }
     }
 
-    ///Frame rate
+    /// Frame rate
     {
         DoubleParamDescriptor* param = desc.defineDoubleParam(kParamFrameRate);
         param->setLabel(kParamFrameRateLabel);
         param->setHint(kParamFrameRateHint);
         param->setEvaluateOnChange(false);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
-        //param->setEnabled(false); // done in the restoreStateFromParams()
+        // param->setEnabled(false); // done in the restoreStateFromParams()
         param->setDefault(24.);
         param->setRange(0., DBL_MAX);
         param->setDisplayRange(0., 300.);
@@ -3299,16 +3238,16 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         }
     }
 
-    ///Custom FPS
+    /// Custom FPS
     {
-        BooleanParamDescriptor* param  = desc.defineBooleanParam(kParamCustomFps);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamCustomFps);
         param->setLabel(kParamCustomFpsLabel);
         param->setHint(kParamCustomFpsHint);
         param->setEvaluateOnChange(false);
         param->setAnimates(false);
         desc.addClipPreferencesSlaveParam(*param);
         if (addSeparatorAfterLastParameter) {
-            //param->setLayoutHint(eLayoutHintDivider);
+            // param->setLayoutHint(eLayoutHintDivider);
         }
         if (page) {
             page->addChild(*param);
@@ -3321,14 +3260,14 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
         param->setIsSecretAndDisabled(true); // always secret
         param->setIsPersistent(false);
         param->setEvaluateOnChange(false);
-        //param->setDefault();
+        // param->setDefault();
         if (page) {
             page->addChild(*param);
         }
     }
 
     {
-        BooleanParamDescriptor* param  = desc.defineBooleanParam(kParamGuessedParams);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamGuessedParams);
         param->setEvaluateOnChange(false);
         param->setAnimates(false);
         param->setIsSecretAndDisabled(true);
@@ -3342,7 +3281,7 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor &desc,
 } // GenericReaderDescribeInContextBegin
 
 void
-GenericReaderDescribeInContextEnd(ImageEffectDescriptor &desc,
+GenericReaderDescribeInContextEnd(ImageEffectDescriptor& desc,
                                   ContextEnum context,
                                   PageParamDescriptor* page,
                                   const char* inputSpaceNameDefault,
@@ -3352,7 +3291,7 @@ GenericReaderDescribeInContextEnd(ImageEffectDescriptor &desc,
     // insert OCIO parameters
     GenericOCIO::describeInContextInput(desc, context, page, inputSpaceNameDefault, kParamInputSpaceLabel);
     {
-        BooleanParamDescriptor* param  = desc.defineBooleanParam(kParamInputSpaceSet);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamInputSpaceSet);
         param->setEvaluateOnChange(false);
         param->setAnimates(false);
         param->setIsSecretAndDisabled(true);
@@ -3376,4 +3315,3 @@ GenericReaderDescribeInContextEnd(ImageEffectDescriptor &desc,
 
 NAMESPACE_OFX_IO_EXIT
 NAMESPACE_OFX_EXIT
-

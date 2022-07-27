@@ -33,16 +33,16 @@
  *   This was already true before the 11.1v3 sync (e.g. at commit 4d0d3a5).
  */
 
-#if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_ ) ) && !defined(UINT64_C)
+#if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_)) && !defined(UINT64_C)
 #warning "__STDC_CONSTANT_MACROS has to be defined before including <stdint.h>, this file will probably not compile."
 #endif
 #ifndef __STDC_CONSTANT_MACROS
 #define __STDC_CONSTANT_MACROS // ...or stdint.h wont' define UINT64_C, needed by libavutil
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
-#include <algorithm>
 #ifdef DEBUG
 #include <cstdio>
 #define DBG(x) x
@@ -52,9 +52,9 @@
 
 #include "IOUtility.h"
 
+#include "FFmpegFile.h"
 #include "GenericOCIO.h"
 #include "GenericReader.h"
-#include "FFmpegFile.h"
 #include "ofxsCopier.h"
 
 #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 0, 0)
@@ -72,15 +72,15 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginName "ReadFFmpeg"
 #define kPluginGrouping "Image/Readers"
-#define kPluginDescription "Read video using FFmpeg.\n" \
-"All formats supported by FFmpeg should be supported, but there may be issues " \
-"with some non-conform files. In this case, it is recommended to transcode the " \
-"video to a digital intermediate format, which is more suitable for grading, " \
-"compositing and video editing.\n" \
-"This can be done using the ffmpeg command-line tool, by following the " \
-"instructions at (https://trac.ffmpeg.org/wiki/Encode/VFX).\n" \
-"Note that some format/codec combinations (eg AVI containing H264, MPEG-1 Video or MPEG-2 Video) do not support timestamps " \
-"and must be moved to another container (e.g., MOV)."
+#define kPluginDescription "Read video using FFmpeg.\n"                                                                                                 \
+                           "All formats supported by FFmpeg should be supported, but there may be issues "                                              \
+                           "with some non-conform files. In this case, it is recommended to transcode the "                                             \
+                           "video to a digital intermediate format, which is more suitable for grading, "                                               \
+                           "compositing and video editing.\n"                                                                                           \
+                           "This can be done using the ffmpeg command-line tool, by following the "                                                     \
+                           "instructions at (https://trac.ffmpeg.org/wiki/Encode/VFX).\n"                                                               \
+                           "Note that some format/codec combinations (eg AVI containing H264, MPEG-1 Video or MPEG-2 Video) do not support timestamps " \
+                           "and must be moved to another container (e.g., MOV)."
 
 #define kPluginIdentifier "fr.inria.openfx.ReadFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
@@ -96,27 +96,23 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamLibraryInfo "libraryInfo"
 #define kParamLibraryInfoLabel "FFmpeg Info...", "Display information about the underlying library."
 
-
 #define kSupportsRGBA true
 #define kSupportsRGB true
 #define kSupportsXY false
 #define kSupportsAlpha false
 #define kSupportsTiles false
 
-
 class ReadFFmpegPlugin
-    : public GenericReaderPlugin
-{
+    : public GenericReaderPlugin {
     FFmpegFileManager& _manager;
-    BooleanParam *_firstTrackOnly;
+    BooleanParam* _firstTrackOnly;
 
 public:
-
     ReadFFmpegPlugin(FFmpegFileManager& manager, OfxImageEffectHandle handle, const vector<string>& extensions);
 
     virtual ~ReadFFmpegPlugin();
 
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
     bool loadNearestFrame() const;
 
@@ -130,7 +126,6 @@ public:
     virtual void restoreStateFromParams() OVERRIDE FINAL;
 
 private:
-
     virtual bool isVideoStream(const string& filename) OVERRIDE FINAL;
 
     /**
@@ -152,10 +147,10 @@ private:
      * You must also return the premultiplication state and pixel components of the image.
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
-    virtual bool guessParamsFromFilename(const string& filename, string *colorspace, PreMultiplicationEnum *filePremult, PixelComponentEnum *components, int *componentCount) OVERRIDE FINAL;
-    virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
-    virtual bool getSequenceTimeDomain(const string& filename, OfxRangeI &range) OVERRIDE FINAL;
-    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
+    virtual bool guessParamsFromFilename(const string& filename, string* colorspace, PreMultiplicationEnum* filePremult, PixelComponentEnum* components, int* componentCount) OVERRIDE FINAL;
+    virtual void decode(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    virtual bool getSequenceTimeDomain(const string& filename, OfxRangeI& range) OVERRIDE FINAL;
+    virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
     virtual bool getFrameRate(const string& filename, double* fps) const OVERRIDE FINAL;
 };
 
@@ -207,7 +202,6 @@ ReadFFmpegPlugin::loadNearestFrame() const
     return v == 0;
 }
 
-
 static string
 ffmpeg_versions()
 {
@@ -217,9 +211,9 @@ ffmpeg_versions()
     oss << "libavformat ";
     oss << LIBAVFORMAT_VERSION_MAJOR << '.' << LIBAVFORMAT_VERSION_MINOR << '.' << LIBAVFORMAT_VERSION_MICRO << " / ";
     oss << (avformat_version() >> 16) << '.' << (avformat_version() >> 8 & 0xff) << '.' << (avformat_version() & 0xff) << std::endl;
-    //oss << "libavdevice ";
-    //oss << LIBAVDEVICE_VERSION_MAJOR << '.' << LIBAVDEVICE_VERSION_MINOR << '.' << LIBAVDEVICE_VERSION_MICRO << " / ";
-    //oss << avdevice_version() >> 16 << '.' << avdevice_version() >> 8 & 0xff << '.' << avdevice_version() & 0xff << std::endl;
+    // oss << "libavdevice ";
+    // oss << LIBAVDEVICE_VERSION_MAJOR << '.' << LIBAVDEVICE_VERSION_MINOR << '.' << LIBAVDEVICE_VERSION_MICRO << " / ";
+    // oss << avdevice_version() >> 16 << '.' << avdevice_version() >> 8 & 0xff << '.' << avdevice_version() & 0xff << std::endl;
     oss << "libavcodec ";
     oss << LIBAVCODEC_VERSION_MAJOR << '.' << LIBAVCODEC_VERSION_MINOR << '.' << LIBAVCODEC_VERSION_MICRO << " / ";
     oss << (avcodec_version() >> 16) << '.' << (avcodec_version() >> 8 & 0xff) << '.' << (avcodec_version() & 0xff) << std::endl;
@@ -233,10 +227,9 @@ ffmpeg_versions()
     return oss.str();
 }
 
-
 void
-ReadFFmpegPlugin::changedParam(const InstanceChangedArgs &args,
-                               const string &paramName)
+ReadFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
+                               const string& paramName)
 {
     if (paramName == kParamLibraryInfo) {
         sendMessage(Message::eMessageMessage, "", ffmpeg_versions());
@@ -266,58 +259,58 @@ ReadFFmpegPlugin::changedParam(const InstanceChangedArgs &args,
  **/
 bool
 ReadFFmpegPlugin::guessParamsFromFilename(const string& filename,
-                                          string *colorspace,
-                                          PreMultiplicationEnum *filePremult,
-                                          PixelComponentEnum *components,
-                                          int *componentCount)
+                                          string* colorspace,
+                                          PreMultiplicationEnum* filePremult,
+                                          PixelComponentEnum* components,
+                                          int* componentCount)
 {
     assert(colorspace && filePremult && components && componentCount);
     FFmpegFile* file = _manager.get(this, filename);
     if (!file) {
-        //Clear all opened files by this plug-in since the user changed the selected file/sequence
+        // Clear all opened files by this plug-in since the user changed the selected file/sequence
         _manager.clear(this);
         file = _manager.getOrCreate(this, filename);
     }
 
-    if ( !file || file->isInvalid() ) {
+    if (!file || file->isInvalid()) {
         if (file) {
-            //setPersistentMessage(Message::eMessageError, "", file->getError());
+            // setPersistentMessage(Message::eMessageError, "", file->getError());
         } else {
-            //setPersistentMessage(Message::eMessageError, "", "Cannot open file.");
+            // setPersistentMessage(Message::eMessageError, "", "Cannot open file.");
         }
 
         return false;
     }
 
-#   ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
     // Unless otherwise specified, video files are assumed to be rec709.
-    if ( _ocio->hasColorspace("Rec709") ) {
+    if (_ocio->hasColorspace("Rec709")) {
         // nuke-default
         *colorspace = "Rec709";
-    } else if ( _ocio->hasColorspace("nuke_rec709") ) {
+    } else if (_ocio->hasColorspace("nuke_rec709")) {
         // blender
         *colorspace = "nuke_rec709";
-    } else if ( _ocio->hasColorspace("Rec.709 - Full") ) {
+    } else if (_ocio->hasColorspace("Rec.709 - Full")) {
         // out_rec709full or "Rec.709 - Full" in aces 1.0.0
         *colorspace = "Rec.709 - Full";
-    } else if ( _ocio->hasColorspace("out_rec709full") ) {
+    } else if (_ocio->hasColorspace("out_rec709full")) {
         // out_rec709full or "Rec.709 - Full" in aces 1.0.0
         *colorspace = "out_rec709full";
-    } else if ( _ocio->hasColorspace("rrt_rec709_full_100nits") ) {
+    } else if (_ocio->hasColorspace("rrt_rec709_full_100nits")) {
         // rrt_rec709_full_100nits in aces 0.7.1
         *colorspace = "rrt_rec709_full_100nits";
-    } else if ( _ocio->hasColorspace("rrt_rec709") ) {
+    } else if (_ocio->hasColorspace("rrt_rec709")) {
         // rrt_rec709 in aces 0.1.1
         *colorspace = "rrt_rec709";
-    } else if ( _ocio->hasColorspace("hd10") ) {
+    } else if (_ocio->hasColorspace("hd10")) {
         // hd10 in spi-anim and spi-vfx
         *colorspace = "hd10";
     }
-#   endif
+#endif
 
     *componentCount = file->getNumberOfComponents();
     *components = (*componentCount > 3) ? ePixelComponentRGBA : ePixelComponentRGB;
-    ///Ffmpeg is RGB opaque.
+    /// Ffmpeg is RGB opaque.
     *filePremult = (*componentCount > 3) ? eImageUnPreMultiplied : eImageOpaque;
 
     return true;
@@ -336,7 +329,7 @@ ReadFFmpegPlugin::decode(const string& filename,
                          bool /*isPlayback*/,
                          const OfxRectI& renderWindow,
                          const OfxPointD& renderScale,
-                         float *pixelData,
+                         float* pixelData,
                          const OfxRectI& imgBounds,
                          PixelComponentEnum pixelComponents,
                          int pixelComponentCount,
@@ -344,26 +337,24 @@ ReadFFmpegPlugin::decode(const string& filename,
 {
     FFmpegFile* file = _manager.getOrCreate(this, filename);
 
-    if ( file && file->isInvalid() ) {
-        setPersistentMessage( Message::eMessageError, "", file->getError() );
+    if (file && file->isInvalid()) {
+        setPersistentMessage(Message::eMessageError, "", file->getError());
 
         return;
     }
     clearPersistentMessage();
 
     /// we only support RGB or RGBA output clip
-    if ( (pixelComponents != ePixelComponentRGB) &&
-         (pixelComponents != ePixelComponentRGBA) &&
-         (pixelComponents != ePixelComponentAlpha) ) {
+    if ((pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentAlpha)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
     }
-    assert( (pixelComponents == ePixelComponentRGB && pixelComponentCount == 3) || (pixelComponents == ePixelComponentRGBA && pixelComponentCount == 4) || (pixelComponents == ePixelComponentAlpha && pixelComponentCount == 1) );
+    assert((pixelComponents == ePixelComponentRGB && pixelComponentCount == 3) || (pixelComponents == ePixelComponentRGBA && pixelComponentCount == 4) || (pixelComponents == ePixelComponentAlpha && pixelComponentCount == 1));
 
-    ///blindly ignore the filename, we suppose that the file is the same than the file loaded in the changedParam
+    /// blindly ignore the filename, we suppose that the file is the same than the file loaded in the changedParam
     if (!file) {
-        setPersistentMessage(Message::eMessageError, "", filename +  ": Missing frame");
+        setPersistentMessage(Message::eMessageError, "", filename + ": Missing frame");
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -383,10 +374,9 @@ ReadFFmpegPlugin::decode(const string& filename,
     // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
     //  "If a clip or plugin does not support tiled images, then the host should supply full RoD images to the effect whenever it fetches one."
     //  The renderWindow itself may or may not be the full image...
-    //assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == width && renderWindow.y1 == 0 && renderWindow.y2 == height));
+    // assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == width && renderWindow.y1 == 0 && renderWindow.y2 == height));
 
-    if ( ( (imgBounds.x2 - imgBounds.x1) < width ) ||
-         ( (imgBounds.y2 - imgBounds.y1) < height ) ) {
+    if (((imgBounds.x2 - imgBounds.x1) < width) || ((imgBounds.y2 - imgBounds.y1) < height)) {
         setPersistentMessage(Message::eMessageError, "", "The host provided an image of wrong size, can't decode.");
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -399,10 +389,10 @@ ReadFFmpegPlugin::decode(const string& filename,
     assert(numComponents == 3 || numComponents == 4);
 
     std::size_t sizeOfData = file->getSizeOfData();
-    assert( sizeOfData == sizeof(unsigned char) || sizeOfData == sizeof(unsigned short) );
+    assert(sizeOfData == sizeof(unsigned char) || sizeOfData == sizeof(unsigned short));
 
     int srcRowBytes = width * numComponents * sizeOfData;
-    std::size_t bufferSize =  height * srcRowBytes;
+    std::size_t bufferSize = height * srcRowBytes;
 
     RamBuffer bufferRaii(bufferSize);
     unsigned char* buffer = bufferRaii.getData();
@@ -414,12 +404,12 @@ ReadFFmpegPlugin::decode(const string& filename,
     // this is the first stream (in fact the only one we consider for now), allocate the output buffer according to the bitdepth
 
     try {
-        if ( !file->decode(this, (int)time, loadNearestFrame(), buffer) ) {
-            if ( abort() ) {
+        if (!file->decode(this, (int)time, loadNearestFrame(), buffer)) {
+            if (abort()) {
                 // decode() probably existed because plugin was aborted
                 return;
             }
-            setPersistentMessage( Message::eMessageError, "", file->getError() );
+            setPersistentMessage(Message::eMessageError, "", file->getError());
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
@@ -427,8 +417,8 @@ ReadFFmpegPlugin::decode(const string& filename,
     } catch (const std::exception& e) {
         int choice;
         _missingFrameParam->getValue(choice);
-        if (choice == 1) { //error
-            setPersistentMessage( Message::eMessageError, "", e.what() );
+        if (choice == 1) { // error
+            setPersistentMessage(Message::eMessageError, "", e.what());
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
@@ -437,15 +427,14 @@ ReadFFmpegPlugin::decode(const string& filename,
         return;
     }
 
-
     convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
 } // ReadFFmpegPlugin::decode
 
 bool
 ReadFFmpegPlugin::getSequenceTimeDomain(const string& filename,
-                                        OfxRangeI &range)
+                                        OfxRangeI& range)
 {
-    if ( FFmpegFile::isImageFile(filename) ) {
+    if (FFmpegFile::isImageFile(filename)) {
         range.min = range.max = 0.;
 
         return false;
@@ -454,7 +443,7 @@ ReadFFmpegPlugin::getSequenceTimeDomain(const string& filename,
     int width, height, frames;
     double ap;
     FFmpegFile* file = _manager.getOrCreate(this, filename);
-    if ( !file || file->isInvalid() ) {
+    if (!file || file->isInvalid()) {
         range.min = range.max = 0.;
 
         return false;
@@ -474,7 +463,7 @@ ReadFFmpegPlugin::getFrameRate(const string& filename,
     assert(fps);
 
     FFmpegFile* file = _manager.getOrCreate(this, filename);
-    if ( !file || file->isInvalid() ) {
+    if (!file || file->isInvalid()) {
         return false;
     }
 
@@ -487,16 +476,16 @@ bool
 ReadFFmpegPlugin::getFrameBounds(const string& filename,
                                  OfxTime time,
                                  int view,
-                                 OfxRectI *bounds,
-                                 OfxRectI *format,
-                                 double *par,
-                                 string *error,
+                                 OfxRectI* bounds,
+                                 OfxRectI* format,
+                                 double* par,
+                                 string* error,
                                  int* tile_width,
                                  int* tile_height)
 {
     assert(bounds && par);
     FFmpegFile* file = _manager.getOrCreate(this, filename);
-    if ( !file || file->isInvalid() ) {
+    if (!file || file->isInvalid()) {
         if (error && file) {
             *error = file->getError();
         }
@@ -511,7 +500,7 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
     file->setSelectedStream(view);
     int width, height, frames;
     double ap;
-    if ( !file->getInfo(width, height, ap, frames) ) {
+    if (!file->getInfo(width, height, ap, frames)) {
         width = 0;
         height = 0;
         ap = 1.;
@@ -528,8 +517,7 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
 }
 
 class ReadFFmpegPluginFactory
-    : public PluginFactoryHelper<ReadFFmpegPluginFactory>
-{
+    : public PluginFactoryHelper<ReadFFmpegPluginFactory> {
     auto_ptr<FFmpegFileManager> _manager;
 
 public:
@@ -538,7 +526,8 @@ public:
                             unsigned int verMin)
         : PluginFactoryHelper<ReadFFmpegPluginFactory>(id, verMaj, verMin)
         , _manager()
-    {}
+    {
+    }
 
     virtual void load() OVERRIDE FINAL;
     virtual void unload() OVERRIDE FINAL
@@ -551,8 +540,8 @@ public:
 
     bool isVideoStreamPlugin() const { return true; }
 
-    virtual void describe(ImageEffectDescriptor &desc) OVERRIDE FINAL;
-    virtual void describeInContext(ImageEffectDescriptor &desc, ContextEnum context) OVERRIDE FINAL;
+    virtual void describe(ImageEffectDescriptor& desc) OVERRIDE FINAL;
+    virtual void describeInContext(ImageEffectDescriptor& desc, ContextEnum context) OVERRIDE FINAL;
 
     vector<string> _extensions;
 };
@@ -576,22 +565,20 @@ split(const string &s,
 
 #endif
 
-static
-std::list<string> &
-split(const string &s,
+static std::list<string>&
+split(const string& s,
       char delim,
-      std::list<string> &elems)
+      std::list<string>& elems)
 {
     stringstream ss(s);
     string item;
 
-    while ( std::getline(ss, item, delim) ) {
+    while (std::getline(ss, item, delim)) {
         elems.push_back(item);
     }
 
     return elems;
 }
-
 
 void
 ReadFFmpegPluginFactory::load()
@@ -606,17 +593,17 @@ ReadFFmpegPluginFactory::load()
 #else
     std::list<string> extensionsl;
     const AVInputFormat* iFormat;
-    void *i = 0;
-    while ((iFormat = av_demuxer_iterate (&i))) {
-        //DBG(std::printf("ReadFFmpeg: \"%s\", // %s (%s)\n", iFormat->extensions ? iFormat->extensions : iFormat->name, iFormat->name, iFormat->long_name));
+    void* i = 0;
+    while ((iFormat = av_demuxer_iterate(&i))) {
+        // DBG(std::printf("ReadFFmpeg: \"%s\", // %s (%s)\n", iFormat->extensions ? iFormat->extensions : iFormat->name, iFormat->name, iFormat->long_name));
         if (iFormat->extensions != NULL) {
-            string extStr( iFormat->extensions );
+            string extStr(iFormat->extensions);
             split(extStr, ',', extensionsl);
         }
         {
             // name's format defines (in general) extensions
             // require to fix extension in LibAV/FFMpeg to don't use it.
-            string extStr( iFormat->name);
+            string extStr(iFormat->name);
             split(extStr, ',', extensionsl);
         }
     }
@@ -624,21 +611,21 @@ ReadFFmpegPluginFactory::load()
     // Hack: Add basic video container extensions
     // as some versions of LibAV doesn't declare properly all extensions...
     // or there may be other well-known extensions (such as mts or m2ts)
-    //extensionsl.push_back("pix"); // alias_pix (Alias/Wavefront PIX image)
+    // extensionsl.push_back("pix"); // alias_pix (Alias/Wavefront PIX image)
     extensionsl.push_back("avi"); // AVI (Audio Video Interleaved)
-    //extensionsl.push_back("bsa"); // bethsoftvid (Bethesda Softworks VID)
-    //extensionsl.push_back("bik"); // bink (Bink)
-    //extensionsl.push_back("cpk"); // film_cpk (Sega FILM / CPK)
-    //extensionsl.push_back("cak"); // film_cpk (Sega FILM / CPK)
-    //extensionsl.push_back("film"); // film_cpk (Sega FILM / CPK)
-    //extensionsl.push_back("fli"); // flic (FLI/FLC/FLX animation)
-    //extensionsl.push_back("flc"); // flic (FLI/FLC/FLX animation)
-    //extensionsl.push_back("flx"); // flic (FLI/FLC/FLX animation)
+    // extensionsl.push_back("bsa"); // bethsoftvid (Bethesda Softworks VID)
+    // extensionsl.push_back("bik"); // bink (Bink)
+    // extensionsl.push_back("cpk"); // film_cpk (Sega FILM / CPK)
+    // extensionsl.push_back("cak"); // film_cpk (Sega FILM / CPK)
+    // extensionsl.push_back("film"); // film_cpk (Sega FILM / CPK)
+    // extensionsl.push_back("fli"); // flic (FLI/FLC/FLX animation)
+    // extensionsl.push_back("flc"); // flic (FLI/FLC/FLX animation)
+    // extensionsl.push_back("flx"); // flic (FLI/FLC/FLX animation)
     extensionsl.push_back("flv"); // flv (FLV (Flash Video))
-    //extensionsl.push_back("ilbm"); // iff (IFF (Interchange File Format))
-    //extensionsl.push_back("anim"); // iff (IFF (Interchange File Format))
-    //extensionsl.push_back("mve"); // ipmovie (Interplay MVE)
-    //extensionsl.push_back("lml"); // lmlm4 (raw lmlm4)
+    // extensionsl.push_back("ilbm"); // iff (IFF (Interchange File Format))
+    // extensionsl.push_back("anim"); // iff (IFF (Interchange File Format))
+    // extensionsl.push_back("mve"); // ipmovie (Interplay MVE)
+    // extensionsl.push_back("lml"); // lmlm4 (raw lmlm4)
     extensionsl.push_back("mkv"); // matroska,webm (Matroska / WebM)
     extensionsl.push_back("mk3d"); // matroska,webm (Matroska / WebM)
     extensionsl.push_back("webm"); // matroska,webm (Matroska / WebM)
@@ -903,20 +890,20 @@ ReadFFmpegPluginFactory::load()
 
         NULL
     };
-    for (const char*const* e = extensions_blacklist; *e != NULL; ++e) {
+    for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
         extensionsl.remove(*e);
     }
 
-    _extensions.assign( extensionsl.begin(), extensionsl.end() );
+    _extensions.assign(extensionsl.begin(), extensionsl.end());
     // sort / unique
-    std::sort( _extensions.begin(), _extensions.end() );
-    _extensions.erase( std::unique( _extensions.begin(), _extensions.end() ), _extensions.end() );
+    std::sort(_extensions.begin(), _extensions.end());
+    _extensions.erase(std::unique(_extensions.begin(), _extensions.end()), _extensions.end());
 #endif // if 0
 } // ReadFFmpegPluginFactory::load
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-ReadFFmpegPluginFactory::describe(ImageEffectDescriptor &desc)
+ReadFFmpegPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     GenericReaderDescribe(desc, _extensions, kPluginEvaluation, kSupportsTiles, false);
     // basic labels
@@ -937,23 +924,23 @@ ReadFFmpegPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                            ContextEnum context)
 {
     // make some pages and to things in
-    PageParamDescriptor *page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin(),
+    PageParamDescriptor* page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin(),
                                                                     kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false);
 
     {
         // deprecated parameter, for backward compatibility only
-        IntParamDescriptor *param = desc.defineIntParam(kParamMaxRetries);
+        IntParamDescriptor* param = desc.defineIntParam(kParamMaxRetries);
         param->setIsSecretAndDisabled(true);
         if (page) {
             page->addChild(*param);
         }
     }
     {
-        BooleanParamDescriptor *param = desc.defineBooleanParam(kParamFirstTrackOnly);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamFirstTrackOnly);
         param->setLabelAndHint(kParamFirstTrackOnlyLabelAndHint);
         param->setAnimates(false);
         param->setDefault(false);
@@ -978,7 +965,7 @@ ImageEffect*
 ReadFFmpegPluginFactory::createInstance(OfxImageEffectHandle handle,
                                         ContextEnum /*context*/)
 {
-    ReadFFmpegPlugin* ret =  new ReadFFmpegPlugin(*_manager, handle, _extensions);
+    ReadFFmpegPlugin* ret = new ReadFFmpegPlugin(*_manager, handle, _extensions);
 
     ret->restoreStateFromParams();
 
@@ -988,4 +975,4 @@ ReadFFmpegPluginFactory::createInstance(OfxImageEffectHandle handle,
 static ReadFFmpegPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

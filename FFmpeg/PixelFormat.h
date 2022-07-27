@@ -27,30 +27,29 @@ extern "C" {
 namespace OFX {
 namespace FFmpeg {
 
-// these are ordered
-enum PixelCodingEnum
-{
-    ePixelCodingNone = 0,
-    ePixelCodingGray,   // Grayscale
-    ePixelCodingPalette, // Palette (color-capable)
-    ePixelCodingBayer,  // Bayer mosaic
-    ePixelCodingYUV410, // 1 Cr & Cb sample per 4x4 Y samples
-    ePixelCodingYUV411, // 1 Cr & Cb sample per 4x1 Y samples
-    ePixelCodingYUV420, // 1 Cr & Cb sample per 2x2 Y samples
-    ePixelCodingYUV422, // 1 Cr & Cb sample per 2x1 Y samples
-    ePixelCodingYUV440 = ePixelCodingYUV422, // 1 Cr & Cb sample per 1x2 Y samples
-    ePixelCodingYUV444, // 1 Cr & Cb sample per 1x1 Y samples
-    ePixelCodingRGB,    // RGB
-    ePixelCodingXYZ, // XYZ
-};
+    // these are ordered
+    enum PixelCodingEnum {
+        ePixelCodingNone = 0,
+        ePixelCodingGray, // Grayscale
+        ePixelCodingPalette, // Palette (color-capable)
+        ePixelCodingBayer, // Bayer mosaic
+        ePixelCodingYUV410, // 1 Cr & Cb sample per 4x4 Y samples
+        ePixelCodingYUV411, // 1 Cr & Cb sample per 4x1 Y samples
+        ePixelCodingYUV420, // 1 Cr & Cb sample per 2x2 Y samples
+        ePixelCodingYUV422, // 1 Cr & Cb sample per 2x1 Y samples
+        ePixelCodingYUV440 = ePixelCodingYUV422, // 1 Cr & Cb sample per 1x2 Y samples
+        ePixelCodingYUV444, // 1 Cr & Cb sample per 1x1 Y samples
+        ePixelCodingRGB, // RGB
+        ePixelCodingXYZ, // XYZ
+    };
 
-bool pixelFormatIsYUV(AVPixelFormat pixelFormat);
-int pixelFormatBitDepth(AVPixelFormat pixelFormat);
-int pixelFormatBPP(AVPixelFormat pixelFormat);
-PixelCodingEnum pixelFormatCoding(AVPixelFormat pixelFormat);
-bool pixelFormatAlpha(AVPixelFormat pixelFormat);
+    bool pixelFormatIsYUV(AVPixelFormat pixelFormat);
+    int pixelFormatBitDepth(AVPixelFormat pixelFormat);
+    int pixelFormatBPP(AVPixelFormat pixelFormat);
+    PixelCodingEnum pixelFormatCoding(AVPixelFormat pixelFormat);
+    bool pixelFormatAlpha(AVPixelFormat pixelFormat);
 
-int pixelFormatBPPFromSpec(PixelCodingEnum coding, int bitdepth, bool alpha);
+    int pixelFormatBPPFromSpec(PixelCodingEnum coding, int bitdepth, bool alpha);
 
 }
 }

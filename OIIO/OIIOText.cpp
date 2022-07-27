@@ -26,7 +26,7 @@
 
 #include "ofxsMacros.h"
 
-GCC_DIAG_OFF(unused-parameter)
+GCC_DIAG_OFF(unused - parameter)
 #include <OpenImageIO/imageio.h>
 /*
    unfortunately, OpenImageIO/imagebuf.h includes OpenImageIO/thread.h,
@@ -39,17 +39,16 @@ GCC_DIAG_OFF(unused-parameter)
 #define OPENIMAGEIO_THREAD_H
 #include <OpenImageIO/imagebuf.h>
 #include <OpenImageIO/imagebufalgo.h>
-GCC_DIAG_ON(unused-parameter)
+GCC_DIAG_ON(unused - parameter)
 #include "OIIOGlobal.h"
 
-#include "ofxsProcessing.H"
-#include "ofxsThreadSuite.h"
 #include "ofxsCopier.h"
 #include "ofxsPositionInteract.h"
+#include "ofxsProcessing.H"
+#include "ofxsThreadSuite.h"
 
 #include "IOUtility.h"
 #include "ofxNatron.h"
-
 
 using namespace OFX;
 using std::string;
@@ -58,7 +57,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginName "TextOIIO"
 #define kPluginGrouping "Draw"
-#define kPluginDescription  "Use OpenImageIO to write text on images."
+#define kPluginDescription "Use OpenImageIO to write text on images."
 
 #define kPluginIdentifier "fr.inria.openfx.OIIOText"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
@@ -75,7 +74,6 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kSupportsRenderScale 1
 #define kRenderThreadSafety eRenderFullySafe
 
-
 #define kParamPosition "position"
 #define kParamPositionLabel "Position"
 #define kParamPositionHint \
@@ -85,7 +83,6 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamInteractiveLabel "Interactive"
 #define kParamInteractiveHint \
     "When checked the image will be rendered whenever moving the overlay interact instead of when releasing the mouse button."
-
 
 #define kParamText "text"
 #define kParamTextLabel "Text"
@@ -113,43 +110,40 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 static bool gHostSupportsDefaultCoordinateSystem = true; // for kParamDefaultsNormalised
 
 class OIIOTextPlugin
-    : public ImageEffect
-{
+    : public ImageEffect {
 public:
-
     OIIOTextPlugin(OfxImageEffectHandle handle);
 
     virtual ~OIIOTextPlugin();
 
     /* Override the render */
-    virtual void render(const RenderArguments &args) OVERRIDE FINAL;
+    virtual void render(const RenderArguments& args) OVERRIDE FINAL;
 
     /* override is identity */
-    virtual bool isIdentity(const IsIdentityArguments &args, Clip * &identityClip, double &identityTime, int& view, std::string& plane) OVERRIDE FINAL;
+    virtual bool isIdentity(const IsIdentityArguments& args, Clip*& identityClip, double& identityTime, int& view, std::string& plane) OVERRIDE FINAL;
 
     /* override changedParam */
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
     /* override changed clip */
-    //virtual void changedClip(const InstanceChangedArgs &args, const string &clipName) OVERRIDE FINAL;
+    // virtual void changedClip(const InstanceChangedArgs &args, const string &clipName) OVERRIDE FINAL;
 
     // override the rod call
-    virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments &args, OfxRectD &rod) OVERRIDE FINAL;
+    virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments& args, OfxRectD& rod) OVERRIDE FINAL;
 
     // override the roi call
-    //virtual void getRegionsOfInterest(const RegionsOfInterestArguments &args, RegionOfInterestSetter &rois) OVERRIDE FINAL;
+    // virtual void getRegionsOfInterest(const RegionsOfInterestArguments &args, RegionOfInterestSetter &rois) OVERRIDE FINAL;
 
 private:
-
 private:
     // do not need to delete these, the ImageEffect is managing them for us
-    Clip *_dstClip;
-    Clip *_srcClip;
-    Double2DParam *_position;
-    StringParam *_text;
-    IntParam *_fontSize;
-    StringParam *_fontName;
-    RGBAParam *_textColor;
+    Clip* _dstClip;
+    Clip* _srcClip;
+    Double2DParam* _position;
+    StringParam* _text;
+    IntParam* _fontSize;
+    StringParam* _fontName;
+    RGBAParam* _textColor;
 };
 
 OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
@@ -158,12 +152,9 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
     , _srcClip(NULL)
 {
     _dstClip = fetchClip(kOfxImageEffectOutputClipName);
-    assert( _dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA ||
-                         _dstClip->getPixelComponents() == ePixelComponentRGB) );
+    assert(_dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA || _dstClip->getPixelComponents() == ePixelComponentRGB));
     _srcClip = getContext() == eContextGenerator ? NULL : fetchClip(kOfxImageEffectSimpleSourceClipName);
-    assert( (!_srcClip && getContext() == eContextGenerator) ||
-            ( _srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA ||
-                           _srcClip->getPixelComponents() == ePixelComponentRGB) ) );
+    assert((!_srcClip && getContext() == eContextGenerator) || (_srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA || _srcClip->getPixelComponents() == ePixelComponentRGB)));
 
     _position = fetchDouble2DParam(kParamPosition);
     _text = fetchStringParam(kParamText);
@@ -175,7 +166,7 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
     initOIIOThreads();
 
     // honor kParamDefaultsNormalised
-    if ( paramExists(kParamDefaultsNormalised) ) {
+    if (paramExists(kParamDefaultsNormalised)) {
         // Some hosts (e.g. Resolve) may not support normalized defaults (setDefaultCoordinateSystem(eCoordinatesNormalised))
         // handle these ourselves!
         BooleanParam* param = fetchBooleanParam(kParamDefaultsNormalised);
@@ -186,7 +177,7 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
             OfxPointD origin = getProjectOffset();
             OfxPointD p;
             // we must denormalise all parameters for which setDefaultCoordinateSystem(eCoordinatesNormalised) couldn't be done
-            //EditBlock(*this, kParamDefaultsNormalised);
+            // EditBlock(*this, kParamDefaultsNormalised);
             p = _position->getValue();
             _position->setValue(p.x * size.x + origin.x, p.y * size.y + origin.y);
             param->setValue(false);
@@ -199,8 +190,8 @@ OIIOTextPlugin::~OIIOTextPlugin()
 }
 
 static OIIO::ImageSpec
-imageSpecFromOFXImage(const OfxRectI &rod,
-                      const OfxRectI &bounds,
+imageSpecFromOFXImage(const OfxRectI& rod,
+                      const OfxRectI& bounds,
                       PixelComponentEnum pixelComponents,
                       BitDepthEnum bitDepth)
 {
@@ -239,7 +230,7 @@ imageSpecFromOFXImage(const OfxRectI &rod,
         throwSuiteStatusException(kOfxStatErrFormat);
         break;
     }
-    OIIO::ImageSpec spec (format);
+    OIIO::ImageSpec spec(format);
     spec.x = bounds.x1;
     spec.y = rod.y2 - bounds.y2;
     spec.width = bounds.x2 - bounds.x1;
@@ -256,16 +247,16 @@ imageSpecFromOFXImage(const OfxRectI &rod,
 
 /* Override the render */
 void
-OIIOTextPlugin::render(const RenderArguments &args)
+OIIOTextPlugin::render(const RenderArguments& args)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
     }
 
     auto_ptr<const Image> srcImg(_srcClip ? _srcClip->fetchImage(args.time) : 0);
-    if ( srcImg.get() ) {
+    if (srcImg.get()) {
         checkBadRenderScaleOrField(srcImg, args);
     }
 
@@ -275,8 +266,8 @@ OIIOTextPlugin::render(const RenderArguments &args)
         return;
     }
     assert(_dstClip);
-    auto_ptr<Image> dstImg( _dstClip->fetchImage(args.time) );
-    if ( !dstImg.get() ) {
+    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -284,15 +275,14 @@ OIIOTextPlugin::render(const RenderArguments &args)
     checkBadRenderScaleOrField(dstImg, args);
 
     BitDepthEnum dstBitDepth = dstImg->getPixelDepth();
-    if ( (dstBitDepth != eBitDepthFloat) || ( srcImg.get() && ( dstBitDepth != srcImg->getPixelDepth() ) ) ) {
+    if ((dstBitDepth != eBitDepthFloat) || (srcImg.get() && (dstBitDepth != srcImg->getPixelDepth()))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
     }
 
-    PixelComponentEnum dstComponents  = dstImg->getPixelComponents();
-    if ( ( (dstComponents != ePixelComponentRGBA) && (dstComponents != ePixelComponentRGB) && (dstComponents != ePixelComponentAlpha) ) ||
-         ( srcImg.get() && ( dstComponents != srcImg->getPixelComponents() ) ) ) {
+    PixelComponentEnum dstComponents = dstImg->getPixelComponents();
+    if (((dstComponents != ePixelComponentRGBA) && (dstComponents != ePixelComponentRGB) && (dstComponents != ePixelComponentAlpha)) || (srcImg.get() && (dstComponents != srcImg->getPixelComponents()))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -300,12 +290,11 @@ OIIOTextPlugin::render(const RenderArguments &args)
 
     // are we in the image bounds
     OfxRectI dstBounds = dstImg->getBounds();
-    if ( (args.renderWindow.x1 < dstBounds.x1) || (args.renderWindow.x1 >= dstBounds.x2) || (args.renderWindow.y1 < dstBounds.y1) || (args.renderWindow.y1 >= dstBounds.y2) ||
-         ( args.renderWindow.x2 <= dstBounds.x1) || ( args.renderWindow.x2 > dstBounds.x2) || ( args.renderWindow.y2 <= dstBounds.y1) || ( args.renderWindow.y2 > dstBounds.y2) ) {
+    if ((args.renderWindow.x1 < dstBounds.x1) || (args.renderWindow.x1 >= dstBounds.x2) || (args.renderWindow.y1 < dstBounds.y1) || (args.renderWindow.y1 >= dstBounds.y2) || (args.renderWindow.x2 <= dstBounds.x1) || (args.renderWindow.x2 > dstBounds.x2) || (args.renderWindow.y2 <= dstBounds.y1) || (args.renderWindow.y2 > dstBounds.y2)) {
         throwSuiteStatusException(kOfxStatErrValue);
 
         return;
-        //throw std::runtime_error("render window outside of image bounds");
+        // throw std::runtime_error("render window outside of image bounds");
     }
 
     OfxRectI srcRod;
@@ -316,7 +305,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
     OIIO::ImageSpec srcSpec;
     auto_ptr<const OIIO::ImageBuf> srcBuf;
     OfxRectI dstRod = dstImg->getRegionOfDefinition();
-    if ( !srcImg.get() ) {
+    if (!srcImg.get()) {
         setPersistentMessage(Message::eMessageError, "", "Source needs to be connected");
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -328,7 +317,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
         pixelComponentCount = srcImg->getPixelComponentCount();
         bitDepth = srcImg->getPixelDepth();
         srcSpec = imageSpecFromOFXImage(srcRod, srcBounds, pixelComponents, bitDepth);
-        srcBuf.reset( new OIIO::ImageBuf( "src", srcSpec, const_cast<void*>( srcImg->getPixelData() ) ) );
+        srcBuf.reset(new OIIO::ImageBuf("src", srcSpec, const_cast<void*>(srcImg->getPixelData())));
 
         if (!kSupportsTiles) {
             // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
@@ -377,7 +366,7 @@ OIIOTextPlugin::render(const RenderArguments &args)
     int tmpRowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * pixelBytes;
     size_t memSize = (args.renderWindow.y2 - args.renderWindow.y1) * tmpRowBytes;
     ImageMemory mem(memSize, this);
-    float *tmpPixelData = (float*)mem.lock();
+    float* tmpPixelData = (float*)mem.lock();
     const bool flipit = true;
     OIIO::ImageSpec tmpSpec = imageSpecFromOFXImage(srcImg.get() ? srcRod : args.renderWindow, args.renderWindow, pixelComponents, bitDepth);
     assert(tmpSpec.width == args.renderWindow.x2 - args.renderWindow.x1);
@@ -395,12 +384,12 @@ OIIOTextPlugin::render(const RenderArguments &args)
         //     simply flipping or flopping within the data window. (1.5.2)
 #if OIIO_VERSION >= 10502
         // the transformation happens with respect to the display (full) window
-        tmpSpec.y = ( (tmpSpec.full_y + tmpSpec.full_height - 1) - tmpSpec.y ) - (tmpSpec.height - 1);
+        tmpSpec.y = ((tmpSpec.full_y + tmpSpec.full_height - 1) - tmpSpec.y) - (tmpSpec.height - 1);
         tmpSpec.full_y = 0;
         ytext = (tmpSpec.full_y + tmpSpec.full_height - 1) - ytext;
 #else
         // only the data window is flipped
-        ytext = tmpSpec.y + ( (tmpSpec.y + tmpSpec.height - 1) - ytext );
+        ytext = tmpSpec.y + ((tmpSpec.y + tmpSpec.height - 1) - ytext);
 #endif
     }
     assert(tmpSpec.width == args.renderWindow.x2 - args.renderWindow.x1);
@@ -408,13 +397,13 @@ OIIOTextPlugin::render(const RenderArguments &args)
     OIIO::ImageBuf tmpBuf("tmp", tmpSpec, tmpPixelData);
 
     // do we have to flip the image?
-    if ( !srcImg.get() ) {
+    if (!srcImg.get()) {
         OIIO::ImageBufAlgo::zero(tmpBuf);
     } else {
         if (flipit) {
             bool ok = OIIO::ImageBufAlgo::flip(tmpBuf, *srcBuf, srcRoi);
             if (!ok) {
-                setPersistentMessage( Message::eMessageError, "", tmpBuf.geterror().c_str() );
+                setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
                 throwSuiteStatusException(kOfxStatFailed);
             }
         } else {
@@ -427,27 +416,27 @@ OIIOTextPlugin::render(const RenderArguments &args)
     {
         bool ok = OIIO::ImageBufAlgo::render_text(tmpBuf, int(x * args.renderScale.x), ytext, text, int(fontSize * args.renderScale.y), fontName, textColor);
         if (!ok) {
-            setPersistentMessage( Message::eMessageError, "", tmpBuf.geterror().c_str() );
-            //throwSuiteStatusException(kOfxStatFailed);
+            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
+            // throwSuiteStatusException(kOfxStatFailed);
         }
     }
     OIIO::ImageSpec dstSpec = imageSpecFromOFXImage(dstRod, dstBounds, pixelComponents, bitDepth);
-    OIIO::ImageBuf dstBuf( "dst", dstSpec, dstImg->getPixelData() );
+    OIIO::ImageBuf dstBuf("dst", dstSpec, dstImg->getPixelData());
 
     OIIO::ROI tmpRoi(tmpSpec.x, tmpSpec.x + tmpSpec.width, tmpSpec.y, tmpSpec.y + tmpSpec.height);
     // do we have to flip the image?
     if (flipit) {
         bool ok = OIIO::ImageBufAlgo::flip(dstBuf, tmpBuf, tmpRoi);
         if (!ok) {
-            setPersistentMessage( Message::eMessageError, "", tmpBuf.geterror().c_str() );
+            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
             throwSuiteStatusException(kOfxStatFailed);
         }
     } else {
         // copy the temp buffer to dstImg
-        //dstBuf.copy_pixels(tmpBuf); // erases everything out of tmpBuf!
+        // dstBuf.copy_pixels(tmpBuf); // erases everything out of tmpBuf!
         bool ok = OIIO::ImageBufAlgo::paste(dstBuf, args.renderWindow.x1, srcRod.y2 - args.renderWindow.y2, 0, 0, tmpBuf, tmpRoi);
         if (!ok) {
-            setPersistentMessage( Message::eMessageError, "", tmpBuf.geterror().c_str() );
+            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
             throwSuiteStatusException(kOfxStatFailed);
         }
     }
@@ -458,12 +447,13 @@ OIIOTextPlugin::render(const RenderArguments &args)
 } // OIIOTextPlugin::render
 
 bool
-OIIOTextPlugin::isIdentity(const IsIdentityArguments &args,
-                           Clip * &identityClip,
-                           double & /*identityTime*/
-                           , int& /*view*/, std::string& /*plane*/)
+OIIOTextPlugin::isIdentity(const IsIdentityArguments& args,
+                           Clip*& identityClip,
+                           double& /*identityTime*/
+                           ,
+                           int& /*view*/, std::string& /*plane*/)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return false;
@@ -471,7 +461,7 @@ OIIOTextPlugin::isIdentity(const IsIdentityArguments &args,
 
     string text;
     _text->getValueAtTime(args.time, text);
-    if ( text.empty() ) {
+    if (text.empty()) {
         identityClip = _srcClip;
 
         return true;
@@ -489,12 +479,12 @@ OIIOTextPlugin::isIdentity(const IsIdentityArguments &args,
 }
 
 void
-OIIOTextPlugin::changedParam(const InstanceChangedArgs &args,
-                             const string & /*paramName*/)
+OIIOTextPlugin::changedParam(const InstanceChangedArgs& args,
+                             const string& /*paramName*/)
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -504,15 +494,15 @@ OIIOTextPlugin::changedParam(const InstanceChangedArgs &args,
 }
 
 bool
-OIIOTextPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
-                                      OfxRectD &rod)
+OIIOTextPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
+                                      OfxRectD& rod)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return false;
     }
-    if ( _srcClip && _srcClip->isConnected() ) {
+    if (_srcClip && _srcClip->isConnected()) {
         rod = _srcClip->getRegionOfDefinition(args.time);
     } else {
         rod.x1 = rod.y1 = kOfxFlagInfiniteMin;
@@ -522,20 +512,19 @@ OIIOTextPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
     return true;
 }
 
-mDeclarePluginFactory(OIIOTextPluginFactory, {ofxsThreadSuiteCheck();}, {});
+mDeclarePluginFactory(OIIOTextPluginFactory, { ofxsThreadSuiteCheck(); }, {});
 
 namespace {
-struct PositionInteractParam
-{
-    static const char * name() { return kParamPosition; }
+struct PositionInteractParam {
+    static const char* name() { return kParamPosition; }
 
-    static const char * interactiveName() { return kParamInteractive; }
+    static const char* interactiveName() { return kParamInteractive; }
 };
 }
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-OIIOTextPluginFactory::describe(ImageEffectDescriptor &desc)
+OIIOTextPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     // basic labels
     desc.setLabel(kPluginName);
@@ -564,14 +553,14 @@ OIIOTextPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-OIIOTextPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+OIIOTextPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                          ContextEnum /*context*/)
 {
-    //gHostIsNatron = (getImageEffectHostDescription()->isNatron);
+    // gHostIsNatron = (getImageEffectHostDescription()->isNatron);
 
     // Source clip only in the filter context
     // create the mandated source clip
-    ClipDescriptor *srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
+    ClipDescriptor* srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
 
     srcClip->addSupportedComponent(ePixelComponentRGBA);
     srcClip->addSupportedComponent(ePixelComponentRGB);
@@ -580,20 +569,20 @@ OIIOTextPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     srcClip->setIsMask(false);
 
     // create the mandated output clip
-    ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
+    ClipDescriptor* dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
     dstClip->addSupportedComponent(ePixelComponentRGBA);
     dstClip->addSupportedComponent(ePixelComponentRGB);
     dstClip->setSupportsTiles(kSupportsTiles);
 
     // make some pages and to things in
-    PageParamDescriptor *page = desc.definePageParam("Text");
+    PageParamDescriptor* page = desc.definePageParam("Text");
     bool hostHasNativeOverlayForPosition;
     {
         Double2DParamDescriptor* param = desc.defineDouble2DParam(kParamPosition);
         param->setLabel(kParamPositionLabel);
         param->setHint(kParamPositionHint);
         param->setDoubleType(eDoubleTypeXYAbsolute);
-        if ( param->supportsDefaultCoordinateSystem() ) {
+        if (param->supportsDefaultCoordinateSystem()) {
             param->setDefaultCoordinateSystem(eCoordinatesNormalised); // no need of kParamDefaultsNormalised
         } else {
             gHostSupportsDefaultCoordinateSystem = false; // no multithread here, see kParamDefaultsNormalised
@@ -615,7 +604,7 @@ OIIOTextPluginFactory::describeInContext(ImageEffectDescriptor &desc,
         param->setLabel(kParamInteractiveLabel);
         param->setHint(kParamInteractiveHint);
         param->setAnimates(false);
-        //Do not show this parameter if the host handles the interact
+        // Do not show this parameter if the host handles the interact
         if (hostHasNativeOverlayForPosition) {
             param->setIsSecretAndDisabled(true);
         }
@@ -677,4 +666,4 @@ OIIOTextPluginFactory::createInstance(OfxImageEffectHandle handle,
 static OIIOTextPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

@@ -28,9 +28,9 @@
 #endif
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+#include <fstream>
 #include <string>
 #include <windows.h>
-#include <fstream>
 #ifndef __MINGW32__
 #include <ImfStdIO.h>
 #endif
@@ -39,14 +39,14 @@
 #include "ofxsMacros.h"
 
 GCC_DIAG_OFF(deprecated)
-#include <ImfPixelType.h>
+#include <IlmThreadPool.h>
+#include <ImathBox.h>
 #include <ImfChannelList.h>
-#include <ImfInputFile.h>
-#include <ImfHeader.h>
 #include <ImfCompression.h>
 #include <ImfFrameBuffer.h>
-#include <ImathBox.h>
-#include <IlmThreadPool.h>
+#include <ImfHeader.h>
+#include <ImfInputFile.h>
+#include <ImfPixelType.h>
 GCC_DIAG_ON(deprecated)
 
 #ifdef OFX_IO_MT_EXR
@@ -56,19 +56,18 @@ GCC_DIAG_ON(deprecated)
 #include "GenericOCIO.h"
 #include "GenericReader.h"
 
-
 using namespace OFX;
 using namespace OFX::IO;
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;
 #endif
 
-using std::string;
-using std::wstring;
-using std::vector;
+using std::make_pair;
 using std::map;
 using std::pair;
-using std::make_pair;
+using std::string;
+using std::vector;
+using std::wstring;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
@@ -92,22 +91,19 @@ namespace Imf_ = OPENEXR_IMF_NAMESPACE;
 #define kSupportsTiles false
 
 class ReadEXRPlugin
-    : public GenericReaderPlugin
-{
+    : public GenericReaderPlugin {
 public:
-
     ReadEXRPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
 
     virtual ~ReadEXRPlugin();
 
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
 private:
-
     virtual bool isVideoStream(const string& /*filename*/) OVERRIDE FINAL { return false; }
 
-    virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
-    virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI *bounds, OfxRectI *format, double *par, string *error, int* tile_width, int* tile_height) OVERRIDE FINAL;
+    virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     /**
      * @brief Called when the input image/video file changed.
@@ -128,13 +124,12 @@ private:
      * You must also return the premultiplication state and pixel components of the image.
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
-    virtual bool guessParamsFromFilename(const string& newFile, string *colorspace, PreMultiplicationEnum *filePremult, PixelComponentEnum *components, int *componentCount) OVERRIDE FINAL;
+    virtual bool guessParamsFromFilename(const string& newFile, string* colorspace, PreMultiplicationEnum* filePremult, PixelComponentEnum* components, int* componentCount) OVERRIDE FINAL;
 };
 
 namespace Exr {
 ////@enum A small enum to map exr components to Openfx. We can't support more as the openfx standard is limited to R,G,B and A.
-enum Channel
-{
+enum Channel {
     Channel_red = 0,
     Channel_green,
     Channel_blue,
@@ -145,38 +140,16 @@ enum Channel
 static Channel
 fromExrChannel(const string& from)
 {
-    if ( ( from == "R") ||
-         ( from == "r") ||
-         ( from == "Red") ||
-         ( from == "RED") ||
-         ( from == "red") ||
-         ( from == "y") ||
-         ( from == "Y") ) {
+    if ((from == "R") || (from == "r") || (from == "Red") || (from == "RED") || (from == "red") || (from == "y") || (from == "Y")) {
         return Channel_red;
     }
-    if ( ( from == "G") ||
-         ( from == "g") ||
-         ( from == "Green") ||
-         ( from == "GREEN") ||
-         ( from == "green") ||
-         ( from == "ry") ||
-         ( from == "RY") ) {
+    if ((from == "G") || (from == "g") || (from == "Green") || (from == "GREEN") || (from == "green") || (from == "ry") || (from == "RY")) {
         return Channel_green;
     }
-    if ( ( from == "B") ||
-         ( from == "b") ||
-         ( from == "Blue") ||
-         ( from == "BLUE") ||
-         ( from == "blue") ||
-         ( from == "by") ||
-         ( from == "BY") ) {
+    if ((from == "B") || (from == "b") || (from == "Blue") || (from == "BLUE") || (from == "blue") || (from == "by") || (from == "BY")) {
         return Channel_blue;
     }
-    if ( ( from == "A") ||
-         ( from == "a") ||
-         ( from == "Alpha") ||
-         ( from == "ALPHA") ||
-         ( from == "alpha") ) {
+    if ((from == "A") || (from == "a") || (from == "Alpha") || (from == "ALPHA") || (from == "alpha")) {
         return Channel_alpha;
     }
     throw std::invalid_argument("OpenFX doesn't support the channel " + from);
@@ -184,16 +157,17 @@ fromExrChannel(const string& from)
     return Channel_alpha;
 }
 
-class ChannelExtractor
-{
+class ChannelExtractor {
 public:
     ChannelExtractor(const string& name,
-                     const vector<string>& views) :
-        _mappedChannel(Channel_none),
-        _valid(false)
-    {     _valid = extractExrChannelName(name, views);  }
+                     const vector<string>& views)
+        : _mappedChannel(Channel_none)
+        , _valid(false)
+    {
+        _valid = extractExrChannelName(name, views);
+    }
 
-    ~ChannelExtractor() {}
+    ~ChannelExtractor() { }
 
     Channel _mappedChannel;
     bool _valid;
@@ -203,18 +177,16 @@ public:
 
     string exrName() const
     {
-        if ( !_layer.empty() ) {
+        if (!_layer.empty()) {
             return _layer + '.' + _chan;
         }
 
         return _chan;
     }
 
-    bool isValid() const {return _valid; }
+    bool isValid() const { return _valid; }
 
 private:
-
-
     static bool IsView(const string& name,
                        const vector<string>& views)
     {
@@ -234,11 +206,11 @@ private:
         size_t i = str.find(splitChar);
         size_t offset = 0;
         while (i != str.npos) {
-            out.push_back( str.substr(offset, i - offset) );
+            out.push_back(str.substr(offset, i - offset));
             offset = i + 1;
             i = str.find(splitChar, offset);
         }
-        out.push_back( str.substr(offset) );
+        out.push_back(str.substr(offset));
 
         return out;
     }
@@ -248,7 +220,7 @@ private:
         string ret;
         unsigned int i = 0;
 
-        while ( isdigit(str[i]) && ( i < str.size() ) ) {
+        while (isdigit(str[i]) && (i < str.size())) {
             ++i;
         }
         for (; i < str.size(); ++i) {
@@ -263,7 +235,7 @@ private:
         string ret;
 
         for (unsigned int i = 0; i < str.size(); i++) {
-            if ( !isalnum(str[i]) ) {
+            if (!isalnum(str[i])) {
                 ret.push_back('_');
             } else {
                 ret.push_back(str[i]);
@@ -280,24 +252,23 @@ private:
         _layer.clear();
         _view.clear();
 
-
         vector<string> splits = split(channelname, '.');
         vector<string> newSplits;
-        //remove prepending digits
+        // remove prepending digits
         for (size_t i = 0; i < splits.size(); ++i) {
             string s = removePrependingDigits(splits[i]);
-            if ( !s.empty() ) {
-                newSplits.push_back( removeNonAlphaCharacters(s) );
+            if (!s.empty()) {
+                newSplits.push_back(removeNonAlphaCharacters(s));
             }
         }
 
         if (newSplits.size() > 1) {
             for (size_t i = 0; i < (newSplits.size() - 1); ++i) {
                 vector<string>::const_iterator foundView = std::find(views.begin(), views.end(), newSplits[i]);
-                if ( foundView != views.end() ) {
+                if (foundView != views.end()) {
                     _view = *foundView;
                 } else {
-                    if ( !_layer.empty() ) {
+                    if (!_layer.empty()) {
                         _layer += '_';
                     }
                     _layer += newSplits[i];
@@ -311,9 +282,10 @@ private:
         try {
             _mappedChannel = fromExrChannel(_chan);
         } catch (const std::exception& e) {
-#              ifdef DEBUG
-            std::cout << "Error while reading EXR file" << ": " << e.what() << std::endl;
-#              endif
+#ifdef DEBUG
+            std::cout << "Error while reading EXR file"
+                      << ": " << e.what() << std::endl;
+#endif
 
             return false;
         }
@@ -322,10 +294,8 @@ private:
     }
 };
 
-struct File
-{
+struct File {
     File(const string& filename);
-
 
     ~File();
 
@@ -379,39 +349,38 @@ File::File(const string& filename)
     , lock()
 #endif
 {
-    try{
+    try {
 #if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
         inputStr = new std::ifstream(s2ws(filename), std::ios_base::binary);
-        inputStdStream = new Imf_::StdIFStream( *inputStr, filename.c_str() );
+        inputStdStream = new Imf_::StdIFStream(*inputStr, filename.c_str());
         inputfile = new Imf_::InputFile(*inputStdStream);
 #else
 
-        inputfile = new Imf_::InputFile( filename.c_str() );
+        inputfile = new Imf_::InputFile(filename.c_str());
 #endif
-
 
         // convert exr channels to our channels
         const Imf_::ChannelList& imfchannels = inputfile->header().channels();
 
         for (Imf_::ChannelList::ConstIterator chan = imfchannels.begin(); chan != imfchannels.end(); ++chan) {
-            string chanName( chan.name() );
+            string chanName(chan.name());
 
-            ///empty channel, discard it
-            if ( chanName.empty() ) {
+            /// empty channel, discard it
+            if (chanName.empty()) {
                 continue;
             }
 
-            ///convert the channel to ours
+            /// convert the channel to ours
             ChannelExtractor exrExctractor(chan.name(), views);
 
-            ///if we successfully extracted the channels
-            if ( exrExctractor.isValid() ) {
-                ///register the extracted channel
-                channel_map.insert( make_pair(exrExctractor._mappedChannel, exrExctractor._chan) );
+            /// if we successfully extracted the channels
+            if (exrExctractor.isValid()) {
+                /// register the extracted channel
+                channel_map.insert(make_pair(exrExctractor._mappedChannel, exrExctractor._chan));
             } else {
-#                 ifdef DEBUG
+#ifdef DEBUG
                 std::cout << "Cannot decode channel " << chan.name() << std::endl;
-#                 endif
+#endif
             }
         }
 
@@ -438,8 +407,7 @@ File::File(const string& filename)
         int bottom = dispwin.max.y - datawin.max.y;
         int right = datawin.max.x + dataOffset;
         int top = dispwin.max.y - datawin.min.y;
-        if ( ( datawin.min.x != dispwin.min.x) || ( datawin.max.x != dispwin.max.x) ||
-             ( datawin.min.y != dispwin.min.y) || ( datawin.max.y != dispwin.max.y) ) {
+        if ((datawin.min.x != dispwin.min.x) || (datawin.max.x != dispwin.max.x) || (datawin.min.y != dispwin.min.y) || (datawin.max.y != dispwin.max.y)) {
             --left;
             --bottom;
             ++right;
@@ -451,7 +419,7 @@ File::File(const string& filename)
         dataWindow.y2 = top + 1;
 
         pixelAspectRatio = inputfile->header().pixelAspectRatio();
-    }catch (const std::exception& e) {
+    } catch (const std::exception& e) {
 #if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
         delete inputStr;
         delete inputStdStream;
@@ -472,21 +440,19 @@ File::~File()
 }
 
 // Keeps track of all Exr::File mapped against file name.
-class FileManager
-{
+class FileManager {
     typedef map<string, File*> FilesMap;
 
     FilesMap _files;
-    bool _isLoaded;    ///< register all "global" flags to ffmpeg outside of the constructor to allow
+    bool _isLoaded; ///< register all "global" flags to ffmpeg outside of the constructor to allow
     /// all OpenFX related stuff (which depend on another singleton) to be allocated.
 
 #ifdef OFX_IO_MT_EXR
     // internal lock
-    MultiThread::Mutex *_lock;
+    MultiThread::Mutex* _lock;
 #endif
 
 public:
-
     // singleton
     static FileManager s_readerManager;
 
@@ -543,8 +509,8 @@ FileManager::get(const string& filename)
     MultiThread::AutoMutex g(*_lock);
 #endif
     FilesMap::iterator it = _files.find(filename);
-    if ( it == _files.end() ) {
-        pair<FilesMap::iterator, bool> ret = _files.insert( make_pair( string(filename), new File(filename) ) );
+    if (it == _files.end()) {
+        pair<FilesMap::iterator, bool> ret = _files.insert(make_pair(string(filename), new File(filename)));
         assert(ret.second);
 
         return ret.first->second;
@@ -553,7 +519,6 @@ FileManager::get(const string& filename)
     }
 }
 } // namespace Exr
-
 
 ReadEXRPlugin::ReadEXRPlugin(OfxImageEffectHandle handle,
                              const vector<string>& extensions)
@@ -567,14 +532,13 @@ ReadEXRPlugin::~ReadEXRPlugin()
 }
 
 void
-ReadEXRPlugin::changedParam(const InstanceChangedArgs &args,
-                            const string &paramName)
+ReadEXRPlugin::changedParam(const InstanceChangedArgs& args,
+                            const string& paramName)
 {
     GenericReaderPlugin::changedParam(args, paramName);
 }
 
-struct DecodingChannelsMap
-{
+struct DecodingChannelsMap {
     float* buf;
     bool subsampled;
     string channelName;
@@ -587,7 +551,7 @@ ReadEXRPlugin::decode(const string& filename,
                       bool /*isPlayback*/,
                       const OfxRectI& renderWindow,
                       const OfxPointD& renderScale,
-                      float *pixelData,
+                      float* pixelData,
                       const OfxRectI& bounds,
                       PixelComponentEnum pixelComponents,
                       int pixelComponentCount,
@@ -596,7 +560,7 @@ ReadEXRPlugin::decode(const string& filename,
     assert(renderScale.x == 1. && renderScale.y == 1.);
     unused(renderScale);
     /// we only support RGBA output clip
-    if ( (pixelComponents != ePixelComponentRGBA) || (pixelComponentCount != 4) ) {
+    if ((pixelComponents != ePixelComponentRGBA) || (pixelComponentCount != 4)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -604,43 +568,43 @@ ReadEXRPlugin::decode(const string& filename,
 
     Exr::File* file = Exr::FileManager::s_readerManager.get(filename);
     OfxRectI roi = bounds; // used to be dstImg->getRegionOfDefinition(); why?
-    assert( kSupportsTiles || (renderWindow.x1 == file->dataWindow.x1 && renderWindow.x2 == file->dataWindow.x2 && renderWindow.y1 == file->dataWindow.y1 && renderWindow.y2 == file->dataWindow.y2) );
+    assert(kSupportsTiles || (renderWindow.x1 == file->dataWindow.x1 && renderWindow.x2 == file->dataWindow.x2 && renderWindow.y1 == file->dataWindow.y1 && renderWindow.y2 == file->dataWindow.y2));
 
     for (int y = roi.y1; y < roi.y2; ++y) {
-        map<Exr::Channel, DecodingChannelsMap > channels;
+        map<Exr::Channel, DecodingChannelsMap> channels;
         for (Exr::File::ChannelsMap::const_iterator it = file->channel_map.begin(); it != file->channel_map.end(); ++it) {
             DecodingChannelsMap d;
 
-            ///This line means we only support FLOAT dst images with the RGBA format.
-            d.buf = (float*)( (char*)pixelData + (y - roi.y1) * rowBytes ) + (int)it->first;
+            /// This line means we only support FLOAT dst images with the RGBA format.
+            d.buf = (float*)((char*)pixelData + (y - roi.y1) * rowBytes) + (int)it->first;
 
             d.subsampled = it->second == "BY" || it->second == "RY";
             d.channelName = it->second;
-            channels.insert( make_pair(it->first, d) );
+            channels.insert(make_pair(it->first, d));
         }
 
         const Imath::Box2i& dispwin = file->inputfile->header().displayWindow();
         const Imath::Box2i& datawin = file->inputfile->header().dataWindow();
         int exrY = dispwin.max.y - y;
-        //int r = roi.x2;
-        //int x = roi.x1;
+        // int r = roi.x2;
+        // int x = roi.x1;
 
-        //const int X = (std::max)(x, datawin.min.x + file->dataOffset);
-        //const int R = (std::min)(r, datawin.max.x + file->dataOffset + 1);
+        // const int X = (std::max)(x, datawin.min.x + file->dataOffset);
+        // const int R = (std::min)(r, datawin.max.x + file->dataOffset + 1);
 
         // if we're below or above the data window
-        if ( (exrY < datawin.min.y) || (exrY > datawin.max.y) /* || R <= X*/ ) {
+        if ((exrY < datawin.min.y) || (exrY > datawin.max.y) /* || R <= X*/) {
             continue;
         }
 
         Imf_::FrameBuffer fbuf;
-        for (map<Exr::Channel, DecodingChannelsMap >::const_iterator z = channels.begin(); z != channels.end(); ++z) {
+        for (map<Exr::Channel, DecodingChannelsMap>::const_iterator z = channels.begin(); z != channels.end(); ++z) {
             if (!z->second.subsampled) {
-                fbuf.insert( z->second.channelName.c_str(),
-                             Imf_::Slice(Imf_::FLOAT, (char*)(z->second.buf /*+ file->dataOffset*/), sizeof(float) * 4, 0) );
+                fbuf.insert(z->second.channelName.c_str(),
+                            Imf_::Slice(Imf_::FLOAT, (char*)(z->second.buf /*+ file->dataOffset*/), sizeof(float) * 4, 0));
             } else {
-                fbuf.insert( z->second.channelName.c_str(),
-                             Imf_::Slice(Imf_::FLOAT, (char*)(z->second.buf /*+ file->dataOffset*/), sizeof(float) * 4, 0, 2, 2) );
+                fbuf.insert(z->second.channelName.c_str(),
+                            Imf_::Slice(Imf_::FLOAT, (char*)(z->second.buf /*+ file->dataOffset*/), sizeof(float) * 4, 0, 2, 2));
             }
         }
         {
@@ -651,7 +615,7 @@ ReadEXRPlugin::decode(const string& filename,
                 file->inputfile->setFrameBuffer(fbuf);
                 file->inputfile->readPixels(exrY);
             } catch (const std::exception& e) {
-                setPersistentMessage( Message::eMessageError, "", string("OpenEXR error") + ": " + e.what() );
+                setPersistentMessage(Message::eMessageError, "", string("OpenEXR error") + ": " + e.what());
 
                 return;
             }
@@ -680,10 +644,10 @@ ReadEXRPlugin::decode(const string& filename,
  **/
 bool
 ReadEXRPlugin::guessParamsFromFilename(const string& newFile,
-                                       string *colorspace,
-                                       PreMultiplicationEnum *filePremult,
-                                       PixelComponentEnum *components,
-                                       int *componentCount)
+                                       string* colorspace,
+                                       PreMultiplicationEnum* filePremult,
+                                       PixelComponentEnum* components,
+                                       int* componentCount)
 {
     assert(colorspace && filePremult && components && componentCount);
 
@@ -692,10 +656,10 @@ ReadEXRPlugin::guessParamsFromFilename(const string& newFile,
         return false;
     }
 
-# ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
     // Unless otherwise specified, exr files are assumed to be linear.
     *colorspace = OCIO::ROLE_SCENE_LINEAR;
-# endif
+#endif
 
     bool hasRed = file->channel_map.find(Exr::Channel_red) != file->channel_map.end();
     bool hasGreen = file->channel_map.find(Exr::Channel_green) != file->channel_map.end();
@@ -730,7 +694,7 @@ ReadEXRPlugin::guessParamsFromFilename(const string& newFile,
        opaque. By convention, all color channels are premultiplied by alpha, so that
        "foreground + (1-alpha) × background" performs a correct "over" operation."
      */
-    if ( (*components != ePixelComponentRGBA) && (*components != ePixelComponentAlpha) ) {
+    if ((*components != ePixelComponentRGBA) && (*components != ePixelComponentAlpha)) {
         *filePremult = eImageOpaque;
     } else {
         *filePremult = eImagePreMultiplied;
@@ -743,10 +707,10 @@ bool
 ReadEXRPlugin::getFrameBounds(const string& filename,
                               OfxTime /*time*/,
                               int /*view*/,
-                              OfxRectI *bounds,
-                              OfxRectI *format,
-                              double *par,
-                              string *error,
+                              OfxRectI* bounds,
+                              OfxRectI* format,
+                              double* par,
+                              string* error,
                               int* tile_width,
                               int* tile_height)
 {
@@ -773,11 +737,11 @@ ReadEXRPlugin::getFrameBounds(const string& filename,
     return true;
 }
 
-mDeclareReaderPluginFactory(ReadEXRPluginFactory,; , false);
+mDeclareReaderPluginFactory(ReadEXRPluginFactory, ;, false);
 void
 ReadEXRPluginFactory::unload()
 {
-    //Kill all threads
+    // Kill all threads
     IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
 }
 
@@ -790,7 +754,7 @@ ReadEXRPluginFactory::load()
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-ReadEXRPluginFactory::describe(ImageEffectDescriptor &desc)
+ReadEXRPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     GenericReaderDescribe(desc, _extensions, kPluginEvaluation, kSupportsTiles, false);
     // basic labels
@@ -805,11 +769,11 @@ ReadEXRPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-ReadEXRPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+ReadEXRPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                         ContextEnum context)
 {
     // make some pages and to things in
-    PageParamDescriptor *page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin(),
+    PageParamDescriptor* page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin(),
                                                                     kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, true);
 
     GenericReaderDescribeInContextEnd(desc, context, page, "scene_linear", "scene_linear");
@@ -820,7 +784,7 @@ ImageEffect*
 ReadEXRPluginFactory::createInstance(OfxImageEffectHandle handle,
                                      ContextEnum /*context*/)
 {
-    ReadEXRPlugin* ret =  new ReadEXRPlugin(handle, _extensions);
+    ReadEXRPlugin* ret = new ReadEXRPlugin(handle, _extensions);
 
     ret->restoreStateFromParams();
 
@@ -830,4 +794,4 @@ ReadEXRPluginFactory::createInstance(OfxImageEffectHandle handle,
 static ReadEXRPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

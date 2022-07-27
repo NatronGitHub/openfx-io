@@ -24,19 +24,18 @@
 
 #include <memory>
 
-#include "ofxsMacros.h"
 #include "ofxsFileOpen.h"
+#include "ofxsMacros.h"
 
 GCC_DIAG_OFF(deprecated)
-#include <ImfChannelList.h>
 #include <IlmThreadPool.h>
+#include <ImathBox.h>
 #include <ImfArray.h>
-#include <ImfCompression.h>
-#include <ImfOutputFile.h>
-#include <ImfHeader.h>
+#include <ImfChannelList.h>
 #include <ImfCompression.h>
 #include <ImfFrameBuffer.h>
-#include <ImathBox.h>
+#include <ImfHeader.h>
+#include <ImfOutputFile.h>
 #include <half.h>
 GCC_DIAG_ON(deprecated)
 
@@ -75,7 +74,6 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kSupportsXY false
 
 namespace Imf_ = OPENEXR_IMF_NAMESPACE;
-
 
 namespace Exr {
 static const char* compressionNames[6] = {
@@ -130,23 +128,19 @@ depthNameToInt(const string& name)
 }
 
 class WriteEXRPlugin
-    : public GenericWriterPlugin
-{
+    : public GenericWriterPlugin {
 public:
-
     WriteEXRPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
-
 
     virtual ~WriteEXRPlugin();
 
-    //virtual void changedParam(const InstanceChangedArgs &args, const string &paramName);
+    // virtual void changedParam(const InstanceChangedArgs &args, const string &paramName);
 
 private:
-
     virtual void encode(const string& filename,
                         const OfxTime time,
                         const string& viewName,
-                        const float *pixelData,
+                        const float* pixelData,
                         const OfxRectI& bounds,
                         const float pixelAspectRatio,
                         const int pixelDataNComps,
@@ -181,16 +175,15 @@ WriteEXRPlugin::~WriteEXRPlugin()
 {
 }
 
-//void WriteEXRPlugin::changedParam(const InstanceChangedArgs &/*args*/, const string &paramName)
+// void WriteEXRPlugin::changedParam(const InstanceChangedArgs &/*args*/, const string &paramName)
 //{
-//}
-
+// }
 
 void
 WriteEXRPlugin::encode(const string& filename,
                        const OfxTime /*time*/,
                        const string& /*viewName*/,
-                       const float *pixelData,
+                       const float* pixelData,
                        const OfxRectI& bounds,
                        const float pixelAspectRatio,
                        const int pixelDataNComps,
@@ -198,9 +191,9 @@ WriteEXRPlugin::encode(const string& filename,
                        const int /*dstNComps*/,
                        const int rowBytes)
 {
-    ///FIXME: WriteEXR should not disregard dstNComps
+    /// FIXME: WriteEXR should not disregard dstNComps
 
-    if ( (pixelDataNComps != 4) && (pixelDataNComps != 3) && (pixelDataNComps != 1) ) {
+    if ((pixelDataNComps != 4) && (pixelDataNComps != 3) && (pixelDataNComps != 1)) {
         setPersistentMessage(Message::eMessageError, "", "EXR: can only write RGBA, RGB, or Alpha components images");
         throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -211,15 +204,15 @@ WriteEXRPlugin::encode(const string& filename,
 
     // If the file exists (which means "overwrite" was checked), remove it first.
     // See https://github.com/NatronGitHub/Natron/issues/666
-    if (OFX::exists_utf8( filename.c_str() )) {
-        OFX::remove_utf8( filename.c_str() );
+    if (OFX::exists_utf8(filename.c_str())) {
+        OFX::remove_utf8(filename.c_str());
     }
 
     try {
         int compressionIndex;
         _compression->getValue(compressionIndex);
 
-        Imf_::Compression compression( Exr::stringToCompression(Exr::compressionNames[compressionIndex]) );
+        Imf_::Compression compression(Exr::stringToCompression(Exr::compressionNames[compressionIndex]));
 
         int depthIndex;
         _bitDepth->getValue(depthIndex);
@@ -254,7 +247,7 @@ WriteEXRPlugin::encode(const string& filename,
             chanNames[0] = chanNames[3];
         }
         for (int chan = 0; chan < pixelDataNComps; ++chan) {
-            exrheader.channels().insert( chanNames[chan], Imf_::Channel(pixelType) );
+            exrheader.channels().insert(chanNames[chan], Imf_::Channel(pixelType));
         }
 
         Imf_::OutputFile outputFile(filename.c_str(), exrheader);
@@ -263,22 +256,22 @@ WriteEXRPlugin::encode(const string& filename,
             /*First we create a row that will serve as the output buffer.
                We copy the scan-line (with y inverted) in the inputImage to the row.*/
             int exrY = bounds.y2 - y - 1;
-            float* src_pixels = (float*)( (char*)pixelData + (exrY - bounds.y1) * rowBytes );
+            float* src_pixels = (float*)((char*)pixelData + (exrY - bounds.y1) * rowBytes);
 
             /*we create the frame buffer*/
             Imf_::FrameBuffer fbuf;
             if (depth == 32) {
                 for (int chan = 0; chan < pixelDataNComps; ++chan) {
-                    fbuf.insert( chanNames[chan], Imf_::Slice(Imf_::FLOAT, (char*)src_pixels + chan, sizeof(float) * pixelDataNComps, 0) );
+                    fbuf.insert(chanNames[chan], Imf_::Slice(Imf_::FLOAT, (char*)src_pixels + chan, sizeof(float) * pixelDataNComps, 0));
                 }
             } else {
                 Imf_::Array2D<half> halfwriterow(pixelDataNComps, bounds.x2 - bounds.x1);
 
                 for (int chan = 0; chan < pixelDataNComps; ++chan) {
-                    fbuf.insert( chanNames[chan],
-                                 Imf_::Slice(Imf_::HALF,
-                                             (char*)(&halfwriterow[chan][0] - exrDataW.min.x),
-                                             sizeof(halfwriterow[chan][0]), 0) );
+                    fbuf.insert(chanNames[chan],
+                                Imf_::Slice(Imf_::HALF,
+                                            (char*)(&halfwriterow[chan][0] - exrDataW.min.x),
+                                            sizeof(halfwriterow[chan][0]), 0));
                     const float* from = src_pixels + chan;
                     for (int i = exrDataW.min.x, f = exrDataW.min.x; i < exrDataW.max.x; ++i, f += pixelDataNComps) {
                         halfwriterow[chan][i - exrDataW.min.x] = from[f];
@@ -289,7 +282,7 @@ WriteEXRPlugin::encode(const string& filename,
             outputFile.writePixels(1);
         }
     } catch (const std::exception& e) {
-        setPersistentMessage( Message::eMessageError, "", string("OpenEXR error") + ": " + e.what() );
+        setPersistentMessage(Message::eMessageError, "", string("OpenEXR error") + ": " + e.what());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -303,18 +296,18 @@ WriteEXRPlugin::isImageFile(const string& /*fileExtension*/) const
 }
 
 void
-WriteEXRPlugin::onOutputFileChanged(const string & /*filename*/,
+WriteEXRPlugin::onOutputFileChanged(const string& /*filename*/,
                                     bool setColorSpace)
 {
     if (setColorSpace) {
-#     ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
         // Unless otherwise specified, exr files are assumed to be linear.
         _ocio->setOutputColorspace(OCIO::ROLE_SCENE_LINEAR);
-#     endif
+#endif
     }
 }
 
-mDeclareWriterPluginFactory(WriteEXRPluginFactory,; , false);
+mDeclareWriterPluginFactory(WriteEXRPluginFactory, ;, false);
 void
 WriteEXRPluginFactory::load()
 {
@@ -325,13 +318,13 @@ WriteEXRPluginFactory::load()
 void
 WriteEXRPluginFactory::unload()
 {
-    //Kill all threads
+    // Kill all threads
     IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
 }
 
 /** @brief The basic describe function, passed a plugin descriptor */
 void
-WriteEXRPluginFactory::describe(ImageEffectDescriptor &desc)
+WriteEXRPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     GenericWriterDescribe(desc, eRenderFullySafe, _extensions, kPluginEvaluation, false, false);
     // basic labels
@@ -343,11 +336,11 @@ WriteEXRPluginFactory::describe(ImageEffectDescriptor &desc)
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
 void
-WriteEXRPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+WriteEXRPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                          ContextEnum context)
 {
     // make some pages and to things in
-    PageParamDescriptor *page = GenericWriterDescribeInContextBegin(desc, context,
+    PageParamDescriptor* page = GenericWriterDescribeInContextBegin(desc, context,
                                                                     kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha,
                                                                     "scene_linear", "scene_linear", false);
 
@@ -385,7 +378,7 @@ ImageEffect*
 WriteEXRPluginFactory::createInstance(OfxImageEffectHandle handle,
                                       ContextEnum /*context*/)
 {
-    WriteEXRPlugin* ret =  new WriteEXRPlugin(handle, _extensions);
+    WriteEXRPlugin* ret = new WriteEXRPlugin(handle, _extensions);
 
     ret->restoreStateFromParams();
 
@@ -395,4 +388,4 @@ WriteEXRPluginFactory::createInstance(OfxImageEffectHandle handle,
 static WriteEXRPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT

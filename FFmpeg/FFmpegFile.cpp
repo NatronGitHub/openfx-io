@@ -33,7 +33,7 @@
  */
 //#define TRACE_DECODE_PROCESS 1
 
-#if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_ ) ) && !defined(UINT64_C)
+#if (defined(_STDINT_H) || defined(_STDINT_H_) || defined(_MSC_STDINT_H_)) && !defined(UINT64_C)
 #warning "__STDC_CONSTANT_MACROS has to be defined before including <stdint.h>, this file will probably not compile."
 #endif
 #ifndef __STDC_CONSTANT_MACROS
@@ -41,33 +41,33 @@
 #endif
 #include "FFmpegFile.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <algorithm>
 
 #include <ofxsImageEffect.h>
 #include <ofxsMacros.h>
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
-#  include <windows.h> // for GetSystemInfo()
+#include <windows.h> // for GetSystemInfo()
 #define strncasecmp _strnicmp
 #else
-#  include <unistd.h> // for sysconf()
+#include <unistd.h> // for sysconf()
 #endif
 
 using namespace OFX;
 
-using std::string;
 using std::make_pair;
+using std::string;
 
-#define CHECK(x) \
-    { \
-        int error = x; \
-        if (error < 0) { \
+#define CHECK(x)                     \
+    {                                \
+        int error = x;               \
+        if (error < 0) {             \
             setInternalError(error); \
-            return; \
-        } \
-    } \
+            return;                  \
+        }                            \
+    }
 
 //#define TRACE_DECODE_PROCESS 1
 //#define TRACE_FILE_OPEN 1
@@ -101,40 +101,27 @@ video_decoding_threads()
 #endif
 
 static bool
-extensionCorrespondToImageFile(const string & ext)
+extensionCorrespondToImageFile(const string& ext)
 {
-    return (ext == "bmp" ||
-            ext == "cin" ||
-            ext == "dpx" ||
-            ext == "exr" ||
+    return (ext == "bmp" || ext == "cin" || ext == "dpx" || ext == "exr" ||
             /*ext == "gif" ||*/
-            ext == "jpeg" ||
-            ext == "jpg" ||
-            ext == "pix" ||
-            ext == "png" ||
-            ext == "ppm" ||
-            ext == "ptx" ||
-            ext == "rgb" ||
-            ext == "rgba" ||
-            ext == "tga" ||
-            ext == "tiff" ||
-            ext == "webp");
+            ext == "jpeg" || ext == "jpg" || ext == "pix" || ext == "png" || ext == "ppm" || ext == "ptx" || ext == "rgb" || ext == "rgba" || ext == "tga" || ext == "tiff" || ext == "webp");
 }
 
 bool
-FFmpegFile::isImageFile(const string & filename)
+FFmpegFile::isImageFile(const string& filename)
 {
-    ///find the last index of the '.' character
+    /// find the last index of the '.' character
     size_t lastDot = filename.find_last_of('.');
 
-    if (lastDot == string::npos) { //we reached the start of the file, return false because we can't determine from the extension
+    if (lastDot == string::npos) { // we reached the start of the file, return false because we can't determine from the extension
         return false;
     }
-    ++lastDot;//< bypass the '.' character
+    ++lastDot; //< bypass the '.' character
     string ext;
     std::locale loc;
-    while ( lastDot < filename.size() ) {
-        ext.append( 1, std::tolower(filename.at(lastDot), loc) );
+    while (lastDot < filename.size()) {
+        ext.append(1, std::tolower(filename.at(lastDot), loc));
         ++lastDot;
     }
 
@@ -142,8 +129,7 @@ FFmpegFile::isImageFile(const string & filename)
 }
 
 namespace {
-struct FilterEntry
-{
+struct FilterEntry {
     const char* name;
     bool enableReader;
     bool enableWriter;
@@ -152,26 +138,25 @@ struct FilterEntry
 // Bug 11027 - Nuke write: ffmpeg codec fails has details on individual codecs
 
 // For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
-const FilterEntry kFormatWhitelist[] =
-{
-    { "3gp",            true,  true },
-    { "3g2",            true,  true },
-    { "avi",            true,  true },
-    { "dv",             true,  false },    // DV (Digital Video), no HD support
-    { "flv",            true,  true },     // FLV (Flash Video), only used with flv codec. cannot be read in official Qt
-    { "gif",            true,  false },     // GIF Animation - write not supported as 8-bit only.
-    { "h264",           true,  false },     // raw H.264 video. prefer a proper container (mp4, mov, avi)
-    { "hevc",           true,  false },     // raw HEVC video. hevc codec cannot be read in official qt
-    { "m4v",            true,  false },     // raw MPEG-4 video. prefer a proper container (mp4, mov, avi)
-    { "matroska",       true,  true },     // not readable in Qt but may be used with other software
-    { "mov",            true,  true },
-    { "mp4",            true,  true },
-    { "mpeg",           true,  true },
-    { "mpegts",         true,  true },
-    { "mxf",            true,  false },     // not readable in Qt but may be used with other software, however MXF has too many constraints to be easyly writable (for H264 it requires avctx.profile = FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10 or FF_PROFILE_H264_HIGH_422). it is better to transcode with an external tool
-    { "ogg",            true,  false },    // Ogg, for theora codec (use ogv for writing)
-    { "ogv",            true,  true },    // Ogg Video, for theora codec
-    { nullptr, false, false}
+const FilterEntry kFormatWhitelist[] = {
+    { "3gp", true, true },
+    { "3g2", true, true },
+    { "avi", true, true },
+    { "dv", true, false }, // DV (Digital Video), no HD support
+    { "flv", true, true }, // FLV (Flash Video), only used with flv codec. cannot be read in official Qt
+    { "gif", true, false }, // GIF Animation - write not supported as 8-bit only.
+    { "h264", true, false }, // raw H.264 video. prefer a proper container (mp4, mov, avi)
+    { "hevc", true, false }, // raw HEVC video. hevc codec cannot be read in official qt
+    { "m4v", true, false }, // raw MPEG-4 video. prefer a proper container (mp4, mov, avi)
+    { "matroska", true, true }, // not readable in Qt but may be used with other software
+    { "mov", true, true },
+    { "mp4", true, true },
+    { "mpeg", true, true },
+    { "mpegts", true, true },
+    { "mxf", true, false }, // not readable in Qt but may be used with other software, however MXF has too many constraints to be easyly writable (for H264 it requires avctx.profile = FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10 or FF_PROFILE_H264_HIGH_422). it is better to transcode with an external tool
+    { "ogg", true, false }, // Ogg, for theora codec (use ogv for writing)
+    { "ogv", true, true }, // Ogg Video, for theora codec
+    { nullptr, false, false }
 };
 
 // For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
@@ -184,95 +169,94 @@ const FilterEntry kFormatWhitelist[] =
 #define TERRIBLE false
 //#define SHOULDWORK true
 #define SHOULDWORK false
-const FilterEntry kCodecWhitelist[] =
-{
+const FilterEntry kCodecWhitelist[] = {
     // Video codecs.
-    { "aic",            true,  false },     // Apple Intermediate Codec (no encoder)
-    { "av1",            true,  false },    // Alliance for Open Media AV1 (encoders: libaom-av1 librav1e)
-    { "avrp",           true,  UNSAFEQT0 && UNSAFEVLC },     // Avid 1:1 10-bit RGB Packer - write not supported as not official qt readable with relevant 3rd party codec.
-    { "avui",           true,  false },     // Avid Meridien Uncompressed - write not supported as this is an SD only codec. Only 720x486 and 720x576 are supported. experimental in ffmpeg 2.6.1.
-    { "ayuv",           true,  UNSAFEQT0 && UNSAFEVLC },     // Uncompressed packed MS 4:4:4:4 - write not supported as not official qt readable.
-    { "cfhd",           true,  true },     // GoPro Cineform HD.
-    { "cinepak",        true,  true },     // Cinepak.
-    { "cllc",           true,  false },    // Canopus Lossless Codec
-    { "dnxhd",          true,  true },     // VC3/DNxHD
-    { "dpx",            true,  true },     // DPX (Digital Picture Exchange) image
-    { "dxv",            true,  false },     // Resolume DXV
-    { "exr",            true,  true },     // EXR image
-    { "ffv1",           true,  UNSAFEQT0 && UNSAFEVLC },     // FFmpeg video codec #1 - write not supported as not official qt readable.
-    { "ffvhuff",        true,  UNSAFEQT0 && UNSAFEVLC },     // Huffyuv FFmpeg variant - write not supported as not official qt readable.
-    { "flv",            true,  UNSAFEQT0 },     // FLV / Sorenson Spark / Sorenson H.263 (Flash Video) - write not supported as not official qt readable.
-    { "gif",            true,  false },     // GIF (Graphics Interchange Format) - write not supported as 8-bit only.
-    { "h263p",          true,  true },     // H.263+ / H.263-1998 / H.263 version 2
-    { "h264",           true,  false },     // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (the encoder is libx264)
-    { "hap",            true,  true },     // Vidvox Hap
-    { "hevc",           true,  false },     // H.265 / HEVC (High Efficiency Video Coding) (the encoder is libx265)
-    { "hq_hqa",         true,  false },    // Canopus HQ/HQA
-    { "hqx",            true,  false },    // Canopus HQX
-    { "huffyuv",        true,  UNSAFEQT0 && UNSAFEVLC },     // HuffYUV - write not supported as not official qt readable.
-    { "jpeg2000",       true,  UNSAFEQT0 },     // JPEG 2000 - write not supported as not official qt readable.
-    { "jpegls",         true,  UNSAFEQT0 },     // JPEG-LS - write not supported as can't be read in in official qt.
-    { "libaom-av1",     true,  true },     // Alliance for Open Media AV1 encoder
-    { "libdav1d",       true,  false },    // Alliance for Open Media AV1 (encoder: libaom-av1)
-    { "libopenh264",    true,  true },     // Cisco libopenh264 H.264/MPEG-4 AVC encoder
-    { "libopenjpeg",    true,  true },     // OpenJPEG JPEG 2000
-    { "librav1e",       true,  true },     // rav1e AV1 encoder
-    { "libschroedinger", true,  UNSAFEQT0 && UNSAFEVLC },     // libschroedinger Dirac - write untested. VLC plays with a wrong format
-    { "libtheora",      true,  UNSAFEQT0 },     // libtheora Theora - write untested.
-    { "libvpx",         true,  UNSAFEQT0 },     // On2 VP8
-    { "libvpx-vp9",     true,  UNSAFEQT0 },     // Google VP9
-    { "libx264",        true,  UNSAFEQT0 },     // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (encoder)
-    { "libx264rgb",     true,  UNSAFEQT0 },     // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB (encoder)
-    { "libx265",        true,  UNSAFEQT0 },     // H.265 / HEVC (High Efficiency Video Coding) (encoder) - resizes the image
-    { "libxavs",        true,  false },         // Chinese AVS (Audio Video Standard) (encoder) - untested
-    { "libxvid",        true,  true },     // MPEG-4 part 2
-    { "ljpeg",          true,  UNSAFEQT0 },     // Lossless JPEG - write not supported as can't be read in in official qt.
-    { "mjpeg",          true,  true },     // MJPEG (Motion JPEG) - this looks to be MJPEG-A. MJPEG-B encoding is not supported by FFmpeg so is not included here. To avoid confusion over the MJPEG-A and MJPEG-B variants, this codec is displayed as 'Photo JPEG'. This is done to i) avoid the confusion of the naming, ii) be consistent with Apple QuickTime, iii) the term 'Photo JPEG' is recommend for progressive frames which is appropriate to Nuke/NukeStudio as it does not have interlaced support.
-    { "mpeg1video",     true,  TERRIBLE },     // MPEG-1 video - write not supported as it gives random 8x8 blocky errors
-    { "mpeg2video",     true,  true },     // MPEG-2 video
-    { "mpeg4",          true,  true },     // MPEG-4 part 2
-    { "msmpeg4v2",      true,  UNSAFEQT0 },     // MPEG-4 part 2 Microsoft variant version 2 - write not supported as doesn't read in official qt.
-    { "msmpeg4",        true,  UNSAFEQT0 },     // MPEG-4 part 2 Microsoft variant version 3 - write not supported as doesn't read in official qt.
-    { "png",            true,  true },     // PNG (Portable Network Graphics) image
-    { "prores",         true,  false },     // Apple ProRes (the encoder is prores_ks)
-    { "qtrle",          true,  true },     // QuickTime Animation (RLE) video
-    { "r10k",           true,  UNSAFEQT && UNSAFEVLC },     // AJA Kono 10-bit RGB - write not supported as not official qt readable without colourshifts.
-    { "r210",           true,  UNSAFEQT && UNSAFEVLC },     // Uncompressed RGB 10-bit - write not supported as not official qt readable with relevant 3rd party codec without colourshifts.
-    { "rawvideo",       true,  UNSAFEQT && UNSAFEVLC },     // raw video - write not supported as not official qt readable.
-    { "svq1",           true,  true },     // Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1
-    { "targa",          true,  true },     // Truevision Targa image.
-    { "theora",         true,  false },     // Theora (decoder).
-    { "tiff",           true,  true },     // TIFF Image
-    { "v210",           true,  UNSAFEQT },     // Uncompressed 4:2:2 10-bit- write not supported as not official qt readable without colourshifts.
-    { "v308",           true,  UNSAFEQT0 && UNSAFEVLC },     // Uncompressed packed 4:4:4 - write not supported as not official qt readable and 8-bit only.
-    { "v408",           true,  UNSAFEQT0 && UNSAFEVLC },     // Uncompressed packed QT 4:4:4:4 - write not supported as official qt can't write, so bad round trip choice and 8-bit only.
-    { "v410",           true,  UNSAFEQT0 && UNSAFEVLC },     // Uncompressed 4:4:4 10-bit - write not supported as not official qt readable with standard codecs.
-    { "vc2",            true,  UNSAFEQT0 && UNSAFEVLC },     // SMPTE VC-2 (previously BBC Dirac Pro).
-    { "vp8",            true,  false },     // On2 VP8 (decoder)
-    { "vp9",            true,  false },     // Google VP9 (decoder)
+    { "aic", true, false }, // Apple Intermediate Codec (no encoder)
+    { "av1", true, false }, // Alliance for Open Media AV1 (encoders: libaom-av1 librav1e)
+    { "avrp", true, UNSAFEQT0&& UNSAFEVLC }, // Avid 1:1 10-bit RGB Packer - write not supported as not official qt readable with relevant 3rd party codec.
+    { "avui", true, false }, // Avid Meridien Uncompressed - write not supported as this is an SD only codec. Only 720x486 and 720x576 are supported. experimental in ffmpeg 2.6.1.
+    { "ayuv", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed MS 4:4:4:4 - write not supported as not official qt readable.
+    { "cfhd", true, true }, // GoPro Cineform HD.
+    { "cinepak", true, true }, // Cinepak.
+    { "cllc", true, false }, // Canopus Lossless Codec
+    { "dnxhd", true, true }, // VC3/DNxHD
+    { "dpx", true, true }, // DPX (Digital Picture Exchange) image
+    { "dxv", true, false }, // Resolume DXV
+    { "exr", true, true }, // EXR image
+    { "ffv1", true, UNSAFEQT0&& UNSAFEVLC }, // FFmpeg video codec #1 - write not supported as not official qt readable.
+    { "ffvhuff", true, UNSAFEQT0&& UNSAFEVLC }, // Huffyuv FFmpeg variant - write not supported as not official qt readable.
+    { "flv", true, UNSAFEQT0 }, // FLV / Sorenson Spark / Sorenson H.263 (Flash Video) - write not supported as not official qt readable.
+    { "gif", true, false }, // GIF (Graphics Interchange Format) - write not supported as 8-bit only.
+    { "h263p", true, true }, // H.263+ / H.263-1998 / H.263 version 2
+    { "h264", true, false }, // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (the encoder is libx264)
+    { "hap", true, true }, // Vidvox Hap
+    { "hevc", true, false }, // H.265 / HEVC (High Efficiency Video Coding) (the encoder is libx265)
+    { "hq_hqa", true, false }, // Canopus HQ/HQA
+    { "hqx", true, false }, // Canopus HQX
+    { "huffyuv", true, UNSAFEQT0&& UNSAFEVLC }, // HuffYUV - write not supported as not official qt readable.
+    { "jpeg2000", true, UNSAFEQT0 }, // JPEG 2000 - write not supported as not official qt readable.
+    { "jpegls", true, UNSAFEQT0 }, // JPEG-LS - write not supported as can't be read in in official qt.
+    { "libaom-av1", true, true }, // Alliance for Open Media AV1 encoder
+    { "libdav1d", true, false }, // Alliance for Open Media AV1 (encoder: libaom-av1)
+    { "libopenh264", true, true }, // Cisco libopenh264 H.264/MPEG-4 AVC encoder
+    { "libopenjpeg", true, true }, // OpenJPEG JPEG 2000
+    { "librav1e", true, true }, // rav1e AV1 encoder
+    { "libschroedinger", true, UNSAFEQT0&& UNSAFEVLC }, // libschroedinger Dirac - write untested. VLC plays with a wrong format
+    { "libtheora", true, UNSAFEQT0 }, // libtheora Theora - write untested.
+    { "libvpx", true, UNSAFEQT0 }, // On2 VP8
+    { "libvpx-vp9", true, UNSAFEQT0 }, // Google VP9
+    { "libx264", true, UNSAFEQT0 }, // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (encoder)
+    { "libx264rgb", true, UNSAFEQT0 }, // H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB (encoder)
+    { "libx265", true, UNSAFEQT0 }, // H.265 / HEVC (High Efficiency Video Coding) (encoder) - resizes the image
+    { "libxavs", true, false }, // Chinese AVS (Audio Video Standard) (encoder) - untested
+    { "libxvid", true, true }, // MPEG-4 part 2
+    { "ljpeg", true, UNSAFEQT0 }, // Lossless JPEG - write not supported as can't be read in in official qt.
+    { "mjpeg", true, true }, // MJPEG (Motion JPEG) - this looks to be MJPEG-A. MJPEG-B encoding is not supported by FFmpeg so is not included here. To avoid confusion over the MJPEG-A and MJPEG-B variants, this codec is displayed as 'Photo JPEG'. This is done to i) avoid the confusion of the naming, ii) be consistent with Apple QuickTime, iii) the term 'Photo JPEG' is recommend for progressive frames which is appropriate to Nuke/NukeStudio as it does not have interlaced support.
+    { "mpeg1video", true, TERRIBLE }, // MPEG-1 video - write not supported as it gives random 8x8 blocky errors
+    { "mpeg2video", true, true }, // MPEG-2 video
+    { "mpeg4", true, true }, // MPEG-4 part 2
+    { "msmpeg4v2", true, UNSAFEQT0 }, // MPEG-4 part 2 Microsoft variant version 2 - write not supported as doesn't read in official qt.
+    { "msmpeg4", true, UNSAFEQT0 }, // MPEG-4 part 2 Microsoft variant version 3 - write not supported as doesn't read in official qt.
+    { "png", true, true }, // PNG (Portable Network Graphics) image
+    { "prores", true, false }, // Apple ProRes (the encoder is prores_ks)
+    { "qtrle", true, true }, // QuickTime Animation (RLE) video
+    { "r10k", true, UNSAFEQT&& UNSAFEVLC }, // AJA Kono 10-bit RGB - write not supported as not official qt readable without colourshifts.
+    { "r210", true, UNSAFEQT&& UNSAFEVLC }, // Uncompressed RGB 10-bit - write not supported as not official qt readable with relevant 3rd party codec without colourshifts.
+    { "rawvideo", true, UNSAFEQT&& UNSAFEVLC }, // raw video - write not supported as not official qt readable.
+    { "svq1", true, true }, // Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1
+    { "targa", true, true }, // Truevision Targa image.
+    { "theora", true, false }, // Theora (decoder).
+    { "tiff", true, true }, // TIFF Image
+    { "v210", true, UNSAFEQT }, // Uncompressed 4:2:2 10-bit- write not supported as not official qt readable without colourshifts.
+    { "v308", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed 4:4:4 - write not supported as not official qt readable and 8-bit only.
+    { "v408", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed QT 4:4:4:4 - write not supported as official qt can't write, so bad round trip choice and 8-bit only.
+    { "v410", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed 4:4:4 10-bit - write not supported as not official qt readable with standard codecs.
+    { "vc2", true, UNSAFEQT0&& UNSAFEVLC }, // SMPTE VC-2 (previously BBC Dirac Pro).
+    { "vp8", true, false }, // On2 VP8 (decoder)
+    { "vp9", true, false }, // Google VP9 (decoder)
 
     // Audio codecs.
-    { "pcm_alaw",       true,  true },     // PCM A-law / G.711 A-law
-    { "pcm_f32be",      true,  true },     // PCM 32-bit floating point big-endian
-    { "pcm_f32le",      true,  true },     // PCM 32-bit floating point little-endian
-    { "pcm_f64be",      true,  true },     // PCM 64-bit floating point big-endian
-    { "pcm_f64le",      true,  true },     // PCM 64-bit floating point little-endian
-    { "pcm_mulaw",      true,  true },     // PCM mu-law / G.711 mu-law
-    { "pcm_s16be",      true,  true },     // PCM signed 16-bit big-endian
-    { "pcm_s16le",      true,  true },     // PCM signed 16-bit little-endian
-    { "pcm_s24be",      true,  true },     // PCM signed 24-bit big-endian
-    { "pcm_s24le",      true,  true },     // PCM signed 24-bit little-endian
-    { "pcm_s32be",      true,  true },     // PCM signed 32-bit big-endian
-    { "pcm_s32le",      true,  true },     // PCM signed 32-bit little-endian
-    { "pcm_s8",         true,  true },     // PCM signed 8-bit
-    { "pcm_u16be",      true,  true },     // PCM unsigned 16-bit big-endian
-    { "pcm_u16le",      true,  true },     // PCM unsigned 16-bit little-endian
-    { "pcm_u24be",      true,  true },     // PCM unsigned 24-bit big-endian
-    { "pcm_u24le",      true,  true },     // PCM unsigned 24-bit little-endian
-    { "pcm_u32be",      true,  true },     // PCM unsigned 32-bit big-endian
-    { "pcm_u32le",      true,  true },     // PCM unsigned 32-bit little-endian
-    { "pcm_u8",         true,  true },     // PCM unsigned 8-bit
-    { nullptr, false, false}
+    { "pcm_alaw", true, true }, // PCM A-law / G.711 A-law
+    { "pcm_f32be", true, true }, // PCM 32-bit floating point big-endian
+    { "pcm_f32le", true, true }, // PCM 32-bit floating point little-endian
+    { "pcm_f64be", true, true }, // PCM 64-bit floating point big-endian
+    { "pcm_f64le", true, true }, // PCM 64-bit floating point little-endian
+    { "pcm_mulaw", true, true }, // PCM mu-law / G.711 mu-law
+    { "pcm_s16be", true, true }, // PCM signed 16-bit big-endian
+    { "pcm_s16le", true, true }, // PCM signed 16-bit little-endian
+    { "pcm_s24be", true, true }, // PCM signed 24-bit big-endian
+    { "pcm_s24le", true, true }, // PCM signed 24-bit little-endian
+    { "pcm_s32be", true, true }, // PCM signed 32-bit big-endian
+    { "pcm_s32le", true, true }, // PCM signed 32-bit little-endian
+    { "pcm_s8", true, true }, // PCM signed 8-bit
+    { "pcm_u16be", true, true }, // PCM unsigned 16-bit big-endian
+    { "pcm_u16le", true, true }, // PCM unsigned 16-bit little-endian
+    { "pcm_u24be", true, true }, // PCM unsigned 24-bit big-endian
+    { "pcm_u24le", true, true }, // PCM unsigned 24-bit little-endian
+    { "pcm_u32be", true, true }, // PCM unsigned 32-bit big-endian
+    { "pcm_u32le", true, true }, // PCM unsigned 32-bit little-endian
+    { "pcm_u8", true, true }, // PCM unsigned 8-bit
+    { nullptr, false, false }
 };
 
 const FilterEntry*
@@ -368,9 +352,9 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
     }
 
     if (!_convertCtx) {
-        //Preventing deprecated pixel format used error messages, see:
-        //https://libav.org/doxygen/master/pixfmt_8h.html#a9a8e335cf3be472042bc9f0cf80cd4c5
-        //This manually sets them to the new versions of equivalent types.
+        // Preventing deprecated pixel format used error messages, see:
+        // https://libav.org/doxygen/master/pixfmt_8h.html#a9a8e335cf3be472042bc9f0cf80cd4c5
+        // This manually sets them to the new versions of equivalent types.
         switch (srcPixelFormat) {
         case AV_PIX_FMT_YUVJ420P:
             srcPixelFormat = AV_PIX_FMT_YUV420P;
@@ -400,12 +384,12 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
         }
 
         _convertCtx = sws_getContext(srcWidth, srcHeight, srcPixelFormat, // src format
-                                     dstWidth, dstHeight, dstPixelFormat,        // dest format
+                                     dstWidth, dstHeight, dstPixelFormat, // dest format
                                      SWS_BICUBIC, nullptr, nullptr, nullptr);
 
         // Set up the SoftWareScaler to convert colorspaces correctly.
         // Colorspace conversion makes no sense for RGB->RGB conversions
-        if ( !isYUV() ) {
+        if (!isYUV()) {
             return _convertCtx;
         }
 
@@ -481,7 +465,7 @@ FFmpegFile::Stream::GetStreamAspectRatio(Stream* stream)
 
 // get stream start time
 int64_t
-FFmpegFile::getStreamStartTime(Stream & stream)
+FFmpegFile::getStreamStartTime(Stream& stream)
 {
 #if TRACE_FILE_OPEN
     std::cout << "      Determining stream start PTS:" << std::endl;
@@ -494,7 +478,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     int64_t startPTS = stream._avstream->start_time;
     int64_t startDTS = stream._avstream->start_time;
 #if TRACE_FILE_OPEN
-    if ( startPTS != int64_t(AV_NOPTS_VALUE) ) {
+    if (startPTS != int64_t(AV_NOPTS_VALUE)) {
         std::cout << "        Obtained from AVStream::start_time=";
     }
 #endif
@@ -537,7 +521,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
 #endif
 
 #if TRACE_FILE_OPEN
-        if ( startPTS != int64_t(AV_NOPTS_VALUE) ) {
+        if (startPTS != int64_t(AV_NOPTS_VALUE)) {
             std::cout << "        Found by searching frames=";
         }
 #endif
@@ -564,8 +548,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
     }
 
 #if TRACE_FILE_OPEN
-    std::cout << startPTS << " ticks, " << double(startPTS) * double(stream._avstream->time_base.num) /
-        double(stream._avstream->time_base.den) << " s" << std::endl;
+    std::cout << startPTS << " ticks, " << double(startPTS) * double(stream._avstream->time_base.num) / double(stream._avstream->time_base.den) << " s" << std::endl;
 #endif
 
     stream._startDTS = startDTS;
@@ -575,7 +558,7 @@ FFmpegFile::getStreamStartTime(Stream & stream)
 
 // Get the video stream duration in frames...
 int64_t
-FFmpegFile::getStreamFrames(Stream & stream)
+FFmpegFile::getStreamFrames(Stream& stream)
 {
 #if TRACE_FILE_OPEN
     std::cout << "      Determining stream frame count:" << std::endl;
@@ -609,14 +592,14 @@ FFmpegFile::getStreamFrames(Stream & stream)
         //   duration would have to be <= 1 microsecond greater than an exact number of frames in order to
         //   result in the wrong number of frames, which is highly improbable.
         int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
-        frames = ( (_context->duration - 1) * stream._fpsNum + divisor - 1 ) / divisor;
+        frames = ((_context->duration - 1) * stream._fpsNum + divisor - 1) / divisor;
 
         // The above calculation is not reliable, because it seems in some situations (such as rendering out a mov
         // with 5 frames at 24 fps from Nuke) the duration has been rounded up to the nearest millisecond, which
         // leads to an extra frame being reported.  To attempt to work around this, compare against the number of
         // frames in the stream, and if they differ by one, use that value instead.
         int64_t streamFrames = stream._avstream->nb_frames;
-        if ( (streamFrames > 0) && (std::abs( (double)(frames - streamFrames) ) <= 1) ) {
+        if ((streamFrames > 0) && (std::abs((double)(frames - streamFrames)) <= 1)) {
             frames = streamFrames;
         }
 #if TRACE_FILE_OPEN
@@ -643,8 +626,7 @@ FFmpegFile::getStreamFrames(Stream & stream)
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::nb_frames, calculating from duration & framerate..." << std::endl;
 #endif
-        frames = (int64_t(stream._avstream->duration) * stream._avstream->time_base.num  * stream._fpsNum) /
-                 (int64_t(stream._avstream->time_base.den) * stream._fpsDen);
+        frames = (int64_t(stream._avstream->duration) * stream._avstream->time_base.num * stream._fpsNum) / (int64_t(stream._avstream->time_base.den) * stream._fpsDen);
 #if TRACE_FILE_OPEN
         if (frames > 0) {
             std::cout << "        Calculated from duration & framerate=";
@@ -702,12 +684,11 @@ FFmpegFile::getStreamFrames(Stream & stream)
 // that match in this way are more likely to contain multiple views rather then unrelated
 // content. This is somewhat arbitrary but seems like a reasonable starting point until
 // users tell us otherwise.
-static
-bool
+static bool
 CheckStreamPropertiesMatch(const AVStream* streamA,
                            const AVStream* streamB)
 {
-#if 0//FF_API_LAVF_AVCTX
+#if 0 // FF_API_LAVF_AVCTX
     const AVCodecContext* codecA = streamA->codec;
     const AVCodecContext* codecB = streamB->codec;
 #else
@@ -720,7 +701,7 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
         return false;
     }
 
-#if 0//FF_API_LAVF_AVCTX
+#if 0 // FF_API_LAVF_AVCTX
     AVPixelFormat codecAfmt = codecA->pix_fmt;
     AVPixelFormat codecBfmt = codecB->pix_fmt;
 #else
@@ -736,27 +717,11 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
     const AVPixFmtDescriptor* pixFmtDescA = av_pix_fmt_desc_get(codecAfmt);
     const AVPixFmtDescriptor* pixFmtDescB = av_pix_fmt_desc_get(codecBfmt);
 
-    return
-    (codecA->codec_id             == codecB->codec_id) &&
-    (codecA->bits_per_raw_sample  == codecB->bits_per_raw_sample) &&
-    (codecA->width                == codecB->width) &&
-    (codecA->height               == codecB->height) &&
-    (codecA->sample_aspect_ratio.num  == codecB->sample_aspect_ratio.num) &&
-    (codecA->sample_aspect_ratio.den  == codecB->sample_aspect_ratio.den) &&
-    (pixFmtDescA->nb_components       == pixFmtDescB->nb_components) &&
-    (streamA->sample_aspect_ratio.num == streamB->sample_aspect_ratio.num) &&
-    (streamA->sample_aspect_ratio.den == streamB->sample_aspect_ratio.den) &&
-    (streamA->time_base.num     == streamB->time_base.num) &&
-    (streamA->time_base.den     == streamB->time_base.den) &&
-    (streamA->start_time        == streamB->start_time) &&
-    (streamA->duration          == streamB->duration) &&
-    (streamA->nb_frames         == streamB->nb_frames) &&
-    (streamA->r_frame_rate.num  == streamB->r_frame_rate.num) &&
-    (streamA->r_frame_rate.den  == streamB->r_frame_rate.den);
+    return (codecA->codec_id == codecB->codec_id) && (codecA->bits_per_raw_sample == codecB->bits_per_raw_sample) && (codecA->width == codecB->width) && (codecA->height == codecB->height) && (codecA->sample_aspect_ratio.num == codecB->sample_aspect_ratio.num) && (codecA->sample_aspect_ratio.den == codecB->sample_aspect_ratio.den) && (pixFmtDescA->nb_components == pixFmtDescB->nb_components) && (streamA->sample_aspect_ratio.num == streamB->sample_aspect_ratio.num) && (streamA->sample_aspect_ratio.den == streamB->sample_aspect_ratio.den) && (streamA->time_base.num == streamB->time_base.num) && (streamA->time_base.den == streamB->time_base.den) && (streamA->start_time == streamB->start_time) && (streamA->duration == streamB->duration) && (streamA->nb_frames == streamB->nb_frames) && (streamA->r_frame_rate.num == streamB->r_frame_rate.num) && (streamA->r_frame_rate.den == streamB->r_frame_rate.den);
 }
 
 // constructor
-FFmpegFile::FFmpegFile(const string & filename)
+FFmpegFile::FFmpegFile(const string& filename)
     : _filename(filename)
     , _context(nullptr)
     , _streams()
@@ -769,23 +734,23 @@ FFmpegFile::FFmpegFile(const string & filename)
 #endif
 {
 #ifdef OFX_IO_MT_FFMPEG
-    //MultiThread::AutoMutex guard(_lock); // not needed in a constructor: we are the only owner
+    // MultiThread::AutoMutex guard(_lock); // not needed in a constructor: we are the only owner
 #endif
 
 #if TRACE_FILE_OPEN
     std::cout << "FFmpeg Reader=" << this << "::c'tor(): filename=" << filename << std::endl;
 #endif
 
-    assert( !_filename.empty() );
+    assert(!_filename.empty());
     AVDictionary* demuxerOptions = nullptr;
     // enabling drefs to allow reading from external tracks
     // this enables quicktime reference files demuxing
     av_dict_set(&demuxerOptions, "enable_drefs", "1", 0);
-    CHECK( avformat_open_input(&_context, _filename.c_str(), nullptr, &demuxerOptions) );
+    CHECK(avformat_open_input(&_context, _filename.c_str(), nullptr, &demuxerOptions));
     if (demuxerOptions != nullptr) {
         // demuxerOptions is destroyed and replaced, on avformat_open_input return,
         // with a dict containing the options that were not found
-        //assert(false && "invalid options passed to demuxer");
+        // assert(false && "invalid options passed to demuxer");
         // Actually, this is OK since enable_drefs is a valid option only for mov/mp4/3gp
         // https://ffmpeg.org/ffmpeg-formats.html#Options-1
         av_dict_free(&demuxerOptions);
@@ -799,7 +764,7 @@ FFmpegFile::FFmpegFile(const string & filename)
     // loaded. This defaults to 5meg. 100meg should be enough for large stereo quicktimes.
     _context->probesize = 100000000;
 
-    CHECK( avformat_find_stream_info(_context, nullptr) );
+    CHECK(avformat_find_stream_info(_context, nullptr));
 
 #if TRACE_FILE_OPEN
     std::cout << "  " << _context->nb_streams << " streams:" << std::endl;
@@ -841,9 +806,9 @@ FFmpegFile::FFmpegFile(const string & filename)
             continue;
         }
         if (codecCtx->pix_fmt == AV_PIX_FMT_NONE) {
-#         if TRACE_FILE_OPEN
+#if TRACE_FILE_OPEN
             std::cout << "Unknown pixel format, skipping..." << std::endl;
-#         endif
+#endif
             continue;
         }
 
@@ -857,23 +822,20 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 
         // skip codecs not in the white list
-        //string reason;
-        if ( !isCodecWhitelistedForReading(videoCodec->name) ) {
-#         if TRACE_FILE_OPEN
+        // string reason;
+        if (!isCodecWhitelistedForReading(videoCodec->name)) {
+#if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" disallowed, skipping..." << std::endl;
-#         endif
+#endif
             unsupported_codec = true;
             continue;
         }
         // Some format/codec combinations, even if readable, do not have timestamps.
         // See also codecCompatible() in WriteFFmpeg.cpp which contains a similar check.
-        if ((std::string(_context->iformat->name) == "avi") &&
-            (codecCtx->codec_id == AV_CODEC_ID_H264 ||
-             codecCtx->codec_id == AV_CODEC_ID_MPEG1VIDEO ||
-             codecCtx->codec_id == AV_CODEC_ID_MPEG2VIDEO) ) {
-#         if TRACE_FILE_OPEN
+        if ((std::string(_context->iformat->name) == "avi") && (codecCtx->codec_id == AV_CODEC_ID_H264 || codecCtx->codec_id == AV_CODEC_ID_MPEG1VIDEO || codecCtx->codec_id == AV_CODEC_ID_MPEG2VIDEO)) {
+#if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" in format \"" << _format->name << "\" disallowed because it lacks timestamps, skipping..." << std::endl;
-#         endif
+#endif
             unsupported_codec = true;
             continue;
         }
@@ -887,21 +849,21 @@ FFmpegFile::FFmpegFile(const string & filename)
 
             // Activate multithreaded decoding. This must be done before opening the codec; see
             // http://lists.gnu.org/archive/html/bino-list/2011-08/msg00019.html
-#          ifdef AV_CODEC_CAP_AUTO_THREADS
+#ifdef AV_CODEC_CAP_AUTO_THREADS
             // Do not use AV_CODEC_CAP_AUTO_THREADS, since it may create too many threads
-            //if (avstream->codec->codec && (avstream->codec->codec->capabilities & AV_CODEC_CAP_AUTO_THREADS)) {
+            // if (avstream->codec->codec && (avstream->codec->codec->capabilities & AV_CODEC_CAP_AUTO_THREADS)) {
             //    avstream->codec->thread_count = 0;
             //} else
-#          endif
+#endif
             {
-                codecCtx->thread_count = (std::min)( (int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS ); // ask for the number of available cores for multithreading
-#             ifdef AV_CODEC_CAP_SLICE_THREADS
-                if ( codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) ) {
+                codecCtx->thread_count = (std::min)((int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS); // ask for the number of available cores for multithreading
+#ifdef AV_CODEC_CAP_SLICE_THREADS
+                if (codecCtx->codec && (codecCtx->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)) {
                     // multiple threads are used to decode a single frame. Reduces delay
                     codecCtx->thread_type = FF_THREAD_SLICE;
                 }
-#             endif
-                //avstream->codec->thread_count = video_decoding_threads(); // bino's strategy (disabled)
+#endif
+                // avstream->codec->thread_count = video_decoding_threads(); // bino's strategy (disabled)
             }
             // Set CODEC_FLAG_EMU_EDGE in the same situations in which ffplay sets it.
             // I don't know what exactly this does, but it is necessary to fix the problem
@@ -911,7 +873,7 @@ FFmpegFile::FFmpegFile(const string & filename)
 #ifdef FF_API_LOWRES
             lowres = avctx->lowres;
 #endif
-            if ( lowres || ( videoCodec && (videoCodec->capabilities & CODEC_CAP_DR1) ) ) {
+            if (lowres || (videoCodec && (videoCodec->capabilities & CODEC_CAP_DR1))) {
                 avctx->flags |= CODEC_FLAG_EMU_EDGE;
             }
 #endif
@@ -960,7 +922,7 @@ FFmpegFile::FFmpegFile(const string & filename)
             // [openfx-io note] when using insternal ffmpeg 8bits->16 bits conversion,
             // (255 = 100%) becomes (65280 =99.6%)
             stream->_bitDepth = codecCtx->bits_per_raw_sample; // disabled in Nuke's reader
-            //stream->_bitDepth = 16; // enabled in Nuke's reader
+            // stream->_bitDepth = 16; // enabled in Nuke's reader
 
             const AVPixFmtDescriptor* avPixFmtDescriptor = av_pix_fmt_desc_get(stream->_codecContext->pix_fmt);
             if (avPixFmtDescriptor == nullptr) {
@@ -993,21 +955,18 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 #if TRACE_FILE_OPEN
         std::cout << "      Timebase=" << avstream->time_base.num << "/" << avstream->time_base.den << " s/tick" << std::endl;
-        std::cout << "      Duration=" << avstream->duration << " ticks, " <<
-            double(avstream->duration) * double(avstream->time_base.num) /
-            double(avstream->time_base.den) << " s" << std::endl;
+        std::cout << "      Duration=" << avstream->duration << " ticks, " << double(avstream->duration) * double(avstream->time_base.num) / double(avstream->time_base.den) << " s" << std::endl;
         std::cout << "      BitDepth=" << stream->_bitDepth << std::endl;
         std::cout << "      NumberOfComponents=" << stream->_numberOfComponents << std::endl;
 #endif
 
         // If FPS is specified, record it.
         // Otherwise assume 1 fps (default value).
-        if ( (avstream->r_frame_rate.num != 0) && (avstream->r_frame_rate.den != 0) ) {
+        if ((avstream->r_frame_rate.num != 0) && (avstream->r_frame_rate.den != 0)) {
             stream->_fpsNum = avstream->r_frame_rate.num;
             stream->_fpsDen = avstream->r_frame_rate.den;
 #if TRACE_FILE_OPEN
-            std::cout << "      Framerate=" << stream->_fpsNum << "/" << stream->_fpsDen << ", " <<
-                double(stream->_fpsNum) / double(stream->_fpsDen) << " fps" << std::endl;
+            std::cout << "      Framerate=" << stream->_fpsNum << "/" << stream->_fpsDen << ", " << double(stream->_fpsNum) / double(stream->_fpsDen) << " fps" << std::endl;
 #endif
         }
 #if TRACE_FILE_OPEN
@@ -1016,7 +975,7 @@ FFmpegFile::FFmpegFile(const string & filename)
         }
 #endif
 
-        stream->_width  = codecCtx->width;
+        stream->_width = codecCtx->width;
         stream->_height = codecCtx->height;
 #if TRACE_FILE_OPEN
         std::cout << "      Image size=" << stream->_width << "x" << stream->_height << std::endl;
@@ -1027,13 +986,13 @@ FFmpegFile::FFmpegFile(const string & filename)
 
         // set stream start time and numbers of frames
         stream->_startPTS = getStreamStartTime(*stream);
-        stream->_frames   = getStreamFrames(*stream);
+        stream->_frames = getStreamFrames(*stream);
 
         // save the stream
         _streams.push_back(stream);
     }
-    if ( _streams.empty() ) {
-        setError( unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream" );
+    if (_streams.empty()) {
+        setError(unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream");
         _selectedStream = nullptr;
     } else {
 #pragma message WARN("should we build a separate FFmpegfile for each view? see also FFmpegFileManager")
@@ -1042,8 +1001,7 @@ FFmpegFile::FFmpegFile(const string & filename)
 
         if (static_cast<size_t>(viewIndex) < _streams.size()) {
             _selectedStream = _streams[viewIndex];
-        }
-        else {
+        } else {
             _selectedStream = _streams[0];
         }
     }
@@ -1069,12 +1027,12 @@ FFmpegFile::~FFmpegFile()
     _errorMsg.clear();
 }
 
-void FFmpegFile::setSelectedStream(int streamIndex)
+void
+FFmpegFile::setSelectedStream(int streamIndex)
 {
     if ((streamIndex >= 0) && (streamIndex < static_cast<int>(_streams.size()))) {
         _selectedStream = _streams[streamIndex];
-    }
-    else {
+    } else {
         assert(false && "setSelectedStream: Invalid streamIndex");
         _selectedStream = !_streams.empty() ? _streams[0] : nullptr;
     }
@@ -1083,15 +1041,15 @@ void FFmpegFile::setSelectedStream(int streamIndex)
 const char*
 FFmpegFile::getColorspace() const
 {
-    //The preferred colorspace is figured out from a number of sources - initially we look for a number
-    //of different metadata sources that may be present in the file. If these fail we then fall back
-    //to using the codec's underlying storage mechanism - if RGB we default to gamma 1.8, if YCbCr we
-    //default to gamma 2.2 (note prores special case). Note we also ignore the NCLC atom for reading
-    //purposes, as in practise it tends to be incorrect.
+    // The preferred colorspace is figured out from a number of sources - initially we look for a number
+    // of different metadata sources that may be present in the file. If these fail we then fall back
+    // to using the codec's underlying storage mechanism - if RGB we default to gamma 1.8, if YCbCr we
+    // default to gamma 2.2 (note prores special case). Note we also ignore the NCLC atom for reading
+    // purposes, as in practise it tends to be incorrect.
 
-    //First look for the meta keys that (recent) Nukes would've written, or special cases in Arri meta.
-    //Doubles up searching for lower case keys as the ffmpeg searches are case sensitive, and the keys
-    //have been seen to be lower cased (particularly in old Arri movs).
+    // First look for the meta keys that (recent) Nukes would've written, or special cases in Arri meta.
+    // Doubles up searching for lower case keys as the ffmpeg searches are case sensitive, and the keys
+    // have been seen to be lower cased (particularly in old Arri movs).
     if (_context && _context->metadata) {
         AVDictionaryEntry* t;
 
@@ -1120,22 +1078,21 @@ FFmpegFile::getColorspace() const
         if (!t) {
             av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
-        if ( t && !strncasecmp(t->value, "LOG-C", 5) ) {
+        if (t && !strncasecmp(t->value, "LOG-C", 5)) {
             return "AlexaV3LogC";
         }
-        if ( t && !strncasecmp(t->value, "REC-709", 7) ) {
+        if (t && !strncasecmp(t->value, "REC-709", 7)) {
             return "rec709";
         }
     }
 
-    //Special case for prores - the util YUV will report RGB, due to pixel format support, but for
-    //compatibility and consistency with official quicktime, we need to be using 2.2 for 422 material
-    //and 1.8 for 4444. Protected to deal with ffmpeg vagaries.
+    // Special case for prores - the util YUV will report RGB, due to pixel format support, but for
+    // compatibility and consistency with official quicktime, we need to be using 2.2 for 422 material
+    // and 1.8 for 4444. Protected to deal with ffmpeg vagaries.
     assert((_streams.empty() || _selectedStream) && "_streams not empty but null _selectedStream");
     if (!_streams.empty() && _selectedStream->_codecContext && _selectedStream->_codecContext->codec_id) {
         if (_selectedStream->_codecContext->codec_id == AV_CODEC_ID_PRORES) {
-            if ( ( _streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'h') ) ||
-                 ( _streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'x') ) ) {
+            if ((_streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'h')) || (_streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'x'))) {
                 return "Gamma1.8";
             } else {
                 return "Gamma2.2";
@@ -1143,8 +1100,7 @@ FFmpegFile::getColorspace() const
         }
     }
     if (!_streams.empty() && _selectedStream->_codecContext) {
-        if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_BT709 ||
-            _selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE240M) {
+        if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_BT709 || _selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE240M) {
             return "rec709";
         } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_GAMMA22) {
             return "Gamma2.2";
@@ -1183,7 +1139,7 @@ FFmpegFile::setError(const char* msg,
     _invalidState = true;
 }
 
-const string &
+const string&
 FFmpegFile::getError() const
 {
 #ifdef OFX_IO_MT_FFMPEG
@@ -1208,7 +1164,7 @@ bool
 FFmpegFile::seekFrame(int frame,
                       Stream* stream)
 {
-    ///Private should not lock
+    /// Private should not lock
 
     avcodec_flush_buffers(stream->_codecContext);
     int64_t timestamp = stream->frameToDts(frame);
@@ -1271,17 +1227,10 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     // If gop_size == 0 then this is a intra-only encode and we can
     // assume sequential frame output from the decoder
-    bool isIntraOnly = stream->_codecContext->gop_size ? false: true;
+    bool isIntraOnly = stream->_codecContext->gop_size ? false : true;
 
     // These codecs may still report a gop_size if incorrectly muxed.
-    if ((stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_PNG) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_DPX) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_TARGA) ||
-        (stream->_codecContext->codec_id == AV_CODEC_ID_TIFF)) {
+    if ((stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) || (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) || (stream->_codecContext->codec_id == AV_CODEC_ID_PNG) || (stream->_codecContext->codec_id == AV_CODEC_ID_DPX) || (stream->_codecContext->codec_id == AV_CODEC_ID_TARGA) || (stream->_codecContext->codec_id == AV_CODEC_ID_TIFF)) {
         isIntraOnly = true;
     }
 
@@ -1297,9 +1246,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     }
 
     // Setup the output frame struct with the buffer passed in
-    avFrameOut->width   = stream->_width;
-    avFrameOut->height  = stream->_height;
-    avFrameOut->format  = stream->_outputPixelFormat;
+    avFrameOut->width = stream->_width;
+    avFrameOut->height = stream->_height;
+    avFrameOut->format = stream->_outputPixelFormat;
 
     int res = 0;
 
@@ -1309,25 +1258,23 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     }
 
     res = av_image_fill_pointers(
-                                 avFrameOut->data,
-                                 stream->_outputPixelFormat,
-                                 stream->_height,
-                                 buffer,
-                                 avFrameOut->linesize
-                                 );
+        avFrameOut->data,
+        stream->_outputPixelFormat,
+        stream->_height,
+        buffer,
+        avFrameOut->linesize);
 
     if (res < 0) {
         setInternalError(res, "FFmpeg Reader Failed to fill image pointers: ");
         return false;
     }
 
-
     bool retriedSeek = false;
     bool retriedDecode = false;
 
     while (!retriedDecode) {
 
-        retriedDecode = retriedSeek ? true: false;
+        retriedDecode = retriedSeek ? true : false;
 
         hasPicture = demuxAndDecode(avFrameOut, frame);
 
@@ -1338,15 +1285,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         if (!hasPicture && !isIntraOnly && !retriedSeek) {
             retriedSeek = true;
             seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD);
-        }
-        else {
+        } else {
             break;
         }
     }
 
     return hasPicture;
 } // FFmpegFile::decode
-
 
 bool
 FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
@@ -1368,8 +1313,8 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
 // https://github.com/FFmpeg/FFmpeg/blob/9e30859cb60b915f237581e3ce91b0d31592edc0/libavcodec/decode.c#L748
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 static int
-mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
-                int *got_frame, const AVPacket *pkt)
+mov64_av_decode(AVCodecContext* avctx, AVFrame* frame,
+                int* got_frame, const AVPacket* pkt)
 {
     int ret;
 
@@ -1393,19 +1338,20 @@ mov64_av_decode(AVCodecContext *avctx, AVFrame *frame,
     return 0;
 }
 
-bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
+bool
+FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
 {
     Stream* stream = _selectedStream;
     MyAVPacket avPacket;
 
     av_frame_unref(stream->_avIntermediateFrame);
 
-    int res                   = 0;
-    bool hasPicture           = false;
-    int frameDecoded          = 0;
+    int res = 0;
+    bool hasPicture = false;
+    int frameDecoded = 0;
     AVFrame* avFrameDecodeDst = stream->_avIntermediateFrame;
 
-    auto foundCorrectFrame = [this,stream](AVFrame* decodedFrame, int64_t targetFrameIdx) -> bool {
+    auto foundCorrectFrame = [this, stream](AVFrame* decodedFrame, int64_t targetFrameIdx) -> bool {
         bool found = false;
 
         // Fallback to using the DTS from the AVPacket that triggered returning this frame if no PTS is found
@@ -1454,13 +1400,11 @@ bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
         }
     }
 
-
     // Check for any read failures
     if (res < 0 && res != AVERROR_EOF) {
         setInternalError(res, "FFmpeg Reader Failed to read frame: ");
         return false;
     }
-
 
     // Flush the decoder of remaining frames
     if (res == AVERROR_EOF) {
@@ -1475,8 +1419,7 @@ bool FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
                 if (foundCorrectFrame(avFrameDecodeDst, frame)) {
                     return imageConvert(avFrameDecodeDst, avFrameOut);
                 }
-            }
-            else {
+            } else {
                 break;
             }
         }
@@ -1498,8 +1441,8 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
     AVPixelFormat dstPixFmt = (AVPixelFormat)avFrameOut->format;
     AVPixelFormat srcPixFmt = (AVPixelFormat)avFrameIn->format;
 
-    avFrameOut->pts          = avFrameIn->pts;
-    avFrameOut->pkt_dts      = avFrameIn->pkt_dts;
+    avFrameOut->pts = avFrameIn->pts;
+    avFrameOut->pkt_dts = avFrameIn->pkt_dts;
     avFrameOut->pkt_duration = avFrameIn->pkt_duration;
 
     if (!avFrameOut->data[0]) {
@@ -1511,28 +1454,26 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
     }
 
     SwsContext* context = stream->getConvertCtx(
-                                                srcPixFmt,
-                                                avFrameIn->width,
-                                                avFrameIn->height,
-                                                avFrameIn->color_range,
-                                                dstPixFmt,
-                                                avFrameOut->width,
-                                                avFrameOut->height
-                                                );
+        srcPixFmt,
+        avFrameIn->width,
+        avFrameIn->height,
+        avFrameIn->color_range,
+        dstPixFmt,
+        avFrameOut->width,
+        avFrameOut->height);
 
     // Scale if any of the decoding path has provided a convert
     // context. Otherwise, no scaling/conversion is required after
     // decoding the frame.
     if (context) {
         sws_scale(
-                  context,
-                  avFrameIn->data,
-                  avFrameIn->linesize,
-                  0,
-                  avFrameIn->height,
-                  avFrameOut->data,
-                  avFrameOut->linesize
-                  );
+            context,
+            avFrameIn->data,
+            avFrameIn->linesize,
+            0,
+            avFrameIn->height,
+            avFrameOut->data,
+            avFrameOut->linesize);
     } else {
         return false;
     }
@@ -1541,10 +1482,10 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
 }
 
 bool
-FFmpegFile::getFPS(double & fps,
+FFmpegFile::getFPS(double& fps,
                    unsigned streamIdx)
 {
-    if ( streamIdx >= _streams.size() ) {
+    if (streamIdx >= _streams.size()) {
         return false;
     }
 
@@ -1552,17 +1493,17 @@ FFmpegFile::getFPS(double & fps,
     Stream* stream = _streams[streamIdx];
     // guard against division by zero
     assert(stream->_fpsDen);
-    fps = stream->_fpsDen ? ( (double)stream->_fpsNum / stream->_fpsDen ) : stream->_fpsNum;
+    fps = stream->_fpsDen ? ((double)stream->_fpsNum / stream->_fpsDen) : stream->_fpsNum;
 
     return true;
 }
 
 // get stream information
 bool
-FFmpegFile::getInfo(int & width,
-                    int & height,
-                    double & aspect,
-                    int & frames)
+FFmpegFile::getInfo(int& width,
+                    int& height,
+                    double& aspect,
+                    int& frames)
 {
 #ifdef OFX_IO_MT_FFMPEG
     AutoMutex guard(_lock);
@@ -1576,7 +1517,7 @@ FFmpegFile::getInfo(int & width,
     if (!_selectedStream) {
         return false;
     }
-    width  = _selectedStream->_width;
+    width = _selectedStream->_width;
     height = _selectedStream->_height;
     aspect = _selectedStream->_aspect;
     frames = (int)_selectedStream->_frames;
@@ -1587,7 +1528,7 @@ FFmpegFile::getInfo(int & width,
 std::size_t
 FFmpegFile::getBufferBytesCount() const
 {
-    if ( _streams.empty() ) {
+    if (_streams.empty()) {
         return 0;
     }
 
@@ -1622,12 +1563,12 @@ FFmpegFileManager::init()
 }
 
 void
-FFmpegFileManager::clear(void const * plugin)
+FFmpegFileManager::clear(void const* plugin)
 {
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
-    if ( found != _files.end() ) {
+    if (found != _files.end()) {
         for (std::list<FFmpegFile*>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
             delete *it;
         }
@@ -1636,8 +1577,8 @@ FFmpegFileManager::clear(void const * plugin)
 }
 
 FFmpegFile*
-FFmpegFileManager::get(void const * plugin,
-                       const string &filename) const
+FFmpegFileManager::get(void const* plugin,
+                       const string& filename) const
 {
     if (filename.empty() || !plugin) {
         return 0;
@@ -1645,10 +1586,10 @@ FFmpegFileManager::get(void const * plugin,
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
-    if ( found != _files.end() ) {
+    if (found != _files.end()) {
         for (std::list<FFmpegFile*>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
-            if ( (*it)->getFilename() == filename ) {
-                if ( (*it)->isInvalid() ) {
+            if ((*it)->getFilename() == filename) {
+                if ((*it)->isInvalid()) {
                     delete *it;
                     found->second.erase(it);
                     break;
@@ -1663,8 +1604,8 @@ FFmpegFileManager::get(void const * plugin,
 }
 
 FFmpegFile*
-FFmpegFileManager::getOrCreate(void const * plugin,
-                               const string &filename) const
+FFmpegFileManager::getOrCreate(void const* plugin,
+                               const string& filename) const
 {
     if (filename.empty() || !plugin) {
         return 0;
@@ -1672,10 +1613,10 @@ FFmpegFileManager::getOrCreate(void const * plugin,
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
-    if ( found != _files.end() ) {
+    if (found != _files.end()) {
         for (std::list<FFmpegFile*>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
-            if ( (*it)->getFilename() == filename ) {
-                if ( (*it)->isInvalid() ) {
+            if ((*it)->getFilename() == filename) {
+                if ((*it)->isInvalid()) {
                     delete *it;
                     found->second.erase(it);
                     break;
@@ -1687,10 +1628,10 @@ FFmpegFileManager::getOrCreate(void const * plugin,
     }
 
     FFmpegFile* file = new FFmpegFile(filename);
-    if ( found == _files.end() ) {
+    if (found == _files.end()) {
         std::list<FFmpegFile*> fileList;
         fileList.push_back(file);
-        _files.insert( make_pair(plugin, fileList) );
+        _files.insert(make_pair(plugin, fileList));
     } else {
         found->second.push_back(file);
     }

@@ -24,16 +24,16 @@
 
 #include "GenericWriter.h"
 
+#include <algorithm>
 #include <cfloat> // DBL_MAX
 #include <cstring> // memset
 #include <locale>
 #include <sstream>
-#include <algorithm>
 
-#include "ofxsLog.h"
-#include "ofxsCopier.h"
 #include "ofxsCoords.h"
+#include "ofxsCopier.h"
 #include "ofxsFileOpen.h"
+#include "ofxsLog.h"
 
 #include "ofxsMultiPlane.h"
 
@@ -51,11 +51,11 @@
 namespace OCIO = OCIO_NAMESPACE;
 #endif
 
-using std::string;
+using std::map;
 using std::size_t;
+using std::string;
 using std::stringstream;
 using std::vector;
-using std::map;
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
@@ -69,15 +69,15 @@ NAMESPACE_OFX_IO_ENTER
 // in the Writer context, the script name must be kOfxImageEffectFileParamName, @see kOfxImageEffectContextWriter
 #define kParamFilename kOfxImageEffectFileParamName
 #define kParamFilenameLabel "File"
-#define kParamFilenameHint \
-    "The output image sequence/video stream file(s). " \
-    "The string must match the following format: " \
-    "path/sequenceName###.ext where the number of " \
-    "# (hashes) will define the number of digits to append to each " \
-    "file. For example path/mySequence###.jpg will be translated to " \
-    "path/mySequence000.jpg, path/mySequence001.jpg, etc. " \
+#define kParamFilenameHint                                                                                                                                          \
+    "The output image sequence/video stream file(s). "                                                                                                              \
+    "The string must match the following format: "                                                                                                                  \
+    "path/sequenceName###.ext where the number of "                                                                                                                 \
+    "# (hashes) will define the number of digits to append to each "                                                                                                \
+    "file. For example path/mySequence###.jpg will be translated to "                                                                                               \
+    "path/mySequence000.jpg, path/mySequence001.jpg, etc. "                                                                                                         \
     "%d printf-like notation can also be used instead of the hashes, for example path/sequenceName%03d.ext will achieve the same than the example aforementioned. " \
-    "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overridden everytimes. " \
+    "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overridden everytimes. "                                \
     "Views can be specified using the \"long\" view notation %V or the \"short\" notation using %v."
 
 #define kParamOverwrite "overwrite"
@@ -95,8 +95,7 @@ NAMESPACE_OFX_IO_ENTER
 #define kParamFormatTypeOptionInput "Input Format", "Renders the pixels included in the input format", "input"
 #define kParamFormatTypeOptionProject "Project Format", "Renders the pixels included in the project format", "project"
 #define kParamFormatTypeOptionFixed "Fixed Format", "Renders the pixels included in the format indicated by the " kParamOutputFormatLabel " parameter.", "fixed"
-enum FormatTypeEnum
-{
+enum FormatTypeEnum {
     eFormatTypeInput = 0,
     eFormatTypeProject,
     eFormatTypeFixed,
@@ -122,9 +121,9 @@ enum FormatTypeEnum
 
 #define kParamInputPremult "inputPremult"
 #define kParamInputPremultLabel "Input Premult"
-#define kParamInputPremultHint \
-    "Input is considered to have this premultiplication state.\n" \
-    "Colorspace conversion is done on the input RGB data, even if it is premultiplied, " \
+#define kParamInputPremultHint                                                                                 \
+    "Input is considered to have this premultiplication state.\n"                                              \
+    "Colorspace conversion is done on the input RGB data, even if it is premultiplied, "                       \
     "and may thus give a wrong result if the input is premultiplied and the target colorspace is nonlinear.\n" \
     "This is set automatically from the input stream information, but can be adjusted if this information is wrong."
 #define kParamInputPremultOptionOpaqueHint "The image is opaque and so has no premultiplication state, as if the alpha component in all pixels were set to the white point.", "opaque"
@@ -140,11 +139,11 @@ enum FormatTypeEnum
 #define kParamClipToRoD "clipToRoD"
 #define kParamClipToRoDLabel "Clip To RoD"
 #define kParamClipToRoDHint "When checked, the portion of the image written will be the region of definition of the image in input and not the format " \
-    "selected by the Output Format parameter.\n" \
-    "For the EXR file format, this will distinguish the data window (size of the image in input) from the display window (the format specified by Output Format)."
+                            "selected by the Output Format parameter.\n"                                                                                \
+                            "For the EXR file format, this will distinguish the data window (size of the image in input) from the display window (the format specified by Output Format)."
 
-#define kParamProcessHint  "When checked, this channel of the layer will be written to the file otherwise it will be skipped. Most file formats will " \
-    "pack the channels into the first N channels of the file. If for some reason it's not possible, the channel will be filled with 0."
+#define kParamProcessHint "When checked, this channel of the layer will be written to the file otherwise it will be skipped. Most file formats will " \
+                          "pack the channels into the first N channels of the file. If for some reason it's not possible, the channel will be filled with 0."
 
 #define kParamOutputComponents "outputComponents"
 #define kParamOutputComponentsLabel "Output Components"
@@ -156,15 +155,16 @@ enum FormatTypeEnum
 #define kParamOutputSpaceSet "ocioOutputSpaceSet" // was the output colorspace set by user?
 #endif
 
-static bool gHostIsNatron   = false;
+static bool gHostIsNatron = false;
 static bool gHostIsNatronVersion3OrGreater = false;
 static bool gHostIsMultiPlanar = false;
 static bool gHostIsMultiView = false;
 
-template<typename T>
+template <typename T>
 static inline void
-unused(const T&) {}
-
+unused(const T&)
+{
+}
 
 GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
                                          const vector<string>& extensions,
@@ -192,7 +192,7 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
     , _guessedParams(NULL)
 #ifdef OFX_IO_USING_OCIO
     , _outputSpaceSet(NULL)
-    , _ocio( new GenericOCIO(this) )
+    , _ocio(new GenericOCIO(this))
 #endif
     , _extensions(extensions)
     , _supportsRGBA(supportsRGBA)
@@ -217,9 +217,8 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
 
     _premult = fetchChoiceParam(kParamInputPremult);
 
-
-    ///Param does not necessarily exist for all IO plugins
-    if ( paramExists(kParamClipToRoD) ) {
+    /// Param does not necessarily exist for all IO plugins
+    if (paramExists(kParamClipToRoD)) {
         _clipToRoD = fetchBooleanParam(kParamClipToRoD);
     }
 
@@ -256,14 +255,13 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
     if (_clipToRoD) {
         string filename;
         _fileParam->getValue(filename);
-        _clipToRoD->setIsSecretAndDisabled( outputFormat != eFormatTypeProject || !displayWindowSupportedByFormat(filename) );
+        _clipToRoD->setIsSecretAndDisabled(outputFormat != eFormatTypeProject || !displayWindowSupportedByFormat(filename));
     }
-    if ( (outputFormat == eFormatTypeInput) || (outputFormat == eFormatTypeProject) ) {
+    if ((outputFormat == eFormatTypeInput) || (outputFormat == eFormatTypeProject)) {
         _outputFormat->setIsSecretAndDisabled(true);
     } else {
         _outputFormat->setIsSecretAndDisabled(false);
     }
-
 
     // must be in sync with GenericWriterDescribeInContextBegin
     if (supportsAlpha) {
@@ -305,7 +303,7 @@ GenericWriterPlugin::restoreStateFromParams()
 bool
 GenericWriterPlugin::checkExtension(const string& ext)
 {
-    if ( ext.empty() ) {
+    if (ext.empty()) {
         // no extension
         return false;
     }
@@ -314,12 +312,13 @@ GenericWriterPlugin::checkExtension(const string& ext)
 }
 
 bool
-GenericWriterPlugin::isIdentity(const IsIdentityArguments &args,
-                                Clip * & /*identityClip*/,
-                                double & /*identityTime*/
-                                , int& /*view*/, std::string& /*plane*/)
+GenericWriterPlugin::isIdentity(const IsIdentityArguments& args,
+                                Clip*& /*identityClip*/,
+                                double& /*identityTime*/
+                                ,
+                                int& /*view*/, std::string& /*plane*/)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
     }
 
@@ -360,7 +359,7 @@ getPixelsComponentsCount(const string& rawComponents,
 
     MultiPlane::ImagePlaneDesc plane, pairedPlane;
     MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
-    switch ( plane.getNumComponents() ) {
+    switch (plane.getNumComponents()) {
     case 0:
         *mappedComponents = ePixelComponentNone;
         break;
@@ -436,13 +435,13 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             ss << planeToFetch.getPlaneLabel();
             ss << " could not be fetched";
 
-            setPersistentMessage( Message::eMessageError, "", ss.str() );
+            setPersistentMessage(Message::eMessageError, "", ss.str());
             throwSuiteStatusException(kOfxStatFailed);
         }
 
         return;
     } else {
-        ///Add it to the holder so we are sure it gets released if an exception occurs below
+        /// Add it to the holder so we are sure it gets released if an exception occurs below
         srcImgsHolder->addImage(srcImg);
     }
 
@@ -466,7 +465,6 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         return;
     }
 
-
     // premultiplication/unpremultiplication is only useful for RGBA data
     bool noPremult = (pixelComponents != ePixelComponentRGBA) || (userPremult == eImageOpaque);
     PixelComponentEnum srcMappedComponents;
@@ -476,15 +474,9 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     *mappedComponentsCount = srcMappedComponentsCount;
     assert(srcMappedComponentsCount != 0 && srcMappedComponents != ePixelComponentNone);
 
-    bool renderWindowIsBounds = renderWindow.x1 == bounds->x1 &&
-                                renderWindow.y1 == bounds->y1 &&
-                                renderWindow.x2 == bounds->x2 &&
-                                renderWindow.y2 == bounds->y2;
+    bool renderWindowIsBounds = renderWindow.x1 == bounds->x1 && renderWindow.y1 == bounds->y1 && renderWindow.x2 == bounds->x2 && renderWindow.y2 == bounds->y2;
 
-
-    if ( renderWindowIsBounds &&
-         isOCIOIdentity &&
-         ( noPremult || ( userPremult == pluginExpectedPremult) ) ) {
+    if (renderWindowIsBounds && isOCIOIdentity && (noPremult || (userPremult == pluginExpectedPremult))) {
         // Render window is of the same size as the input image and we don't need to apply colorspace conversion
         // or premultiplication operations.
 
@@ -492,9 +484,9 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         *rowBytes = srcRowBytes;
 
         // copy to dstImg if necessary
-        if ( (renderRequestedView == view) && _outputClip && _outputClip->isConnected() ) {
-            auto_ptr<Image> dstImg( _outputClip->fetchImagePlane( time, renderRequestedView, plane.c_str() ) );
-            if ( !dstImg.get() ) {
+        if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
+            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+            if (!dstImg.get()) {
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                 throwSuiteStatusException(kOfxStatFailed);
 
@@ -519,14 +511,14 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             }
 
             // copy the source image (the writer is a no-op)
-            copyPixelData( renderWindow, renderScale,
-                           srcPixelData,
-                           renderWindow,
-                           pixelComponents /* could also be srcMappedComponents */,
-                           srcMappedComponentsCount,
-                           bitDepth,
-                           srcRowBytes,
-                           dstImg.get() );
+            copyPixelData(renderWindow, renderScale,
+                          srcPixelData,
+                          renderWindow,
+                          pixelComponents /* could also be srcMappedComponents */,
+                          srcMappedComponentsCount,
+                          bitDepth,
+                          srcRowBytes,
+                          dstImg.get());
         }
     } else {
         // generic case: some conversions are needed.
@@ -554,7 +546,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         // Clip the render window to the bounds of the source image.
         OfxRectI renderWindowClipped;
-        if ( !intersect(renderWindow, *bounds, &renderWindowClipped) ) {
+        if (!intersect(renderWindow, *bounds, &renderWindowClipped)) {
             // Nothing to do, exit
             return;
         }
@@ -562,9 +554,8 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         if (isOCIOIdentity) {
             // bypass OCIO
 
-            if ( noPremult || (userPremult == pluginExpectedPremult) ) {
-                if ( (userPremult == eImageOpaque) && ( (srcMappedComponents == ePixelComponentRGBA) ||
-                                                        ( srcMappedComponents == ePixelComponentAlpha) ) ) {
+            if (noPremult || (userPremult == pluginExpectedPremult)) {
+                if ((userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha))) {
                     // Opaque: force the alpha channel to 1
                     copyPixelsOpaque(*this, renderWindowClipped, renderScale,
                                      srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
@@ -578,8 +569,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             } else if (userPremult == eImagePreMultiplied) {
                 assert(pluginExpectedPremult == eImageUnPreMultiplied);
                 if (pluginExpectedPremult == eImageUnPreMultiplied) {
-                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
-                                   , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 } else {
                     copyPixels(*this, renderWindowClipped, renderScale,
                                srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
@@ -588,8 +578,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             } else {
                 assert(userPremult == eImageUnPreMultiplied);
                 assert(pluginExpectedPremult == eImagePreMultiplied);
-                premultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
-                                 , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                premultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
         } else {
             assert(!isOCIOIdentity);
@@ -616,11 +605,9 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             // Note the last line: it says that when saving to a format that doesn't handle alpha (eg jpg),
             // users prefer just considering the image as opaque and dropping alpha before color conversion.
 
-
             // OCIO expects unpremultiplied input
-            if ( noPremult || (userPremult == eImageUnPreMultiplied) ) {
-                if ( (userPremult == eImageOpaque) && ( (srcMappedComponents == ePixelComponentRGBA) ||
-                                                        ( srcMappedComponents == ePixelComponentAlpha) ) ) {
+            if (noPremult || (userPremult == eImageUnPreMultiplied)) {
+                if ((userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha))) {
                     // Opaque: force the alpha channel to 1
                     copyPixelsOpaque(*this, renderWindowClipped, renderScale,
                                      srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
@@ -636,34 +623,32 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
                 if (alphaOK || pluginExpectedPremult == eImageUnPreMultiplied) {
                     // unpremult before colorspace conversion, only if the plugin expects unpremult data (eg WritePNG)
-                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount
-                                       , bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 } else {
                     copyPixels(*this, renderWindowClipped, renderScale,
                                srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
                                tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 }
             }
-#         ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
             // do the color-space conversion
-            if ( (srcMappedComponents == ePixelComponentRGB) || (srcMappedComponents == ePixelComponentRGBA) ) {
+            if ((srcMappedComponents == ePixelComponentRGB) || (srcMappedComponents == ePixelComponentRGBA)) {
                 _ocio->apply(time, renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, tmpRowBytes);
             }
-#         endif
+#endif
 
             // If needed, re-premult the image for the plugin to work correctly
             // ... but only if output format supports alpha (alphaOK)
             // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
-            if ( alphaOK && (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA) ) {
-                premultPixelData(renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount
-                                 , bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+            if (alphaOK && (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA)) {
+                premultPixelData(renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
             }
         } // if (isOCIOIdentity) {
 
         // copy to dstImg if necessary
-        if ( (renderRequestedView == view) && _outputClip && _outputClip->isConnected() ) {
-            auto_ptr<Image> dstImg( _outputClip->fetchImagePlane( time, renderRequestedView, plane.c_str() ) );
-            if ( !dstImg.get() ) {
+        if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
+            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+            if (!dstImg.get()) {
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                 throwSuiteStatusException(kOfxStatFailed);
 
@@ -686,7 +671,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
             // copy the source image (the writer is a no-op)
             if (srcMappedComponentsCount == dstMappedComponentsCount) {
-                copyPixelData( renderWindow, renderScale, srcPixelData, *bounds, pixelComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, dstImg.get() );
+                copyPixelData(renderWindow, renderScale, srcPixelData, *bounds, pixelComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, dstImg.get());
             } else {
                 void* dstPixelData;
                 OfxRectI dstBounds;
@@ -698,7 +683,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                 // Be careful: src may have more components than dst (eg dst is RGB, src is RGBA).
                 // In this case, only copy the first components (thus the std::min)
 
-                assert( ( /*dstPixelComponentStartIndex=*/ 0 + /*desiredSrcNComps=*/ (std::min)(srcMappedComponentsCount, dstMappedComponentsCount) ) <= /*dstPixelComponentCount=*/ dstMappedComponentsCount );
+                assert((/*dstPixelComponentStartIndex=*/0 + /*desiredSrcNComps=*/(std::min)(srcMappedComponentsCount, dstMappedComponentsCount)) <= /*dstPixelComponentCount=*/dstMappedComponentsCount);
                 interleavePixelBuffers(renderWindowClipped, renderScale,
                                        srcPixelData,
                                        *bounds,
@@ -719,12 +704,11 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         *bounds = renderWindow;
     } // if (renderWindowIsBounds && isOCIOIdentity && (noPremult || userPremult == pluginExpectedPremult))
 
-
-    if ( doAnyPacking && ( !packingContiguous || ( (int)packingMapping.size() != srcMappedComponentsCount ) ) ) {
+    if (doAnyPacking && (!packingContiguous || ((int)packingMapping.size() != srcMappedComponentsCount))) {
         int pixelBytes = packingMapping.size() * getComponentBytes(bitDepth);
         int tmpRowBytes = (renderWindow.x2 - renderWindow.x1) * pixelBytes;
         size_t memSize = (size_t)(renderWindow.y2 - renderWindow.y1) * (size_t)tmpRowBytes;
-        ImageMemory *packingBufferMem = new ImageMemory(memSize, this);
+        ImageMemory* packingBufferMem = new ImageMemory(memSize, this);
         srcImgsHolder->addMemory(packingBufferMem);
         float* packingBufferData = (float*)packingBufferMem->lock();
         if (!packingBufferData) {
@@ -739,7 +723,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         *rowBytes = tmpRowBytes;
         *bounds = renderWindow;
         *mappedComponentsCount = packingMapping.size();
-        switch ( packingMapping.size() ) {
+        switch (packingMapping.size()) {
         case 1:
             *mappedComponents = ePixelComponentAlpha;
             break;
@@ -759,8 +743,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     }
 } // GenericWriterPlugin::fetchPlaneConvertAndCopy
 
-struct ImageData
-{
+struct ImageData {
     float* srcPixelData;
     int rowBytes;
     OfxRectI bounds;
@@ -769,10 +752,10 @@ struct ImageData
 };
 
 void
-GenericWriterPlugin::getPackingOptions(bool *allCheckboxHidden,
+GenericWriterPlugin::getPackingOptions(bool* allCheckboxHidden,
                                        vector<int>* packingMapping) const
 {
-    bool processChannels[4] = {true, true, true, true};
+    bool processChannels[4] = { true, true, true, true };
     bool processCheckboxSecret[4];
 
     *allCheckboxHidden = true;
@@ -797,11 +780,11 @@ GenericWriterPlugin::getPackingOptions(bool *allCheckboxHidden,
 }
 
 void
-GenericWriterPlugin::render(const RenderArguments &args)
+GenericWriterPlugin::render(const RenderArguments& args)
 {
     const double time = args.time;
 
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -813,7 +796,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
         return;
     }
 
-    if ( args.planes.empty() ) {
+    if (args.planes.empty()) {
         setPersistentMessage(Message::eMessageError, "", "Host did not requested any layer to render");
         throwSuiteStatusException(kOfxStatFailed);
     }
@@ -823,26 +806,26 @@ GenericWriterPlugin::render(const RenderArguments &args)
     // filename = filenameFromPattern(filename, time);
     {
         string ext = extension(filename);
-        if ( !checkExtension(ext) ) {
+        if (!checkExtension(ext)) {
             setPersistentMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
             throwSuiteStatusException(kOfxStatErrImageFormat);
         }
     }
 
     // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
-    if ( !_overwrite->getValueAtTime(time) ) {
+    if (!_overwrite->getValueAtTime(time)) {
         // check if output file exists
         string filename;
         _fileParam->getValueAtTime(time, filename);
         // filename = filenameFromPattern(filename, time);
-        std::FILE *image = fopen_utf8(filename.c_str(), "rb");
+        std::FILE* image = fopen_utf8(filename.c_str(), "rb");
         if (image) {
             fclose(image);
             // file exists
-            if (_outputClip && _outputClip->isConnected() ) {
-                auto_ptr<Image> dstImg( _outputClip->fetchImage(time) );
+            if (_outputClip && _outputClip->isConnected()) {
+                auto_ptr<Image> dstImg(_outputClip->fetchImage(time));
                 // fill output with black
-                fillBlack( *this, args.renderWindow, args.renderScale, dstImg.get() );
+                fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
             }
             // nothing else to do!
 
@@ -853,38 +836,37 @@ GenericWriterPlugin::render(const RenderArguments &args)
     double pixelAspectRatio;
     getOutputRoD(time, args.renderView, 0, &pixelAspectRatio);
 
-    ///This is automatically the same generally as inputClip premultiplication but can differ is the user changed it.
+    /// This is automatically the same generally as inputClip premultiplication but can differ is the user changed it.
     int userPremult_i;
     _premult->getValueAtTime(time, userPremult_i);
     PreMultiplicationEnum userPremult = (PreMultiplicationEnum)userPremult_i;
 
-    ///This is what the plug-in expects to be passed to the encode function.
+    /// This is what the plug-in expects to be passed to the encode function.
     PreMultiplicationEnum pluginExpectedPremult = getExpectedInputPremultiplication();
 
-
-    ///This is the mapping of destination channels onto source channels if packing happens
+    /// This is the mapping of destination channels onto source channels if packing happens
     vector<int> packingMapping;
     bool allCheckboxHidden;
     getPackingOptions(&allCheckboxHidden, &packingMapping);
 
     const bool doAnyPacking = args.planes.size() == 1 && !allCheckboxHidden;
 
-    //Packing is required if channels are not contiguous, e.g: the user unchecked G but left R,B,A checked
+    // Packing is required if channels are not contiguous, e.g: the user unchecked G but left R,B,A checked
     bool packingContiguous = true;
 
     if (doAnyPacking) {
         PixelComponentEnum clipComps = _inputClip->getPixelComponents();
 
-        if ( packingMapping.empty() ) {
+        if (packingMapping.empty()) {
             setPersistentMessage(Message::eMessageError, "", "Nothing to render: At least 1 channel checkbox must be checked");
             throwSuiteStatusException(kOfxStatFailed);
         }
-        if ( (clipComps == ePixelComponentAlpha) && (packingMapping.size() != 1) ) {
+        if ((clipComps == ePixelComponentAlpha) && (packingMapping.size() != 1)) {
             setPersistentMessage(Message::eMessageError, "", "Output Components selected is Alpha: select only one single channel checkbox");
             throwSuiteStatusException(kOfxStatFailed);
         }
 
-        if ( (packingMapping.size() == 1) && !_supportsAlpha ) {
+        if ((packingMapping.size() == 1) && !_supportsAlpha) {
             if (_supportsXY) {
                 packingMapping.push_back(-1);
             } else if (_supportsRGB) {
@@ -899,7 +881,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                 setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render single-channel images");
                 throwSuiteStatusException(kOfxStatFailed);
             }
-        } else if ( (packingMapping.size() == 2) && !_supportsXY ) {
+        } else if ((packingMapping.size() == 2) && !_supportsXY) {
             if (_supportsRGB) {
                 packingMapping.push_back(-1);
             } else if (_supportsRGBA) {
@@ -910,14 +892,14 @@ GenericWriterPlugin::render(const RenderArguments &args)
                 setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render 2-channel images");
                 throwSuiteStatusException(kOfxStatFailed);
             }
-        } else if ( (packingMapping.size() == 3) && !_supportsRGB ) {
+        } else if ((packingMapping.size() == 3) && !_supportsRGB) {
             if (_supportsRGBA) {
                 packingMapping.push_back(-1);
             } else {
                 setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render 3-channel images");
                 throwSuiteStatusException(kOfxStatFailed);
             }
-        } else if ( (packingMapping.size() == 4) && !_supportsRGBA ) {
+        } else if ((packingMapping.size() == 4) && !_supportsRGBA) {
             setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render 4-channel images");
             throwSuiteStatusException(kOfxStatFailed);
         }
@@ -933,23 +915,21 @@ GenericWriterPlugin::render(const RenderArguments &args)
         }
     }
 
-
     // The following (commented out) code is not fully-safe, because the same instance may be have
     // two threads running on the same area of the same frame, and the apply()
     // calls both read and write dstImg.
     // This results in colorspace conversion being applied several times.
     //
-    //if (dstImg.get()) {
+    // if (dstImg.get()) {
     //// do the color-space conversion on dstImg
-    //getImageData(dstImg.get(), &pixelData, &bounds, &pixelComponents, &rowBytes);
+    // getImageData(dstImg.get(), &pixelData, &bounds, &pixelComponents, &rowBytes);
     //_ocio->apply(time, args.renderWindow, pixelData, bounds, pixelComponents, rowBytes);
-    //encode(filename, time, pixelData, bounds, pixelComponents, rowBytes);
-    //}
+    // encode(filename, time, pixelData, bounds, pixelComponents, rowBytes);
+    // }
     //
-    // The only viable solution (below) is to do the conversion in a temporary space,
-    // and finally copy the result.
+    //  The only viable solution (below) is to do the conversion in a temporary space,
+    //  and finally copy the result.
     //
-
 
 #ifdef OFX_IO_USING_OCIO
     bool isOCIOIdentity = _ocio->isIdentity(time);
@@ -957,7 +937,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
     bool isOCIOIdentity = true;
 #endif
 
-    //The host required that we render all views into 1 file. This is for now only supported by EXR.
+    // The host required that we render all views into 1 file. This is for now only supported by EXR.
 
     bool doDefaultView = false;
     map<int, string> viewNames;
@@ -974,7 +954,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
         }
     } else {
         int viewToRender = getViewToRender();
-        if ( (viewToRender >= 0) && (viewToRender != args.renderView) ) {
+        if ((viewToRender >= 0) && (viewToRender != args.renderView)) {
             setPersistentMessage(Message::eMessageError, "", "Inconsistent view to render requested");
             throwSuiteStatusException(kOfxStatFailed);
 
@@ -1006,21 +986,21 @@ GenericWriterPlugin::render(const RenderArguments &args)
         }
         viewNames[args.renderView] = view;
     }
-    assert( !viewNames.empty() );
+    assert(!viewNames.empty());
 
-    //This controls how we split into parts
+    // This controls how we split into parts
     LayerViewsPartsEnum partsSplit = getPartsSplittingPreference();
 
     bool alphaOK = supportsAlpha(filename);
-    if ( (viewNames.size() == 1) && (args.planes.size() == 1) ) {
-        //Regular case, just do a simple part
+    if ((viewNames.size() == 1) && (args.planes.size() == 1)) {
+        // Regular case, just do a simple part
         int viewIndex = viewNames.begin()->first;
         InputImagesHolder dataHolder; // owns srcImg and tmpMem
         const Image* srcImg; // owned by dataHolder, no need to delete
-        ImageMemory *tmpMem; // owned by dataHolder, no need to delete
+        ImageMemory* tmpMem; // owned by dataHolder, no need to delete
         ImageData data;
         // NOTE: failIfNoSrcImg=true causes the writer to fail if the src RoD is empty, see https://github.com/MrKepzie/Natron/issues/1617
-        fetchPlaneConvertAndCopy(args.planes.front(), /*failIfNoSrcImg=*/ false, viewIndex, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+        fetchPlaneConvertAndCopy(args.planes.front(), /*failIfNoSrcImg=*/false, viewIndex, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
 
         int dstNComps = doAnyPacking ? packingMapping.size() : data.pixelComponentsCount;
         int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
@@ -1034,8 +1014,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
         assert(gHostIsMultiPlanar);
         EncodePlanesLocalData_RAII encodeData(this);
 
-        if ( (partsSplit == eLayerViewsSplitViews) &&
-             ( args.planes.size() == 1) ) {
+        if ((partsSplit == eLayerViewsSplitViews) && (args.planes.size() == 1)) {
             /*
                Splitting views but only a single layer per view is equivalent to split views/layers: code path is shorter in later case
              */
@@ -1048,7 +1027,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                We have to aggregate all views/layers into a single buffer and write it all at once.
              */
             int nChannels = 0;
-            InputImagesHolder dataHolder;     // owns all tmpMem and srcImg
+            InputImagesHolder dataHolder; // owns all tmpMem and srcImg
             std::list<ImageData> planesData;
 
             // The list of actual planes that could be fetched
@@ -1056,23 +1035,23 @@ GenericWriterPlugin::render(const RenderArguments &args)
 
             for (map<int, string>::const_iterator view = viewNames.begin(); view != viewNames.end(); ++view) {
                 // The first view determines the planes that could be fetched. Other views just attempt to fetch the exact same planes.
-                const std::list<string> *planesToFetch = 0;
-                if ( view == viewNames.begin() ) {
+                const std::list<string>* planesToFetch = 0;
+                if (view == viewNames.begin()) {
                     planesToFetch = &args.planes;
                 } else {
                     planesToFetch = &actualPlanes;
                 }
 
                 for (std::list<string>::const_iterator plane = planesToFetch->begin(); plane != planesToFetch->end(); ++plane) {
-                    ImageMemory *tmpMem;     // owned by dataHolder, no need to delete
-                    const Image* srcImg;     // owned by dataHolder, no need to delete
+                    ImageMemory* tmpMem; // owned by dataHolder, no need to delete
+                    const Image* srcImg; // owned by dataHolder, no need to delete
                     ImageData data;
-                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
                     if (!data.srcPixelData) {
                         continue;
                     }
 
-                    if ( view == viewNames.begin() ) {
+                    if (view == viewNames.begin()) {
                         actualPlanes.push_back(*plane);
                     }
 
@@ -1081,8 +1060,8 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     planesData.push_back(data);
                     int dstNComps = doAnyPacking ? packingMapping.size() : data.pixelComponentsCount;
                     nChannels += dstNComps;
-                }    // for each plane
-            }     // for each view
+                } // for each plane
+            } // for each view
             if (nChannels == 0) {
                 setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
                 throwSuiteStatusException(kOfxStatFailed);
@@ -1100,7 +1079,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                 return;
             }
 
-            ///Set to 0 everywhere since the render window might be bigger than the src img bounds
+            /// Set to 0 everywhere since the render window might be bigger than the src img bounds
             std::memset(tmpMemPtr, 0, memSize);
 
             int interleaveIndex = 0;
@@ -1110,24 +1089,24 @@ GenericWriterPlugin::render(const RenderArguments &args)
                 int dstNComps = doAnyPacking ? packingMapping.size() : it->pixelComponentsCount;
                 int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
                 OfxRectI intersection;
-                if ( Coords::rectIntersection(args.renderWindow, it->bounds, &intersection) ) {
-                    assert( (/*dstPixelComponentStartIndex=*/ interleaveIndex + /*desiredSrcNComps=*/ dstNComps) <= /*dstPixelComponentCount=*/ nChannels );
+                if (Coords::rectIntersection(args.renderWindow, it->bounds, &intersection)) {
+                    assert((/*dstPixelComponentStartIndex=*/interleaveIndex + /*desiredSrcNComps=*/dstNComps) <= /*dstPixelComponentCount=*/nChannels);
                     interleavePixelBuffers(intersection,
                                            args.renderScale,
                                            it->srcPixelData,
                                            it->bounds,
                                            it->pixelComponents,
                                            it->pixelComponentsCount,
-                                           dstNCompsStartIndex,     // srcNCompsStartIndex
-                                           dstNComps,     // desiredSrcNComps
+                                           dstNCompsStartIndex, // srcNCompsStartIndex
+                                           dstNComps, // desiredSrcNComps
                                            eBitDepthFloat,
                                            it->rowBytes,
-                                           args.renderWindow,     // dstBounds
-                                           ePixelComponentNone,     // dstPixelComponents
-                                           interleaveIndex,     // dstPixelComponentStartIndex
-                                           nChannels,     // dstPixelComponentCount
-                                           tmpRowBytes,     // dstRowBytes
-                                           tmpMemPtr);     // dstPixelData
+                                           args.renderWindow, // dstBounds
+                                           ePixelComponentNone, // dstPixelComponents
+                                           interleaveIndex, // dstPixelComponentStartIndex
+                                           nChannels, // dstPixelComponentCount
+                                           tmpRowBytes, // dstRowBytes
+                                           tmpMemPtr); // dstPixelData
                 }
                 interleaveIndex += dstNComps;
             }
@@ -1144,31 +1123,30 @@ GenericWriterPlugin::render(const RenderArguments &args)
             // The list of actual planes that could be fetched
             std::list<string> actualPlanes;
 
-
             int partIndex = 0;
             for (map<int, string>::const_iterator view = viewNames.begin(); view != viewNames.end(); ++view) {
                 // The first view determines the planes that could be fetched. Other views just attempt to fetch the exact same planes.
-                const std::list<string> *planesToFetch = 0;
-                if ( view == viewNames.begin() ) {
+                const std::list<string>* planesToFetch = 0;
+                if (view == viewNames.begin()) {
                     planesToFetch = &args.planes;
                 } else {
                     planesToFetch = &actualPlanes;
                 }
 
                 int nChannels = 0;
-                InputImagesHolder dataHolder;     // owns all tmpMem and srcImg
+                InputImagesHolder dataHolder; // owns all tmpMem and srcImg
 
                 std::list<ImageData> planesData;
                 for (std::list<string>::const_iterator plane = planesToFetch->begin(); plane != planesToFetch->end(); ++plane) {
-                    ImageMemory *tmpMem;     // owned by dataHolder, no need to delete
-                    const Image* srcImg;     // owned by dataHolder, no need to delete
+                    ImageMemory* tmpMem; // owned by dataHolder, no need to delete
+                    const Image* srcImg; // owned by dataHolder, no need to delete
                     ImageData data;
-                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
                     if (!data.srcPixelData) {
                         continue;
                     }
 
-                    if ( view == viewNames.begin() ) {
+                    if (view == viewNames.begin()) {
                         actualPlanes.push_back(*plane);
                     }
 
@@ -1196,7 +1174,7 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     return;
                 }
 
-                ///Set to 0 everywhere since the render window might be bigger than the src img bounds
+                /// Set to 0 everywhere since the render window might be bigger than the src img bounds
                 std::memset(tmpMemPtr, 0, memSize);
 
                 int interleaveIndex = 0;
@@ -1206,36 +1184,36 @@ GenericWriterPlugin::render(const RenderArguments &args)
                     OfxRectI intersection;
                     int dstNComps = doAnyPacking ? packingMapping.size() : it->pixelComponentsCount;
                     int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
-                    if ( Coords::rectIntersection(args.renderWindow, it->bounds, &intersection) ) {
-                        assert( (/*dstPixelComponentStartIndex=*/ interleaveIndex + /*desiredSrcNComps=*/ dstNComps) <= /*dstPixelComponentCount=*/ nChannels );
+                    if (Coords::rectIntersection(args.renderWindow, it->bounds, &intersection)) {
+                        assert((/*dstPixelComponentStartIndex=*/interleaveIndex + /*desiredSrcNComps=*/dstNComps) <= /*dstPixelComponentCount=*/nChannels);
                         interleavePixelBuffers(intersection,
                                                args.renderScale,
                                                it->srcPixelData,
                                                it->bounds,
                                                it->pixelComponents,
                                                it->pixelComponentsCount,
-                                               dstNCompsStartIndex,     // srcNCompsStartIndex
-                                               dstNComps,     // desiredSrcNComps
+                                               dstNCompsStartIndex, // srcNCompsStartIndex
+                                               dstNComps, // desiredSrcNComps
                                                eBitDepthFloat,
                                                it->rowBytes,
                                                args.renderWindow,
-                                               ePixelComponentNone,     // dstPixelComponents
-                                               interleaveIndex,     // dstPixelComponentStartIndex
-                                               nChannels,     // dstPixelComponentCount
+                                               ePixelComponentNone, // dstPixelComponents
+                                               interleaveIndex, // dstPixelComponentStartIndex
+                                               nChannels, // dstPixelComponentCount
                                                tmpRowBytes,
                                                tmpMemPtr);
                     }
                     interleaveIndex += dstNComps;
                 }
 
-                if ( view == viewNames.begin() ) {
+                if (view == viewNames.begin()) {
                     beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, doAnyPacking && !packingContiguous, packingMapping, args.renderWindow);
                 }
 
                 encodePart(encodeData.getData(), filename, tmpMemPtr, nChannels, partIndex, tmpRowBytes);
 
                 ++partIndex;
-            }     // for each view
+            } // for each view
 
             break;
         }
@@ -1248,56 +1226,54 @@ GenericWriterPlugin::render(const RenderArguments &args)
 
             int partIndex = 0;
             for (map<int, string>::const_iterator view = viewNames.begin(); view != viewNames.end(); ++view) {
-                InputImagesHolder dataHolder;     // owns all tmpMem and srcImg
+                InputImagesHolder dataHolder; // owns all tmpMem and srcImg
                 vector<ImageData> datas;
 
                 // The first view determines the planes that could be fetched. Other views just attempt to fetch the exact same planes.
-                const std::list<string> *planesToFetch = 0;
-                if ( view == viewNames.begin() ) {
+                const std::list<string>* planesToFetch = 0;
+                if (view == viewNames.begin()) {
                     planesToFetch = &args.planes;
                 } else {
                     planesToFetch = &actualPlanes;
                 }
 
                 for (std::list<string>::const_iterator plane = planesToFetch->begin(); plane != planesToFetch->end(); ++plane) {
-                    ImageMemory *tmpMem;     // owned by dataHolder, no need to delete
-                    const Image* srcImg;     // owned by dataHolder, no need to delete
+                    ImageMemory* tmpMem; // owned by dataHolder, no need to delete
+                    const Image* srcImg; // owned by dataHolder, no need to delete
                     ImageData data;
-                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/ false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
+                    fetchPlaneConvertAndCopy(*plane, /*failIfNoSrcImg=*/false, view->first, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
                     if (!data.srcPixelData) {
                         continue;
                     }
                     datas.push_back(data);
-                    if ( view == viewNames.begin() ) {
+                    if (view == viewNames.begin()) {
                         actualPlanes.push_back(*plane);
                     }
-                }     // for each plane
+                } // for each plane
 
-                if ( view == viewNames.begin() ) {
+                if (view == viewNames.begin()) {
                     beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, doAnyPacking && !packingContiguous, packingMapping, args.renderWindow);
                 }
                 for (vector<ImageData>::iterator it = datas.begin(); it != datas.end(); ++it) {
                     encodePart(encodeData.getData(), filename, it->srcPixelData, it->pixelComponentsCount, partIndex, it->rowBytes);
                     ++partIndex;
                 }
-            }     // for each view
+            } // for each view
 
             break;
         }
         } // switch
         ;
 
-        endEncodeParts( encodeData.getData() );
+        endEncodeParts(encodeData.getData());
     }
 
     clearPersistentMessage();
 } // GenericWriterPlugin::render
 
 class PackPixelsProcessorBase
-    : public PixelProcessorFilterBase
-{
+    : public PixelProcessorFilterBase {
 protected:
-
     vector<int> _mapping;
 
 public:
@@ -1313,13 +1289,10 @@ public:
     }
 };
 
-
 template <typename PIX, int maxValue, int srcNComps>
 class PackPixelsProcessor
-    : public PackPixelsProcessorBase
-{
+    : public PackPixelsProcessorBase {
 public:
-
     PackPixelsProcessor(ImageEffect& instance)
         : PackPixelsProcessorBase(instance)
     {
@@ -1330,12 +1303,12 @@ public:
         unused(rs);
         assert(rs.x == 1. && rs.y == 1.);
         assert(_srcBounds.x1 < _srcBounds.x2 && _srcBounds.y1 < _srcBounds.y2);
-        assert( (int)_mapping.size() == _dstPixelComponentCount );
+        assert((int)_mapping.size() == _dstPixelComponentCount);
 
-        PIX *dstPix = (PIX *)getDstPixelAddress(procWindow.x1, procWindow.y1);
+        PIX* dstPix = (PIX*)getDstPixelAddress(procWindow.x1, procWindow.y1);
         assert(dstPix);
 
-        const PIX *srcPix = (const PIX *) getSrcPixelAddress(procWindow.x1, procWindow.y1);
+        const PIX* srcPix = (const PIX*)getSrcPixelAddress(procWindow.x1, procWindow.y1);
         assert(srcPix);
 
         const int srcRowElements = _srcRowBytes / sizeof(PIX);
@@ -1343,19 +1316,17 @@ public:
         const int procWidth = procWindow.x2 - procWindow.x1;
 
         for (int y = procWindow.y1; y < procWindow.y2; ++y,
-             srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and subtract what was done on last iteration
-             dstPix += (dstRowElements - procWidth * _dstPixelComponentCount)
-             ) {
-            if ( (y % 100 == 0) && _effect.abort() ) {
-                //check for abort only every 100 lines
+                 srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and subtract what was done on last iteration
+                                                       dstPix += (dstRowElements - procWidth * _dstPixelComponentCount)) {
+            if ((y % 100 == 0) && _effect.abort()) {
+                // check for abort only every 100 lines
                 break;
             }
 
             for (int x = procWindow.x1; x < procWindow.x2; ++x,
-                 srcPix += srcNComps,
-                 dstPix += _dstPixelComponentCount
-                 ) {
-                assert( srcPix == ( (const PIX*)getSrcPixelAddress(x, y) ) );
+                     srcPix += srcNComps,
+                     dstPix += _dstPixelComponentCount) {
+                assert(srcPix == ((const PIX*)getSrcPixelAddress(x, y)));
                 for (int c = 0; c < _dstPixelComponentCount; ++c) {
                     int srcCol = _mapping[c];
                     if (srcCol == -1) {
@@ -1377,13 +1348,12 @@ public:
     }
 };
 
-
 template <typename PIX, int maxValue>
 void
 packPixelBufferForDepth(ImageEffect* instance,
                         const OfxRectI& renderWindow,
                         const OfxPointD& renderScale,
-                        const void *srcPixelData,
+                        const void* srcPixelData,
                         const OfxRectI& bounds,
                         BitDepthEnum bitDepth,
                         int srcRowBytes,
@@ -1397,27 +1367,26 @@ packPixelBufferForDepth(ImageEffect* instance,
     int srcNComps = 0;
     switch (srcPixelComponents) {
     case ePixelComponentAlpha:
-        p.reset( new PackPixelsProcessor<PIX, maxValue, 1>(*instance) );
+        p.reset(new PackPixelsProcessor<PIX, maxValue, 1>(*instance));
         srcNComps = 1;
         break;
     case ePixelComponentXY:
-        p.reset( new PackPixelsProcessor<PIX, maxValue, 2>(*instance) );
+        p.reset(new PackPixelsProcessor<PIX, maxValue, 2>(*instance));
         srcNComps = 2;
         break;
     case ePixelComponentRGB:
-        p.reset( new PackPixelsProcessor<PIX, maxValue, 3>(*instance) );
+        p.reset(new PackPixelsProcessor<PIX, maxValue, 3>(*instance));
         srcNComps = 3;
         break;
     case ePixelComponentRGBA:
-        p.reset( new PackPixelsProcessor<PIX, maxValue, 4>(*instance) );
+        p.reset(new PackPixelsProcessor<PIX, maxValue, 4>(*instance));
         srcNComps = 4;
         break;
     default:
-        //Unsupported components
+        // Unsupported components
         throwSuiteStatusException(kOfxStatFailed);
         break;
-    }
-    ;
+    };
 
     p->setSrcImg(srcPixelData, bounds, srcPixelComponents, srcNComps, bitDepth, srcRowBytes, 0);
     p->setDstImg(dstPixelData, bounds, srcPixelComponents /*this argument is meaningless*/, channelsMapping.size(), bitDepth, dstRowBytes);
@@ -1431,17 +1400,16 @@ packPixelBufferForDepth(ImageEffect* instance,
 void
 GenericWriterPlugin::packPixelBuffer(const OfxRectI& renderWindow,
                                      const OfxPointD& renderScale,
-                                     const void *srcPixelData,
+                                     const void* srcPixelData,
                                      const OfxRectI& bounds,
                                      BitDepthEnum bitDepth,
                                      int srcRowBytes,
                                      PixelComponentEnum srcPixelComponents,
-                                     const vector<int>& channelsMapping, //maps dst channels to input channels
+                                     const vector<int>& channelsMapping, // maps dst channels to input channels
                                      int dstRowBytes,
                                      void* dstPixelData)
 {
-    assert(renderWindow.x1 >= bounds.x1 && renderWindow.x2 <= bounds.x2 &&
-           renderWindow.y1 >= bounds.y1 && renderWindow.y2 <= bounds.y2);
+    assert(renderWindow.x1 >= bounds.x1 && renderWindow.x2 <= bounds.x2 && renderWindow.y1 >= bounds.y1 && renderWindow.y2 <= bounds.y2);
     switch (bitDepth) {
     case eBitDepthFloat:
         packPixelBufferForDepth<float, 1>(this, renderWindow, renderScale, (const float*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (float*)dstPixelData);
@@ -1453,17 +1421,15 @@ GenericWriterPlugin::packPixelBuffer(const OfxRectI& renderWindow,
         packPixelBufferForDepth<unsigned short, 65535>(this, renderWindow, renderScale, (const unsigned short*)srcPixelData, bounds, bitDepth, srcRowBytes, srcPixelComponents, channelsMapping, dstRowBytes, (unsigned short*)dstPixelData);
         break;
     default:
-        //unknown pixel depth
+        // unknown pixel depth
         throwSuiteStatusException(kOfxStatFailed);
         break;
     }
 }
 
 class InterleaveProcessorBase
-    : public PixelProcessorFilterBase
-{
+    : public PixelProcessorFilterBase {
 protected:
-
     int _dstStartIndex;
     int _desiredSrcNComps;
     int _srcNCompsStartIndex;
@@ -1489,10 +1455,8 @@ public:
 
 template <typename PIX, int maxValue, int srcNComps>
 class InterleaveProcessor
-    : public InterleaveProcessorBase
-{
+    : public InterleaveProcessorBase {
 public:
-
     InterleaveProcessor(ImageEffect& instance)
         : InterleaveProcessorBase(instance)
     {
@@ -1505,11 +1469,11 @@ public:
         assert(_srcBounds.x1 < _srcBounds.x2 && _srcBounds.y1 < _srcBounds.y2);
         assert(_dstStartIndex >= 0);
         assert(_dstStartIndex + _desiredSrcNComps <= _dstPixelComponentCount); // inner loop must not overrun dstPix
-        PIX *dstPix = (PIX *)getDstPixelAddress(procWindow.x1, procWindow.y1);
+        PIX* dstPix = (PIX*)getDstPixelAddress(procWindow.x1, procWindow.y1);
         assert(dstPix);
         dstPix += _dstStartIndex;
 
-        const PIX *srcPix = (const PIX *) getSrcPixelAddress(procWindow.x1, procWindow.y1);
+        const PIX* srcPix = (const PIX*)getSrcPixelAddress(procWindow.x1, procWindow.y1);
         assert(srcPix);
 
         const int srcRowElements = _srcRowBytes / sizeof(PIX);
@@ -1517,20 +1481,18 @@ public:
         const int procWidth = procWindow.x2 - procWindow.x1;
 
         for (int y = procWindow.y1; y < procWindow.y2; ++y,
-             srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and subtract what was done on last iteration
-             dstPix += (dstRowElements - procWidth * _dstPixelComponentCount)
-             ) {
-            if ( (y % 10 == 0) && _effect.abort() ) {
-                //check for abort only every 10 lines
+                 srcPix += (srcRowElements - procWidth * srcNComps), // Move to next row and subtract what was done on last iteration
+                                                       dstPix += (dstRowElements - procWidth * _dstPixelComponentCount)) {
+            if ((y % 10 == 0) && _effect.abort()) {
+                // check for abort only every 10 lines
                 break;
             }
 
             for (int x = procWindow.x1; x < procWindow.x2; ++x,
-                 srcPix += srcNComps,
-                 dstPix += _dstPixelComponentCount
-                 ) {
-                assert(dstPix == ( (PIX*)getDstPixelAddress(x, y) ) + _dstStartIndex);
-                assert( srcPix == ( (const PIX*)getSrcPixelAddress(x, y) ) );
+                     srcPix += srcNComps,
+                     dstPix += _dstPixelComponentCount) {
+                assert(dstPix == ((PIX*)getDstPixelAddress(x, y)) + _dstStartIndex);
+                assert(srcPix == ((const PIX*)getSrcPixelAddress(x, y)));
 
                 for (int c = 0; c < _desiredSrcNComps; ++c) {
                     dstPix[c] = srcPix[c + _srcNCompsStartIndex];
@@ -1545,7 +1507,7 @@ void
 interleavePixelBuffersForDepth(ImageEffect* instance,
                                const OfxRectI& renderWindow,
                                const OfxPointD& renderScale,
-                               const PIX *srcPixelData,
+                               const PIX* srcPixelData,
                                const OfxRectI& bounds,
                                const PixelComponentEnum srcPixelComponents,
                                const int srcPixelComponentCount,
@@ -1554,33 +1516,32 @@ interleavePixelBuffersForDepth(ImageEffect* instance,
                                const BitDepthEnum bitDepth,
                                const int srcRowBytes,
                                const OfxRectI& dstBounds,
-                               const PixelComponentEnum dstPixelComponents,      // ignored, may be ePixelComponentNone
+                               const PixelComponentEnum dstPixelComponents, // ignored, may be ePixelComponentNone
                                const int dstPixelComponentStartIndex,
                                const int dstPixelComponentCount,
                                const int dstRowBytes,
                                PIX* dstPixelData)
 {
-    assert( (dstPixelComponentStartIndex + desiredSrcNComps) <= dstPixelComponentCount );
+    assert((dstPixelComponentStartIndex + desiredSrcNComps) <= dstPixelComponentCount);
     auto_ptr<InterleaveProcessorBase> p;
     switch (srcPixelComponentCount) {
     case 1:
-        p.reset( new InterleaveProcessor<PIX, maxValue, 1>(*instance) );
+        p.reset(new InterleaveProcessor<PIX, maxValue, 1>(*instance));
         break;
     case 2:
-        p.reset( new InterleaveProcessor<PIX, maxValue, 2>(*instance) );
+        p.reset(new InterleaveProcessor<PIX, maxValue, 2>(*instance));
         break;
     case 3:
-        p.reset( new InterleaveProcessor<PIX, maxValue, 3>(*instance) );
+        p.reset(new InterleaveProcessor<PIX, maxValue, 3>(*instance));
         break;
     case 4:
-        p.reset( new InterleaveProcessor<PIX, maxValue, 4>(*instance) );
+        p.reset(new InterleaveProcessor<PIX, maxValue, 4>(*instance));
         break;
     default:
-        //Unsupported components
+        // Unsupported components
         throwSuiteStatusException(kOfxStatFailed);
         break;
-    }
-    ;
+    };
     p->setSrcImg(srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, bitDepth, srcRowBytes, 0);
     p->setDstImg(dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, bitDepth, dstRowBytes);
     p->setRenderWindow(renderWindow, renderScale);
@@ -1592,7 +1553,7 @@ interleavePixelBuffersForDepth(ImageEffect* instance,
 void
 GenericWriterPlugin::interleavePixelBuffers(const OfxRectI& renderWindow,
                                             const OfxPointD& renderScale,
-                                            const void *srcPixelData,
+                                            const void* srcPixelData,
                                             const OfxRectI& bounds,
                                             const PixelComponentEnum srcPixelComponents,
                                             const int srcPixelComponentCount,
@@ -1607,11 +1568,9 @@ GenericWriterPlugin::interleavePixelBuffers(const OfxRectI& renderWindow,
                                             const int dstRowBytes,
                                             void* dstPixelData)
 {
-    assert( (dstPixelComponentStartIndex + desiredSrcNComps) <= dstPixelComponentCount );
-    assert(renderWindow.x1 >= bounds.x1 && renderWindow.x2 <= bounds.x2 &&
-           renderWindow.y1 >= bounds.y1 && renderWindow.y2 <= bounds.y2);
-    assert(renderWindow.x1 >= dstBounds.x1 && renderWindow.x2 <= dstBounds.x2 &&
-           renderWindow.y1 >= dstBounds.y1 && renderWindow.y2 <= dstBounds.y2);
+    assert((dstPixelComponentStartIndex + desiredSrcNComps) <= dstPixelComponentCount);
+    assert(renderWindow.x1 >= bounds.x1 && renderWindow.x2 <= bounds.x2 && renderWindow.y1 >= bounds.y1 && renderWindow.y2 <= bounds.y2);
+    assert(renderWindow.x1 >= dstBounds.x1 && renderWindow.x2 <= dstBounds.x2 && renderWindow.y1 >= dstBounds.y1 && renderWindow.y2 <= dstBounds.y2);
     switch (bitDepth) {
     case eBitDepthFloat:
         interleavePixelBuffersForDepth<float, 1>(this, renderWindow, renderScale, (const float*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (float*)dstPixelData);
@@ -1623,16 +1582,16 @@ GenericWriterPlugin::interleavePixelBuffers(const OfxRectI& renderWindow,
         interleavePixelBuffersForDepth<unsigned short, 65535>(this, renderWindow, renderScale, (const unsigned short*)srcPixelData, bounds, srcPixelComponents, srcPixelComponentCount, srcNCompsStartIndex, desiredSrcNComps, bitDepth, srcRowBytes, dstBounds, dstPixelComponents, dstPixelComponentStartIndex, dstPixelComponentCount, dstRowBytes, (unsigned short*)dstPixelData);
         break;
     default:
-        //unknown pixel depth
+        // unknown pixel depth
         throwSuiteStatusException(kOfxStatFailed);
         break;
     }
 }
 
 void
-GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments &args)
+GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& args)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -1642,7 +1601,7 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments &arg
     _fileParam->getValue(filename);
     {
         string ext = extension(filename);
-        if ( !checkExtension(ext) ) {
+        if (!checkExtension(ext)) {
             setPersistentMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
             throwSuiteStatusException(kOfxStatErrImageFormat);
         }
@@ -1661,9 +1620,9 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments &arg
 }
 
 void
-GenericWriterPlugin::endSequenceRender(const EndSequenceRenderArguments &args)
+GenericWriterPlugin::endSequenceRender(const EndSequenceRenderArguments& args)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -1679,17 +1638,17 @@ GenericWriterPlugin::endSequenceRender(const EndSequenceRenderArguments &args)
 // basic plugin render function, just a skelington to instantiate templates from
 
 static void
-setupAndProcess(PixelProcessorFilterBase & processor,
+setupAndProcess(PixelProcessorFilterBase& processor,
                 int premultChannel,
-                const OfxRectI &renderWindow,
+                const OfxRectI& renderWindow,
                 const OfxPointD& renderScale,
-                const void *srcPixelData,
+                const void* srcPixelData,
                 const OfxRectI& srcBounds,
                 PixelComponentEnum srcPixelComponents,
                 int srcPixelComponentCount,
                 BitDepthEnum srcPixelDepth,
                 int srcRowBytes,
-                void *dstPixelData,
+                void* dstPixelData,
                 const OfxRectI& dstBounds,
                 PixelComponentEnum dstPixelComponents,
                 int dstPixelComponentCount,
@@ -1699,7 +1658,7 @@ setupAndProcess(PixelProcessorFilterBase & processor,
     assert(srcPixelData && dstPixelData);
 
     // make sure bit depths are sane
-    if ( (srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents) ) {
+    if ((srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents)) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1719,15 +1678,15 @@ setupAndProcess(PixelProcessorFilterBase & processor,
 }
 
 void
-GenericWriterPlugin::unPremultPixelData(const OfxRectI &renderWindow,
+GenericWriterPlugin::unPremultPixelData(const OfxRectI& renderWindow,
                                         const OfxPointD& renderScale,
-                                        const void *srcPixelData,
+                                        const void* srcPixelData,
                                         const OfxRectI& srcBounds,
                                         PixelComponentEnum srcPixelComponents,
                                         int srcPixelComponentCount,
                                         BitDepthEnum srcPixelDepth,
                                         int srcRowBytes,
-                                        void *dstPixelData,
+                                        void* dstPixelData,
                                         const OfxRectI& dstBounds,
                                         PixelComponentEnum dstPixelComponents,
                                         int dstPixelComponentCount,
@@ -1737,7 +1696,7 @@ GenericWriterPlugin::unPremultPixelData(const OfxRectI &renderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ( (dstBitDepth != eBitDepthFloat) || ( (dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha) ) ) {
+    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1746,21 +1705,21 @@ GenericWriterPlugin::unPremultPixelData(const OfxRectI &renderWindow,
         PixelCopierUnPremult<float, 4, 1, float, 4, 1> fred(*this);
         setupAndProcess(fred, 3, renderWindow, renderScale, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     } else {
-        ///other pixel components means you want to copy only...
+        /// other pixel components means you want to copy only...
         assert(false);
     }
 }
 
 void
-GenericWriterPlugin::premultPixelData(const OfxRectI &renderWindow,
+GenericWriterPlugin::premultPixelData(const OfxRectI& renderWindow,
                                       const OfxPointD& renderScale,
-                                      const void *srcPixelData,
+                                      const void* srcPixelData,
                                       const OfxRectI& srcBounds,
                                       PixelComponentEnum srcPixelComponents,
                                       int srcPixelComponentCount,
                                       BitDepthEnum srcPixelDepth,
                                       int srcRowBytes,
-                                      void *dstPixelData,
+                                      void* dstPixelData,
                                       const OfxRectI& dstBounds,
                                       PixelComponentEnum dstPixelComponents,
                                       int dstPixelComponentCount,
@@ -1770,7 +1729,7 @@ GenericWriterPlugin::premultPixelData(const OfxRectI &renderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ( (dstBitDepth != eBitDepthFloat) || ( (dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha) ) ) {
+    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
@@ -1780,7 +1739,7 @@ GenericWriterPlugin::premultPixelData(const OfxRectI &renderWindow,
         PixelCopierPremult<float, 4, 1, float, 4, 1> fred(*this);
         setupAndProcess(fred, 3, renderWindow, renderScale, srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcPixelDepth, srcRowBytes, dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
     } else {
-        ///other pixel components means you want to copy only...
+        /// other pixel components means you want to copy only...
         assert(false);
     }
 }
@@ -1836,7 +1795,7 @@ GenericWriterPlugin::getOutputRoD(OfxTime time,
     assert(rod || par);
 
     bool clipToRoD = false;
-    if ( _clipToRoD && !_clipToRoD->getIsSecret() ) {
+    if (_clipToRoD && !_clipToRoD->getIsSecret()) {
         _clipToRoD->getValue(clipToRoD);
     }
     // user wants RoD written, don't care parameters
@@ -1852,7 +1811,7 @@ GenericWriterPlugin::getOutputRoD(OfxTime time,
         double formatPar;
         getSelectedOutputFormat(&format, &formatPar);
         if (rod) {
-            OfxPointD renderScale = {1., 1.};
+            OfxPointD renderScale = { 1., 1. };
             Coords::toCanonical(format, renderScale, formatPar, rod);
         }
         if (par) {
@@ -1862,10 +1821,10 @@ GenericWriterPlugin::getOutputRoD(OfxTime time,
 }
 
 bool
-GenericWriterPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
-                                           OfxRectD &rod)
+GenericWriterPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
+                                           OfxRectD& rod)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return false;
@@ -1875,10 +1834,9 @@ GenericWriterPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &ar
     return true;
 }
 
-
 void
-GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments &args,
-                                          OFX::RegionOfInterestSetter &rois)
+GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments& args,
+                                          OFX::RegionOfInterestSetter& rois)
 {
     const double time = args.time;
 
@@ -1886,7 +1844,7 @@ GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments 
     // RoD of its inputs. We just ask for the renderwindow.
 
     // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
-    if ( _overwrite->getValueAtTime(time) ) {
+    if (_overwrite->getValueAtTime(time)) {
         // set the RoI, since the default is the full input RoD
         rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
     } else {
@@ -1895,14 +1853,14 @@ GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments 
         _fileParam->getValueAtTime(time, filename);
         // filename = filenameFromPattern(filename, time);
         {
-            std::FILE *image = fopen_utf8(filename.c_str(), "rb");
+            std::FILE* image = fopen_utf8(filename.c_str(), "rb");
             if (!image) {
                 // set the RoI, since the default is the full input RoD
                 rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
             } else {
                 fclose(image);
                 // file exists, do not ask for anything on input
-                const OfxRectD emptyRoI = {0., 0., 0., 0.};
+                const OfxRectD emptyRoI = { 0., 0., 0., 0. };
                 rois.setRegionOfInterest(*_inputClip, emptyRoI);
             }
         }
@@ -1913,7 +1871,7 @@ void
 GenericWriterPlugin::encode(const string& /*filename*/,
                             const OfxTime /*time*/,
                             const string& /*viewName*/,
-                            const float */*pixelData*/,
+                            const float* /*pixelData*/,
                             const OfxRectI& /*bounds*/,
                             const float /*pixelAspectRatio*/,
                             const int /*pixelDataNComps*/,
@@ -1942,7 +1900,7 @@ GenericWriterPlugin::beginEncodeParts(void* /*user_data*/,
 void
 GenericWriterPlugin::encodePart(void* /*user_data*/,
                                 const string& /*filename*/,
-                                const float */*pixelData*/,
+                                const float* /*pixelData*/,
                                 int /*pixelDataNComps*/,
                                 int /*planeIndex*/,
                                 int /*rowBytes*/)
@@ -1951,13 +1909,13 @@ GenericWriterPlugin::encodePart(void* /*user_data*/,
 }
 
 bool
-GenericWriterPlugin::getTimeDomain(OfxRangeD &range)
+GenericWriterPlugin::getTimeDomain(OfxRangeD& range)
 {
     int choice;
 
     _frameRange->getValue(choice);
     if (choice == 0) {
-        ///let the default be applied
+        /// let the default be applied
         return false;
     } else if (choice == 1) {
         timeLineGetBounds(range.min, range.max);
@@ -2059,7 +2017,7 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
 
     _fileParam->getValue(filename);
 
-    if ( filename.empty() ) {
+    if (filename.empty()) {
         // if the file name is set to an empty string,
         // reset so that values are automatically set on next call to outputFileChanged()
         _guessedParams->resetToDefault();
@@ -2068,12 +2026,12 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
     }
 
     // only set perstistent params if not restoring
-    //bool setPersistentValues = !restoreExistingWriter && (reason == eChangeUserEdit);
+    // bool setPersistentValues = !restoreExistingWriter && (reason == eChangeUserEdit);
     unused(restoreExistingWriter);
 
     {
         string ext = extension(filename);
-        if ( !checkExtension(ext) ) {
+        if (!checkExtension(ext)) {
             if (throwErrors) {
                 if (reason == eChangeUserEdit) {
                     sendMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
@@ -2087,9 +2045,9 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
         }
     }
     bool setColorSpace = true;
-#     ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
     // if outputSpaceSet == true (output space was manually set by user) then setColorSpace = false
-    if ( _outputSpaceSet->getValue() ) {
+    if (_outputSpaceSet->getValue()) {
         setColorSpace = false;
     }
     // We should always try to parse from string first,
@@ -2104,11 +2062,11 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
     if (setColorSpace && ocioConfig) {
         string name = filename;
         (void)SequenceParsing::removePath(name); // only use the file NAME
-#     if OCIO_VERSION_HEX >= 0x02000000
-        const char* colorSpaceStr = ocioConfig->getColorSpaceFromFilepath( name.c_str() );
-#     else
-        const char* colorSpaceStr = ocioConfig->parseColorSpaceFromString( name.c_str() );
-#     endif
+#if OCIO_VERSION_HEX >= 0x02000000
+        const char* colorSpaceStr = ocioConfig->getColorSpaceFromFilepath(name.c_str());
+#else
+        const char* colorSpaceStr = ocioConfig->parseColorSpaceFromString(name.c_str());
+#endif
         size_t colorSpaceStrLen = colorSpaceStr ? std::strlen(colorSpaceStr) : 0;
         if (colorSpaceStrLen == 0) {
             colorSpaceStr = NULL;
@@ -2119,39 +2077,34 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
             // as in http://opencolorio.org/configurations/spi_pipeline.html
             // https://github.com/imageworks/OpenColorIO/pull/413
             size_t pos = name.find_last_of('.');
-            if ( pos == string::npos || pos < (colorSpaceStrLen + 1) ) { // +1 for the delimiter
+            if (pos == string::npos || pos < (colorSpaceStrLen + 1)) { // +1 for the delimiter
                 // no dot, or the colorspace name and the delimiter cannot hold before the dot
                 colorSpaceStr = NULL;
                 colorSpaceStrLen = 0;
-            } else if ( (name.compare(pos - colorSpaceStrLen, colorSpaceStrLen, colorSpaceStr) != 0) ||
-                       ( (name[pos - colorSpaceStrLen - 1] != '_') &&
-                        (name[pos - colorSpaceStrLen - 1] != '-') &&
-                        (name[pos - colorSpaceStrLen - 1] != ' ') &&
-                        (name[pos - colorSpaceStrLen - 1] != '.') ) ) {
-                           // the colorspace name is not before the last dot or is not preceded by a valid delimiter
-                           colorSpaceStr = NULL;
-                           colorSpaceStrLen = 0;
-                       }
+            } else if ((name.compare(pos - colorSpaceStrLen, colorSpaceStrLen, colorSpaceStr) != 0) || ((name[pos - colorSpaceStrLen - 1] != '_') && (name[pos - colorSpaceStrLen - 1] != '-') && (name[pos - colorSpaceStrLen - 1] != ' ') && (name[pos - colorSpaceStrLen - 1] != '.'))) {
+                // the colorspace name is not before the last dot or is not preceded by a valid delimiter
+                colorSpaceStr = NULL;
+                colorSpaceStrLen = 0;
+            }
         }
         if (colorSpaceStr && colorSpaceStrLen > 0) {
-            assert( _ocio->hasColorspace(colorSpaceStr) ); // parseColorSpaceFromString always returns an existing colorspace
+            assert(_ocio->hasColorspace(colorSpaceStr)); // parseColorSpaceFromString always returns an existing colorspace
             // we're lucky
             _ocio->setOutputColorspace(colorSpaceStr);
             setColorSpace = false;
         }
     }
-#     endif
+#endif
 
     // give the derived class a chance to initialize any data structure it may need
     onOutputFileChanged(filename, setColorSpace);
-#     ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
     _ocio->refreshInputAndOutputState(0);
-#     endif
+#endif
 
     if (_clipToRoD) {
-        _clipToRoD->setIsSecretAndDisabled( !displayWindowSupportedByFormat(filename) );
+        _clipToRoD->setIsSecretAndDisabled(!displayWindowSupportedByFormat(filename));
     }
-
 
     if (reason == eChangeUserEdit) {
         // mark that most parameters should not be set automagically if the filename is changed
@@ -2161,8 +2114,8 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
 } // GenericWriterPlugin::outputFileChanged
 
 void
-GenericWriterPlugin::changedParam(const InstanceChangedArgs &args,
-                                  const string &paramName)
+GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
+                                  const string& paramName)
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
@@ -2176,15 +2129,15 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs &args,
             int curFirstFrame;
             _firstFrame->getValue(curFirstFrame);
             // if first-frame has never been set by the user, set it
-            if ( (first != curFirstFrame) && (curFirstFrame == 0) ) {
-                _firstFrame->setValue( (int)first );
+            if ((first != curFirstFrame) && (curFirstFrame == 0)) {
+                _firstFrame->setValue((int)first);
             }
             _lastFrame->setIsSecretAndDisabled(false);
             int curLastFrame;
             _lastFrame->getValue(curLastFrame);
             // if last-frame has never been set by the user, set it
-            if ( (last != curLastFrame) && (curLastFrame == 0) ) {
-                _lastFrame->setValue( (int)last );
+            if ((last != curLastFrame) && (curLastFrame == 0)) {
+                _lastFrame->setValue((int)last);
             }
         } else {
             _firstFrame->setIsSecretAndDisabled(true);
@@ -2197,47 +2150,46 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs &args,
         if (_clipToRoD) {
             string filename;
             _fileParam->getValue(filename);
-            _clipToRoD->setIsSecretAndDisabled( !displayWindowSupportedByFormat(filename) );
+            _clipToRoD->setIsSecretAndDisabled(!displayWindowSupportedByFormat(filename));
         }
-        if ( (type == eFormatTypeInput) || (type == eFormatTypeProject) ) {
+        if ((type == eFormatTypeInput) || (type == eFormatTypeProject)) {
             _outputFormat->setIsSecretAndDisabled(true);
         } else {
             _outputFormat->setIsSecretAndDisabled(false);
         }
     } else if (paramName == kParamOutputFormat) {
-        //the host does not handle the format itself, do it ourselves
+        // the host does not handle the format itself, do it ourselves
         int format_i;
         _outputFormat->getValue(format_i);
         int w = 0, h = 0;
         double par = -1;
-        getFormatResolution( (EParamFormat)format_i, &w, &h, &par );
+        getFormatResolution((EParamFormat)format_i, &w, &h, &par);
         assert(par != -1);
         _outputFormatPar->setValue(par);
         _outputFormatSize->setValue(w, h);
-    } else if ( (paramName == kParamClipInfo) && (args.reason == eChangeUserEdit) ) {
+    } else if ((paramName == kParamClipInfo) && (args.reason == eChangeUserEdit)) {
         string msg;
         msg += "Input: ";
         if (!_inputClip) {
             msg += "N/A";
         } else {
-            msg += imageFormatString( _inputClip->getPixelComponents(), _inputClip->getPixelDepth() );
+            msg += imageFormatString(_inputClip->getPixelComponents(), _inputClip->getPixelDepth());
             msg += " ";
-            msg += premultString( _inputClip->getPreMultiplication() );
+            msg += premultString(_inputClip->getPreMultiplication());
         }
         msg += "\n";
         msg += "Output: ";
         if (!_outputClip) {
             msg += "N/A";
         } else {
-            msg += imageFormatString( _outputClip->getPixelComponents(), _outputClip->getPixelDepth() );
+            msg += imageFormatString(_outputClip->getPixelComponents(), _outputClip->getPixelDepth());
             msg += " ";
-            msg += premultString( _outputClip->getPreMultiplication() );
+            msg += premultString(_outputClip->getPreMultiplication());
         }
         msg += "\n";
         sendMessage(Message::eMessageMessage, "", msg);
 #ifdef OFX_IO_USING_OCIO
-    } else if ( ( (paramName == kOCIOParamOutputSpace) || (paramName == kOCIOParamOutputSpaceChoice) ) &&
-                ( args.reason == eChangeUserEdit) ) {
+    } else if (((paramName == kOCIOParamOutputSpace) || (paramName == kOCIOParamOutputSpaceChoice)) && (args.reason == eChangeUserEdit)) {
         // set the outputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
         _outputSpaceSet->setValue(true);
 #endif
@@ -2251,24 +2203,18 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs &args,
 } // GenericWriterPlugin::changedParam
 
 void
-GenericWriterPlugin::changedClip(const InstanceChangedArgs &args,
-                                 const string &clipName)
+GenericWriterPlugin::changedClip(const InstanceChangedArgs& args,
+                                 const string& clipName)
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
     MultiPlaneEffect::changedClip(args, clipName);
-    if ( (clipName == kOfxImageEffectSimpleSourceClipName) && _inputClip && (args.reason == eChangeUserEdit) ) {
+    if ((clipName == kOfxImageEffectSimpleSourceClipName) && _inputClip && (args.reason == eChangeUserEdit)) {
         PreMultiplicationEnum premult = _inputClip->getPreMultiplication();
-#     ifdef DEBUG
-        if ( _inputClip->isConnected() ) {
+#ifdef DEBUG
+        if (_inputClip->isConnected()) {
             PixelComponentEnum components = _inputClip->getPixelComponents();
-            assert( (components == ePixelComponentAlpha && premult != eImageOpaque) ||
-                    (components == ePixelComponentRGB && premult == eImageOpaque) ||
-                    (components == ePixelComponentRGBA) ||
-                    ( (components == ePixelComponentCustom ||
-                       components == ePixelComponentMotionVectors ||
-                       components == ePixelComponentStereoDisparity) && gHostIsMultiPlanar ) );
-
+            assert((components == ePixelComponentAlpha && premult != eImageOpaque) || (components == ePixelComponentRGB && premult == eImageOpaque) || (components == ePixelComponentRGBA) || ((components == ePixelComponentCustom || components == ePixelComponentMotionVectors || components == ePixelComponentStereoDisparity) && gHostIsMultiPlanar));
 
             int index = -1;
             for (std::size_t i = 0; i < _outputComponentsTable.size(); ++i) {
@@ -2282,7 +2228,7 @@ GenericWriterPlugin::changedClip(const InstanceChangedArgs &args,
                 _outputComponents->setValue(index);
             }
         }
-#      endif
+#endif
         _premult->setValue(premult);
 
         double fps = _inputClip->getFrameRate();
@@ -2299,9 +2245,8 @@ GenericWriterPlugin::refreshRGBAParamsFromOutputComponents()
 {
     int index;
     _outputComponents->getValue(index);
-    assert( index >= 0 && index < (int)_outputComponentsTable.size() );
+    assert(index >= 0 && index < (int)_outputComponentsTable.size());
     PixelComponentEnum comps = _outputComponentsTable[index];
-
 
     vector<string> checkboxesLabels;
     if (comps == ePixelComponentAlpha) {
@@ -2325,7 +2270,7 @@ GenericWriterPlugin::refreshRGBAParamsFromOutputComponents()
         _processChannels[3]->setLabel(checkboxesLabels[0]);
     } else {
         for (int i = 0; i < 4; ++i) {
-            if ( i < (int)checkboxesLabels.size() ) {
+            if (i < (int)checkboxesLabels.size()) {
                 _processChannels[i]->setIsSecretAndDisabled(false);
                 _processChannels[i]->setLabel(checkboxesLabels[i]);
             } else {
@@ -2337,20 +2282,20 @@ GenericWriterPlugin::refreshRGBAParamsFromOutputComponents()
 } // refreshRGBAParamsFromOutputComponents
 
 void
-GenericWriterPlugin::getClipPreferences(ClipPreferencesSetter &clipPreferences)
+GenericWriterPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
 {
     MultiPlaneEffect::getClipPreferences(clipPreferences);
-    if ( !_outputComponents->getIsSecret() ) {
+    if (!_outputComponents->getIsSecret()) {
         int index;
         _outputComponents->getValue(index);
-        assert( index >= 0 && index < (int)_outputComponentsTable.size() );
+        assert(index >= 0 && index < (int)_outputComponentsTable.size());
         PixelComponentEnum comps = _outputComponentsTable[index];
 
         if (!gHostIsNatronVersion3OrGreater) {
             refreshRGBAParamsFromOutputComponents();
         }
 
-        //Set output pixel components to match what will be output if the choice is not All
+        // Set output pixel components to match what will be output if the choice is not All
         clipPreferences.setClipComponents(*_inputClip, comps);
         clipPreferences.setClipComponents(*_outputClip, comps);
         PreMultiplicationEnum premult = _inputClip->getPreMultiplication();
@@ -2381,7 +2326,7 @@ GenericWriterPlugin::getFrameViewsNeeded(const FrameViewsNeededArguments& args,
     r.min = r.max = args.time;
 
     if (!gHostIsMultiView) {
-        //As what's requested
+        // As what's requested
         frameViews.addFrameViewsNeeded(*_inputClip, r, args.view);
     } else {
         int viewsToRender = getViewToRender();
@@ -2422,7 +2367,7 @@ using namespace OFX;
  * GenericWriterPluginFactory<YOUR_FACTORY>::describe(desc);
  **/
 void
-GenericWriterDescribe(ImageEffectDescriptor &desc,
+GenericWriterDescribe(ImageEffectDescriptor& desc,
                       RenderSafetyEnum safety,
                       const vector<string>& extensions, // list of supported extensions
                       int evaluation, // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated
@@ -2439,8 +2384,8 @@ GenericWriterDescribe(ImageEffectDescriptor &desc,
     desc.addSupportedContext(eContextGeneral);
 
     // OCIO is only supported for float images.
-    //desc.addSupportedBitDepth(eBitDepthUByte);
-    //desc.addSupportedBitDepth(eBitDepthUShort);
+    // desc.addSupportedBitDepth(eBitDepthUByte);
+    // desc.addSupportedBitDepth(eBitDepthUShort);
     desc.addSupportedBitDepth(eBitDepthFloat);
 
     // set a few flags
@@ -2453,18 +2398,17 @@ GenericWriterDescribe(ImageEffectDescriptor &desc,
     desc.setSupportsMultipleClipPARs(false);
     desc.setRenderThreadSafety(safety);
 
-
 #ifdef OFX_EXTENSIONS_NUKE
     if (getImageEffectHostDescription()
         && getImageEffectHostDescription()->isMultiPlanar) {
         desc.setIsMultiPlanar(isMultiPlanar);
         if (isMultiPlanar) {
             gHostIsMultiPlanar = true;
-            //We let all un-rendered planes pass-through so that they can be retrieved below by a shuffle node
+            // We let all un-rendered planes pass-through so that they can be retrieved below by a shuffle node
             desc.setPassThroughForNotProcessedPlanes(ePassThroughLevelPassThroughNonRenderedPlanes);
         }
     }
-    if ( isMultiView && fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true) ) {
+    if (isMultiView && fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true)) {
         gHostIsMultiView = true;
         desc.setIsViewAware(true);
         desc.setIsViewInvariant(eViewInvarianceAllViewsVariant);
@@ -2482,7 +2426,7 @@ GenericWriterDescribe(ImageEffectDescriptor &desc,
  * GenericWriterPluginFactory<YOUR_FACTORY>::describeInContext(desc,context);
  **/
 PageParamDescriptor*
-GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
+GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
                                     ContextEnum context,
                                     bool supportsRGBA,
                                     bool supportsRGB,
@@ -2498,7 +2442,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
     }
 
     // create the mandated source clip
-    ClipDescriptor *srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
+    ClipDescriptor* srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
     if (supportsRGBA) {
         srcClip->addSupportedComponent(ePixelComponentRGBA);
     }
@@ -2516,7 +2460,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
     srcClip->setSupportsTiles(kSupportsTiles);
 
     // create the mandated output clip
-    ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
+    ClipDescriptor* dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
     if (supportsRGBA) {
         dstClip->addSupportedComponent(ePixelComponentRGBA);
     }
@@ -2531,11 +2475,10 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         dstClip->addSupportedComponent(ePixelComponentXY);
     }
 #endif
-    dstClip->setSupportsTiles(kSupportsTiles);//< we don't support tiles in output!
-
+    dstClip->setSupportsTiles(kSupportsTiles); //< we don't support tiles in output!
 
     // make some pages and to things in
-    PageParamDescriptor *page = desc.definePageParam("Controls");
+    PageParamDescriptor* page = desc.definePageParam("Controls");
 
     {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputComponents);
@@ -2636,7 +2579,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         param->appendOption(kParamFormatTypeOptionProject);
         assert(param->getNOptions() == (int)eFormatTypeFixed);
         param->appendOption(kParamFormatTypeOptionFixed);
-        param->setDefault( (int)eFormatTypeProject );
+        param->setDefault((int)eFormatTypeProject);
         param->setAnimates(false);
         param->setHint(kParamFormatTypeHint);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
@@ -2645,13 +2588,12 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         }
     }
 
-
     //////////// Output format
     {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputFormat);
         param->setLabel(kParamOutputFormatLabel);
         param->setAnimates(true);
-        //param->setIsSecret(true); // done in the plugin constructor
+        // param->setIsSecret(true); // done in the plugin constructor
         param->setHint(kParamOutputFormatHint);
         assert(param->getNOptions() == eParamFormatPCVideo);
         param->appendOption(kParamFormatPCVideoLabel, "", kParamFormatPCVideo);
@@ -2726,7 +2668,6 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         }
     }
 
-
     /////////// Clip to project
     if (supportsDisplayWindow) {
         BooleanParamDescriptor* param = desc.defineBooleanParam(kParamClipToRoD);
@@ -2743,7 +2684,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
     GenericOCIO::describeInContextInput(desc, context, page, inputSpaceNameDefault);
     GenericOCIO::describeInContextOutput(desc, context, page, outputSpaceNameDefault, kParamOutputSpaceLabel);
     {
-        BooleanParamDescriptor* param  = desc.defineBooleanParam(kParamOutputSpaceSet);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamOutputSpaceSet);
         param->setEvaluateOnChange(false);
         param->setAnimates(false);
         param->setIsSecretAndDisabled(true);
@@ -2782,7 +2723,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
     }
 
     {
-        PushButtonParamDescriptor *param = desc.definePushButtonParam(kParamClipInfo);
+        PushButtonParamDescriptor* param = desc.definePushButtonParam(kParamClipInfo);
         param->setLabel(kParamClipInfoLabel);
         param->setHint(kParamClipInfoHint);
         if (page) {
@@ -2809,7 +2750,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamFirstFrame);
         param->setLabel(kParamFirstFrameLabel);
-        //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+        // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setAnimates(true);
         if (page) {
             page->addChild(*param);
@@ -2820,7 +2761,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamLastFrame);
         param->setLabel(kParamLastFrameLabel);
-        //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+        // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setAnimates(true);
         if (page) {
             page->addChild(*param);
@@ -2833,14 +2774,14 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         param->setIsSecretAndDisabled(true); // always secret
         param->setIsPersistent(false);
         param->setEvaluateOnChange(false);
-        //param->setDefault();
+        // param->setDefault();
         if (page) {
             page->addChild(*param);
         }
     }
 
     {
-        BooleanParamDescriptor* param  = desc.defineBooleanParam(kParamGuessedParams);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamGuessedParams);
         param->setEvaluateOnChange(false);
         param->setAnimates(false);
         param->setIsSecretAndDisabled(true);
@@ -2850,12 +2791,11 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor &desc,
         }
     }
 
-
     return page;
 } // GenericWriterDescribeInContextBegin
 
 void
-GenericWriterDescribeInContextEnd(ImageEffectDescriptor & /*desc*/,
+GenericWriterDescribeInContextEnd(ImageEffectDescriptor& /*desc*/,
                                   ContextEnum /*context*/,
                                   PageParamDescriptor* /*page*/)
 {

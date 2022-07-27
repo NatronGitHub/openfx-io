@@ -22,7 +22,7 @@
  * Run a shell script.
  */
 
-#if !( defined(_WIN32) || defined(__WIN32__) || defined(WIN32 ) ) // Sorry, MS Windows users, this plugin won't work for you
+#if !(defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) // Sorry, MS Windows users, this plugin won't work for you
 
 #include "RunScript.h"
 #include "ofxsMacros.h"
@@ -35,18 +35,18 @@
 #else
 #define DBG(x) (void)0
 #endif
-#include <string>
-#include <sstream>
 #include <cstdlib>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <sstream>
 #include <stdio.h> // for snprintf & _snprintf
+#include <string>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-#  include <windows.h>
-#  if defined(_MSC_VER) && _MSC_VER < 1900
-#    define snprintf _snprintf
-#  endif
+#include <windows.h>
+#if defined(_MSC_VER) && _MSC_VER < 1900
+#define snprintf _snprintf
+#endif
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
 #include "ofxsCopier.h"
@@ -62,50 +62,50 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginName "RunScriptOFX"
 #define kPluginGrouping "Image"
-#define kPluginDescription \
-    "Run a script with the given arguments.\n" \
-    "This is mostly useful to execute an external program on a set of input images files, which outputs image files.\n" \
+#define kPluginDescription                                                                                                                                                                                                         \
+    "Run a script with the given arguments.\n"                                                                                                                                                                                     \
+    "This is mostly useful to execute an external program on a set of input images files, which outputs image files.\n"                                                                                                            \
     "Writers should be connected to each input, so that the image files are written before running the script, and the output of this node should be fed into one or more Readers, which read the images written by the script.\n" \
-    "\n" \
-    "Sample section of a node graph which uses RunScript:\n" \
-    "\n" \
-    "```\n" \
-    "              ...\n" \
-    "               ^\n" \
-    "               |\n" \
-    "Write([Project]/scriptinput#####.png)\n" \
-    "               ^\n" \
-    "               |\n" \
-    "RunScript1(processes [Project]/scriptinput#####.png, output is [Project]/scriptoutput#####.png)\n" \
-    "               ^\n" \
-    "               |\n" \
-    "Read([Project]/scriptoutput#####.png, set the frame range manually)\n" \
-    "               ^\n" \
-    "               |\n" \
-    "RunScript2(deletes temporary files [Project]/scriptinput#####.png and [Project]/scriptoutput#####.png, optional)\n" \
-    "               ^\n" \
-    "               |\n" \
-    "              ...\n" \
-    "```\n" \
-    "Keep in mind that the input and output files are never removed in the above graph.\n" \
-    "The output of RunScript is a copy of its first input.\n" \
-    "\n" \
-    "Each argument may be:\n" \
-    "\n" \
-    "- A filename (RunScript1 and RunScript2 in the example above should have `[Project]/scriptinput#####.png` and `[Project]/scriptoutput#####.png` as filename parameters 1 and 2)\n" \
-    "- A floating-point value (which can be linked to any plugin)\n" \
-    "- An integer\n" \
-    "- A string\n" \
-    "\n" \
-    "Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n" \
-    "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces).\n" \
-    "For example, the script in RunScript2 in the above example would be:\n" \
-    "\n" \
-    "```\n" \
-    "#!/bin/sh\n" \
-    "rm \"$1\" \"$2\"\n" \
-    "```\n" \
-    "\n" \
+    "\n"                                                                                                                                                                                                                           \
+    "Sample section of a node graph which uses RunScript:\n"                                                                                                                                                                       \
+    "\n"                                                                                                                                                                                                                           \
+    "```\n"                                                                                                                                                                                                                        \
+    "              ...\n"                                                                                                                                                                                                          \
+    "               ^\n"                                                                                                                                                                                                           \
+    "               |\n"                                                                                                                                                                                                           \
+    "Write([Project]/scriptinput#####.png)\n"                                                                                                                                                                                      \
+    "               ^\n"                                                                                                                                                                                                           \
+    "               |\n"                                                                                                                                                                                                           \
+    "RunScript1(processes [Project]/scriptinput#####.png, output is [Project]/scriptoutput#####.png)\n"                                                                                                                            \
+    "               ^\n"                                                                                                                                                                                                           \
+    "               |\n"                                                                                                                                                                                                           \
+    "Read([Project]/scriptoutput#####.png, set the frame range manually)\n"                                                                                                                                                        \
+    "               ^\n"                                                                                                                                                                                                           \
+    "               |\n"                                                                                                                                                                                                           \
+    "RunScript2(deletes temporary files [Project]/scriptinput#####.png and [Project]/scriptoutput#####.png, optional)\n"                                                                                                           \
+    "               ^\n"                                                                                                                                                                                                           \
+    "               |\n"                                                                                                                                                                                                           \
+    "              ...\n"                                                                                                                                                                                                          \
+    "```\n"                                                                                                                                                                                                                        \
+    "Keep in mind that the input and output files are never removed in the above graph.\n"                                                                                                                                         \
+    "The output of RunScript is a copy of its first input.\n"                                                                                                                                                                      \
+    "\n"                                                                                                                                                                                                                           \
+    "Each argument may be:\n"                                                                                                                                                                                                      \
+    "\n"                                                                                                                                                                                                                           \
+    "- A filename (RunScript1 and RunScript2 in the example above should have `[Project]/scriptinput#####.png` and `[Project]/scriptoutput#####.png` as filename parameters 1 and 2)\n"                                            \
+    "- A floating-point value (which can be linked to any plugin)\n"                                                                                                                                                               \
+    "- An integer\n"                                                                                                                                                                                                               \
+    "- A string\n"                                                                                                                                                                                                                 \
+    "\n"                                                                                                                                                                                                                           \
+    "Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n"                                                                                                           \
+    "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces).\n"                                                 \
+    "For example, the script in RunScript2 in the above example would be:\n"                                                                                                                                                       \
+    "\n"                                                                                                                                                                                                                           \
+    "```\n"                                                                                                                                                                                                                        \
+    "#!/bin/sh\n"                                                                                                                                                                                                                  \
+    "rm \"$1\" \"$2\"\n"                                                                                                                                                                                                           \
+    "```\n"                                                                                                                                                                                                                        \
+    "\n"                                                                                                                                                                                                                           \
     "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
 
 #define kPluginIdentifier "fr.inria.openfx.RunScript"
@@ -120,51 +120,49 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kRunScriptPluginSourceClipCount 10
 #define kRunScriptPluginArgumentsCount 10
 
-#define kGroupRunScriptPlugin                   "scriptParameters"
-#define kGroupRunScriptPluginLabel              "Script Parameters"
-#define kGroupRunScriptPluginHint               "The list of command-line parameters passed to the script."
+#define kGroupRunScriptPlugin "scriptParameters"
+#define kGroupRunScriptPluginLabel "Script Parameters"
+#define kGroupRunScriptPluginHint "The list of command-line parameters passed to the script."
 
-#define kParamCount                   "paramCount"
-#define kParamCountLabel              "Number of Parameters"
+#define kParamCount "paramCount"
+#define kParamCountLabel "Number of Parameters"
 
-#define kParamType                    "type"
-#define kParamTypeLabel               "Type of Parameter "
+#define kParamType "type"
+#define kParamTypeLabel "Type of Parameter "
 
-#define kParamTypeFilenameName  "filename"
+#define kParamTypeFilenameName "filename"
 #define kParamTypeFilenameLabel "File Name"
-#define kParamTypeFilenameHint  "A constant or animated string containing a filename.\nIf the string contains hashes (like ####) or a printf token (like %04d), they will be replaced by the frame number, and if it contains %v or %V, it will be replaced by the view ID (\"l\" or \"r\" for %v, \"left\" or \"right\" for %V).\nThis is usually linked to the output filename of an upstream Writer node, or to the input filename of a downstream Reader node."
-#define kParamTypeStringName          "string"
-#define kParamTypeStringLabel         "String"
-#define kParamTypeStringHint          "A string (or sequence of characters)."
-#define kParamTypeDoubleName          "double"
-#define kParamTypeDoubleLabel         "Floating Point"
-#define kParamTypeDoubleHint          "A floating point numerical value."
-#define kParamTypeIntName             "integer"
-#define kParamTypeIntLabel            "Integer"
-#define kParamTypeIntHint             "An integer numerical value."
+#define kParamTypeFilenameHint "A constant or animated string containing a filename.\nIf the string contains hashes (like ####) or a printf token (like %04d), they will be replaced by the frame number, and if it contains %v or %V, it will be replaced by the view ID (\"l\" or \"r\" for %v, \"left\" or \"right\" for %V).\nThis is usually linked to the output filename of an upstream Writer node, or to the input filename of a downstream Reader node."
+#define kParamTypeStringName "string"
+#define kParamTypeStringLabel "String"
+#define kParamTypeStringHint "A string (or sequence of characters)."
+#define kParamTypeDoubleName "double"
+#define kParamTypeDoubleLabel "Floating Point"
+#define kParamTypeDoubleHint "A floating point numerical value."
+#define kParamTypeIntName "integer"
+#define kParamTypeIntLabel "Integer"
+#define kParamTypeIntHint "An integer numerical value."
 
 #define kNukeWarnTcl "On Nuke, the characters '$', '[' ']' must be preceded with a backslash (as '\\$', '\\[', '\\]') to avoid TCL variable and expression substitution."
 
-#define kParamScript                  "script"
-#define kParamScriptLabel             "Script"
-#define kParamScriptHint \
+#define kParamScript "script"
+#define kParamScriptLabel "Script"
+#define kParamScriptHint                                                                                                                         \
     "Contents of the script. Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n" \
     "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces)."
 
-#define kParamValidate                  "validate"
-#define kParamValidateLabel             "Validate"
-#define kParamValidateHint              "Validate the script contents and execute it on next render. This locks the script and all its parameters."
+#define kParamValidate "validate"
+#define kParamValidateLabel "Validate"
+#define kParamValidateHint "Validate the script contents and execute it on next render. This locks the script and all its parameters."
 
-enum ERunScriptPluginParamType
-{
+enum ERunScriptPluginParamType {
     eRunScriptPluginParamTypeFilename = 0,
     eRunScriptPluginParamTypeString,
     eRunScriptPluginParamTypeDouble,
     eRunScriptPluginParamTypeInteger
 };
 
-static
-string
+static string
 unsignedToString(unsigned i)
 {
     if (i == 0) {
@@ -172,7 +170,7 @@ unsignedToString(unsigned i)
     }
     string nb;
     for (unsigned j = i; j != 0; j /= 10) {
-        nb = (char)( '0' + (j % 10) ) + nb;
+        nb = (char)('0' + (j % 10)) + nb;
     }
 
     return nb;
@@ -181,31 +179,30 @@ unsignedToString(unsigned i)
 ////////////////////////////////////////////////////////////////////////////////
 /** @brief The plugin that does our work */
 class RunScriptPlugin
-    : public ImageEffect
-{
+    : public ImageEffect {
 public:
     /** @brief ctor */
     RunScriptPlugin(OfxImageEffectHandle handle);
 
     /* Override the render */
-    virtual void render(const RenderArguments &args) OVERRIDE FINAL;
+    virtual void render(const RenderArguments& args) OVERRIDE FINAL;
 
     /* override is identity */
-    virtual bool isIdentity(const IsIdentityArguments & /*args*/,
-                            Clip * & /*identityClip*/,
-                            double & /*identityTime*/, int& /*view*/, std::string& /*plane*/) OVERRIDE FINAL
+    virtual bool isIdentity(const IsIdentityArguments& /*args*/,
+                            Clip*& /*identityClip*/,
+                            double& /*identityTime*/, int& /*view*/, std::string& /*plane*/) OVERRIDE FINAL
     {
         return false;
     }
 
     /* override changedParam */
-    virtual void changedParam(const InstanceChangedArgs &args, const string &paramName) OVERRIDE FINAL;
+    virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
     // override the rod call
-    virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments &args, OfxRectD &rod) OVERRIDE FINAL;
+    virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments& args, OfxRectD& rod) OVERRIDE FINAL;
 
     // override the roi call
-    virtual void getRegionsOfInterest(const RegionsOfInterestArguments &args, RegionOfInterestSetter &rois) OVERRIDE FINAL;
+    virtual void getRegionsOfInterest(const RegionsOfInterestArguments& args, RegionOfInterestSetter& rois) OVERRIDE FINAL;
 
     /** @brief The sync private data action, called when the effect needs to sync any private data to persistent parameters */
     virtual void syncPrivateData(void) OVERRIDE FINAL
@@ -217,16 +214,16 @@ private:
     void updateVisibility(void);
 
 private:
-    Clip *_srcClip[kRunScriptPluginSourceClipCount];
-    Clip *_dstClip;
-    IntParam *_param_count;
-    ChoiceParam *_type[kRunScriptPluginArgumentsCount];
-    StringParam *_filename[kRunScriptPluginArgumentsCount];
-    StringParam *_string[kRunScriptPluginArgumentsCount];
-    DoubleParam *_double[kRunScriptPluginArgumentsCount];
-    IntParam *_int[kRunScriptPluginArgumentsCount];
-    StringParam *_script;
-    BooleanParam *_validate;
+    Clip* _srcClip[kRunScriptPluginSourceClipCount];
+    Clip* _dstClip;
+    IntParam* _param_count;
+    ChoiceParam* _type[kRunScriptPluginArgumentsCount];
+    StringParam* _filename[kRunScriptPluginArgumentsCount];
+    StringParam* _string[kRunScriptPluginArgumentsCount];
+    DoubleParam* _double[kRunScriptPluginArgumentsCount];
+    IntParam* _int[kRunScriptPluginArgumentsCount];
+    StringParam* _script;
+    BooleanParam* _validate;
 };
 
 RunScriptPlugin::RunScriptPlugin(OfxImageEffectHandle handle)
@@ -234,7 +231,7 @@ RunScriptPlugin::RunScriptPlugin(OfxImageEffectHandle handle)
 {
     if (getContext() != eContextGenerator) {
         for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
-            if ( (i == 0) && (getContext() == eContextFilter) ) {
+            if ((i == 0) && (getContext() == eContextFilter)) {
                 _srcClip[i] = fetchClip(kOfxImageEffectSimpleSourceClipName);
             } else {
                 const string istr = unsignedToString(i + 1);
@@ -266,11 +263,11 @@ RunScriptPlugin::RunScriptPlugin(OfxImageEffectHandle handle)
 }
 
 void
-RunScriptPlugin::render(const RenderArguments &args)
+RunScriptPlugin::render(const RenderArguments& args)
 {
     DBG(std::cout << "rendering time " << args.time << " scale " << args.renderScale.x << ',' << args.renderScale.y << " window " << args.renderWindow.x1 << ',' << args.renderWindow.y1 << " - " << args.renderWindow.x2 << ',' << args.renderWindow.y2 << " field " << (int)args.fieldToRender << " view " << args.renderView << std::endl);
 
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -288,9 +285,9 @@ RunScriptPlugin::render(const RenderArguments &args)
     // fetch images corresponding to all connected inputs,
     // since it may trigger render actions upstream
     for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
-        if ( _srcClip[i]->isConnected() ) {
-            auto_ptr<const Image> srcImg( _srcClip[i]->fetchImage(args.time) );
-            if ( !srcImg.get() ) {
+        if (_srcClip[i]->isConnected()) {
+            auto_ptr<const Image> srcImg(_srcClip[i]->fetchImage(args.time));
+            if (!srcImg.get()) {
                 throwSuiteStatusException(kOfxStatFailed);
 
                 return;
@@ -308,8 +305,8 @@ RunScriptPlugin::render(const RenderArguments &args)
         return;
     }
     assert(_dstClip);
-    auto_ptr<Image> dstImg( _dstClip->fetchImage(args.time) );
-    if ( !dstImg.get() ) {
+    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -329,7 +326,7 @@ RunScriptPlugin::render(const RenderArguments &args)
     }
     string script;
     _script->getValue(script);
-    ssize_t s = write( fd, script.c_str(), script.size() );
+    ssize_t s = write(fd, script.c_str(), script.size());
     close(fd);
     if (s < 0) {
         throwSuiteStatusException(kOfxStatFailed);
@@ -357,7 +354,7 @@ RunScriptPlugin::render(const RenderArguments &args)
         int t_int;
         _type[i]->getValue(t_int);
         ERunScriptPluginParamType t = (ERunScriptPluginParamType)t_int;
-        ValueParam *p = NULL;
+        ValueParam* p = NULL;
         switch (t) {
         case eRunScriptPluginParamTypeFilename: {
             string s;
@@ -395,9 +392,9 @@ RunScriptPlugin::render(const RenderArguments &args)
         }
         }
         if (p) {
-            DBG( std::cout << "; IsAnimating=" << (p->getIsAnimating() ? "true" : "false") );
-            DBG( std::cout << "; IsAutoKeying=" << (p->getIsAutoKeying() ? "true" : "false") );
-            DBG( std::cout << "; NumKeys=" << p->getNumKeys() );
+            DBG(std::cout << "; IsAnimating=" << (p->getIsAnimating() ? "true" : "false"));
+            DBG(std::cout << "; IsAutoKeying=" << (p->getIsAutoKeying() ? "true" : "false"));
+            DBG(std::cout << "; NumKeys=" << p->getNumKeys());
         }
         DBG(std::cout << std::endl);
     }
@@ -406,7 +403,7 @@ RunScriptPlugin::render(const RenderArguments &args)
     vector<string> errors;
     redi::ipstream in(scriptname, argv, redi::pstreambuf::pstderr | redi::pstreambuf::pstderr);
     string errmsg;
-    while ( std::getline(in, errmsg) ) {
+    while (std::getline(in, errmsg)) {
         errors.push_back(errmsg);
         DBG(std::cout << "output: " << errmsg << std::endl);
     }
@@ -416,39 +413,39 @@ RunScriptPlugin::render(const RenderArguments &args)
 
     // now copy the first input to output
 
-    if ( _dstClip->isConnected() ) {
-        auto_ptr<Image> dstImg( _dstClip->fetchImage(args.time) );
-        if ( !dstImg.get() ) {
+    if (_dstClip->isConnected()) {
+        auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+        if (!dstImg.get()) {
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
         }
         checkBadRenderScaleOrField(dstImg, args);
 
-        auto_ptr<const Image> srcImg( _srcClip[0]->fetchImage(args.time) );
+        auto_ptr<const Image> srcImg(_srcClip[0]->fetchImage(args.time));
 
-        if ( !srcImg.get() ) {
+        if (!srcImg.get()) {
             // fill output with black
-            fillBlack( *this, args.renderWindow, args.renderScale, dstImg.get() );
+            fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
         } else {
             checkBadRenderScaleOrField(srcImg, args);
 
             // copy the source image (the writer is a no-op)
-            copyPixels( *this, args.renderWindow, args.renderScale, srcImg.get(), dstImg.get() );
+            copyPixels(*this, args.renderWindow, args.renderScale, srcImg.get(), dstImg.get());
         }
     }
 } // RunScriptPlugin::render
 
 void
-RunScriptPlugin::changedParam(const InstanceChangedArgs &args,
-                              const string &paramName)
+RunScriptPlugin::changedParam(const InstanceChangedArgs& args,
+                              const string& paramName)
 {
-    DBG(std::cout << "changed param " << paramName << " at time " << args.time << " reason = " << (int)args.reason <<  std::endl);
+    DBG(std::cout << "changed param " << paramName << " at time " << args.time << " reason = " << (int)args.reason << std::endl);
 
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
 
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -482,7 +479,7 @@ RunScriptPlugin::changedParam(const InstanceChangedArgs &args,
         clearPersistentMessage();
     } else {
         for (int i = 0; i < param_count; ++i) {
-            if ( ( paramName == _type[i]->getName() ) && (args.reason == eChangeUserEdit) ) {
+            if ((paramName == _type[i]->getName()) && (args.reason == eChangeUserEdit)) {
                 int t_int;
                 _type[i]->getValue(t_int);
                 ERunScriptPluginParamType t = (ERunScriptPluginParamType)t_int;
@@ -498,7 +495,7 @@ RunScriptPlugin::changedParam(const InstanceChangedArgs &args,
         int t_int;
         _type[i]->getValue(t_int);
         ERunScriptPluginParamType t = (ERunScriptPluginParamType)t_int;
-        ValueParam *p = NULL;
+        ValueParam* p = NULL;
         switch (t) {
         case eRunScriptPluginParamTypeFilename: {
             string s;
@@ -530,9 +527,9 @@ RunScriptPlugin::changedParam(const InstanceChangedArgs &args,
         }
         }
         if (p) {
-            DBG( std::cout << "; IsAnimating=" << (p->getIsAnimating() ? "true" : "false") );
-            DBG( std::cout << "; IsAutoKeying=" << (p->getIsAutoKeying() ? "true" : "false") );
-            DBG( std::cout << "; NumKeys=" << p->getNumKeys() );
+            DBG(std::cout << "; IsAnimating=" << (p->getIsAnimating() ? "true" : "false"));
+            DBG(std::cout << "; IsAutoKeying=" << (p->getIsAutoKeying() ? "true" : "false"));
+            DBG(std::cout << "; NumKeys=" << p->getNumKeys());
         }
         DBG(std::cout << std::endl);
     }
@@ -587,10 +584,10 @@ RunScriptPlugin::updateVisibility(void)
 
 // override the roi call
 void
-RunScriptPlugin::getRegionsOfInterest(const RegionsOfInterestArguments &args,
-                                      RegionOfInterestSetter &rois)
+RunScriptPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
+                                      RegionOfInterestSetter& rois)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -601,7 +598,7 @@ RunScriptPlugin::getRegionsOfInterest(const RegionsOfInterestArguments &args,
         for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
             OfxRectD srcRoI;
 
-            if ( _srcClip[i] && _srcClip[i]->isConnected() ) {
+            if (_srcClip[i] && _srcClip[i]->isConnected()) {
                 srcRoI = _srcClip[i]->getRegionOfDefinition(args.time);
                 rois.setRegionOfInterest(*_srcClip[i], srcRoI);
             }
@@ -610,10 +607,10 @@ RunScriptPlugin::getRegionsOfInterest(const RegionsOfInterestArguments &args,
 }
 
 bool
-RunScriptPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
-                                       OfxRectD & /*rod*/)
+RunScriptPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
+                                       OfxRectD& /*rod*/)
 {
-    if ( !kSupportsRenderScale && ( (args.renderScale.x != 1.) || (args.renderScale.y != 1.) ) ) {
+    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
     }
 
@@ -621,9 +618,9 @@ RunScriptPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments &args,
     return false;
 }
 
-mDeclarePluginFactory(RunScriptPluginFactory, {ofxsThreadSuiteCheck();}, {});
+mDeclarePluginFactory(RunScriptPluginFactory, { ofxsThreadSuiteCheck(); }, {});
 void
-RunScriptPluginFactory::describe(ImageEffectDescriptor &desc)
+RunScriptPluginFactory::describe(ImageEffectDescriptor& desc)
 {
     DBG(std::cout << "describing!\n");
     // basic labels
@@ -631,7 +628,7 @@ RunScriptPluginFactory::describe(ImageEffectDescriptor &desc)
     desc.setPluginGrouping(kPluginGrouping);
     desc.setPluginDescription(kPluginDescription);
 #ifdef OFX_EXTENSIONS_NATRON
-   desc.setDescriptionIsMarkdown(true);
+    desc.setDescriptionIsMarkdown(true);
 #endif
 
     // add the supported contexts
@@ -658,20 +655,19 @@ RunScriptPluginFactory::describe(ImageEffectDescriptor &desc)
 }
 
 void
-RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
+RunScriptPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                                           ContextEnum context)
 {
     DBG(std::cout << "describing in context " << (int)context << std::endl);
 
-    const ImageEffectHostDescription &gHostDescription = *getImageEffectHostDescription();
-    bool hostIsNuke = (gHostDescription.hostName.find("nuke") != string::npos ||
-                       gHostDescription.hostName.find("Nuke") != string::npos);
+    const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
+    bool hostIsNuke = (gHostDescription.hostName.find("nuke") != string::npos || gHostDescription.hostName.find("Nuke") != string::npos);
 
     // Source clip only in the filter context
     // create the mandated source clip
     for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
-        ClipDescriptor *srcClip;
-        if ( (i == 0) && (context == eContextFilter) ) {
+        ClipDescriptor* srcClip;
+        if ((i == 0) && (context == eContextFilter)) {
             srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName); // mandatory clip for the filter context
         } else {
             const string istr = unsignedToString(i + 1);
@@ -688,7 +684,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     }
 
     // create the mandated output clip
-    ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
+    ClipDescriptor* dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
     dstClip->addSupportedComponent(ePixelComponentRGB);
     dstClip->addSupportedComponent(ePixelComponentRGBA);
     dstClip->addSupportedComponent(ePixelComponentAlpha);
@@ -696,10 +692,10 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     dstClip->setSupportsTiles(false);
 
     // make some pages and to things in
-    PageParamDescriptor *page = desc.definePageParam("Controls");
+    PageParamDescriptor* page = desc.definePageParam("Controls");
 
     {
-        GroupParamDescriptor *group = desc.defineGroupParam(kGroupRunScriptPlugin);
+        GroupParamDescriptor* group = desc.defineGroupParam(kGroupRunScriptPlugin);
         if (group) {
             group->setHint(kGroupRunScriptPluginHint);
             group->setLabel(kGroupRunScriptPluginLabel);
@@ -708,7 +704,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
             }
         }
         {
-            IntParamDescriptor *param = desc.defineIntParam(kParamCount);
+            IntParamDescriptor* param = desc.defineIntParam(kParamCount);
             param->setLabel(kParamCountLabel);
             param->setAnimates(true);
             param->setRange(0, kRunScriptPluginArgumentsCount);
@@ -730,10 +726,10 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 param->setLabel(kParamTypeLabel + istr);
                 param->setAnimates(true);
                 param->appendOption(kParamTypeFilenameLabel, kParamTypeFilenameHint);
-                param->appendOption(kParamTypeStringLabel,   kParamTypeStringHint);
-                param->appendOption(kParamTypeDoubleLabel,   kParamTypeDoubleHint);
-                param->appendOption(kParamTypeIntLabel,      kParamTypeIntHint);
-                //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+                param->appendOption(kParamTypeStringLabel, kParamTypeStringHint);
+                param->appendOption(kParamTypeDoubleLabel, kParamTypeDoubleHint);
+                param->appendOption(kParamTypeIntLabel, kParamTypeIntHint);
+                // param->setIsSecretAndDisabled(true); // done in the plugin constructor
                 if (group) {
                     param->setParent(*group);
                 }
@@ -749,7 +745,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 param->setStringType(eStringTypeFilePath);
                 param->setFilePathExists(false); // the file may or may not exist
                 param->setAnimates(true); // the file name may change with time
-                //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+                // param->setIsSecretAndDisabled(true); // done in the plugin constructor
                 if (group) {
                     param->setParent(*group);
                 }
@@ -763,7 +759,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 param->setLabel(kParamTypeStringLabel + istr);
                 param->setHint(kParamTypeStringHint);
                 param->setAnimates(true);
-                //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+                // param->setIsSecretAndDisabled(true); // done in the plugin constructor
                 if (group) {
                     param->setParent(*group);
                 }
@@ -777,7 +773,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 param->setLabel(kParamTypeDoubleLabel + istr);
                 param->setHint(kParamTypeDoubleHint);
                 param->setAnimates(true);
-                //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+                // param->setIsSecretAndDisabled(true); // done in the plugin constructor
                 param->setRange(-DBL_MAX, DBL_MAX);
                 param->setDisplayRange(-1000., 1000.);
                 if (group) {
@@ -793,7 +789,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
                 param->setLabel(kParamTypeIntLabel + istr);
                 param->setHint(kParamTypeIntHint);
                 param->setAnimates(true);
-                //param->setIsSecretAndDisabled(true); // done in the plugin constructor
+                // param->setIsSecretAndDisabled(true); // done in the plugin constructor
                 if (group) {
                     param->setParent(*group);
                 }
@@ -805,7 +801,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     }
 
     {
-        StringParamDescriptor *param = desc.defineStringParam(kParamScript);
+        StringParamDescriptor* param = desc.defineStringParam(kParamScript);
         param->setLabel(kParamScriptLabel);
         if (hostIsNuke) {
             param->setHint(string(kParamScriptHint) + " " kNukeWarnTcl);
@@ -821,7 +817,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor &desc,
     }
 
     {
-        BooleanParamDescriptor *param = desc.defineBooleanParam(kParamValidate);
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamValidate);
         param->setLabel(kParamValidateLabel);
         param->setHint(kParamValidateHint);
         param->setEvaluateOnChange(true);
@@ -841,6 +837,6 @@ RunScriptPluginFactory::createInstance(OfxImageEffectHandle handle,
 static RunScriptPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginVersionMinor);
 mRegisterPluginFactoryInstance(p)
 
-OFXS_NAMESPACE_ANONYMOUS_EXIT
+    OFXS_NAMESPACE_ANONYMOUS_EXIT
 
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
