@@ -244,7 +244,7 @@ enum VoronoiTypeEnum {
 #define kParamYRotate "YRotate"
 #define kParamYRotateLabel "Y Rotate"
 #define kParamYRotateHint "Rotation about the Y axis in the 3D noise space (X,Y,Z). Noise artifacts may appear if it is 0 or a multiple of 90."
-#define kParamYRotateDefault 37.
+#define kParamYRotateDefault 27.
 
 #define kPageTransform "transformPage"
 #define kPageTransformLabel "Transform"
