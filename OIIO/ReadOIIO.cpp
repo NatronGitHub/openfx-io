@@ -39,15 +39,19 @@
 #include "ofxsMacros.h"
 
 #include "OIIOGlobal.h"
-GCC_DIAG_OFF(unused - parameter)
+// clang-format off
+GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imagecache.h>
-GCC_DIAG_ON(unused - parameter)
+GCC_DIAG_ON(unused-parameter)
+// clang-format on
 
 #ifdef OFX_IO_USING_LIBRAW
-GCC_DIAG_OFF(deprecated - declarations)
+// clang-format off
+GCC_DIAG_OFF(deprecated-declarations)
 #include <libraw.h>
 #include <libraw_version.h>
-GCC_DIAG_ON(deprecated - declarations)
+GCC_DIAG_ON(deprecated-declarations)
+// clang-format on
 #else
 // default to a recent version
 #define LIBRAW_MAJOR_VERSION 0

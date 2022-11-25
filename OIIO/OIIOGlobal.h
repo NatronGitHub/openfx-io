@@ -23,9 +23,11 @@
 #include "ofxsMacros.h"
 #include <iostream>
 
-GCC_DIAG_OFF(unused - parameter)
+// clang-format off
+GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imageio.h>
-GCC_DIAG_ON(unused - parameter)
+GCC_DIAG_ON(unused-parameter)
+// clang-format on
 
 OIIO_NAMESPACE_USING
 

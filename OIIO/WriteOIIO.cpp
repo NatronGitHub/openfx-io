@@ -27,9 +27,11 @@
 #include "ofxsMacros.h"
 
 #include "OIIOGlobal.h"
-GCC_DIAG_OFF(unused - parameter)
+// clang-format off
+GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/filesystem.h>
-GCC_DIAG_ON(unused - parameter)
+GCC_DIAG_ON(unused-parameter)
+// clang-format on
 
 #include "GenericOCIO.h"
 #include "GenericWriter.h"

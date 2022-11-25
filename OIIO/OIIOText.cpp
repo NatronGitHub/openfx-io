@@ -26,8 +26,6 @@
 
 #include "ofxsMacros.h"
 
-GCC_DIAG_OFF(unused - parameter)
-#include <OpenImageIO/imageio.h>
 /*
    unfortunately, OpenImageIO/imagebuf.h includes OpenImageIO/thread.h,
    which includes boost/thread.hpp,
@@ -36,10 +34,14 @@ GCC_DIAG_OFF(unused - parameter)
 
    the following define prevents including error_code.hpp, which is not used anyway.
  */
+// clang-format off
+GCC_DIAG_OFF(unused-parameter)
+#include <OpenImageIO/imageio.h>
 #define OPENIMAGEIO_THREAD_H
 #include <OpenImageIO/imagebuf.h>
 #include <OpenImageIO/imagebufalgo.h>
-GCC_DIAG_ON(unused - parameter)
+GCC_DIAG_ON(unused-parameter)
+// clang-format on
 #include "OIIOGlobal.h"
 
 #include "ofxsCopier.h"
