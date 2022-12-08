@@ -88,9 +88,10 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription                                                                                                                                                                                                                                                                                    \
     "Adds synthetic grain.\n"                                                                                                                                                                                                                                                                                 \
     "Push \"presets\" to get predefined types of grain, these are the correct size for 2K scans.\n"                                                                                                                                                                                                           \
+    "Note that some presets require applying per-channel Blur to the output (see the Presets documentation).\n"                                                                                                                                                                                               \
     "\n"                                                                                                                                                                                                                                                                                                      \
     "You can also adjust the sliders to match a sample piece of grain. Find a sample with a rather constant background, blur it to remove the grain, and use as input to this. View with a wipe in the viewer so you can make a match. It helps to view and match each of the red, green, blue separately.\n" \
-    "See also http://opticalenquiry.com/nuke/index.php?title=Integration#Matching_grain"
+    "See also https://web.archive.org/web/20210728000722/opticalenquiry.com/nuke/index.php?title=Integration"
 
 #define kPluginIdentifier "net.sf.openfx.SeGrain"
 // History:
@@ -135,16 +136,22 @@ struct PresetStruct {
     double green_m;
     double blue_m;
     const char* label;
+    const char* hint;
 };
 
-#define NUMPRESETS 6
+#define NUMPRESETS 11
 static struct PresetStruct gPresets[NUMPRESETS] = {
-    { /*red_size*/ 3.30, /*green_size*/ 2.90, /*blue_size*/ 2.50, /*red_i*/ 0.60, /*green_i*/ 0.60, /*blue_i*/ 0.60, /*red_m*/ 0.42, /*green_m*/ 0.46, /*blue_m*/ 0.85, /*label*/ "Kodak 5248" },
-    { /*red_size*/ 2.70, /*green_size*/ 2.60, /*blue_size*/ 2.40, /*red_i*/ 1.00, /*green_i*/ 0.76, /*blue_i*/ 0.65, /*red_m*/ 0.37, /*green_m*/ 0.60, /*blue_m*/ 1.65, /*label*/ "Kodak 5279" },
-    { /*red_size*/ 1.87, /*green_size*/ 2.60, /*blue_size*/ 2.44, /*red_i*/ 1.00, /*green_i*/ 0.76, /*blue_i*/ 0.79, /*red_m*/ 0.41, /*green_m*/ 0.60, /*blue_m*/ 1.80, /*label*/ "Kodak FX214" },
-    { /*red_size*/ 0.04, /*green_size*/ 0.10, /*blue_size*/ 0.90, /*red_i*/ 0.90, /*green_i*/ 0.76, /*blue_i*/ 0.81, /*red_m*/ 0.49, /*green_m*/ 0.50, /*blue_m*/ 1.55, /*label*/ "Kodak GT5274" },
-    { /*red_size*/ 0.23, /*green_size*/ 1.20, /*blue_size*/ 1.40, /*red_i*/ 0.60, /*green_i*/ 0.86, /*blue_i*/ 0.60, /*red_m*/ 0.48, /*green_m*/ 0.42, /*blue_m*/ 0.87, /*label*/ "Kodak 5217" },
-    { /*red_size*/ 0.10, /*green_size*/ 1.60, /*blue_size*/ 1.91, /*red_i*/ 0.60, /*green_i*/ 0.86, /*blue_i*/ 0.73, /*red_m*/ 0.38, /*green_m*/ 0.17, /*blue_m*/ 0.87, /*label*/ "Kodak 5218" },
+    { /*red_size*/ 3.30, /*green_size*/ 2.90, /*blue_size*/ 2.50, /*red_i*/ 0.60, /*green_i*/ 0.60, /*blue_i*/ 0.60, /*red_m*/ 0.42, /*green_m*/ 0.46, /*blue_m*/ 0.85, /*label*/ "Kodak 5248", /* hint*/ nullptr },
+    { /*red_size*/ 2.70, /*green_size*/ 2.60, /*blue_size*/ 2.40, /*red_i*/ 1.00, /*green_i*/ 0.76, /*blue_i*/ 0.65, /*red_m*/ 0.37, /*green_m*/ 0.60, /*blue_m*/ 1.65, /*label*/ "Kodak 5279", /* hint*/ nullptr },
+    { /*red_size*/ 1.87, /*green_size*/ 2.60, /*blue_size*/ 2.44, /*red_i*/ 1.00, /*green_i*/ 0.76, /*blue_i*/ 0.79, /*red_m*/ 0.41, /*green_m*/ 0.60, /*blue_m*/ 1.80, /*label*/ "Kodak FX214", /* hint*/ nullptr },
+    { /*red_size*/ 0.04, /*green_size*/ 0.10, /*blue_size*/ 0.90, /*red_i*/ 0.90, /*green_i*/ 0.76, /*blue_i*/ 0.81, /*red_m*/ 0.49, /*green_m*/ 0.50, /*blue_m*/ 1.55, /*label*/ "Kodak GT5274", /* hint*/ nullptr },
+    { /*red_size*/ 0.23, /*green_size*/ 1.20, /*blue_size*/ 1.40, /*red_i*/ 0.60, /*green_i*/ 0.86, /*blue_i*/ 0.60, /*red_m*/ 0.48, /*green_m*/ 0.42, /*blue_m*/ 0.87, /*label*/ "Kodak 5217", /* hint*/ nullptr },
+    { /*red_size*/ 0.10, /*green_size*/ 1.60, /*blue_size*/ 1.91, /*red_i*/ 0.60, /*green_i*/ 0.86, /*blue_i*/ 0.73, /*red_m*/ 0.38, /*green_m*/ 0.17, /*blue_m*/ 0.87, /*label*/ "Kodak 5218", /* hint*/ nullptr },
+    { /*red_size*/ 1.20, /*green_size*/ 1.40, /*blue_size*/ 1.30, /*red_i*/ 1.20, /*green_i*/ 0.60, /*blue_i*/ 0.90, /*red_m*/ 0.37, /*green_m*/ 0.31, /*blue_m*/ 0.85, /*label*/ "Kodak 5219", /* hint*/ nullptr },
+    { /*red_size*/ 0.10, /*green_size*/ 1.00, /*blue_size*/ 1.00, /*red_i*/ 0.60, /*green_i*/ 0.86, /*blue_i*/ 0.73, /*red_m*/ 0.20, /*green_m*/ 0.24, /*blue_m*/ 0.47, /*label*/ "Kodak 5201", /* hint*/ nullptr },
+    { /*red_size*/ 0.60, /*green_size*/ 0.80, /*blue_size*/ 1.00, /*red_i*/ 0.70, /*green_i*/ 1.00, /*blue_i*/ 0.30, /*red_m*/ 0.34, /*green_m*/ 0.38, /*blue_m*/ 0.85, /*label*/ "Kodak 5213", /* hint*/ "Combine with Blur(R,size=1), Blur(G,size=1), Blur(B,size=1.1)" }, // add blur with size (1, 1, 1.1)
+    { /*red_size*/ 1.50, /*green_size*/ 1.00, /*blue_size*/ 1.30, /*red_i*/ 0.60, /*green_i*/ 0.86, /*blue_i*/ 3.43, /*red_m*/ 0.08, /*green_m*/ 0.12, /*blue_m*/ 0.32, /*label*/ "Kodak 5245", /* hint*/ "Combine with Blur(G,size=1.2), Blur(B,size=1.15)" }, // add blur with size (0, 1.2, 1.15)
+    { /*red_size*/ 1.70, /*green_size*/ 1.70, /*blue_size*/ 1.70, /*red_i*/ 0.30, /*green_i*/ 0.30, /*blue_i*/ 0.30, /*red_m*/ 0.15, /*green_m*/ 0.15, /*blue_m*/ 0.15, /*label*/ "Digital Noise", /* hint*/ nullptr },
 };
 
 #define kParamGroupSize "grainSize"
@@ -803,7 +810,7 @@ SeGrainPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setLabel(kParamPresetsLabel);
         param->setHint(kParamPresetsHint);
         for (int i = 0; i < NUMPRESETS; ++i) {
-            param->appendOption(gPresets[i].label);
+            param->appendOption(gPresets[i].label, gPresets[i].hint ? gPresets[i].hint : "");
         }
         param->appendOption(kParamPresetsOptionOther);
         param->setDefault(0);
