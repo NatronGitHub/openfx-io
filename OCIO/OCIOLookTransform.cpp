@@ -101,23 +101,6 @@ using std::string;
 #define kParamDirectionOptionForward "Forward", "", "forward"
 #define kParamDirectionOptionInverse "Inverse", "", "inverse"
 
-#if defined(OFX_SUPPORTS_OPENGLRENDER)
-#define kParamEnableGPU "enableGPU"
-#define kParamEnableGPULabel "Enable GPU Render"
-#if OCIO_VERSION_HEX >= 0x02000000
-#define kParamEnableGPUHint_warn ""
-#else
-// OCIO1's GPU render is not accurate enough.
-// see https://github.com/imageworks/OpenColorIO/issues/394
-// and https://github.com/imageworks/OpenColorIO/issues/456
-#define kParamEnableGPUHint_warn "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n"
-#endif
-#define kParamEnableGPUHint                                                                                                                                                              \
-    "Enable GPU-based OpenGL render (only available when \"(Un)premult\" is not checked).\n" kParamEnableGPUHint_warn                                                                    \
-    "If the checkbox is checked but is not enabled (i.e. it cannot be unchecked), GPU render can not be enabled or disabled from the plugin and is probably part of the host options.\n" \
-    "If the checkbox is not checked and is not enabled (i.e. it cannot be checked), GPU render is not available on this host."
-#endif
-
 namespace OCIO = OCIO_NAMESPACE;
 
 static bool gHostIsNatron = false;
@@ -324,7 +307,6 @@ private:
     DoubleParam* _mix;
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
-    BooleanParam* _enableGPU;
 
     auto_ptr<GenericOCIO> _ocio;
 
@@ -355,7 +337,6 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
     , _mix(NULL)
     , _maskApply(NULL)
     , _maskInvert(NULL)
-    , _enableGPU(NULL)
     , _ocio(new GenericOCIO(this))
     , _procDirection(-1)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
@@ -384,9 +365,7 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    _enableGPU = fetchBooleanParam(kParamEnableGPU);
-    assert(_enableGPU);
-    setSupportsOpenGLAndTileInfo(_premult, _enableGPU, nullptr);
+    setSupportsOpenGLAndTileInfo(_premult, nullptr);
 #endif
 
     bool singleLook = _singleLook->getValue();
@@ -976,8 +955,8 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs& args,
         _lookCombination->setEnabled(!singleLook);
         _lookCombination->setEvaluateOnChange(!singleLook);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    } else if (paramName == kParamEnableGPU || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(_premult, _enableGPU, &args.time);
+    } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+        setSupportsOpenGLAndTileInfo(_premult, &args.time);
 #endif
     } else {
         _ocio->changedParam(args, paramName);
@@ -1161,29 +1140,7 @@ OCIOLookTransformPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     }
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    {
-        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamEnableGPU);
-        param->setLabel(kParamEnableGPULabel);
-        param->setHint(kParamEnableGPUHint);
-        const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
-        // Resolve advertises OpenGL support in its host description, but never calls render with OpenGL enabled
-        if (gHostDescription.supportsOpenGLRender && (gHostDescription.hostName != "DaVinciResolveLite")) {
-            // OCIO's GPU render is not accurate enough.
-            // see https://github.com/imageworks/OpenColorIO/issues/394
-            param->setDefault(/*true*/ false);
-            if (gHostDescription.APIVersionMajor * 100 + gHostDescription.APIVersionMinor < 104) {
-                // Switching OpenGL render from the plugin was introduced in OFX 1.4
-                param->setEnabled(false);
-            }
-        } else {
-            param->setDefault(false);
-            param->setEnabled(false);
-        }
-
-        if (page) {
-            page->addChild(*param);
-        }
-    }
+    OCIOPluginBase::defineEnableGPUParam(desc, page);
 #endif
 
     ofxsPremultDescribeParams(desc, page);
