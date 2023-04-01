@@ -36,6 +36,7 @@
 #include "ofxsThreadSuite.h"
 
 #include "GenericOCIO.h"
+#include "OCIOPluginBase.h"
 
 namespace OCIO = OCIO_NAMESPACE;
 
@@ -146,7 +147,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 static bool gHostIsNatron = false; // TODO: generate a CCCId choice param kParamCCCIDChoice from available IDs
 
 class OCIOCDLTransformPlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIOCDLTransformPlugin(OfxImageEffectHandle handle);
 
@@ -368,7 +369,7 @@ private:
 };
 
 OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)

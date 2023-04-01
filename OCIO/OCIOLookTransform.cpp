@@ -24,7 +24,7 @@
 
 #ifdef OFX_IO_USING_OCIO
 
-//#include <iostream>
+// #include <iostream>
 #include <memory>
 #ifdef DEBUG
 #include <cstdio> // printf
@@ -39,6 +39,7 @@
 #include <ofxsProcessing.H>
 
 #include "IOUtility.h"
+#include "OCIOPluginBase.h"
 
 using namespace OFX;
 using namespace IO;
@@ -137,7 +138,7 @@ buildLookChoiceMenu(OCIO::ConstConfigRcPtr config,
 }
 
 class OCIOLookTransformPlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIOLookTransformPlugin(OfxImageEffectHandle handle);
 
@@ -340,7 +341,7 @@ private:
 };
 
 OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)

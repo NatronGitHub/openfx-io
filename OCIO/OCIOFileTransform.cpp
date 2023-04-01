@@ -24,7 +24,7 @@
 
 #ifdef OFX_IO_USING_OCIO
 
-//#include <stdio.h> // for snprintf & _snprintf
+// #include <stdio.h> // for snprintf & _snprintf
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <windows.h>
 #if defined(_MSC_VER) && _MSC_VER < 1900
@@ -38,6 +38,7 @@
 
 #include "GenericOCIO.h"
 #include "IOUtility.h"
+#include "OCIOPluginBase.h"
 #include "ofxNatron.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
@@ -124,7 +125,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 static bool gHostIsNatron = false; // TODO: generate a CCCId choice param kParamCCCIDChoice from available IDs
 
 class OCIOFileTransformPlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIOFileTransformPlugin(OfxImageEffectHandle handle);
 
@@ -328,7 +329,7 @@ private:
 };
 
 OCIOFileTransformPlugin::OCIOFileTransformPlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)

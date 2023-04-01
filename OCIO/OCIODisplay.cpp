@@ -23,7 +23,7 @@
  */
 
 #ifdef OFX_IO_USING_OCIO
-//#include <iostream>
+// #include <iostream>
 #include <algorithm>
 #include <memory>
 #ifdef DEBUG
@@ -32,6 +32,7 @@
 
 #include "GenericOCIO.h"
 #include "IOUtility.h"
+#include "OCIOPluginBase.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
 #include "ofxsMacros.h"
@@ -165,7 +166,7 @@ buildViewMenu(OCIO::ConstConfigRcPtr config,
 }
 
 class OCIODisplayPlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIODisplayPlugin(OfxImageEffectHandle handle);
 
@@ -378,7 +379,7 @@ private:
 };
 
 OCIODisplayPlugin::OCIODisplayPlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _display(NULL)

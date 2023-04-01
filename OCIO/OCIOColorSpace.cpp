@@ -24,7 +24,7 @@
 
 #ifdef OFX_IO_USING_OCIO
 
-//#include <iostream>
+// #include <iostream>
 #include <memory>
 #ifdef DEBUG
 #include <cstdio> // printf
@@ -33,6 +33,7 @@
 #include "GenericOCIO.h"
 
 #include "IOUtility.h"
+#include "OCIOPluginBase.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
 #include "ofxsMacros.h"
@@ -77,7 +78,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #endif
 
 class OCIOColorSpacePlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIOColorSpacePlugin(OfxImageEffectHandle handle);
 
@@ -278,7 +279,7 @@ private:
 };
 
 OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)

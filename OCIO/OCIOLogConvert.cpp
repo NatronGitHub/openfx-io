@@ -30,6 +30,7 @@
 #endif
 #include "GenericOCIO.h"
 #include "IOUtility.h"
+#include "OCIOPluginBase.h"
 #include "ofxNatron.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
@@ -85,7 +86,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 static bool gWasOCIOEnvVarFound = false;
 
 class OCIOLogConvertPlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIOLogConvertPlugin(OfxImageEffectHandle handle);
 
@@ -286,7 +287,7 @@ private:
 };
 
 OCIOLogConvertPlugin::OCIOLogConvertPlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)
