@@ -53,7 +53,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.OCIOLogConvert"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -326,14 +326,7 @@ OCIOLogConvertPlugin::OCIOLogConvertPlugin(OfxImageEffectHandle handle)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     _enableGPU = fetchBooleanParam(kParamEnableGPU);
     assert(_enableGPU);
-    const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
-    if (!gHostDescription.supportsOpenGLRender) {
-        _enableGPU->setEnabled(false);
-    }
-    // GPU rendering is wrong when (un)premult is checked
-    bool premult = _premult->getValue();
-    _enableGPU->setEnabled(!premult);
-    setSupportsOpenGLRender(!premult && _enableGPU->getValue());
+    setSupportsOpenGLAndTileInfo(_premult, _enableGPU, nullptr);
 #endif
 
     loadConfig(0.);
@@ -930,12 +923,7 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
         sendMessage(Message::eMessageMessage, "", msg);
 #ifdef OFX_SUPPORTS_OPENGLRENDER
     } else if (paramName == kParamEnableGPU || paramName == kParamPremult) {
-        // GPU rendering is wrong when (un)premult is checked
-        bool premult = _premult->getValueAtTime(args.time);
-        _enableGPU->setEnabled(!premult);
-        bool supportsGL = !premult && _enableGPU->getValueAtTime(args.time);
-        setSupportsOpenGLRender(supportsGL);
-        setSupportsTiles(!supportsGL);
+        setSupportsOpenGLAndTileInfo(_premult, _enableGPU, &args.time);
 #endif
     }
 } // OCIOLogConvertPlugin::changedParam
