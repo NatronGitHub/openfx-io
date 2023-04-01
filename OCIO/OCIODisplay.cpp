@@ -334,8 +334,6 @@ private:
     // do not need to delete these, the ImageEffect is managing them for us
     Clip* _dstClip;
     Clip* _srcClip;
-    BooleanParam* _premult;
-    ChoiceParam* _premultChannel;
     StringParam* _display;
     StringParam* _view;
     ChoiceParam* _displayChoice;
@@ -383,9 +381,6 @@ OCIODisplayPlugin::OCIODisplayPlugin(OfxImageEffectHandle handle)
     assert(_dstClip && (!_dstClip->isConnected() || _dstClip->getPixelComponents() == ePixelComponentRGBA || _dstClip->getPixelComponents() == ePixelComponentRGB));
     _srcClip = getContext() == eContextGenerator ? NULL : fetchClip(kOfxImageEffectSimpleSourceClipName);
     assert((!_srcClip && getContext() == eContextGenerator) || (_srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA || _srcClip->getPixelComponents() == ePixelComponentRGB)));
-    _premult = fetchBooleanParam(kParamPremult);
-    _premultChannel = fetchChoiceParam(kParamPremultChannel);
-    assert(_premult && _premultChannel);
     _display = fetchStringParam(kParamDisplay);
     _view = fetchStringParam(kParamView);
 
@@ -397,7 +392,7 @@ OCIODisplayPlugin::OCIODisplayPlugin(OfxImageEffectHandle handle)
     _view = fetchStringParam(kParamView);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(_premult, nullptr);
+    setSupportsOpenGLAndTileInfo(nullptr);
 #endif
 
     if (gHostIsNatron) {
@@ -541,8 +536,7 @@ OCIODisplayPlugin::setupAndCopy(PixelProcessorFilterBase& processor,
 
     bool premult;
     int premultChannel;
-    _premult->getValueAtTime(time, premult);
-    _premultChannel->getValueAtTime(time, premultChannel);
+    getPremultAndPremultChannelAtTime(time, premult, premultChannel);
     processor.setPremultMaskMix(premult, premultChannel, 1.);
 
     // Call the base class process member, this will call the derived templated process code
@@ -1072,9 +1066,8 @@ OCIODisplayPlugin::render(const RenderArguments& args)
     ImageMemory mem(memSize, this);
     float* tmpPixelData = (float*)mem.lock();
     bool premult;
-    _premult->getValueAtTime(args.time, premult);
     int premultChannel;
-    _premultChannel->getValueAtTime(args.time, premultChannel);
+    getPremultAndPremultChannelAtTime(args.time, premult, premultChannel);
 
     // copy renderWindow to the temporary image
     copyPixelData(premult, false, premultChannel, args.time, args.renderWindow, args.renderScale, srcPixelData, bounds, pixelComponents, pixelComponentCount, bitDepth, srcRowBytes, tmpPixelData, args.renderWindow, pixelComponents, pixelComponentCount, bitDepth, tmpRowBytes);
@@ -1139,8 +1132,8 @@ OCIODisplayPlugin::changedParam(const InstanceChangedArgs& args,
             _view->setValue(view);
         }
 #ifdef OFX_SUPPORTS_OPENGLRENDER
-    } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(_premult, &args.time);
+    } else if (paramEffectsOpenGLAndTileSupport(paramName)) {
+        setSupportsOpenGLAndTileInfo(&args.time);
 #endif
     } else {
         return _ocio->changedParam(args, paramName);
@@ -1152,21 +1145,7 @@ OCIODisplayPlugin::changedClip(const InstanceChangedArgs& args,
                                const string& clipName)
 {
     if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && (args.reason == eChangeUserEdit)) {
-        if (_srcClip->getPixelComponents() != ePixelComponentRGBA) {
-            _premult->setValue(false);
-        } else {
-            switch (_srcClip->getPreMultiplication()) {
-            case eImageOpaque:
-                _premult->setValue(false);
-                break;
-            case eImagePreMultiplied:
-                _premult->setValue(true);
-                break;
-            case eImageUnPreMultiplied:
-                _premult->setValue(false);
-                break;
-            }
-        }
+        changedSrcClip(_srcClip);
     }
 }
 

@@ -247,8 +247,6 @@ private:
     Clip* _dstClip;
     Clip* _srcClip;
     Clip* _maskClip;
-    BooleanParam* _premult;
-    ChoiceParam* _premultChannel;
     DoubleParam* _mix;
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
@@ -265,8 +263,6 @@ OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)
-    , _premult(NULL)
-    , _premultChannel(NULL)
     , _mix(NULL)
     , _maskInvert(NULL)
     , _ocio(new GenericOCIO(this))
@@ -280,16 +276,13 @@ OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
     assert((!_srcClip && getContext() == eContextGenerator) || (_srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA || _srcClip->getPixelComponents() == ePixelComponentRGB)));
     _maskClip = fetchClip(getContext() == eContextPaint ? "Brush" : "Mask");
     assert(!_maskClip || !_maskClip->isConnected() || _maskClip->getPixelComponents() == ePixelComponentAlpha);
-    _premult = fetchBooleanParam(kParamPremult);
-    _premultChannel = fetchChoiceParam(kParamPremultChannel);
-    assert(_premult && _premultChannel);
     _mix = fetchDoubleParam(kParamMix);
     _maskApply = paramExists(kParamMaskApply) ? fetchBooleanParam(kParamMaskApply) : 0;
     _maskInvert = fetchBooleanParam(kParamMaskInvert);
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(_premult, nullptr);
+    setSupportsOpenGLAndTileInfo(nullptr);
 #endif
 }
 
@@ -347,8 +340,7 @@ OCIOColorSpacePlugin::setupAndCopy(PixelProcessorFilterBase& processor,
 
     bool premult;
     int premultChannel;
-    _premult->getValueAtTime(time, premult);
-    _premultChannel->getValueAtTime(time, premultChannel);
+    getPremultAndPremultChannelAtTime(time, premult, premultChannel);
     double mix;
     _mix->getValueAtTime(time, mix);
     processor.setPremultMaskMix(premult, premultChannel, mix);
@@ -693,9 +685,8 @@ OCIOColorSpacePlugin::render(const RenderArguments& args)
     ImageMemory mem(memSize, this);
     float* tmpPixelData = (float*)mem.lock();
     bool premult;
-    _premult->getValueAtTime(args.time, premult);
     int premultChannel;
-    _premultChannel->getValueAtTime(args.time, premultChannel);
+    getPremultAndPremultChannelAtTime(args.time, premult, premultChannel);
     double mix;
     _mix->getValueAtTime(args.time, mix);
 
@@ -758,7 +749,7 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
     clearPersistentMessage();
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(_premult, &args.time);
+        setSupportsOpenGLAndTileInfo(&args.time);
         return;
     }
 #endif
@@ -771,21 +762,7 @@ OCIOColorSpacePlugin::changedClip(const InstanceChangedArgs& args,
                                   const string& clipName)
 {
     if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && (args.reason == eChangeUserEdit)) {
-        if (_srcClip->getPixelComponents() != ePixelComponentRGBA) {
-            _premult->setValue(false);
-        } else {
-            switch (_srcClip->getPreMultiplication()) {
-            case eImageOpaque:
-                _premult->setValue(false);
-                break;
-            case eImagePreMultiplied:
-                _premult->setValue(true);
-                break;
-            case eImageUnPreMultiplied:
-                _premult->setValue(false);
-                break;
-            }
-        }
+        changedSrcClip(_srcClip);
     }
 }
 

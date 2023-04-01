@@ -325,8 +325,6 @@ private:
     IntParam* _version;
     StringParam* _cccid;
     StringParam* _export;
-    BooleanParam* _premult;
-    ChoiceParam* _premultChannel;
     DoubleParam* _mix;
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
@@ -366,8 +364,6 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
     , _version(NULL)
     , _cccid(NULL)
     , _export(NULL)
-    , _premult(NULL)
-    , _premultChannel(NULL)
     , _mix(NULL)
     , _maskApply(NULL)
     , _maskInvert(NULL)
@@ -403,16 +399,13 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
     _cccid = fetchStringParam(kParamCCCID);
     _export = fetchStringParam(kParamExport);
     assert(_slope && _offset && _power && _saturation && _direction && _readFromFile && _file && _version && _cccid && _export);
-    _premult = fetchBooleanParam(kParamPremult);
-    _premultChannel = fetchChoiceParam(kParamPremultChannel);
-    assert(_premult && _premultChannel);
     _mix = fetchDoubleParam(kParamMix);
     _maskApply = paramExists(kParamMaskApply) ? fetchBooleanParam(kParamMaskApply) : 0;
     _maskInvert = fetchBooleanParam(kParamMaskInvert);
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(_premult, nullptr);
+    setSupportsOpenGLAndTileInfo(nullptr);
 #endif
 
     bool readFromFile;
@@ -476,8 +469,7 @@ OCIOCDLTransformPlugin::setupAndCopy(PixelProcessorFilterBase& processor,
 
     bool premult;
     int premultChannel;
-    _premult->getValueAtTime(time, premult);
-    _premultChannel->getValueAtTime(time, premultChannel);
+    getPremultAndPremultChannelAtTime(time, premult, premultChannel);
     double mix;
     _mix->getValueAtTime(time, mix);
     processor.setPremultMaskMix(premult, premultChannel, mix);
@@ -914,8 +906,7 @@ OCIOCDLTransformPlugin::render(const RenderArguments& args)
     size_t memSize = (args.renderWindow.y2 - args.renderWindow.y1) * tmpRowBytes;
     ImageMemory mem(memSize, this);
     float* tmpPixelData = (float*)mem.lock();
-    bool premult;
-    _premult->getValueAtTime(args.time, premult);
+    bool premult = getPremultValueAtTime(args.time);
 
     // copy renderWindow to the temporary image
     copyPixelData(premult, false, false, args.time, args.renderWindow, args.renderScale, srcPixelData, bounds, pixelComponents, pixelComponentCount, bitDepth, srcRowBytes, tmpPixelData, args.renderWindow, pixelComponents, pixelComponentCount, bitDepth, tmpRowBytes);
@@ -1230,7 +1221,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
         _export->setValue(kParamExportDefault);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(_premult, &args.time);
+        setSupportsOpenGLAndTileInfo(&args.time);
 #endif
     }
 } // OCIOCDLTransformPlugin::changedParam
@@ -1240,21 +1231,7 @@ OCIOCDLTransformPlugin::changedClip(const InstanceChangedArgs& args,
                                     const string& clipName)
 {
     if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && (args.reason == eChangeUserEdit)) {
-        if (_srcClip->getPixelComponents() != ePixelComponentRGBA) {
-            _premult->setValue(false);
-        } else {
-            switch (_srcClip->getPreMultiplication()) {
-            case eImageOpaque:
-                _premult->setValue(false);
-                break;
-            case eImagePreMultiplied:
-                _premult->setValue(true);
-                break;
-            case eImageUnPreMultiplied:
-                _premult->setValue(false);
-                break;
-            }
-        }
+        changedSrcClip(_srcClip);
     }
 }
 

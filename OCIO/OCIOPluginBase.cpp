@@ -2,6 +2,7 @@
 
 #include "IOUtility.h"
 #include "ofxsImageEffect.h"
+#include "ofxsMaskMix.h"
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
@@ -25,10 +26,13 @@ NAMESPACE_OFX_IO_ENTER
 
 OCIOPluginBase::OCIOPluginBase(OfxImageEffectHandle handle)
     : ImageEffect(handle)
+    , _premult(fetchBooleanParam(kParamPremult))
+    , _premultChannel(fetchChoiceParam(kParamPremultChannel))
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _enableGPU(fetchBooleanParam(kParamEnableGPU))
 #endif
 {
+    assert(_premult && _premultChannel);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     assert(_enableGPU);
 #endif
@@ -63,22 +67,51 @@ OCIOPluginBase::defineEnableGPUParam(ImageEffectDescriptor& desc, PageParamDescr
     }
 }
 
-bool OCIOPluginBase::paramEffectsOpenGLAndTileSupport(const std::string& paramName) {
-    return paramName == kParamEnableGPU;
+void
+OCIOPluginBase::getPremultAndPremultChannelAtTime(double time, bool& premult, int& premultChannel)
+{
+    _premult->getValueAtTime(time, premult);
+    _premultChannel->getValueAtTime(time, premultChannel);
+}
+
+bool
+OCIOPluginBase::paramEffectsOpenGLAndTileSupport(const std::string& paramName)
+{
+    return paramName == kParamEnableGPU || paramName == kParamPremult;
 }
 
 void
-OCIOPluginBase::setSupportsOpenGLAndTileInfo(BooleanParam* premultParam, const double* const time)
+OCIOPluginBase::setSupportsOpenGLAndTileInfo(const double* const time)
 {
     const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
 
     // GPU rendering is wrong when (un)premult is checked
-    const bool premult = time ? premultParam->getValueAtTime(*time) : premultParam->getValue();
+    const bool premult = time ? _premult->getValueAtTime(*time) : _premult->getValue();
     const bool enableGPU = time ? _enableGPU->getValueAtTime(*time) : _enableGPU->getValue();
     _enableGPU->setEnabled(gHostDescription.supportsOpenGLRender && !premult);
     const bool supportsGL = !premult && enableGPU;
     setSupportsOpenGLRender(supportsGL);
     setSupportsTiles(!supportsGL);
+}
+
+void
+OCIOPluginBase::changedSrcClip(Clip* srcClip)
+{
+    if (srcClip->getPixelComponents() != ePixelComponentRGBA) {
+        _premult->setValue(false);
+    } else {
+        switch (srcClip->getPreMultiplication()) {
+        case eImageOpaque:
+            _premult->setValue(false);
+            break;
+        case eImagePreMultiplied:
+            _premult->setValue(true);
+            break;
+        case eImageUnPreMultiplied:
+            _premult->setValue(false);
+            break;
+        }
+    }
 }
 
 NAMESPACE_OFX_IO_EXIT

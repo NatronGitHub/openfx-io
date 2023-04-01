@@ -18,18 +18,25 @@ protected:
     OCIOPluginBase(OfxImageEffectHandle handle);
     virtual ~OCIOPluginBase() override;
 
+    bool getPremultValueAtTime(double time) { return _premult->getValueAtTime(time); }
+    void getPremultAndPremultChannelAtTime(double time, bool& premult, int& premultChannel);
+
     // Returns true if |paramName| is the name of a parameter that influences the
     // value of the SupportsOpenGLRender & SupportsTiles properties.
     bool paramEffectsOpenGLAndTileSupport(const std::string& paramName);
 
     // Sets SupportsOpenGLRender & SupportsTiles properties based on the current
-    // values of premult and _enableGPU parameters.
+    // values of premult and enableGPU parameters.
     // Note: If |time| is not nullptr, then the parameter values are fetched for the
     // time specified by |*time|.
-    void setSupportsOpenGLAndTileInfo(BooleanParam* premultParam,
-                                      const double* const time);
+    void setSupportsOpenGLAndTileInfo(const double* const time);
+
+    void changedSrcClip(Clip* srcClip);
 
 private:
+    BooleanParam* _premult;
+    ChoiceParam* _premultChannel;
+
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     BooleanParam* _enableGPU;
 #endif
