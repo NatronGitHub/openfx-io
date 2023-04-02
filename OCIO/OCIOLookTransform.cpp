@@ -358,7 +358,7 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(nullptr);
+    setSupportsOpenGLAndTileInfo();
 #endif
 
     bool singleLook = _singleLook->getValue();
@@ -949,7 +949,7 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs& args,
         _lookCombination->setEvaluateOnChange(!singleLook);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(&args.time);
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     } else {
         _ocio->changedParam(args, paramName);

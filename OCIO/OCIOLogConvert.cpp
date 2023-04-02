@@ -298,7 +298,7 @@ OCIOLogConvertPlugin::OCIOLogConvertPlugin(OfxImageEffectHandle handle)
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(nullptr);
+    setSupportsOpenGLAndTileInfo();
 #endif
 
     loadConfig(0.);
@@ -893,7 +893,7 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
         sendMessage(Message::eMessageMessage, "", msg);
 #ifdef OFX_SUPPORTS_OPENGLRENDER
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(&args.time);
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     }
 } // OCIOLogConvertPlugin::changedParam

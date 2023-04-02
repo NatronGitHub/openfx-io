@@ -405,7 +405,7 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(nullptr);
+    setSupportsOpenGLAndTileInfo();
 #endif
 
     bool readFromFile;
@@ -1221,7 +1221,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
         _export->setValue(kParamExportDefault);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(&args.time);
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     }
 } // OCIOCDLTransformPlugin::changedParam

@@ -81,14 +81,21 @@ OCIOPluginBase::paramEffectsOpenGLAndTileSupport(const std::string& paramName)
 }
 
 void
-OCIOPluginBase::setSupportsOpenGLAndTileInfo(const double* const time)
+OCIOPluginBase::setSupportsOpenGLAndTileInfo()
 {
-    const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
+    setSupportsOpenGLAndTileInfo_internal(_premult->getValue(), _enableGPU->getValue());
+}
 
-    // GPU rendering is wrong when (un)premult is checked
-    const bool premult = time ? _premult->getValueAtTime(*time) : _premult->getValue();
-    const bool enableGPU = time ? _enableGPU->getValueAtTime(*time) : _enableGPU->getValue();
-    _enableGPU->setEnabled(gHostDescription.supportsOpenGLRender && !premult);
+void
+OCIOPluginBase::setSupportsOpenGLAndTileInfoAtTime(double time)
+{
+    setSupportsOpenGLAndTileInfo_internal(_premult->getValueAtTime(time), _enableGPU->getValueAtTime(time));
+}
+
+void
+OCIOPluginBase::setSupportsOpenGLAndTileInfo_internal(bool premult, bool enableGPU)
+{
+    _enableGPU->setEnabled(getImageEffectHostDescription()->supportsOpenGLRender && !premult);
     const bool supportsGL = !premult && enableGPU;
     setSupportsOpenGLRender(supportsGL);
     setSupportsTiles(!supportsGL);

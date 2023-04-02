@@ -344,7 +344,7 @@ OCIOFileTransformPlugin::OCIOFileTransformPlugin(OfxImageEffectHandle handle)
     _maskInvert = fetchBooleanParam(kParamMaskInvert);
     assert(_mix && _maskInvert);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(nullptr);
+    setSupportsOpenGLAndTileInfo();
 #endif
 
     updateCCCId();
@@ -905,7 +905,7 @@ OCIOFileTransformPlugin::changedParam(const InstanceChangedArgs& args,
         OCIO::ClearAllCaches();
 #ifdef OFX_SUPPORTS_OPENGLRENDER
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(&args.time);
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     }
 }

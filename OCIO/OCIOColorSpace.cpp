@@ -282,7 +282,7 @@ OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(nullptr);
+    setSupportsOpenGLAndTileInfo();
 #endif
 }
 
@@ -749,7 +749,7 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
     clearPersistentMessage();
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
-        setSupportsOpenGLAndTileInfo(&args.time);
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
         return;
     }
 #endif

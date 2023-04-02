@@ -1,6 +1,7 @@
 #ifndef IO_OCIOPluginBase_h
 #define IO_OCIOPluginBase_h
 
+#include <optional>
 #include <string>
 
 #include "IOUtility.h"
@@ -25,15 +26,16 @@ protected:
     // value of the SupportsOpenGLRender & SupportsTiles properties.
     bool paramEffectsOpenGLAndTileSupport(const std::string& paramName);
 
-    // Sets SupportsOpenGLRender & SupportsTiles properties based on the current
+    // Sets SupportsOpenGLRender & SupportsTiles properties based on the
     // values of premult and enableGPU parameters.
-    // Note: If |time| is not nullptr, then the parameter values are fetched for the
-    // time specified by |*time|.
-    void setSupportsOpenGLAndTileInfo(const double* const time);
+    void setSupportsOpenGLAndTileInfo();
+    void setSupportsOpenGLAndTileInfoAtTime(double time);
 
     void changedSrcClip(Clip* srcClip);
 
 private:
+    void setSupportsOpenGLAndTileInfo_internal(bool premult, bool enableGPU);
+
     BooleanParam* _premult;
     ChoiceParam* _premultChannel;
 

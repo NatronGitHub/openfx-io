@@ -392,7 +392,7 @@ OCIODisplayPlugin::OCIODisplayPlugin(OfxImageEffectHandle handle)
     _view = fetchStringParam(kParamView);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    setSupportsOpenGLAndTileInfo(nullptr);
+    setSupportsOpenGLAndTileInfo();
 #endif
 
     if (gHostIsNatron) {
@@ -1133,7 +1133,7 @@ OCIODisplayPlugin::changedParam(const InstanceChangedArgs& args,
         }
 #ifdef OFX_SUPPORTS_OPENGLRENDER
     } else if (paramEffectsOpenGLAndTileSupport(paramName)) {
-        setSupportsOpenGLAndTileInfo(&args.time);
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     } else {
         return _ocio->changedParam(args, paramName);
