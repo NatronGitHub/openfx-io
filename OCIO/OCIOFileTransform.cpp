@@ -155,39 +155,6 @@ private:
                        double time,
                        const OfxRectI& renderWindow,
                        const OfxPointD& renderScale,
-                       const Image* srcImg,
-                       Image* dstImg)
-    {
-        const void* srcPixelData;
-        OfxRectI srcBounds;
-        PixelComponentEnum srcPixelComponents;
-        BitDepthEnum srcBitDepth;
-        int srcRowBytes;
-
-        getImageData(srcImg, &srcPixelData, &srcBounds, &srcPixelComponents, &srcBitDepth, &srcRowBytes);
-        int srcPixelComponentCount = srcImg->getPixelComponentCount();
-        void* dstPixelData;
-        OfxRectI dstBounds;
-        PixelComponentEnum dstPixelComponents;
-        BitDepthEnum dstBitDepth;
-        int dstRowBytes;
-        getImageData(dstImg, &dstPixelData, &dstBounds, &dstPixelComponents, &dstBitDepth, &dstRowBytes);
-        int dstPixelComponentCount = dstImg->getPixelComponentCount();
-        copyPixelData(unpremult,
-                      premult,
-                      maskmix,
-                      time,
-                      renderWindow, renderScale,
-                      srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
-                      dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-    }
-
-    void copyPixelData(bool unpremult,
-                       bool premult,
-                       bool maskmix,
-                       double time,
-                       const OfxRectI& renderWindow,
-                       const OfxPointD& renderScale,
                        const void* srcPixelData,
                        const OfxRectI& srcBounds,
                        PixelComponentEnum srcPixelComponents,
@@ -204,37 +171,6 @@ private:
 
         getImageData(dstImg, &dstPixelData, &dstBounds, &dstPixelComponents, &dstBitDepth, &dstRowBytes);
         int dstPixelComponentCount = dstImg->getPixelComponentCount();
-        copyPixelData(unpremult,
-                      premult,
-                      maskmix,
-                      time,
-                      renderWindow, renderScale,
-                      srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
-                      dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-    }
-
-    void copyPixelData(bool unpremult,
-                       bool premult,
-                       bool maskmix,
-                       double time,
-                       const OfxRectI& renderWindow,
-                       const OfxPointD& renderScale,
-                       const Image* srcImg,
-                       void* dstPixelData,
-                       const OfxRectI& dstBounds,
-                       PixelComponentEnum dstPixelComponents,
-                       int dstPixelComponentCount,
-                       BitDepthEnum dstBitDepth,
-                       int dstRowBytes)
-    {
-        const void* srcPixelData;
-        OfxRectI srcBounds;
-        PixelComponentEnum srcPixelComponents;
-        BitDepthEnum srcBitDepth;
-        int srcRowBytes;
-
-        getImageData(srcImg, &srcPixelData, &srcBounds, &srcPixelComponents, &srcBitDepth, &srcRowBytes);
-        int srcPixelComponentCount = srcImg->getPixelComponentCount();
         copyPixelData(unpremult,
                       premult,
                       maskmix,
