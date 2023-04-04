@@ -24,7 +24,7 @@
 
 #ifdef OFX_IO_USING_OCIO
 
-//#include <iostream>
+// #include <iostream>
 #include <memory>
 #ifdef DEBUG
 #include <cstdio> // printf
@@ -33,6 +33,7 @@
 #include "GenericOCIO.h"
 
 #include "IOUtility.h"
+#include "OCIOPluginBase.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
 #include "ofxsMacros.h"
@@ -52,32 +53,15 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription "ColorSpace transformation using OpenColorIO configuration file."
 #define kPluginIdentifier "fr.inria.openfx.OCIOColorSpace"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
 #define kSupportsRenderScale 1
 #define kRenderThreadSafety eRenderFullySafe
 
-#if defined(OFX_SUPPORTS_OPENGLRENDER)
-#define kParamEnableGPU "enableGPU"
-#define kParamEnableGPULabel "Enable GPU Render"
-#if OCIO_VERSION_HEX >= 0x02000000
-#define kParamEnableGPUHint_warn ""
-#else
-// OCIO1's GPU render is not accurate enough.
-// see https://github.com/imageworks/OpenColorIO/issues/394
-// and https://github.com/imageworks/OpenColorIO/issues/456
-#define kParamEnableGPUHint_warn "Note that GPU render is not as accurate as CPU render, so this should be enabled with care.\n"
-#endif
-#define kParamEnableGPUHint                                                                                                                                                              \
-    "Enable GPU-based OpenGL render (only available when \"(Un)premult\" is not checked).\n" kParamEnableGPUHint_warn                                                                    \
-    "If the checkbox is checked but is not enabled (i.e. it cannot be unchecked), GPU render can not be enabled or disabled from the plugin and is probably part of the host options.\n" \
-    "If the checkbox is not checked and is not enabled (i.e. it cannot be checked), GPU render is not available on this host."
-#endif
-
 class OCIOColorSpacePlugin
-    : public ImageEffect {
+    : public OCIOPluginBase {
 public:
     OCIOColorSpacePlugin(OfxImageEffectHandle handle);
 
@@ -263,8 +247,6 @@ private:
     Clip* _dstClip;
     Clip* _srcClip;
     Clip* _maskClip;
-    BooleanParam* _premult;
-    ChoiceParam* _premultChannel;
     DoubleParam* _mix;
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
@@ -272,23 +254,19 @@ private:
     auto_ptr<GenericOCIO> _ocio;
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    BooleanParam* _enableGPU;
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
 #endif
 };
 
 OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
-    : ImageEffect(handle)
+    : OCIOPluginBase(handle)
     , _dstClip(NULL)
     , _srcClip(NULL)
     , _maskClip(NULL)
-    , _premult(NULL)
-    , _premultChannel(NULL)
     , _mix(NULL)
     , _maskInvert(NULL)
     , _ocio(new GenericOCIO(this))
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    , _enableGPU(NULL)
     , _openGLContextData(NULL)
 #endif
 {
@@ -298,25 +276,13 @@ OCIOColorSpacePlugin::OCIOColorSpacePlugin(OfxImageEffectHandle handle)
     assert((!_srcClip && getContext() == eContextGenerator) || (_srcClip && (!_srcClip->isConnected() || _srcClip->getPixelComponents() == ePixelComponentRGBA || _srcClip->getPixelComponents() == ePixelComponentRGB)));
     _maskClip = fetchClip(getContext() == eContextPaint ? "Brush" : "Mask");
     assert(!_maskClip || !_maskClip->isConnected() || _maskClip->getPixelComponents() == ePixelComponentAlpha);
-    _premult = fetchBooleanParam(kParamPremult);
-    _premultChannel = fetchChoiceParam(kParamPremultChannel);
-    assert(_premult && _premultChannel);
     _mix = fetchDoubleParam(kParamMix);
     _maskApply = paramExists(kParamMaskApply) ? fetchBooleanParam(kParamMaskApply) : 0;
     _maskInvert = fetchBooleanParam(kParamMaskInvert);
     assert(_mix && _maskInvert);
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    _enableGPU = fetchBooleanParam(kParamEnableGPU);
-    assert(_enableGPU);
-    const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
-    if (!gHostDescription.supportsOpenGLRender) {
-        _enableGPU->setEnabled(false);
-    }
-    // GPU rendering is wrong when (un)premult is checked
-    bool premult = _premult->getValue();
-    _enableGPU->setEnabled(!premult);
-    setSupportsOpenGLRender(!premult && _enableGPU->getValue());
+    setSupportsOpenGLAndTileInfo();
 #endif
 }
 
@@ -374,8 +340,7 @@ OCIOColorSpacePlugin::setupAndCopy(PixelProcessorFilterBase& processor,
 
     bool premult;
     int premultChannel;
-    _premult->getValueAtTime(time, premult);
-    _premultChannel->getValueAtTime(time, premultChannel);
+    getPremultAndPremultChannelAtTime(time, premult, premultChannel);
     double mix;
     _mix->getValueAtTime(time, mix);
     processor.setPremultMaskMix(premult, premultChannel, mix);
@@ -720,9 +685,8 @@ OCIOColorSpacePlugin::render(const RenderArguments& args)
     ImageMemory mem(memSize, this);
     float* tmpPixelData = (float*)mem.lock();
     bool premult;
-    _premult->getValueAtTime(args.time, premult);
     int premultChannel;
-    _premultChannel->getValueAtTime(args.time, premultChannel);
+    getPremultAndPremultChannelAtTime(args.time, premult, premultChannel);
     double mix;
     _mix->getValueAtTime(args.time, mix);
 
@@ -784,14 +748,8 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    if (paramName == kParamEnableGPU || paramName == kParamPremult) {
-        // GPU rendering is wrong when (un)premult is checked
-        bool premult = _premult->getValueAtTime(args.time);
-        _enableGPU->setEnabled(!premult);
-        bool supportsGL = !premult && _enableGPU->getValueAtTime(args.time);
-        setSupportsOpenGLRender(supportsGL);
-        setSupportsTiles(!supportsGL);
-
+    if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+        setSupportsOpenGLAndTileInfoAtTime(args.time);
         return;
     }
 #endif
@@ -804,21 +762,7 @@ OCIOColorSpacePlugin::changedClip(const InstanceChangedArgs& args,
                                   const string& clipName)
 {
     if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && (args.reason == eChangeUserEdit)) {
-        if (_srcClip->getPixelComponents() != ePixelComponentRGBA) {
-            _premult->setValue(false);
-        } else {
-            switch (_srcClip->getPreMultiplication()) {
-            case eImageOpaque:
-                _premult->setValue(false);
-                break;
-            case eImagePreMultiplied:
-                _premult->setValue(true);
-                break;
-            case eImageUnPreMultiplied:
-                _premult->setValue(false);
-                break;
-            }
-        }
+        changedSrcClip(_srcClip);
     }
 }
 
@@ -896,29 +840,7 @@ OCIOColorSpacePluginFactory::describeInContext(ImageEffectDescriptor& desc,
     }
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    {
-        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamEnableGPU);
-        param->setLabel(kParamEnableGPULabel);
-        param->setHint(kParamEnableGPUHint);
-        const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
-        // Resolve advertises OpenGL support in its host description, but never calls render with OpenGL enabled
-        if (gHostDescription.supportsOpenGLRender && (gHostDescription.hostName != "DaVinciResolveLite")) {
-            // OCIO's GPU render is not accurate enough.
-            // see https://github.com/imageworks/OpenColorIO/issues/394
-            param->setDefault(/*true*/ false);
-            if (gHostDescription.APIVersionMajor * 100 + gHostDescription.APIVersionMinor < 104) {
-                // Switching OpenGL render from the plugin was introduced in OFX 1.4
-                param->setEnabled(false);
-            }
-        } else {
-            param->setDefault(false);
-            param->setEnabled(false);
-        }
-
-        if (page) {
-            page->addChild(*param);
-        }
-    }
+    OCIOPluginBase::defineEnableGPUParam(desc, page);
 #endif
 
     ofxsPremultDescribeParams(desc, page);
