@@ -28,6 +28,7 @@ OCIOCDLTransform.o \
 OCIOFileTransform.o \
 OCIOLogConvert.o \
 OCIOLookTransform.o \
+OCIOPluginBase.o \
 
 OCIO_OPENGL_OBJS = GenericOCIOOpenGL.o glsl.o glad.o ofxsOGLUtilities.o
 
