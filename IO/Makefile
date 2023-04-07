@@ -14,7 +14,7 @@ GenericReader.o GenericWriter.o SequenceParsing.o \
 SeExpr.o \
 SeGrain.o \
 SeNoise.o \
-GenericOCIO.o $(OCIO_OPENGL_OBJS) \
+OCIOPluginBase.o GenericOCIO.o $(OCIO_OPENGL_OBJS) \
 ReadEXR.o WriteEXR.o \
 ReadFFmpeg.o FFmpegFile.o WriteFFmpeg.o PixelFormat.o \
 ReadOIIO.o WriteOIIO.o \
