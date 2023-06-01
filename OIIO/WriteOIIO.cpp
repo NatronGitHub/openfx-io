@@ -807,8 +807,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         _tileSize->setIsSecretAndDisabled(!output->supports("tiles"));
         //_outputLayers->setIsSecretAndDisabled(!output->supports("nchannels"));
 
-        // hasQuality: search for uses of decode_compression_metadata() in OIIO
-        // output->supports("quality") still returns false for all formats.
+        // hasQuality: search for uses of decode_compression_metadata() in OIIO source code.
+        // output->supports("quality") still returns false for all formats, but may
+        // be implemented someday, see https://github.com/OpenImageIO/oiio/issues/3859
         bool hasQuality = (strcmp(output->format_name(), "jpeg") == 0 ||
                            strcmp(output->format_name(), "webp") == 0 ||
                            strcmp(output->format_name(), "heic") == 0 ||
@@ -1106,14 +1107,14 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     }
 #endif // ifdef OFX_IO_USING_OCIO
     if (!_quality->getIsSecret()) {
-#if OIIO_VERSION >= 20316
+#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string(quality);
 #else
         spec.attribute("CompressionQuality", quality);
 #endif
     }
     if (!_dwaCompressionLevel->getIsSecret()) {
-#if OIIO_VERSION >= 20316
+#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string((int)dwaCompressionLevel);
 #else
         spec.attribute("openexr:dwaCompressionLevel", (float)dwaCompressionLevel);
