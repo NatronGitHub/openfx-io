@@ -806,22 +806,30 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
     if (output.get()) {
         _tileSize->setIsSecretAndDisabled(!output->supports("tiles"));
         //_outputLayers->setIsSecretAndDisabled(!output->supports("nchannels"));
-        bool hasQuality = (strcmp(output->format_name(), "jpeg") == 0 || strcmp(output->format_name(), "webp") == 0);
-        if (!hasQuality && (strcmp(output->format_name(), "tiff") == 0)) {
-            int compression_i;
-            _compression->getValue(compression_i);
-            hasQuality = ((EParamCompression)compression_i == eParamCompressionJPEG);
-        }
-        _quality->setIsSecretAndDisabled(!hasQuality);
+
+        // hasQuality: search for uses of decode_compression_metadata() in OIIO source code.
+        // output->supports("quality") still returns false for all formats, but may
+        // be implemented someday, see https://github.com/OpenImageIO/oiio/issues/3859
+        bool hasQuality = (strcmp(output->format_name(), "jpeg") == 0 ||
+                           strcmp(output->format_name(), "webp") == 0 ||
+                           strcmp(output->format_name(), "heic") == 0 ||
+                           strcmp(output->format_name(), "avif") == 0 ||
+                           output->supports("quality"));
+        bool hasDWA = false;
         bool isEXR = strcmp(output->format_name(), "openexr") == 0;
-        bool hasDWA = isEXR;
-        if (hasDWA) {
+        bool isTIFF = strcmp(output->format_name(), "tiff") == 0;
+        if (isEXR || isTIFF) {
             int compression_i;
             _compression->getValue(compression_i);
             EParamCompression compression = (EParamCompression)compression_i;
-            hasDWA = (compression == eParamCompressionDWAa) || (compression == eParamCompressionDWAb);
+            hasQuality = (compression == eParamCompressionJPEG ||
+                          compression == eParamCompressionZip);
+            if (isEXR) {
+                hasDWA = (compression == eParamCompressionDWAa) || (compression == eParamCompressionDWAb);
+            }
         }
         _dwaCompressionLevel->setIsSecretAndDisabled(!hasDWA);
+        _quality->setIsSecretAndDisabled(!hasQuality);
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
@@ -1099,10 +1107,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     }
 #endif // ifdef OFX_IO_USING_OCIO
     if (!_quality->getIsSecret()) {
+#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
+        compression += ':' + std::to_string(quality);
+#else
         spec.attribute("CompressionQuality", quality);
+#endif
     }
     if (!_dwaCompressionLevel->getIsSecret()) {
+#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
+        compression += ':' + std::to_string((int)dwaCompressionLevel);
+#else
         spec.attribute("openexr:dwaCompressionLevel", (float)dwaCompressionLevel);
+#endif
     }
     spec.attribute("Orientation", orientation + 1);
     if (!compression.empty()) { // some formats have a good value for the default compression
