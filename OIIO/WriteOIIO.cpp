@@ -814,6 +814,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
                            strcmp(output->format_name(), "avif") == 0 ||
                            output->supports("quality"));
         bool hasDWA = false;
+        bool hasZIP = false;
         bool isEXR = strcmp(output->format_name(), "openexr") == 0;
         bool isTIFF = strcmp(output->format_name(), "tiff") == 0;
         if (isEXR || isTIFF) {
@@ -824,9 +825,11 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
                           compression == eParamCompressionZip);
             if (isEXR) {
                 hasDWA = (compression == eParamCompressionDWAa) || (compression == eParamCompressionDWAb);
+                hasZIP = (compression == eParamCompressionZip) || (compression == eParamCompressionZips);
             }
         }
         _dwaCompressionLevel->setIsSecretAndDisabled(!hasDWA);
+        _zipCompressionLevel->setIsSecretAndDisabled(!hasZIP);
         _quality->setIsSecretAndDisabled(!hasQuality);
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
@@ -839,6 +842,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         //_outputLayers->setIsSecretAndDisabled(true);
         _quality->setIsSecretAndDisabled(true);
         _dwaCompressionLevel->setIsSecretAndDisabled(true);
+        _zipCompressionLevel->setIsSecretAndDisabled(true);
         if (_views) {
             _views->setIsSecretAndDisabled(true);
         }
@@ -1116,6 +1120,11 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         compression += ':' + std::to_string((int)dwaCompressionLevel);
 #else
         spec.attribute("openexr:dwaCompressionLevel", (float)dwaCompressionLevel);
+#endif
+    }
+    if (!_zipCompressionLevel->getIsSecret()) {
+#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
+        compression += ':' + std::to_string((int)zipCompressionLevel); // zip and zips compression level 1 to 9 range
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
