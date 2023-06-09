@@ -1655,7 +1655,7 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         }
     }
     {
-        IntParamDescriptor* param = desc.defineDoubleParam(kParamOutputZIPCompressionLevel);
+        IntParamDescriptor* param = desc.defineIntParam(kParamOutputZIPCompressionLevel);
         param->setLabel(kParamOutputZIPCompressionLevelLabel);
         param->setHint(kParamOutputZIPCompressionLevelHint);
         param->setRange(1, 9);
