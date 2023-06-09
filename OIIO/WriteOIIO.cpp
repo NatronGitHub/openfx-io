@@ -995,6 +995,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     if (!_dwaCompressionLevel->getIsSecret()) {
         _dwaCompressionLevel->getValue(dwaCompressionLevel);
     }
+    int zipCompressionLevel = 4;
+    if (!_zipCompressionLevel->getIsSecret()) {
+        _zipCompressionLevel->getValue(zipCompressionLevel);
+    }
     int orientation;
     _orientation->getValue(orientation);
     int compression_i;
@@ -1631,6 +1635,17 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setRange(0, DBL_MAX);
         param->setDisplayRange(45, 200);
         param->setDefault(kParamOutputDWACompressionLevelDefault);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        IntParamDescriptor* param = desc.defineDoubleParam(kParamOutputZIPCompressionLevel);
+        param->setLabel(kParamOutputZIPCompressionLevelLabel);
+        param->setHint(kParamOutputZIPCompressionLevelHint);
+        param->setRange(1, 9);
+        param->setDisplayRange(1, 9);
+        param->setDefault(kParamOutputZIPCompressionLevelDefault);
         if (page) {
             page->addChild(*param);
         }
