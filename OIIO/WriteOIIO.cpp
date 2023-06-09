@@ -125,6 +125,12 @@ enum ETuttlePluginComponents {
     "Amount of compression when using Dreamworks DWAA or DWAB compression options. These lossy formats are variable in quality and can minimize the compression artifacts. Higher values will result in greater compression and likewise smaller file size, but increases the chance for artifacts. Values from 45 to 150 are usually correct for production shots, whereas HDR vacation photos could use up to 500. Values below 45 should give no visible imprrovement on photographs. [EXR w/ DWAa or DWAb comp.]"
 #define kParamOutputDWACompressionLevelDefault 45
 
+#define kParamOutputZIPCompressionLevel "zipCompressionLevel"
+#define kParamOutputZIPCompressionLevelLabel "ZIP Compression Level"
+#define kParamOutputZIPCompressionLevelHint \
+    "Amount of compression when using Dreamworks Zip or Zips compression options. These Lossless formats are variable in level and can minimize the compression artifacts. Higher values will result in greater compression and likewise smaller file size, but increases the chance for artifacts. [EXR w/ Zip or Zips comp.]"
+#define kParamOutputZIPCompressionLevelDefault 4
+
 #define kParamOutputOrientation "orientation"
 #define kParamOutputOrientationLabel "Orientation"
 #define kParamOutputOrientationHint                                                     \
