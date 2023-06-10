@@ -832,8 +832,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
             int compression_i;
             _compression->getValue(compression_i);
             EParamCompression compression = (EParamCompression)compression_i;
-            hasQuality = (compression == eParamCompressionJPEG ||
-                          compression == eParamCompressionZip);
+            hasQuality = (compression == eParamCompressionJPEG);
             if (isEXR) {
                 hasDWA = (compression == eParamCompressionDWAa) || (compression == eParamCompressionDWAb);
                 hasZIP = (compression == eParamCompressionZip) || (compression == eParamCompressionZips);
