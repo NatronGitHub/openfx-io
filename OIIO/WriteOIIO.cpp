@@ -371,6 +371,7 @@ private:
     ChoiceParam* _bitDepth;
     IntParam* _quality;
     DoubleParam* _dwaCompressionLevel;
+    IntParam* _zipCompressionLevel;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
     ChoiceParam* _tileSize;
@@ -387,6 +388,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _bitDepth(NULL)
     , _quality(NULL)
     , _dwaCompressionLevel(NULL)
+    , _zipCompressionLevel(NULL)
     , _orientation(NULL)
     , _compression(NULL)
     , _tileSize(NULL)
@@ -400,6 +402,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _bitDepth = fetchChoiceParam(kParamBitDepth);
     _quality = fetchIntParam(kParamOutputQuality);
     _dwaCompressionLevel = fetchDoubleParam(kParamOutputDWACompressionLevel);
+    _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
     _tileSize = fetchChoiceParam(kParamTileSize);
