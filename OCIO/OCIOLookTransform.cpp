@@ -122,7 +122,7 @@ buildLookChoiceMenu(OCIO::ConstConfigRcPtr config,
         auto optionName = std::string(lookName);
         // Add look process space to the option name if it is not linear.
         // Pre-2.6.0 OCIO config had "Filmic - " prefix for filmic process space.
-        if ((lookProcessSpace != "linear") && (lookProcessSpace.rfind("Filmic - ", 0) != 0)) {
+        if ((lookProcessSpace != "linear") && !((lookProcessSpace == "Filmic Log") && (optionName.rfind("Filmic - ", 0) == 0))) {
             if (lookProcessSpace == "Filmic Log") {
                 // To be compatible with pre-2.6.0 configs
                 lookProcessSpace = "Filmic";
