@@ -831,9 +831,10 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
             _compression->getValue(compression_i);
             EParamCompression compression = (EParamCompression)compression_i;
             hasQuality = (compression == eParamCompressionJPEG);
+            hasZIP = (compression == eParamCompressionZip);
             if (isEXR) {
                 hasDWA = (compression == eParamCompressionDWAa) || (compression == eParamCompressionDWAb);
-                hasZIP = (compression == eParamCompressionZip) || (compression == eParamCompressionZips);
+                hasZIP |= (compression == eParamCompressionZips);
             }
         }
         _dwaCompressionLevel->setIsSecretAndDisabled(!hasDWA);
@@ -1126,17 +1127,17 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #else
         spec.attribute("CompressionQuality", quality);
 #endif
-    }
-    if (!_dwaCompressionLevel->getIsSecret()) {
+    } else if (!_dwaCompressionLevel->getIsSecret()) {
 #if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string((int)dwaCompressionLevel);
 #else
         spec.attribute("openexr:dwaCompressionLevel", (float)dwaCompressionLevel);
 #endif
-    }
-    if (!_zipCompressionLevel->getIsSecret()) {
+    } else if (!_zipCompressionLevel->getIsSecret()) {
 #if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
-        compression += ':' + std::to_string((int)zipCompressionLevel); // zip and zips compression level 1 to 9 range
+        compression += ':' + std::to_string(zipCompressionLevel); // zip and zips compression level 1 to 9 range
+#else
+        spec.attribute("CompressionQuality", zipCompressionLevel);
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
