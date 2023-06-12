@@ -1138,6 +1138,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         compression += ':' + std::to_string(zipCompressionLevel); // zip and zips compression level 1 to 9 range
 #else
         spec.attribute("CompressionQuality", zipCompressionLevel);
+        spec.attribute("tiff:zipquality", zipCompressionLevel);
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
