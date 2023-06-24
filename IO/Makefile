@@ -29,7 +29,7 @@ OCIOFileTransform.o \
 OCIOLogConvert.o \
 OCIOLookTransform.o \
 
-OCIO_OPENGL_OBJS = GenericOCIOOpenGL.o glsl.o glad.o ofxsOGLUtilities.o
+OCIO_OPENGL_OBJS = GenericOCIOOpenGL.o glsl.o glad.o gladegl.o ofxsOGLUtilities.o
 
 ifeq ($(OS),$(filter $(OS),Linux FreeBSD Darwin))
     PLUGINOBJECTS += RunScript.o
