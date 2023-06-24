@@ -28,8 +28,9 @@ jobs:
       - name: Install Ubuntu system packages
         run: |
           sudo apt update
-          sudo apt-get install cmake libopencolorio-dev libopenimageio-dev libglu1-mesa-dev libgl-dev liblcms2-dev libraw-dev \
-            libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+          sudo apt-get install cmake libopencolorio-dev libopenimageio-dev libglu1-mesa-dev libgl-dev libegl-dev liblcms2-dev \
+            libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev
       - name: Local SeExpr
         run: |
           cd SeExprSrc
