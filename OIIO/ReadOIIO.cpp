@@ -32,18 +32,17 @@
 #include <set>
 #include <sstream>
 
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-#include <IlmThreadPool.h>
-#endif
-
 #include "ofxsMacros.h"
 
 #include "OIIOGlobal.h"
+
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imagecache.h>
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
+
+OIIO_NAMESPACE_USING
 
 #ifdef OFX_IO_USING_LIBRAW
 // clang-format off
@@ -3146,14 +3145,7 @@ ReadOIIOPluginFactory::unload()
     ImageCache::destroy(sharedcache);
 #endif
 
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    // Kill all threads otherwise when the static global thread pool joins it threads there is a deadlock on Mingw
-    IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
-
-    // Workaround to a bug: https://github.com/OpenImageIO/oiio/issues/1795
-    // see also https://github.com/LuxCoreRender/LuxCore/commit/607bfc9bff519ecc32c02ff3203b7ec71d201fde
-    OIIO::attribute("threads", 1);
-#endif
+    shutdownOIIOThreads();
 }
 
 /** @brief The basic describe function, passed a plugin descriptor */
