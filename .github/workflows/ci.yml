@@ -11,7 +11,7 @@ on:
       - README.md
 
 jobs:
-  build:
+  ubuntu_build:
     name: Build Ubuntu 22.04
     runs-on: ubuntu-22.04
     steps:
@@ -30,7 +30,7 @@ jobs:
           sudo apt update
           sudo apt-get install cmake libopencolorio-dev libopenimageio-dev libglu1-mesa-dev libgl-dev libegl-dev liblcms2-dev \
             libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev
+            libswscale-dev patchelf
       - name: Local SeExpr
         run: |
           cd SeExprSrc
@@ -52,3 +52,107 @@ jobs:
         with:
           name: openfx-io-build-ubuntu_22-release
           path: Bundle
+
+      - name: Generate testing bundle
+        run: |
+          # Generate a self contained bundle that can be used for Natron automated testing.
+          cp -r Bundle TestingBundle
+          MANIFEST_NAME=IO.manifest
+          BINARY_NAME=IO.ofx
+          BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
+          SEARCH_PATHS="SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu"
+          python3 .github/workflows/find_and_copy_deps.py --manifest=${MANIFEST_NAME} ${BINARY_PATH}/${BINARY_NAME} ${BINARY_PATH} ${SEARCH_PATHS}
+
+          patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/${BINARY_NAME}
+
+          # Generate simple plugin tester to make sure we can load the test binary.
+          # Replace RTLD_LAZY with RTLD_NOW so that missing symbols cause plugin loading to fail.
+          sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
+          g++ -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
+
+          ./verify_plugin_loads ${BINARY_PATH}/${BINARY_NAME}
+
+      - name: Upload testing artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: openfx-io-build-ubuntu_22-testing
+          path: TestingBundle
+
+  windows_build:
+    name: Build Windows Latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    env:
+      EXTRA_PKG_CONFIG_PATHS: '/mingw64/ffmpeg-gpl2/lib/pkgconfig/:/mingw64/libraw-gpl2/lib/pkgconfig/'
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install Windows system packages
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          install: git base-devel mingw-w64-x86_64-wget unzip mingw-w64-x86_64-cc mingw-w64-x86_64-python3
+
+      - name: Install Natron pacman repository
+        run: |
+          mkdir ${GITHUB_WORKSPACE}/natron_pacman_repo
+          cd ${GITHUB_WORKSPACE}/natron_pacman_repo
+          wget https://github.com/acolwell/Natron/releases/download/windows-mingw-package-repo/natron_package_repo.zip
+          unzip natron_package_repo.zip
+          NATRON_REPO_PATH=`cygpath -u $GITHUB_WORKSPACE`
+          echo -e "#NATRON_REPO_START\n[natron]\nSigLevel = Optional TrustAll\nServer = file://${NATRON_REPO_PATH}/natron_pacman_repo/\n#NATRON_REPO_END" >> /etc/pacman.conf
+          pacman -Syl natron
+          # Install extra Natron packages.
+          pacman -S --needed --noconfirm mingw-w64-x86_64-natron_openimageio mingw-w64-x86_64-natron_seexpr-git \
+            mingw-w64-x86_64-natron_poppler mingw-w64-x86_64-natron_imagemagick mingw-w64-x86_64-natron_ffmpeg-gpl2
+
+
+      - name: Build (release)
+        run: |
+          PKG_CONFIG_PATH=${EXTRA_PKG_CONFIG_PATHS}:${PKG_CONFIG_PATH}
+          make -j2 CONFIG=release
+          mkdir -p Bundle
+          mv `find IO -name "MINGW64_NT*-release"`/IO.ofx.bundle Bundle
+
+      - name: Build (debug)
+        run: |
+          PKG_CONFIG_PATH=${EXTRA_PKG_CONFIG_PATHS}:${PKG_CONFIG_PATH}
+          make -j2 CONFIG=debug
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: openfx-io-build-windows_latest-release
+          path: Bundle
+
+      - name: Generate testing bundle
+        run: |
+          # Generate a self contained bundle that can be used for Natron automated testing.
+          set -x
+          cp -r Bundle TestingBundle
+          MANIFEST_NAME=IO.manifest
+          BINARY_NAME=IO.ofx
+          BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Win64
+          SEARCH_PATHS="/mingw64/ffmpeg-gpl2/bin /mingw64/libraw-gpl2/bin /mingw64/bin"
+          python3 .github/workflows/find_and_copy_deps.py --manifest=${MANIFEST_NAME} ${BINARY_PATH}/${BINARY_NAME} ${BINARY_PATH} ${SEARCH_PATHS}
+
+          "/c/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/mt.exe" -manifest ${MANIFEST_NAME} -outputresource:"${BINARY_PATH}/${BINARY_NAME};2"
+
+          # Generate simple plugin tester to make sure we can load the test binary.
+          g++ -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp openfx/HostSupport/src/ofxhBinary.cpp openfx/HostSupport/src/ofxhUtilities.cpp -I openfx/HostSupport/include/ -I openfx/include/
+
+          ./verify_plugin_loads ${BINARY_PATH}/${BINARY_NAME}
+
+      - name: Upload testing artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: openfx-io-build-windows_latest-testing
+          path: TestingBundle
