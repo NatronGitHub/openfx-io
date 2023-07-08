@@ -35,14 +35,11 @@
 #include "ofxsMacros.h"
 
 #include "OIIOGlobal.h"
-
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imagecache.h>
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
-
-OIIO_NAMESPACE_USING
 
 #ifdef OFX_IO_USING_LIBRAW
 // clang-format off
@@ -109,6 +106,7 @@ using namespace OFX::IO;
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;
 #endif
+OIIO_NAMESPACE_USING
 
 using std::make_pair;
 using std::pair;

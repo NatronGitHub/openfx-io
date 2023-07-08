@@ -34,8 +34,6 @@ GCC_DIAG_OFF(unused-parameter)
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 
-OIIO_NAMESPACE_USING
-
 #include "GenericOCIO.h"
 #include "GenericWriter.h"
 
@@ -47,6 +45,7 @@ using namespace OFX::IO;
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;
 #endif
+OIIO_NAMESPACE_USING
 
 using std::map;
 using std::string;
