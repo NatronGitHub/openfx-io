@@ -1,5 +1,5 @@
 PLUGINOBJECTS = ofxsThreadSuite.o tinythread.o \
-	ReadOIIO.o WriteOIIO.o \
+	ReadOIIO.o WriteOIIO.o OIIOGlobal.o \
 	OIIOText.o OIIOResize.o \
 	GenericReader.o GenericWriter.o GenericOCIO.o SequenceParsing.o \
 	ofxsOGLTextRenderer.o ofxsOGLFontData.o ofxsMultiPlane.o

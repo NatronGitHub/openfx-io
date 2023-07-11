@@ -18,6 +18,7 @@ OCIOPluginBase.o GenericOCIO.o $(OCIO_OPENGL_OBJS) \
 ReadEXR.o WriteEXR.o \
 ReadFFmpeg.o FFmpegFile.o WriteFFmpeg.o PixelFormat.o \
 ReadOIIO.o WriteOIIO.o \
+OIIOGlobal.o \
 OIIOText.o \
 OIIOResize.o \
 ReadPFM.o WritePFM.o \
