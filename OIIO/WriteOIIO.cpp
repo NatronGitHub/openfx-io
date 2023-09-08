@@ -126,7 +126,7 @@ enum ETuttlePluginComponents {
 #define kParamOutputZIPCompressionLevel "zipCompressionLevel"
 #define kParamOutputZIPCompressionLevelLabel "ZIP Compression Level"
 #define kParamOutputZIPCompressionLevelHint \
-    "Amount of compression when using Zlib Zip or Zips compression options. level of compression to use (1-9), These Lossless formats are variable in level and compression ratio. smaller file size. [EXR w/ Zip or Zips comp.]"
+    "Compression level for zip/deflate compression, on a scale from 1 (fastest, minimal compression) to 9 (slowest, maximal compression) [EXR, TIFF or Zfile w/ zip or zips comp.]"
 #define kParamOutputZIPCompressionLevelDefault 4
 
 #define kParamOutputOrientation "orientation"
