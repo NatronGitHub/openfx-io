@@ -126,7 +126,7 @@ enum ETuttlePluginComponents {
 #define kParamOutputZIPCompressionLevel "zipCompressionLevel"
 #define kParamOutputZIPCompressionLevelLabel "ZIP Compression Level"
 #define kParamOutputZIPCompressionLevelHint \
-    "Amount of compression when using Dreamworks Zip or Zips compression options. These Lossless formats are variable in level and can minimize the compression artifacts. Higher values will result in greater compression and likewise smaller file size, but increases the chance for artifacts. [EXR w/ Zip or Zips comp.]"
+    "Amount of compression when using Zlib Zip or Zips compression options. level of compression to use (1-9), These Lossless formats are variable in level and compression ratio. smaller file size. [EXR w/ Zip or Zips comp.]"
 #define kParamOutputZIPCompressionLevelDefault 4
 
 #define kParamOutputOrientation "orientation"
