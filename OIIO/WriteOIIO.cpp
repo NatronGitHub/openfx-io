@@ -212,7 +212,7 @@ enum EParamCompression {
     eParamCompressionPACKBITS
 };
 
-#define kParamOutputLineOrder "openexr:lineOrder"
+#define kParamOutputLineOrder "lineorder"
 #define kParamOutputLineOrderLabel "Line Order"
 #define kParamOutputLineOrderHint "Specifies in what order the scan lines in the file are stored in the file. [EXR]"
 
@@ -1032,7 +1032,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     string compression;
     int lineorder_i;
     _lineorder->getValue(lineorder_i);
-    string lineOrder;
+    string lineorder;
 
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto:
@@ -1083,13 +1083,13 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
     switch ((EParamLineOrder)lineorder_i) {
     case eParamLineOrderIncreasingY: // EXR
-        lineOrder = "increasingY";
+        lineorder = "increasingY";
         break;
     case eParamLineOrderRandomY: // EXR
-        lineOrder = "randomY";
+        lineorder = "randomY";
         break;
     case eParamLineOrderDecreasingY: // EXR
-        lineOrder = "decreasingY";
+        lineorder = "decreasingY";
         break;
     }
     
