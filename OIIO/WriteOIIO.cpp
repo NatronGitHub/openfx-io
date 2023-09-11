@@ -212,6 +212,20 @@ enum EParamCompression {
     eParamCompressionPACKBITS
 };
 
+#define kParamOutputLineOrder "openexr:lineOrder"
+#define kParamOutputLineOrderLabel "Line Order"
+#define kParamOutputLineOrderHint "Specifies in what order the scan lines in the file are stored in the file. [EXR]"
+
+#define kParamLineOrderOptionIncreasingY "increasingy", "first scan line has lowest y coordinate", "increasingy"
+#define kParamLineOrderOptionRandomY "randomy", "only for tiled files; tiles are written in random order", "randomy"
+#define kParamLineOrderOptionDecreasingY "decreasingy", "first scan line has highest y coordinate", "decreasingy"
+
+enum EParamLineOrder {
+    eParamLineOrderIncreasingY = 0,
+    eParamLineOrderRandomY,
+    eParamLineOrderDecreasingY,
+};
+
 #define kParamTileSize "tileSize"
 #define kParamTileSizeLabel "Tile Size"
 #define kParamTileSizeHint "Size of a tile in the output file for formats that support tiles. If scan-line based, the whole image will have a single tile."
@@ -372,6 +386,7 @@ private:
     IntParam* _zipCompressionLevel;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
+    ChoiceParam* _lineorder;
     ChoiceParam* _tileSize;
     ChoiceParam* _outputLayers;
     ChoiceParam* _parts;
@@ -389,6 +404,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _zipCompressionLevel(NULL)
     , _orientation(NULL)
     , _compression(NULL)
+    , _lineorder(NULL)
     , _tileSize(NULL)
     , _outputLayers(NULL)
     , _parts(NULL)
@@ -403,6 +419,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
+    _lineorder = fetchChoiceParam(kParamOutputLineOrder);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
         _outputLayers = fetchChoiceParam(kParamOutputChannels);
@@ -1013,6 +1030,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     int compression_i;
     _compression->getValue(compression_i);
     string compression;
+    int lineorder_i;
+    _lineorder->getValue(lineorder_i);
+    string openexr:lineOrder;
 
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto:
@@ -1061,6 +1081,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
+    switch ((EParamLineOrder)lineorder_i) {
+    case eParamLineOrderIncreasingY: // EXR
+        openexr:lineOrder = "increasingY";
+        break;
+    case eParamLineOrderRandomY: // EXR
+        openexr:lineOrder = "randomY";
+        break;
+    case eParamLineOrderDecreasingY: // EXR
+        openexr:lineOrder = "decreasingY";
+        break;
+    }
+    
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
     // However, WriteOIIO::getExpectedInputPremultiplication() stated that input to the encode()
@@ -1724,7 +1756,22 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             page->addChild(*param);
         }
     }
-
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputLineOrder);
+        param->setLabel(kParamOutputLineOrderLabel);
+        param->setHint(kParamOutputLineOrderHint);
+        assert(param->getNOptions() == eParamLineOrderIncreasingY);
+        param->appendOption(kParamOutputLineOrderOptionIncreasingY);
+        assert(param->getNOptions() == eParamLineOrderRandomY);
+        param->appendOption(kParamOutputLineOrderOptionRandomY);
+        assert(param->getNOptions() == eParamLineOrderDecreasingY);
+        param->appendOption(kParamOutputLineOrderOptionDecreasingY);
+        param->setDefault(0);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    
     if (gIsMultiplanarV2) {
 
         MultiPlane::Factory::describeInContextAddPlaneChoice(desc, page, kParamOutputChannels, kParamOutputChannelsLabel, kParamOutputChannelsHint);
