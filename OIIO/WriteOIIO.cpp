@@ -1032,7 +1032,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     string compression;
     int lineorder_i;
     _lineorder->getValue(lineorder_i);
-    string openexr:lineOrder;
+    string lineOrder;
 
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto:
@@ -1083,13 +1083,13 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
     switch ((EParamLineOrder)lineorder_i) {
     case eParamLineOrderIncreasingY: // EXR
-        openexr:lineOrder = "increasingY";
+        lineOrder = "increasingY";
         break;
     case eParamLineOrderRandomY: // EXR
-        openexr:lineOrder = "randomY";
+        lineOrder = "randomY";
         break;
     case eParamLineOrderDecreasingY: // EXR
-        openexr:lineOrder = "decreasingY";
+        lineOrder = "decreasingY";
         break;
     }
     
@@ -1761,11 +1761,11 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setLabel(kParamOutputLineOrderLabel);
         param->setHint(kParamOutputLineOrderHint);
         assert(param->getNOptions() == eParamLineOrderIncreasingY);
-        param->appendOption(kParamOutputLineOrderOptionIncreasingY);
+        param->appendOption(kParamLineOrderOptionIncreasingY);
         assert(param->getNOptions() == eParamLineOrderRandomY);
-        param->appendOption(kParamOutputLineOrderOptionRandomY);
+        param->appendOption(kParamLineOrderOptionRandomY);
         assert(param->getNOptions() == eParamLineOrderDecreasingY);
-        param->appendOption(kParamOutputLineOrderOptionDecreasingY);
+        param->appendOption(kParamLineOrderOptionDecreasingY);
         param->setDefault(0);
         if (page) {
             page->addChild(*param);
