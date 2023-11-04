@@ -59,8 +59,10 @@ find_package(OpenEXR)
 find_package(LibRaw)
 find_package(SeExpr2)
 
-
-set(CMAKE_CXX_STANDARD 11)
+if(NOT ${OpenImageIO_VERSION} VERSION_LESS 2.3)
+  # C++14 required for OpenImageIO >= 2.3
+  set(CMAKE_CXX_STANDARD 14)
+endif()
 
 # Use -Ofast when applicable (implies -ffast-math)
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
