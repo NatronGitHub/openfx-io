@@ -332,7 +332,12 @@ OpenGLBuilder::allocateAllTextures(unsigned startIndex)
         unsigned height = 0;
         GpuShaderDesc::TextureType channel = GpuShaderDesc::TEXTURE_RGB_CHANNEL;
         Interpolation interpolation = INTERP_LINEAR;
+# if OCIO_VERSION_HEX >= 0x2030000
+        GpuShaderCreator::TextureDimensions dimensions;
+        m_shaderDesc->getTexture(idx, textureName, samplerName, width, height, channel, dimensions, interpolation);
+# else
         m_shaderDesc->getTexture(idx, textureName, samplerName, width, height, channel, interpolation);
+# endif
 
         if (!textureName || !*textureName
             || !samplerName || !*samplerName
