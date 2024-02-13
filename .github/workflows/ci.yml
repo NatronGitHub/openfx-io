@@ -1,6 +1,7 @@
 name: Continous Integration tests
 
 on:
+  workflow_dispatch: {}
   push:
     paths-ignore:
       - LICENSE
