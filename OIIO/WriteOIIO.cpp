@@ -129,6 +129,21 @@ enum ETuttlePluginComponents {
     "Compression level for zip/deflate compression, on a scale from 1 (fastest, minimal compression) to 9 (slowest, maximal compression) [EXR, TIFF or Zfile w/ zip or zips comp.]"
 #define kParamOutputZIPCompressionLevelDefault 4
 
+#define kParamOutputLineOrder "LineOrder"
+#define kParamOutputLineOrderLabel "Line Order"
+#define kParamOutputLineOrderHint                                                                                            \
+    "Specifies in what order the scan lines in the file are stored in the file [EXR]\n"
+
+#define kParamOutputLineOrderOptionincreasingY "increasingY", "first scan line has lowest y coordinate", "increasingY"
+#define kParamOutputLineOrderOptiondecreasingY "decreasingY", "first scan line has highest y coordinate", "decreasingY"
+#define kParamOutputLineOrderOptionrandomY "randomY", "only for tiled files; tiles are written in random order", "randomY"
+
+enum EParamLineorder {
+    eParamLineOrderIncreasingY = 0,
+    eParamLineOrderDecreasingY,
+    eParamLineOrderRandomY
+};
+
 #define kParamOutputOrientation "orientation"
 #define kParamOutputOrientationLabel "Orientation"
 #define kParamOutputOrientationHint                                                     \
@@ -370,6 +385,7 @@ private:
     IntParam* _quality;
     DoubleParam* _dwaCompressionLevel;
     IntParam* _zipCompressionLevel;
+    ChoiceParam* _LineOrder;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
     ChoiceParam* _tileSize;
@@ -389,6 +405,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _zipCompressionLevel(NULL)
     , _orientation(NULL)
     , _compression(NULL)
+    , _LineOrder(NULL)
     , _tileSize(NULL)
     , _outputLayers(NULL)
     , _parts(NULL)
@@ -403,6 +420,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
+    _LineOrder = fetchChoiceParam(kParamOutputLineOrder);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
         _outputLayers = fetchChoiceParam(kParamOutputChannels);
@@ -1060,6 +1078,21 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         compression = "packbits";
         break;
     }
+
+    if (isEXR)
+    switch ((EParamLineOrder)LineOrder_i) {
+    case eParamLineOrderIncreasingY:
+        lineOrder = "increasingY";
+        break;
+    case eParamLineOrderDecreasingY:
+        lineOrder = "decreasingY";
+        break;
+    case eParamLineOrderRandomY:
+        lineOrder = "randomY";
+        break;
+    }
+
+    spec.attribute("openexr:lineOrder", LineOrder);
 
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
@@ -1720,6 +1753,21 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         assert(param->getNOptions() == eParamCompressionPACKBITS);
         param->appendOption(kParamOutputCompressionOptionPACKBITS);
         param->setDefault(eParamCompressionAuto);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+        {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputLineOrder);
+        param->setLabel(kParamOutputLineOrderLabel);
+        param->setHint(kParamOutputLineOrderHint);
+        assert(param->getNOptions() == eParamLineOrderIncreasingY);
+        param->appendOption(kParamOutputLineOrderOptionIncreasingY);
+        assert(param->getNOptions() == eParamLineOrderDecreasingY);
+        param->appendOption(kParamOutputLineOrderOptionDecreasingY);
+        assert(param->getNOptions() == eParamLineOrderRandomY);
+        param->appendOption(kParamOutputLineOrderOptionRandomY);
+        param->setDefault(eParamLineOrderIncreasingY);
         if (page) {
             page->addChild(*param);
         }
