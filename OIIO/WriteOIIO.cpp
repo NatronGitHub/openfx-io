@@ -861,6 +861,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
+        if (_lineOrder) {
+            _lineOrder->setIsSecretAndDisabled(!isEXR);
+        }
         if (_parts) {
             _parts->setIsSecretAndDisabled(!output->supports("multiimage"));
         }
@@ -1094,8 +1097,6 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
-    spec.attribute("openexr:lineOrder", lineOrder);
-
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
     // However, WriteOIIO::getExpectedInputPremultiplication() stated that input to the encode()
@@ -1177,6 +1178,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
+    spec.attribute("openexr:lineOrder", lineOrder);
     if (!compression.empty()) { // some formats have a good value for the default compression
         spec.attribute("compression", compression);
     }
