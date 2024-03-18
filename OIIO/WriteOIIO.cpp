@@ -420,7 +420,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
-    _LineOrder = fetchChoiceParam(kParamOutputLineOrder);
+    _lineOrder = fetchChoiceParam(kParamOutputLineOrder);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
         _outputLayers = fetchChoiceParam(kParamOutputChannels);
@@ -1084,7 +1084,6 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
-    if (isEXR)
     switch ((EParamLineOrder)lineOrder_i) {
     case eParamLineOrderIncreasingY:
         lineOrder = "increasingY";
@@ -1761,7 +1760,7 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             page->addChild(*param);
         }
     }
-        {
+    {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputLineOrder);
         param->setLabel(kParamOutputLineOrderLabel);
         param->setHint(kParamOutputLineOrderHint);
