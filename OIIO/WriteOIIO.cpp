@@ -131,8 +131,7 @@ enum ETuttlePluginComponents {
 
 #define kParamOutputLineOrder "lineOrder"
 #define kParamOutputLineOrderLabel "Line Order"
-#define kParamOutputLineOrderHint                                                                                            \
-    "Specifies in what order the scan lines in the file are stored in the file [EXR]\n"
+#define kParamOutputLineOrderHint \ "Specifies in what order the scan lines [EXR]\n"
 
 #define kParamOutputLineOrderOptionIncreasingY "increasingY", "first scan line has lowest y coordinate", "increasingY"
 #define kParamOutputLineOrderOptionDecreasingY "decreasingY", "first scan line has highest y coordinate", "decreasingY"
