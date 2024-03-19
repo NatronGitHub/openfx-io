@@ -875,6 +875,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(true);
         }
+        if (_lineOrder) {
+            _lineOrder->setIsSecretAndDisabled(true);
+        }
         if (_parts) {
             _parts->setIsSecretAndDisabled(true);
         }
