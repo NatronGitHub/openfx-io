@@ -129,6 +129,9 @@ enum ETuttlePluginComponents {
     "Compression level for zip/deflate compression, on a scale from 1 (fastest, minimal compression) to 9 (slowest, maximal compression) [EXR, TIFF or Zfile w/ zip or zips comp.]"
 #define kParamOutputZIPCompressionLevelDefault 4
 
+#define kParamOutputLineOrderOptionRandomY "randomY", "only for tiled files; tiles are written in random order", "randomY"
+    eParamLineOrderRandomY
+
 #define kParamOutputOrientation "orientation"
 #define kParamOutputOrientationLabel "Orientation"
 #define kParamOutputOrientationHint                                                     \
@@ -1061,6 +1064,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
+    case eParamLineOrderRandomY:
+        lineOrder = "randomY";
+        break;
+    
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
     // However, WriteOIIO::getExpectedInputPremultiplication() stated that input to the encode()
@@ -1725,6 +1732,9 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         }
     }
 
+        assert(param->getNOptions() == eParamLineOrderRandomY);
+        param->appendOption(kParamOutputLineOrderOptionRandomY);
+    
     if (gIsMultiplanarV2) {
 
         MultiPlane::Factory::describeInContextAddPlaneChoice(desc, page, kParamOutputChannels, kParamOutputChannelsLabel, kParamOutputChannelsHint);
