@@ -858,9 +858,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
-        if (_lineOrder) {
-            _lineOrder->setIsSecretAndDisabled(!isEXR);
-        }
+        if (_lineOrder) { _lineOrder->setIsSecretAndDisabled(!isEXR); }
         if (_parts) {
             _parts->setIsSecretAndDisabled(!output->supports("multiimage"));
         }
