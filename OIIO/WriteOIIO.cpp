@@ -229,6 +229,24 @@ enum EParamTileSize {
     eParamTileSize512
 };
 
+#define kParamOutputTextureformat "textureformat"
+#define kParamOutputTextureformatLabel "Texture Format"
+#define kParamOutputTextureformatHint ""
+
+#define kParamOutputTextureformatOptionNone "None", "", "0"
+#define kParamOutputTextureformatOptionPlain "Plain Texture", "MIP-mapped OpenEXR files", "Plain Texture"
+#define kParamOutputTextureformatOptionLatLong "LatLong Environment", "Latlong Environment OpenEXR environment maps.", "LatLong Environment"
+#define kParamOutputTextureformatOptionCubeFace "CubeFace Environment", "CubeFace Environment OpenEXR environment maps.", "CubeFace Environment"
+#define kParamOutputTextureformatOptionShadow "Shadow", "Force one level for shadow maps", "Shadow"
+
+enum EParamTextureformat {
+    eParamTextureformatNone = 0,
+    eParamTextureformatPlain,
+    eParamTextureformatLatLong,
+    eParamTextureformatCubeFace,
+    eParamTextureformatShadow
+}
+
 #define kParamProcessAllLayers "processAllLayers"
 #define kParamProcessAllLayersLabel "All Layers"
 #define kParamProcessAllLayersHint "When checked, all layers will be written to the file"
@@ -372,6 +390,7 @@ private:
     IntParam* _zipCompressionLevel;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
+    ChoiceParam* _textureformat;
     ChoiceParam* _tileSize;
     ChoiceParam* _outputLayers;
     ChoiceParam* _parts;
@@ -389,6 +408,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _zipCompressionLevel(NULL)
     , _orientation(NULL)
     , _compression(NULL)
+    , _textureformat(NULL)
     , _tileSize(NULL)
     , _outputLayers(NULL)
     , _parts(NULL)
@@ -403,6 +423,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
+    _textureformat = fetchChoiceParam(kParamOutputTextureformat);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
         _outputLayers = fetchChoiceParam(kParamOutputChannels);
@@ -843,6 +864,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
+        if (_textureformat) {
+            _textureformat->setIsSecretAndDisabled(!isEXR);
+        }
         if (_parts) {
             _parts->setIsSecretAndDisabled(!output->supports("multiimage"));
         }
@@ -854,6 +878,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         _zipCompressionLevel->setIsSecretAndDisabled(true);
         if (_views) {
             _views->setIsSecretAndDisabled(true);
+        }
+        if (_textureformat) {
+            _textureformat->setIsSecretAndDisabled(true);
         }
         if (_parts) {
             _parts->setIsSecretAndDisabled(true);
@@ -1013,6 +1040,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     int compression_i;
     _compression->getValue(compression_i);
     string compression;
+    int textureformat_i;
+    _textureformat->getValue(textureformat_i);
+    string textureformat;
 
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto:
@@ -1061,6 +1091,21 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
+    switch ((EParamTextureformat)textureformat_i) {
+    case eParamTextureformatPlain:
+        textureformat = "Plain Texture";
+        break;
+    case eParamTextureformatCubeFace:
+        textureformat = "CubeFace Environment";
+        break;
+    case eParamTextureformatLatLong:
+        textureformat = "LatLong Environment";
+        break;
+    case eParamTextureformatShadow:
+        textureformat = "Shadow";
+        break;
+    }
+    
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
     // However, WriteOIIO::getExpectedInputPremultiplication() stated that input to the encode()
@@ -1720,6 +1765,25 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         assert(param->getNOptions() == eParamCompressionPACKBITS);
         param->appendOption(kParamOutputCompressionOptionPACKBITS);
         param->setDefault(eParamCompressionAuto);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputTextureformat);
+        param->setLabel(kParamOutputTextureformatLabel);
+        param->setHint(kParamOutputTextureformatHint);
+        assert(param->getNOptions() == eParamTextureformatNone);
+        param->appendOption(kParamOutputTextureformatOptionNone);
+        assert(param->getNOptions() == eParamTextureformatPlain);
+        param->appendOption(kParamOutputTextureformatOptionPlain);
+        assert(param->getNOptions() == eParamTextureformatLatLong);
+        param->appendOption(kParamOutputTextureformatOptionLatLong);
+        assert(param->getNOptions() == eParamTextureformatCubeFace);
+        param->appendOption(kParamOutputTextureformatOptionCubeFace);
+        assert(param->getNOptions() == eParamTextureformatShadow);
+        param->appendOption(kParamOutputTextureformatOptionShadow);
+        param->setDefault(eParamTextureformatNone);
         if (page) {
             page->addChild(*param);
         }
