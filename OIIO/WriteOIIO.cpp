@@ -135,10 +135,12 @@ enum ETuttlePluginComponents {
 
 #define kParamOutputLineOrderOptionIncreasingY "increasingY", "first scan line has lowest y coordinate", "increasingY"
 #define kParamOutputLineOrderOptionDecreasingY "decreasingY", "first scan line has highest y coordinate", "decreasingY"
+#define kParamOutputLineOrderOptionRandomY "randomY", "only for tiled files; tiles are written in random order", "randomY"
 
 enum EParamLineOrder {
     eParamLineOrderIncreasingY = 0,
-    eParamLineOrderDecreasingY
+    eParamLineOrderDecreasingY,
+    eParamLineOrderRandomY
 };
 
 #define kParamOutputOrientation "orientation"
@@ -1090,6 +1092,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     case eParamLineOrderDecreasingY:
         lineOrder = "decreasingY";
         break;
+    case eParamLineOrderRandomY:
+        lineOrder = "randomY";
+        break;
     }
 
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
@@ -1764,6 +1769,8 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->appendOption(kParamOutputLineOrderOptionIncreasingY);
         assert(param->getNOptions() == eParamLineOrderDecreasingY);
         param->appendOption(kParamOutputLineOrderOptionDecreasingY);
+        assert(param->getNOptions() == eParamLineOrderRandomY);
+        param->appendOption(kParamOutputLineOrderOptionRandomY);
         param->setDefault(eParamLineOrderIncreasingY);
         if (page) {
             page->addChild(*param);
