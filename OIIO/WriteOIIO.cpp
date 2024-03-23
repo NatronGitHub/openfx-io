@@ -1187,6 +1187,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
+    spec.attribute("textureformat", textureformat);
     if (!compression.empty()) { // some formats have a good value for the default compression
         spec.attribute("compression", compression);
     }
