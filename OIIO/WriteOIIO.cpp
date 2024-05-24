@@ -1015,8 +1015,16 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     string compression;
 
     switch ((EParamCompression)compression_i) {
-    case eParamCompressionAuto:
-        break;
+    case eParamCompressionAuto: {
+        // Set compression string for formats that only have a single compression type.
+        static const char* formats[] = {"jpeg", "webp", "heic", "avif", nullptr};
+        for (int i = 0; formats[i] != nullptr; ++i) {
+            if (strcmp(data->output->format_name(), formats[i]) == 0) {
+                compression = formats[i];
+                break;
+            }
+        }
+    } break;
     case eParamCompressionNone: // EXR, TIFF, IFF
         compression = "none";
         break;
