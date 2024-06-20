@@ -129,6 +129,20 @@ enum ETuttlePluginComponents {
     "Compression level for zip/deflate compression, on a scale from 1 (fastest, minimal compression) to 9 (slowest, maximal compression) [EXR, TIFF or Zfile w/ zip or zips comp.]"
 #define kParamOutputZIPCompressionLevelDefault 4
 
+#define kParamOutputLineOrder "lineOrder"
+#define kParamOutputLineOrderLabel "Line Order"
+#define kParamOutputLineOrderHint "Specifies in what order the scan lines [EXR]\n"
+
+#define kParamOutputLineOrderOptionIncreasingY "increasingY", "first scan line has lowest y coordinate", "increasingY"
+#define kParamOutputLineOrderOptionDecreasingY "decreasingY", "first scan line has highest y coordinate", "decreasingY"
+#define kParamOutputLineOrderOptionRandomY "randomY", "only for tiled files; tiles are written in random order", "randomY"
+
+enum EParamLineOrder {
+    eParamLineOrderIncreasingY = 0,
+    eParamLineOrderDecreasingY,
+    eParamLineOrderRandomY
+};
+
 #define kParamOutputOrientation "orientation"
 #define kParamOutputOrientationLabel "Orientation"
 #define kParamOutputOrientationHint                                                     \
@@ -370,6 +384,7 @@ private:
     IntParam* _quality;
     DoubleParam* _dwaCompressionLevel;
     IntParam* _zipCompressionLevel;
+    ChoiceParam* _lineOrder;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
     ChoiceParam* _tileSize;
@@ -389,6 +404,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _zipCompressionLevel(NULL)
     , _orientation(NULL)
     , _compression(NULL)
+    , _lineOrder(NULL)
     , _tileSize(NULL)
     , _outputLayers(NULL)
     , _parts(NULL)
@@ -403,6 +419,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
+    _lineOrder = fetchChoiceParam(kParamOutputLineOrder);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
         _outputLayers = fetchChoiceParam(kParamOutputChannels);
@@ -843,6 +860,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
+        if (_lineOrder) { _lineOrder->setIsSecretAndDisabled(!isEXR); }
         if (_parts) {
             _parts->setIsSecretAndDisabled(!output->supports("multiimage"));
         }
@@ -854,6 +872,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         _zipCompressionLevel->setIsSecretAndDisabled(true);
         if (_views) {
             _views->setIsSecretAndDisabled(true);
+        }
+        if (_lineOrder) {
+            _lineOrder->setIsSecretAndDisabled(true);
         }
         if (_parts) {
             _parts->setIsSecretAndDisabled(true);
@@ -1013,7 +1034,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     int compression_i;
     _compression->getValue(compression_i);
     string compression;
-
+    int lineOrder_i;
+    _lineOrder->getValue(lineOrder_i);
+    string lineOrder;
+    
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto: {
         // Set compression string for formats that only have a single compression type.
@@ -1066,6 +1090,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     case eParamCompressionPACKBITS: // TIFF
         compression = "packbits";
+        break;
+    }
+
+    switch ((EParamLineOrder)lineOrder_i) {
+    case eParamLineOrderIncreasingY:
+        lineOrder = "increasingY";
+        break;
+    case eParamLineOrderDecreasingY:
+        lineOrder = "decreasingY";
+        break;
+    case eParamLineOrderRandomY:
+        lineOrder = "randomY";
         break;
     }
 
@@ -1150,6 +1186,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
+    spec.attribute("openexr:lineOrder", lineOrder);
     if (!compression.empty()) { // some formats have a good value for the default compression
         spec.attribute("compression", compression);
     }
@@ -1728,6 +1765,21 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         assert(param->getNOptions() == eParamCompressionPACKBITS);
         param->appendOption(kParamOutputCompressionOptionPACKBITS);
         param->setDefault(eParamCompressionAuto);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputLineOrder);
+        param->setLabel(kParamOutputLineOrderLabel);
+        param->setHint(kParamOutputLineOrderHint);
+        assert(param->getNOptions() == eParamLineOrderIncreasingY);
+        param->appendOption(kParamOutputLineOrderOptionIncreasingY);
+        assert(param->getNOptions() == eParamLineOrderDecreasingY);
+        param->appendOption(kParamOutputLineOrderOptionDecreasingY);
+        assert(param->getNOptions() == eParamLineOrderRandomY);
+        param->appendOption(kParamOutputLineOrderOptionRandomY);
+        param->setDefault(eParamLineOrderIncreasingY);
         if (page) {
             page->addChild(*param);
         }
