@@ -44,6 +44,10 @@ GCC_DIAG_ON(unused-parameter)
 #ifdef OFX_IO_USING_LIBRAW
 // clang-format off
 GCC_DIAG_OFF(deprecated-declarations)
+// libraw_datastream.h 0.18.3 uses auto_ptr (not C++17 compliant)
+// Prevent inclusion:
+#define __LIBRAW_DATASTREAM_H
+class LibRaw_abstract_datastream;
 #include <libraw.h>
 #include <libraw_version.h>
 GCC_DIAG_ON(deprecated-declarations)
