@@ -44,6 +44,10 @@ GCC_DIAG_ON(unused-parameter)
 #ifdef OFX_IO_USING_LIBRAW
 // clang-format off
 GCC_DIAG_OFF(deprecated-declarations)
+// libraw_datastream.h 0.18.3 uses auto_ptr (not C++17 compliant)
+// Prevent inclusion:
+#define __LIBRAW_DATASTREAM_H
+class LibRaw_abstract_datastream;
 #include <libraw.h>
 #include <libraw_version.h>
 GCC_DIAG_ON(deprecated-declarations)
@@ -125,11 +129,15 @@ typedef ImageInput* ImageInputPtr;
 
 #define kPluginName "ReadOIIO"
 #define kPluginGrouping "Image/Readers"
-#define kPluginDescription                                                        \
-    "Read images using OpenImageIO.\n\n"                                          \
-    "Output is always Premultiplied (alpha is associated).\n\n"                   \
-    "The \"Image Premult\" parameter controls the file premultiplication state, " \
-    "and can be used to fix wrong file metadata (see the help for that parameter)."
+#define kPluginDescription                                                              \
+    "Read images using OpenImageIO.\n\n"                                                \
+    "Output is always Premultiplied (alpha is associated).\n\n"                         \
+    "The \"Image Premult\" parameter controls the file premultiplication state, "       \
+    "and can be used to fix wrong file metadata (see the help for that parameter).\n\n" \
+    "When reading an OpenEXR file with a dataWindow, it is converted to an OpenFX "     \
+    "region of definition by flipping the y axis (y axis goes down in OpenEXR, "        \
+    "up in OpenFX), and adding 1 pixel in every direction if the \"Edge Pixels\" "      \
+    "parameter says that a black border should be added."
 #define kPluginIdentifier "fr.inria.openfx.ReadOIIO"
 #define kPluginVersionMajor 2 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
 #define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.

@@ -1212,9 +1212,15 @@ SeNoisePlugin::changedParam(const InstanceChangedArgs& args,
         _rampInteractive->setIsSecretAndDisabled(noramp);
     } else if (paramName == kParamTransformResetCenter) {
         resetCenter(args.time);
-        _centerChanged->setValue(false);
+        // Only set if necessary
+        if (_centerChanged->getValue()) {
+            _centerChanged->setValue(false);
+        }
     } else if ((paramName == kParamTransformCenter) && ((args.reason == eChangeUserEdit) || (args.reason == eChangePluginEdit))) {
-        _centerChanged->setValue(true);
+        // Only set if necessary
+        if (!_centerChanged->getValue()) {
+            _centerChanged->setValue(true);
+        }
     }
 }
 
@@ -1222,7 +1228,7 @@ void
 SeNoisePlugin::changedClip(const InstanceChangedArgs& args,
                            const std::string& clipName)
 {
-    if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && _srcClip->isConnected() && !_centerChanged->getValueAtTime(args.time) && (args.reason == eChangeUserEdit)) {
+    if ((clipName == kOfxImageEffectSimpleSourceClipName) && _srcClip && _srcClip->isConnected() && !_centerChanged->getValue() && (args.reason == eChangeUserEdit)) {
         resetCenter(args.time);
     }
 }
