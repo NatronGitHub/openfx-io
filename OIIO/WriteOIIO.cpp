@@ -247,6 +247,7 @@ enum EParamTextureformat {
     eParamTextureformatShadow
 }
 
+
 #define kParamProcessAllLayers "processAllLayers"
 #define kParamProcessAllLayersLabel "All Layers"
 #define kParamProcessAllLayersHint "When checked, all layers will be written to the file"
