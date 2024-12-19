@@ -100,7 +100,7 @@ jobs:
         with:
           msystem: mingw64
           update: true
-          install: git base-devel mingw-w64-x86_64-wget unzip mingw-w64-x86_64-cc mingw-w64-x86_64-python3
+          install: git base-devel mingw-w64-x86_64-wget unzip mingw-w64-x86_64-cc mingw-w64-x86_64-python3 mingw-w64-x86_64-pkg-config
 
       - name: Install Natron pacman repository
         run: |
