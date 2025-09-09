@@ -38,15 +38,33 @@
 
 #include "ofxsMacros.h"
 
+// Check OpenEXR version to determine header locations
+#include <OpenEXR/OpenEXRConfig.h>
+#define COMBINED_OPENEXR_VERSION ((10000*OPENEXR_VERSION_MAJOR) + \
+                                  (100*OPENEXR_VERSION_MINOR) + \
+                                  OPENEXR_VERSION_PATCH)
+
 GCC_DIAG_OFF(deprecated)
-#include <IlmThreadPool.h>
-#include <ImathBox.h>
-#include <ImfChannelList.h>
-#include <ImfCompression.h>
-#include <ImfFrameBuffer.h>
-#include <ImfHeader.h>
-#include <ImfInputFile.h>
-#include <ImfPixelType.h>
+#if COMBINED_OPENEXR_VERSION >= 20599 /* 2.5.99: pre-3.0 */
+#   include <OpenEXR/IlmThreadPool.h>
+#   include <Imath/ImathBox.h>
+#   include <OpenEXR/ImfChannelList.h>
+#   include <OpenEXR/ImfCompression.h>
+#   include <OpenEXR/ImfFrameBuffer.h>
+#   include <OpenEXR/ImfHeader.h>
+#   include <OpenEXR/ImfInputFile.h>
+#   include <OpenEXR/ImfPixelType.h>
+#else
+    // OpenEXR 2.x, use the old locations
+#   include <IlmThreadPool.h>
+#   include <ImathBox.h>
+#   include <ImfChannelList.h>
+#   include <ImfCompression.h>
+#   include <ImfFrameBuffer.h>
+#   include <ImfHeader.h>
+#   include <ImfInputFile.h>
+#   include <ImfPixelType.h>
+#endif
 GCC_DIAG_ON(deprecated)
 
 #ifdef OFX_IO_MT_EXR

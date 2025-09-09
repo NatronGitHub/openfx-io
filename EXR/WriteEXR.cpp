@@ -27,16 +27,33 @@
 #include "ofxsFileOpen.h"
 #include "ofxsMacros.h"
 
+#include <OpenEXR/OpenEXRConfig.h>
+#define COMBINED_OPENEXR_VERSION ((10000*OPENEXR_VERSION_MAJOR) + \
+                                  (100*OPENEXR_VERSION_MINOR) + \
+                                  OPENEXR_VERSION_PATCH)
+
 GCC_DIAG_OFF(deprecated)
-#include <IlmThreadPool.h>
-#include <ImathBox.h>
-#include <ImfArray.h>
-#include <ImfChannelList.h>
-#include <ImfCompression.h>
-#include <ImfFrameBuffer.h>
-#include <ImfHeader.h>
-#include <ImfOutputFile.h>
-#include <half.h>
+#if COMBINED_OPENEXR_VERSION >= 20599 /* 2.5.99: pre-3.0 */
+#   include <OpenEXR/IlmThreadPool.h>
+#   include <Imath/ImathBox.h>
+#   include <OpenEXR/ImfArray.h>
+#   include <OpenEXR/ImfChannelList.h>
+#   include <OpenEXR/ImfCompression.h>
+#   include <OpenEXR/ImfFrameBuffer.h>
+#   include <OpenEXR/ImfHeader.h>
+#   include <OpenEXR/ImfOutputFile.h>
+#   include <Imath/half.h>
+#else
+    // OpenEXR 2.x, use the old locations
+#   include <IlmThreadPool.h>
+#   include <ImathBox.h>
+#   include <ImfArray.h>
+#   include <ImfChannelList.h>
+#   include <ImfCompression.h>
+#   include <ImfFrameBuffer.h>
+#   include <ImfHeader.h>
+#   include <ImfOutputFile.h>
+#   include <half.h>
 GCC_DIAG_ON(deprecated)
 
 #include "GenericOCIO.h"
@@ -266,6 +283,10 @@ WriteEXRPlugin::encode(const string& filename,
                 }
             } else {
                 Imf_::Array2D<half> halfwriterow(pixelDataNComps, bounds.x2 - bounds.x1);
+
+#if COMBINED_OPENEXR_VERSION >= 20599 /* 2.5.99: pre-3.0 */
+                using Imath::half;
+#endif
 
                 for (int chan = 0; chan < pixelDataNComps; ++chan) {
                     fbuf.insert(chanNames[chan],
