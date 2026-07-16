@@ -1,0 +1,37 @@
+# Minimal OpenColorIO config for the openfx-io render integration tests.
+# The GenericOCIO layer in the Read/Write plugins requires a loadable OCIO config
+# (via the $OCIO environment variable). This config defines identity colorspaces
+# and the standard roles the plugins reference, so color management is a no-op and
+# the tests exercise the encode/decode paths rather than color science.
+ocio_profile_version: 2
+search_path: ""
+strictparsing: false
+roles:
+  default: raw
+  reference: raw
+  data: raw
+  scene_linear: linear
+  rendering: linear
+  compositing_log: raw
+  color_timing: raw
+  color_picking: raw
+  matte_paint: raw
+  texture_paint: raw
+  aces_interchange: raw
+  cie_xyz_d65_interchange: raw
+  lut_input_space: raw
+displays:
+  none:
+    - !<View> {name: Raw, colorspace: raw}
+active_displays: [none]
+active_views: [Raw]
+colorspaces:
+  - !<ColorSpace> {name: raw, family: raw, bitdepth: 32f, isdata: true}
+  - !<ColorSpace> {name: linear, family: linear, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: sRGB, family: srgb, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: rec709, family: rec709, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: rec601, family: rec601, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: Gamma1.8, family: gamma, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: Gamma2.2, family: gamma, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: st2084, family: hdr, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: AlexaV3LogC, family: log, bitdepth: 32f, isdata: false}
