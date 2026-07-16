@@ -349,8 +349,17 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
 {
     // Reset is flagged when the UI colour matrix selection is
     // modified. This causes a new convert context to be created
-    // that reflects the UI selection.
-    if (_resetConvertCtx) {
+    // that reflects the UI selection. The context is also rebuilt if any of the
+    // source/destination parameters it was created for have changed since.
+    const bool paramsChanged = _convertCtx
+        && (_convertCtxSrcPixelFormat != srcPixelFormat
+            || _convertCtxSrcWidth != srcWidth
+            || _convertCtxSrcHeight != srcHeight
+            || _convertCtxSrcColorRange != srcColorRange
+            || _convertCtxDstPixelFormat != dstPixelFormat
+            || _convertCtxDstWidth != dstWidth
+            || _convertCtxDstHeight != dstHeight);
+    if (_resetConvertCtx || paramsChanged) {
         _resetConvertCtx = false;
         if (_convertCtx) {
             sws_freeContext(_convertCtx);
@@ -359,6 +368,16 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
     }
 
     if (!_convertCtx) {
+        // Remember the (original) parameters this context is being built for, so a
+        // later call with different parameters triggers a rebuild.
+        _convertCtxSrcPixelFormat = srcPixelFormat;
+        _convertCtxSrcWidth = srcWidth;
+        _convertCtxSrcHeight = srcHeight;
+        _convertCtxSrcColorRange = srcColorRange;
+        _convertCtxDstPixelFormat = dstPixelFormat;
+        _convertCtxDstWidth = dstWidth;
+        _convertCtxDstHeight = dstHeight;
+
         // Preventing deprecated pixel format used error messages, see:
         // https://libav.org/doxygen/master/pixfmt_8h.html#a9a8e335cf3be472042bc9f0cf80cd4c5
         // This manually sets them to the new versions of equivalent types.
@@ -386,6 +405,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
             if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
                 srcColorRange = AVCOL_RANGE_JPEG;
             }
+            break;
         default:
             break;
         }
@@ -786,13 +806,19 @@ FFmpegFile::FFmpegFile(const string& filename)
         std::cout << "    FFmpeg stream index " << i << ": ";
 #endif
         AVStream* avstream = _context->streams[i];
-        AVCodecContext* codecCtx = avcodec_alloc_context3(nullptr);
-        avcodec_parameters_to_context(codecCtx, avstream->codecpar);
 
         // be sure to have a valid stream
-        if (!avstream || !codecCtx) {
+        if (!avstream) {
 #if TRACE_FILE_OPEN
-            std::cout << "No valid stream or codec, skipping..." << std::endl;
+            std::cout << "No valid stream, skipping..." << std::endl;
+#endif
+            continue;
+        }
+
+        AVCodecContext* codecCtx = avcodec_alloc_context3(nullptr);
+        if (!codecCtx) {
+#if TRACE_FILE_OPEN
+            std::cout << "No valid codec context, skipping..." << std::endl;
 #endif
             continue;
         }
@@ -802,6 +828,7 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
             std::cout << "Could not convert to context, skipping..." << std::endl;
 #endif
+            avcodec_free_context(&codecCtx);
             continue;
         }
 
@@ -810,12 +837,14 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
             std::cout << "Not a video stream, skipping..." << std::endl;
 #endif
+            avcodec_free_context(&codecCtx);
             continue;
         }
         if (codecCtx->pix_fmt == AV_PIX_FMT_NONE) {
 #if TRACE_FILE_OPEN
             std::cout << "Unknown pixel format, skipping..." << std::endl;
 #endif
+            avcodec_free_context(&codecCtx);
             continue;
         }
 
@@ -825,6 +854,7 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
             std::cout << "Decoder not found, skipping..." << std::endl;
 #endif
+            avcodec_free_context(&codecCtx);
             continue;
         }
 
@@ -835,15 +865,17 @@ FFmpegFile::FFmpegFile(const string& filename)
             std::cout << "Decoder \"" << videoCodec->name << "\" disallowed, skipping..." << std::endl;
 #endif
             unsupported_codec = true;
+            avcodec_free_context(&codecCtx);
             continue;
         }
         // Some format/codec combinations, even if readable, do not have timestamps.
         // See also codecCompatible() in WriteFFmpeg.cpp which contains a similar check.
         if ((std::string(_context->iformat->name) == "avi") && (codecCtx->codec_id == AV_CODEC_ID_H264 || codecCtx->codec_id == AV_CODEC_ID_MPEG1VIDEO || codecCtx->codec_id == AV_CODEC_ID_MPEG2VIDEO)) {
 #if TRACE_FILE_OPEN
-            std::cout << "Decoder \"" << videoCodec->name << "\" in format \"" << _format->name << "\" disallowed because it lacks timestamps, skipping..." << std::endl;
+            std::cout << "Decoder \"" << videoCodec->name << "\" in format \"" << _context->iformat->name << "\" disallowed because it lacks timestamps, skipping..." << std::endl;
 #endif
             unsupported_codec = true;
+            avcodec_free_context(&codecCtx);
             continue;
         }
 
@@ -878,10 +910,10 @@ FFmpegFile::FFmpegFile(const string& filename)
 #ifdef CODEC_FLAG_EMU_EDGE // removed from ffmpeg 4.0
             int lowres = 0;
 #ifdef FF_API_LOWRES
-            lowres = avctx->lowres;
+            lowres = codecCtx->lowres;
 #endif
             if (lowres || (videoCodec && (videoCodec->capabilities & CODEC_CAP_DR1))) {
-                avctx->flags |= CODEC_FLAG_EMU_EDGE;
+                codecCtx->flags |= CODEC_FLAG_EMU_EDGE;
             }
 #endif
         }
@@ -891,6 +923,7 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" failed to open, skipping..." << std::endl;
 #endif
+            avcodec_free_context(&codecCtx);
             continue;
         }
 
@@ -908,6 +941,7 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
                 std::cout << "Stream properties do not match those of first video stream, ignoring this stream." << std::endl;
 #endif
+                avcodec_free_context(&codecCtx);
                 continue;
             }
         }
@@ -1062,7 +1096,7 @@ FFmpegFile::getColorspace() const
 
         t = av_dict_get(_context->metadata, "uk.co.thefoundry.Colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (!t) {
-            av_dict_get(_context->metadata, "uk.co.thefoundry.colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
+            t = av_dict_get(_context->metadata, "uk.co.thefoundry.colorspace", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
         if (t) {
 #if 0
@@ -1083,7 +1117,7 @@ FFmpegFile::getColorspace() const
 
         t = av_dict_get(_context->metadata, "com.arri.camera.ColorGammaSxS", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (!t) {
-            av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", nullptr, AV_DICT_IGNORE_SUFFIX);
+            t = av_dict_get(_context->metadata, "com.arri.camera.colorgammasxs", nullptr, AV_DICT_IGNORE_SUFFIX);
         }
         if (t && !strncasecmp(t->value, "LOG-C", 5)) {
             return "AlexaV3LogC";
@@ -1319,31 +1353,6 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
 // avcodec_send_packet() and avcodec_receive_frame() replace avcodec_decode_video2(), see
 // https://github.com/FFmpeg/FFmpeg/blob/9e30859cb60b915f237581e3ce91b0d31592edc0/libavcodec/decode.c#L748
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
-static int
-mov64_av_decode(AVCodecContext* avctx, AVFrame* frame,
-                int* got_frame, const AVPacket* pkt)
-{
-    int ret;
-
-    ret = avcodec_send_packet(avctx, pkt);
-    if (ret < 0) {
-        *got_frame = 0;
-        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
-            return ret;
-    }
-
-    ret = avcodec_receive_frame(avctx, frame);
-    if (ret < 0) {
-        *got_frame = 0;
-        if (ret == AVERROR(EAGAIN))
-            return 0;
-        return ret;
-    }
-
-    *got_frame = 1;
-
-    return 0;
-}
 
 bool
 FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
@@ -1355,7 +1364,6 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
 
     int res = 0;
     bool hasPicture = false;
-    int frameDecoded = 0;
     AVFrame* avFrameDecodeDst = stream->_avIntermediateFrame;
 
     auto foundCorrectFrame = [this, stream](AVFrame* decodedFrame, int64_t targetFrameIdx) -> bool {
@@ -1388,21 +1396,68 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
         return found;
     };
 
-    // Begin reading from the newly seeked position
+    // Drain all frames currently available from the decoder, checking each against the
+    // target frame. Returns:
+    //   1  if the target frame was found (and converted into avFrameOut),
+    //   0  if the decoder needs more input (EAGAIN) or has been fully drained (EOF),
+    //  <0  an AVERROR on a real decode error.
+    // avcodec_receive_frame() unrefs the destination frame before writing, so there is
+    // no need to unref between iterations.
+    auto drainDecoder = [&]() -> int {
+        for (;;) {
+            int r = avcodec_receive_frame(stream->_codecContext, avFrameDecodeDst);
+            if ((r == AVERROR(EAGAIN)) || (r == AVERROR_EOF)) {
+                return 0;
+            }
+            if (r < 0) {
+                return r;
+            }
+            if (foundCorrectFrame(avFrameDecodeDst, frame)) {
+                hasPicture = imageConvert(avFrameDecodeDst, avFrameOut);
+                return 1;
+            }
+        }
+    };
+
+    // Begin reading from the newly seeked position.
     while ((res = av_read_frame(_context, avPacket.pkt())) >= 0) {
 
-        if (avPacket->stream_index == stream->_idx) {
+        if (avPacket->stream_index != stream->_idx) {
+            continue;
+        }
 
-            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, avPacket.pkt())) < 0) {
+        // Send the packet, then fully drain any frames it produced. If the decoder's input
+        // buffer is full it returns EAGAIN, which per the API contract means we must drain
+        // output first and then resend the *same* packet (rather than dropping it).
+        res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
+        if ((res < 0) && (res != AVERROR(EAGAIN))) {
+            setInternalError(res, "FFmpeg Reader Failed to decode packet: ");
+            return false;
+        }
+
+        int drained = drainDecoder();
+        if (drained < 0) {
+            setInternalError(drained, "FFmpeg Reader Failed to decode packet: ");
+            return false;
+        }
+        if (drained == 1) {
+            return hasPicture;
+        }
+
+        if (res == AVERROR(EAGAIN)) {
+            // The packet was not accepted before; resend it now that output has been drained.
+            res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
+            if (res < 0) {
                 setInternalError(res, "FFmpeg Reader Failed to decode packet: ");
                 return false;
             }
-
-            if (frameDecoded) {
-                if (foundCorrectFrame(avFrameDecodeDst, frame)) {
-                    hasPicture = imageConvert(avFrameDecodeDst, avFrameOut);
-                    return hasPicture;
-                }
+            drained = drainDecoder();
+            if (drained < 0) {
+                setInternalError(drained, "FFmpeg Reader Failed to decode packet: ");
+                return false;
+            }
+            if (drained == 1) {
+                return hasPicture;
             }
         }
     }
@@ -1413,22 +1468,21 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
         return false;
     }
 
-    // Flush the decoder of remaining frames
+    // Flush the decoder of remaining frames by sending a NULL packet (enter draining mode).
     if (res == AVERROR_EOF) {
-        while (1) {
+        res = avcodec_send_packet(stream->_codecContext, nullptr);
+        if ((res < 0) && (res != AVERROR_EOF)) {
+            setInternalError(res, "FFmpeg Reader Failed to flush the decoder of remaining frames: ");
+            return false;
+        }
 
-            if ((res = mov64_av_decode(stream->_codecContext, avFrameDecodeDst, &frameDecoded, nullptr)) < 0) {
-                setInternalError(res, "FFmpeg Reader Failed to flush the decoder of remaing frames: ");
-                return false;
-            }
-
-            if (frameDecoded) {
-                if (foundCorrectFrame(avFrameDecodeDst, frame)) {
-                    return imageConvert(avFrameDecodeDst, avFrameOut);
-                }
-            } else {
-                break;
-            }
+        int drained = drainDecoder();
+        if (drained < 0) {
+            setInternalError(drained, "FFmpeg Reader Failed to flush the decoder of remaining frames: ");
+            return false;
+        }
+        if (drained == 1) {
+            return hasPicture;
         }
     }
 
@@ -1554,11 +1608,7 @@ FFmpegFileManager::FFmpegFileManager()
 
 FFmpegFileManager::~FFmpegFileManager()
 {
-    for (FilesMap::iterator it = _files.begin(); it != _files.end(); ++it) {
-        for (std::list<FFmpegFile*>::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-            delete *it2;
-        }
-    }
+    // shared_ptr entries free their FFmpegFile when the map is cleared.
     _files.clear();
     delete _lock;
 }
@@ -1576,28 +1626,26 @@ FFmpegFileManager::clear(void const* plugin)
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
     if (found != _files.end()) {
-        for (std::list<FFmpegFile*>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
-            delete *it;
-        }
+        // Erasing drops the map's references; any FFmpegFile still referenced by a
+        // concurrent caller stays alive until that caller releases its shared_ptr.
         _files.erase(found);
     }
 }
 
-FFmpegFile*
+std::shared_ptr<FFmpegFile>
 FFmpegFileManager::get(void const* plugin,
                        const string& filename) const
 {
     if (filename.empty() || !plugin) {
-        return 0;
+        return nullptr;
     }
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
     if (found != _files.end()) {
-        for (std::list<FFmpegFile*>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
+        for (std::list<std::shared_ptr<FFmpegFile>>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
             if ((*it)->getFilename() == filename) {
                 if ((*it)->isInvalid()) {
-                    delete *it;
                     found->second.erase(it);
                     break;
                 } else {
@@ -1610,21 +1658,20 @@ FFmpegFileManager::get(void const* plugin,
     return nullptr;
 }
 
-FFmpegFile*
+std::shared_ptr<FFmpegFile>
 FFmpegFileManager::getOrCreate(void const* plugin,
                                const string& filename) const
 {
     if (filename.empty() || !plugin) {
-        return 0;
+        return nullptr;
     }
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
     if (found != _files.end()) {
-        for (std::list<FFmpegFile*>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
+        for (std::list<std::shared_ptr<FFmpegFile>>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
             if ((*it)->getFilename() == filename) {
                 if ((*it)->isInvalid()) {
-                    delete *it;
                     found->second.erase(it);
                     break;
                 } else {
@@ -1634,9 +1681,9 @@ FFmpegFileManager::getOrCreate(void const* plugin,
         }
     }
 
-    FFmpegFile* file = new FFmpegFile(filename);
+    std::shared_ptr<FFmpegFile> file = std::make_shared<FFmpegFile>(filename);
     if (found == _files.end()) {
-        std::list<FFmpegFile*> fileList;
+        std::list<std::shared_ptr<FFmpegFile>> fileList;
         fileList.push_back(file);
         _files.insert(make_pair(plugin, fileList));
     } else {
