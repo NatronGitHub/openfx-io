@@ -40,6 +40,13 @@
 #define __STDC_CONSTANT_MACROS // ...or stdint.h wont' define UINT64_C, needed by libavutil
 #endif
 #include "FFmpegFile.h"
+// Compat: AVFrame::pkt_duration was renamed to duration in FFmpeg 6 (libavutil 58.2)
+// and removed in FFmpeg 8.
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 2, 100)
+#  define OFX_AVFRAME_DURATION(f) ((f)->duration)
+#else
+#  define OFX_AVFRAME_DURATION(f) ((f)->pkt_duration)
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -1374,7 +1381,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
             found = true;
         }
         // If the current frame needs to be displayed longer than current_pts - prev_pts
-        else if ((decodedFrameIdx < targetFrameIdx) && (stream->ptsToFrame(decodedFrame->pts + decodedFrame->pkt_duration) > targetFrameIdx)) {
+        else if ((decodedFrameIdx < targetFrameIdx) && (stream->ptsToFrame(decodedFrame->pts + OFX_AVFRAME_DURATION(decodedFrame)) > targetFrameIdx)) {
             found = true;
         }
 
@@ -1443,7 +1450,7 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
 
     avFrameOut->pts = avFrameIn->pts;
     avFrameOut->pkt_dts = avFrameIn->pkt_dts;
-    avFrameOut->pkt_duration = avFrameIn->pkt_duration;
+    OFX_AVFRAME_DURATION(avFrameOut) = OFX_AVFRAME_DURATION(avFrameIn);
 
     if (!avFrameOut->data[0]) {
         int res = av_image_alloc(avFrameOut->data, avFrameOut->linesize, avFrameOut->width, avFrameOut->height, dstPixFmt, 32);

@@ -499,7 +499,11 @@ private:
     void getConfig(ImageSpec* config) const;
 
     //// OIIO image cache
+#if OIIO_VERSION >= 30000
+    std::shared_ptr<ImageCache> _cache;
+#else
     ImageCache* _cache;
+#endif
 
     BooleanParam* _rawAutoBright;
     BooleanParam* _rawUseCameraWB;
@@ -609,7 +613,9 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 ReadOIIOPlugin::~ReadOIIOPlugin()
 {
     if (_cache) {
-#ifdef OFX_READ_OIIO_SHARED_CACHE
+#if OIIO_VERSION >= 30000
+        _cache.reset(); // OIIO 3.x: shared_ptr manages lifetime (ImageCache::destroy removed)
+#elif defined(OFX_READ_OIIO_SHARED_CACHE)
         ImageCache::destroy(_cache); // don't teardown if it's a shared cache
 #else
         ImageCache::destroy(_cache, true); // teardown non-shared cache
@@ -2560,7 +2566,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 if (spec.tile_width == 0) {
                     // Read by scanlines
 
-                    if (!img->read_scanlines(ybeginClamped, // y begin
+                    if (!img->read_scanlines(subImageIndex, 0, ybeginClamped, // y begin
                                              yendClamped, // y end
                                              zbegin, // z
                                              chbegin, // chan begin
@@ -2633,7 +2639,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
                     // Pass the valid tile range and buffer to OIIO and decode with a negative Y stride from
                     // top to bottom
-                    if (!img->read_tiles(tiledXBegin, // x begin
+                    if (!img->read_tiles(subImageIndex, 0, tiledXBegin, // x begin
                                          tiledXEnd, // x end
                                          tiledYBegin, // y begin
                                          tiledYEnd, // y end
@@ -2960,7 +2966,7 @@ ReadOIIOPlugin::metadata(const string& filename)
             ss << std::endl;
         }
 
-        for (ImageIOParameterList::const_iterator p = subImages[sIt].extra_attribs.begin(); p != subImages[sIt].extra_attribs.end(); ++p) {
+        for (ParamValueList::const_iterator p = subImages[sIt].extra_attribs.begin(); p != subImages[sIt].extra_attribs.end(); ++p) {
             string s = subImages[sIt].metadata_val(*p, true);
             ss << "    " << p->name() << ": ";
             if (s == "1.#INF") {
@@ -3145,10 +3151,17 @@ ReadOIIOPluginFactory::unload()
 
 #ifdef OFX_READ_OIIO_SHARED_CACHE
     // get the shared image cache (may be shared with other plugins using OIIO)
+#if OIIO_VERSION >= 30000
+    std::shared_ptr<ImageCache> sharedcache = ImageCache::create(true);
+    // purge it
+    // teardown is dangerous if there are other users
+    sharedcache.reset();
+#else
     ImageCache* sharedcache = ImageCache::create(true);
     // purge it
     // teardown is dangerous if there are other users
     ImageCache::destroy(sharedcache);
+#endif
 #endif
 
     shutdownOIIOThreads();

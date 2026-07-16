@@ -935,7 +935,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         return;
     }
 
-    OIIO_NAMESPACE::TypeDesc oiioBitDepth;
+    OIIO::TypeDesc oiioBitDepth;
     // size_t sizeOfChannel = 0;
     int bitsPerSample = 0;
     int finalBitDepth_i;
