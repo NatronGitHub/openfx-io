@@ -1908,7 +1908,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
 #endif
     }
     if (cs != NULL) {
-        config->attribute("raw:Colorspace", cs);
+        config->attribute("raw:ColorSpace", cs);
     }
 
     // Use embedded color profile. Values mean:
