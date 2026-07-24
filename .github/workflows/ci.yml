@@ -112,7 +112,7 @@ jobs:
           echo -e "#NATRON_REPO_START\n[natron]\nSigLevel = Optional TrustAll\nServer = file://${NATRON_REPO_PATH}/natron_pacman_repo/\n#NATRON_REPO_END" >> /etc/pacman.conf
           pacman -Syl natron
           # Install extra Natron packages.
-          pacman -S --needed --noconfirm mingw-w64-x86_64-natron_openimageio mingw-w64-x86_64-natron_seexpr-git \
+          pacman -S --needed --noconfirm --overwrite "*" mingw-w64-x86_64-natron_openimageio mingw-w64-x86_64-natron_seexpr-git \
             mingw-w64-x86_64-natron_poppler mingw-w64-x86_64-natron_imagemagick mingw-w64-x86_64-natron_ffmpeg-gpl2
 
 
