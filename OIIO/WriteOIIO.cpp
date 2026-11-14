@@ -137,16 +137,15 @@ enum ETuttlePluginComponents {
 
 #define kParamOutputLineOrder "lineOrder"
 #define kParamOutputLineOrderLabel "Line Order"
-#define kParamOutputLineOrderHint "Specifies in what order the scan lines [EXR]\n"
+#define kParamOutputLineOrderHint "Order in which the scanlines (or tiles) are stored in the file. Only matters for downstream tools that depend on the storage order; the image itself is the same. [EXR]"
 
-#define kParamOutputLineOrderOptionIncreasingY "increasingY", "first scan line has lowest y coordinate", "increasingY"
-#define kParamOutputLineOrderOptionDecreasingY "decreasingY", "first scan line has highest y coordinate", "decreasingY"
-#define kParamOutputLineOrderOptionRandomY "randomY", "only for tiled files; tiles are written in random order", "randomY"
+#define kParamOutputLineOrderOptionIncreasingY "increasingY", "First scanline stored in the file is the top of the image (lowest y in the EXR data window). This is the default.", "increasingY"
+#define kParamOutputLineOrderOptionDecreasingY "decreasingY", "First scanline stored in the file is the bottom of the image (highest y in the EXR data window).", "decreasingY"
+// randomY is not offered: WriteOIIO always writes tiles in order, so it would not be meaningful.
 
 enum EParamLineOrder {
     eParamLineOrderIncreasingY = 0,
-    eParamLineOrderDecreasingY,
-    eParamLineOrderRandomY
+    eParamLineOrderDecreasingY
 };
 
 #define kParamOutputOrientation "orientation"
@@ -417,9 +416,9 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _dwaCompressionLevel(NULL)
     , _zipCompressionLevel(NULL)
     , _zstdCompressionLevel(NULL)
+    , _lineOrder(NULL)
     , _orientation(NULL)
     , _compression(NULL)
-    , _lineOrder(NULL)
     , _tileSize(NULL)
     , _outputLayers(NULL)
     , _parts(NULL)
@@ -879,7 +878,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
-        if (_lineOrder) { _lineOrder->setIsSecretAndDisabled(!isEXR); }
+        if (_lineOrder) {
+            _lineOrder->setIsSecretAndDisabled(!isEXR);
+        }
         if (_parts) {
             _parts->setIsSecretAndDisabled(!output->supports("multiimage"));
         }
@@ -1061,7 +1062,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     int lineOrder_i;
     _lineOrder->getValue(lineOrder_i);
     string lineOrder;
-    
+
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto: {
         // Set compression string for formats that only have a single compression type.
@@ -1132,9 +1133,6 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     case eParamLineOrderDecreasingY:
         lineOrder = "decreasingY";
-        break;
-    case eParamLineOrderRandomY:
-        lineOrder = "randomY";
         break;
     }
 
@@ -1223,7 +1221,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
-    spec.attribute("openexr:lineOrder", lineOrder);
+    if (!_lineOrder->getIsSecret() && !lineOrder.empty()) { // EXR only
+        spec.attribute("openexr:lineOrder", lineOrder);
+    }
     if (!compression.empty()) { // some formats have a good value for the default compression
         spec.attribute("compression", compression);
     }
@@ -1831,8 +1831,6 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->appendOption(kParamOutputLineOrderOptionIncreasingY);
         assert(param->getNOptions() == eParamLineOrderDecreasingY);
         param->appendOption(kParamOutputLineOrderOptionDecreasingY);
-        assert(param->getNOptions() == eParamLineOrderRandomY);
-        param->appendOption(kParamOutputLineOrderOptionRandomY);
         param->setDefault(eParamLineOrderIncreasingY);
         if (page) {
             page->addChild(*param);
