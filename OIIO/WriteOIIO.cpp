@@ -189,6 +189,8 @@ enum EOutputOrientation {
 #define kParamOutputCompressionOptionB44a "b44a", "Lossy 4-by-4 pixel block compression, flat fields are compressed more [EXR]", "b44a"
 #define kParamOutputCompressionOptionDWAa "dwaa", "lossy DCT based compression, in blocks of 32 scanlines. More efficient for partial buffer access. [EXR]", "dwaa"
 #define kParamOutputCompressionOptionDWAb "dwab", "lossy DCT based compression, in blocks of 256 scanlines. More efficient space wise and faster to decode full frames than DWAA. [EXR]", "dwab"
+#define kParamOutputCompressionOptionHTJ2K256 "htj2k256", "JPEG 2000 lossless coding, in blocks of 256 scanlines and using the High-Throughput (HT) blocker. Offers both speed and high-coding efficiency. Requires OpenImageIO built with OpenEXR >= 3.4, falls back to zip otherwise. [EXR]", "htj2k256"
+#define kParamOutputCompressionOptionHTJ2K32 "htj2k32", "JPEG 2000 lossless coding, in blocks of 32 scanlines and using the High-Throughput (HT) blocker. Offers both speed and high-coding efficiency. Requires OpenImageIO built with OpenEXR >= 3.4, falls back to zip otherwise. [EXR]", "htj2k32"
 #define kParamOutputCompressionOptionLZW "lzw", "Lempel-Ziv Welsch compression (lossless) [TIFF]", "lzw"
 #define kParamOutputCompressionOptionCCITTRLE "ccittrle", "CCITT modified Huffman RLE (lossless) [TIFF]", "ccittrle"
 #define kParamOutputCompressionOptionJPEG "jpeg", "JPEG [TIFF]", "jpeg"
@@ -209,7 +211,10 @@ enum EParamCompression {
     eParamCompressionLZW,
     eParamCompressionCCITTRLE,
     eParamCompressionJPEG,
-    eParamCompressionPACKBITS
+    eParamCompressionPACKBITS,
+    // new options must be appended at the end, to keep the index of existing ones
+    eParamCompressionHTJ2K256,
+    eParamCompressionHTJ2K32,
 };
 
 #define kParamTileSize "tileSize"
@@ -1055,6 +1060,12 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     case eParamCompressionDWAb: // EXR
         compression = "dwab";
         break;
+    case eParamCompressionHTJ2K256: // EXR
+        compression = "htj2k256";
+        break;
+    case eParamCompressionHTJ2K32: // EXR
+        compression = "htj2k32";
+        break;
     case eParamCompressionLZW: // TIFF
         compression = "lzw";
         break;
@@ -1727,6 +1738,10 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->appendOption(kParamOutputCompressionOptionJPEG);
         assert(param->getNOptions() == eParamCompressionPACKBITS);
         param->appendOption(kParamOutputCompressionOptionPACKBITS);
+        assert(param->getNOptions() == eParamCompressionHTJ2K256);
+        param->appendOption(kParamOutputCompressionOptionHTJ2K256);
+        assert(param->getNOptions() == eParamCompressionHTJ2K32);
+        param->appendOption(kParamOutputCompressionOptionHTJ2K32);
         param->setDefault(eParamCompressionAuto);
         if (page) {
             page->addChild(*param);
