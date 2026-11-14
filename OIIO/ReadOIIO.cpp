@@ -68,8 +68,15 @@ GCC_DIAG_ON(deprecated-declarations)
     LIBRAW_MAKE_VERSION(LIBRAW_MAJOR_VERSION, LIBRAW_MINOR_VERSION, \
                         LIBRAW_PATCH_VERSION)
 #endif // OFX_IO_USING_LIBRAW
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
-#pragma message WARN("ReadOIIO will not support advanced demosaicing options, because libraw .")
+// LibRaw 0.18.x reports the GPL2/GPL3 demosaic packs through libraw_capabilities().
+// LibRaw >= 0.19 dropped the packs; a patched LibRaw (e.g. Natron's MacPorts port
+// with the gpl2/gpl3 variants) restores them and defines LIBRAW_HAS_DEMOSAIC_GPL_CAPS
+// (in libraw_const.h). In both cases availability is detected at runtime.
+#if defined(OFX_IO_USING_LIBRAW) && (defined(LIBRAW_HAS_DEMOSAIC_GPL_CAPS) || (LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0) && LIBRAW_VERSION < LIBRAW_MAKE_VERSION(0, 19, 0)))
+#define OFX_IO_LIBRAW_RUNTIME_DEMOSAIC_CAPS
+#endif
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0) && !defined(OFX_IO_LIBRAW_RUNTIME_DEMOSAIC_CAPS)
+#pragma message WARN("ReadOIIO will not support advanced demosaicing options (AHD-Mod, AFD, VCD, Mixed, LMMSE, AMaZE), because LibRaw is more recent than 0.18 and does not provide the GPL demosaic packs.")
 #endif
 
 #include <ofxNatron.h>
@@ -262,8 +269,7 @@ enum RawHighlightModeEnum {
 #define kParamRawDemosaicAHD "AHD", "AHD interpolation.", "ahd"
 #define kParamRawDemosaicDCB "DCB", "DCB interpolation.", "dcb"
 #define kParamRawDemosaicAHDMod "AHD-Mod", "Modified AHD interpolation by Paul Lee.", "ahdmod"
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
-#pragma message WARN("Some demosaicing algorithms (AFD, VCD, Mixed, LLMSE, AMaZE) will not be available because LibRaw is more recent than 0.18.3.")
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0) && !defined(OFX_IO_LIBRAW_RUNTIME_DEMOSAIC_CAPS)
 #define WARN_DEMOSAIC " Not available with this version of LibRaw (" LIBRAW_VERSION_STR "), AHD will be used instead."
 #else
 #define WARN_DEMOSAIC
@@ -299,6 +305,25 @@ enum RawDemosaicEnum {
 };
 
 RawDemosaicEnum libraw_demosaic[eRawDemosaicCount];
+
+// Whether the GPL2 (AHD-Mod, AFD, VCD, Mixed, LMMSE) and GPL3 (AMaZE) demosaic
+// algorithms are available in the LibRaw build in use.
+static void
+getLibRawDemosaicCaps(bool* gpl2,
+                      bool* gpl3)
+{
+#if defined(OFX_IO_LIBRAW_RUNTIME_DEMOSAIC_CAPS)
+    unsigned caps = libraw_capabilities();
+    *gpl2 = (caps & LIBRAW_CAPS_DEMOSAICSGPL2) != 0;
+    *gpl3 = (caps & LIBRAW_CAPS_DEMOSAICSGPL3) != 0;
+#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
+    *gpl2 = false;
+    *gpl3 = false;
+#else
+    *gpl2 = true;
+    *gpl3 = true;
+#endif
+}
 
 // number of channels for hosts that don't support modifying choice menus (e.g. Nuke)
 #define kDefaultChannelCount 16
@@ -499,7 +524,11 @@ private:
     void getConfig(ImageSpec* config) const;
 
     //// OIIO image cache
+#if OIIO_VERSION >= 30000
+    std::shared_ptr<ImageCache> _cache;
+#else
     ImageCache* _cache;
+#endif
 
     BooleanParam* _rawAutoBright;
     BooleanParam* _rawUseCameraWB;
@@ -609,7 +638,9 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 ReadOIIOPlugin::~ReadOIIOPlugin()
 {
     if (_cache) {
-#ifdef OFX_READ_OIIO_SHARED_CACHE
+#if OIIO_VERSION >= 30000
+        _cache.reset(); // OIIO 3.x: shared_ptr manages lifetime (ImageCache::destroy removed)
+#elif defined(OFX_READ_OIIO_SHARED_CACHE)
         ImageCache::destroy(_cache); // don't teardown if it's a shared cache
 #else
         ImageCache::destroy(_cache, true); // teardown non-shared cache
@@ -1902,7 +1933,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
 #endif
     }
     if (cs != NULL) {
-        config->attribute("raw:Colorspace", cs);
+        config->attribute("raw:ColorSpace", cs);
     }
 
     // Use embedded color profile. Values mean:
@@ -1970,11 +2001,16 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     // Interpolation quality
     // note: LibRaw must be compiled with demosaic pack GPL2 to use demosaic
     // algorithms 5-9. It must be compiled with demosaic pack GPL3 for
-    // algorithm 10 (AMAzE). If either of these packs are not included, it
+    // algorithm 10 (AMAzE). These packs exist for LibRaw <= 0.18, or for a
+    // newer LibRaw patched to restore them (LIBRAW_HAS_DEMOSAIC_GPL_CAPS).
+    // The menu only lists algorithms reported as available by
+    // getLibRawDemosaicCaps(); if LibRaw is asked for one it lacks anyway, it
     // will silently use option 3 - AHD.
     int rawDemosaic = _rawDemosaic->getValue();
     const char* d = NULL;
-    switch (libraw_demosaic[rawDemosaic]) {
+    // out-of-range values (e.g. from a project saved with another LibRaw build) use AHD
+    RawDemosaicEnum demosaic = (rawDemosaic >= 0 && rawDemosaic < eRawDemosaicCount) ? libraw_demosaic[rawDemosaic] : eRawDemosaicAHD;
+    switch (demosaic) {
     case eRawDemosaicNone:
         d = "none";
         break;
@@ -2560,7 +2596,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 if (spec.tile_width == 0) {
                     // Read by scanlines
 
-                    if (!img->read_scanlines(ybeginClamped, // y begin
+                    if (!img->read_scanlines(subImageIndex, 0, ybeginClamped, // y begin
                                              yendClamped, // y end
                                              zbegin, // z
                                              chbegin, // chan begin
@@ -2633,7 +2669,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
                     // Pass the valid tile range and buffer to OIIO and decode with a negative Y stride from
                     // top to bottom
-                    if (!img->read_tiles(tiledXBegin, // x begin
+                    if (!img->read_tiles(subImageIndex, 0, tiledXBegin, // x begin
                                          tiledXEnd, // x end
                                          tiledYBegin, // y begin
                                          tiledYEnd, // y end
@@ -2960,7 +2996,7 @@ ReadOIIOPlugin::metadata(const string& filename)
             ss << std::endl;
         }
 
-        for (ImageIOParameterList::const_iterator p = subImages[sIt].extra_attribs.begin(); p != subImages[sIt].extra_attribs.end(); ++p) {
+        for (ParamValueList::const_iterator p = subImages[sIt].extra_attribs.begin(); p != subImages[sIt].extra_attribs.end(); ++p) {
             string s = subImages[sIt].metadata_val(*p, true);
             ss << "    " << p->name() << ": ";
             if (s == "1.#INF") {
@@ -3044,17 +3080,8 @@ ReadOIIOPluginFactory::load()
 {
     {
         int i = 0;
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
-        bool libraw_gpl2 = false;
-        bool libraw_gpl3 = false;
-#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
-        unsigned caps = libraw_capabilities();
-        bool libraw_gpl2 = caps & LIBRAW_CAPS_DEMOSAICSGPL2;
-        bool libraw_gpl3 = caps & LIBRAW_CAPS_DEMOSAICSGPL3;
-#else
-        bool libraw_gpl2 = true;
-        bool libraw_gpl3 = true;
-#endif
+        bool libraw_gpl2, libraw_gpl3;
+        getLibRawDemosaicCaps(&libraw_gpl2, &libraw_gpl3);
         // AHD-Mod, AFD, VCD, Mixed, LMMSE are GPL2, AMaZE is GPL3
         libraw_demosaic[i++] = eRawDemosaicNone;
         libraw_demosaic[i++] = eRawDemosaicLinear;
@@ -3076,6 +3103,12 @@ ReadOIIOPluginFactory::load()
         libraw_demosaic[i++] = eRawDemosaicDHT;
         libraw_demosaic[i++] = eRawDemosaicAAHD;
 #endif
+        // Indices past the end of the menu can come from a project saved with a
+        // LibRaw build that had more options (e.g. with the GPL demosaic packs):
+        // fall back on AHD rather than eRawDemosaicNone (zero-initialized).
+        for (; i < eRawDemosaicCount; ++i) {
+            libraw_demosaic[i] = eRawDemosaicAHD;
+        }
     }
 
     _extensions.clear();
@@ -3145,10 +3178,17 @@ ReadOIIOPluginFactory::unload()
 
 #ifdef OFX_READ_OIIO_SHARED_CACHE
     // get the shared image cache (may be shared with other plugins using OIIO)
+#if OIIO_VERSION >= 30000
+    std::shared_ptr<ImageCache> sharedcache = ImageCache::create(true);
+    // purge it
+    // teardown is dangerous if there are other users
+    sharedcache.reset();
+#else
     ImageCache* sharedcache = ImageCache::create(true);
     // purge it
     // teardown is dangerous if there are other users
     ImageCache::destroy(sharedcache);
+#endif
 #endif
 
     shutdownOIIOThreads();
@@ -3394,17 +3434,8 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawDemosaic);
                 param->setLabelAndHint(kParamRawDemosaicLabel);
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0)
-                bool libraw_gpl2 = false;
-                bool libraw_gpl3 = false;
-#elif LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 18, 0)
-                unsigned caps = libraw_capabilities();
-                bool libraw_gpl2 = caps & LIBRAW_CAPS_DEMOSAICSGPL2;
-                bool libraw_gpl3 = caps & LIBRAW_CAPS_DEMOSAICSGPL3;
-#else
-                bool libraw_gpl2 = true;
-                bool libraw_gpl3 = true;
-#endif
+                bool libraw_gpl2, libraw_gpl3;
+                getLibRawDemosaicCaps(&libraw_gpl2, &libraw_gpl3);
                 // AHD-Mod, AFD, VCD, Mixed, LMMSE are GPL2, AMaZE is GPL3
                 assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicNone);
                 param->appendOption(kParamRawDemosaicNone);

@@ -1,6 +1,6 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * This file is part of openfx-io <https://github.com/NatronGitHub/openfx-io>,
- * (C) 2018-2021 The Natron Developers
+ * (C) 2018-2026 The Natron Developers
  * (C) 2013-2018 INRIA
  *
  * openfx-io is free software: you can redistribute it and/or modify
@@ -129,6 +129,12 @@ enum ETuttlePluginComponents {
     "Compression level for zip/deflate compression, on a scale from 1 (fastest, minimal compression) to 9 (slowest, maximal compression) [EXR, TIFF or Zfile w/ zip or zips comp.]"
 #define kParamOutputZIPCompressionLevelDefault 4
 
+#define kParamOutputZSTDCompressionLevel "zstdCompressionLevel"
+#define kParamOutputZSTDCompressionLevelLabel "ZSTD Compression Level"
+#define kParamOutputZSTDCompressionLevelHint \
+    "Compression level for Zstandard compression, on a scale from 1 (fastest, minimal compression) to 22 (slowest, maximal compression) [EXR w/ ZSTD comp.]"
+#define kParamOutputZSTDCompressionLevelDefault 5
+
 #define kParamOutputOrientation "orientation"
 #define kParamOutputOrientationLabel "Orientation"
 #define kParamOutputOrientationHint                                                     \
@@ -189,6 +195,9 @@ enum EOutputOrientation {
 #define kParamOutputCompressionOptionB44a "b44a", "Lossy 4-by-4 pixel block compression, flat fields are compressed more [EXR]", "b44a"
 #define kParamOutputCompressionOptionDWAa "dwaa", "lossy DCT based compression, in blocks of 32 scanlines. More efficient for partial buffer access. [EXR]", "dwaa"
 #define kParamOutputCompressionOptionDWAb "dwab", "lossy DCT based compression, in blocks of 256 scanlines. More efficient space wise and faster to decode full frames than DWAA. [EXR]", "dwab"
+#define kParamOutputCompressionOptionHTJ2K256 "htj2k256", "JPEG 2000 lossless coding, in blocks of 256 scanlines and using the High-Throughput (HT) blocker. Offers both speed and high-coding efficiency. Requires OpenImageIO built with OpenEXR >= 3.4, falls back to zip otherwise. [EXR]", "htj2k256"
+#define kParamOutputCompressionOptionHTJ2K32 "htj2k32", "JPEG 2000 lossless coding, in blocks of 32 scanlines and using the High-Throughput (HT) blocker. Offers both speed and high-coding efficiency. Requires OpenImageIO built with OpenEXR >= 3.4, falls back to zip otherwise. [EXR]", "htj2k32"
+#define kParamOutputCompressionOptionZSTD "zstd", "Zstandard compression (lossless). Requires OpenImageIO built with OpenEXR >= 3.5, falls back to zip otherwise. [EXR]", "zstd"
 #define kParamOutputCompressionOptionLZW "lzw", "Lempel-Ziv Welsch compression (lossless) [TIFF]", "lzw"
 #define kParamOutputCompressionOptionCCITTRLE "ccittrle", "CCITT modified Huffman RLE (lossless) [TIFF]", "ccittrle"
 #define kParamOutputCompressionOptionJPEG "jpeg", "JPEG [TIFF]", "jpeg"
@@ -209,7 +218,11 @@ enum EParamCompression {
     eParamCompressionLZW,
     eParamCompressionCCITTRLE,
     eParamCompressionJPEG,
-    eParamCompressionPACKBITS
+    eParamCompressionPACKBITS,
+    // new options must be appended at the end, to keep the index of existing ones
+    eParamCompressionHTJ2K256,
+    eParamCompressionHTJ2K32,
+    eParamCompressionZSTD,
 };
 
 #define kParamTileSize "tileSize"
@@ -389,6 +402,7 @@ private:
     IntParam* _quality;
     DoubleParam* _dwaCompressionLevel;
     IntParam* _zipCompressionLevel;
+    IntParam* _zstdCompressionLevel;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
     ChoiceParam* _textureformat;
@@ -407,6 +421,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _quality(NULL)
     , _dwaCompressionLevel(NULL)
     , _zipCompressionLevel(NULL)
+    , _zstdCompressionLevel(NULL)
     , _orientation(NULL)
     , _compression(NULL)
     , _textureformat(NULL)
@@ -422,6 +437,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _quality = fetchIntParam(kParamOutputQuality);
     _dwaCompressionLevel = fetchDoubleParam(kParamOutputDWACompressionLevel);
     _zipCompressionLevel = fetchIntParam(kParamOutputZIPCompressionLevel);
+    _zstdCompressionLevel = fetchIntParam(kParamOutputZSTDCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
     _textureformat = fetchChoiceParam(kParamOutputTextureformat);
@@ -846,6 +862,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
                            output->supports("quality"));
         bool hasDWA = false;
         bool hasZIP = false;
+        bool hasZSTD = false;
         bool isEXR = strcmp(output->format_name(), "openexr") == 0;
         bool isTIFF = strcmp(output->format_name(), "tiff") == 0;
         if (isEXR || isTIFF) {
@@ -857,10 +874,12 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
             if (isEXR) {
                 hasDWA = (compression == eParamCompressionDWAa) || (compression == eParamCompressionDWAb);
                 hasZIP |= (compression == eParamCompressionZips);
+                hasZSTD = (compression == eParamCompressionZSTD);
             }
         }
         _dwaCompressionLevel->setIsSecretAndDisabled(!hasDWA);
         _zipCompressionLevel->setIsSecretAndDisabled(!hasZIP);
+        _zstdCompressionLevel->setIsSecretAndDisabled(!hasZSTD);
         _quality->setIsSecretAndDisabled(!hasQuality);
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
@@ -877,6 +896,7 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         _quality->setIsSecretAndDisabled(true);
         _dwaCompressionLevel->setIsSecretAndDisabled(true);
         _zipCompressionLevel->setIsSecretAndDisabled(true);
+        _zstdCompressionLevel->setIsSecretAndDisabled(true);
         if (_views) {
             _views->setIsSecretAndDisabled(true);
         }
@@ -963,7 +983,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         return;
     }
 
-    OIIO_NAMESPACE::TypeDesc oiioBitDepth;
+    OIIO::TypeDesc oiioBitDepth;
     // size_t sizeOfChannel = 0;
     int bitsPerSample = 0;
     int finalBitDepth_i;
@@ -1036,6 +1056,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     if (!_zipCompressionLevel->getIsSecret()) {
         _zipCompressionLevel->getValue(zipCompressionLevel);
     }
+    int zstdCompressionLevel = kParamOutputZSTDCompressionLevelDefault;
+    if (!_zstdCompressionLevel->getIsSecret()) {
+        _zstdCompressionLevel->getValue(zstdCompressionLevel);
+    }
     int orientation;
     _orientation->getValue(orientation);
     int compression_i;
@@ -1085,6 +1109,15 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     case eParamCompressionDWAb: // EXR
         compression = "dwab";
+        break;
+    case eParamCompressionHTJ2K256: // EXR
+        compression = "htj2k256";
+        break;
+    case eParamCompressionHTJ2K32: // EXR
+        compression = "htj2k32";
+        break;
+    case eParamCompressionZSTD: // EXR
+        compression = "zstd";
         break;
     case eParamCompressionLZW: // TIFF
         compression = "lzw";
@@ -1193,6 +1226,10 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #else
         spec.attribute("CompressionQuality", zipCompressionLevel);
         spec.attribute("tiff:zipquality", zipCompressionLevel);
+#endif
+    } else if (!_zstdCompressionLevel->getIsSecret()) {
+#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
+        compression += ':' + std::to_string(zstdCompressionLevel); // zstd compression level 1 to 22 range
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
@@ -1716,6 +1753,17 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         }
     }
     {
+        IntParamDescriptor* param = desc.defineIntParam(kParamOutputZSTDCompressionLevel);
+        param->setLabel(kParamOutputZSTDCompressionLevelLabel);
+        param->setHint(kParamOutputZSTDCompressionLevelHint);
+        param->setRange(1, 22);
+        param->setDisplayRange(1, 22);
+        param->setDefault(kParamOutputZSTDCompressionLevelDefault);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputOrientation);
         param->setLabel(kParamOutputOrientationLabel);
         param->setHint(kParamOutputOrientationHint);
@@ -1774,6 +1822,12 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->appendOption(kParamOutputCompressionOptionJPEG);
         assert(param->getNOptions() == eParamCompressionPACKBITS);
         param->appendOption(kParamOutputCompressionOptionPACKBITS);
+        assert(param->getNOptions() == eParamCompressionHTJ2K256);
+        param->appendOption(kParamOutputCompressionOptionHTJ2K256);
+        assert(param->getNOptions() == eParamCompressionHTJ2K32);
+        param->appendOption(kParamOutputCompressionOptionHTJ2K32);
+        assert(param->getNOptions() == eParamCompressionZSTD);
+        param->appendOption(kParamOutputCompressionOptionZSTD);
         param->setDefault(eParamCompressionAuto);
         if (page) {
             page->addChild(*param);
