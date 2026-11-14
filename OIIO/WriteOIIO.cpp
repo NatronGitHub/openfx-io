@@ -31,6 +31,8 @@
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imageio.h>
 #include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 
@@ -242,23 +244,23 @@ enum EParamTileSize {
     eParamTileSize512
 };
 
-#define kParamOutputTextureformat "textureformat"
+#define kParamOutputTextureformat "textureFormat"
 #define kParamOutputTextureformatLabel "Texture Format"
-#define kParamOutputTextureformatHint ""
-
-#define kParamOutputTextureformatOptionNone "None", "", "0"
-#define kParamOutputTextureformatOptionPlain "Plain Texture", "MIP-mapped OpenEXR files", "Plain Texture"
-#define kParamOutputTextureformatOptionLatLong "LatLong Environment", "Latlong Environment OpenEXR environment maps.", "LatLong Environment"
-#define kParamOutputTextureformatOptionCubeFace "CubeFace Environment", "CubeFace Environment OpenEXR environment maps.", "CubeFace Environment"
-#define kParamOutputTextureformatOptionShadow "Shadow", "Force one level for shadow maps", "Shadow"
+#define kParamOutputTextureformatHint                                                                      \
+    "Write the image as a tiled, MIP-mapped texture, as made by OpenImageIO's maketx. "                     \
+    "Only available for EXR, with a single layer and view. Uses the Tile Size param (64x64 if scan-line based)." \
+    " [EXR]"
+#define kParamOutputTextureformatOptionNone "None", "Write a regular image.", "none"
+#define kParamOutputTextureformatOptionPlain "Plain Texture", "Ordinary MIP-mapped 2D texture (maketx default).", "texture"
+#define kParamOutputTextureformatOptionLatLong "LatLong Environment", "MIP-mapped latitude-longitude environment map (maketx --envlatl).", "envlatl"
+#define kParamOutputTextureformatOptionShadow "Shadow", "Shadow map (maketx --shadow).", "shadow"
 
 enum EParamTextureformat {
     eParamTextureformatNone = 0,
     eParamTextureformatPlain,
     eParamTextureformatLatLong,
-    eParamTextureformatCubeFace,
     eParamTextureformatShadow
-}
+};
 
 
 #define kParamProcessAllLayers "processAllLayers"
@@ -916,6 +918,8 @@ struct WriteOIIOEncodePlanesData {
     auto_ptr<ImageOutput> output;
 #endif
     vector<ImageSpec> specs;
+    bool makeTexture = false;
+    ImageBufAlgo::MakeTextureMode textureMode = ImageBufAlgo::MakeTxTexture;
 };
 
 void*
@@ -1065,9 +1069,6 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     int compression_i;
     _compression->getValue(compression_i);
     string compression;
-    int textureformat_i;
-    _textureformat->getValue(textureformat_i);
-    string textureformat;
 
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto: {
@@ -1133,20 +1134,6 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
-    switch ((EParamTextureformat)textureformat_i) {
-    case eParamTextureformatPlain:
-        textureformat = "Plain Texture";
-        break;
-    case eParamTextureformatCubeFace:
-        textureformat = "CubeFace Environment";
-        break;
-    case eParamTextureformatLatLong:
-        textureformat = "LatLong Environment";
-        break;
-    case eParamTextureformatShadow:
-        textureformat = "Shadow";
-        break;
-    }
     
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
@@ -1233,7 +1220,6 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
-    spec.attribute("textureformat", textureformat);
     if (!compression.empty()) { // some formats have a good value for the default compression
         spec.attribute("compression", compression);
     }
@@ -1493,6 +1479,41 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
             throwSuiteStatusException(kOfxStatFailed);
         }
     }
+    int textureformat_i = eParamTextureformatNone;
+    if (!_textureformat->getIsSecret()) {
+        _textureformat->getValue(textureformat_i);
+    }
+    if (textureformat_i != eParamTextureformatNone) {
+        // Textures are written by ImageBufAlgo::make_texture() in encodePart(), which
+        // creates the tiled, MIP-mapped file itself.
+        if (data->specs.size() != 1) {
+            setPersistentMessage(Message::eMessageError, "", "Texture output only supports writing a single layer and view.");
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+        data->makeTexture = true;
+        switch ((EParamTextureformat)textureformat_i) {
+        case eParamTextureformatLatLong:
+            data->textureMode = ImageBufAlgo::MakeTxEnvLatl;
+            break;
+        case eParamTextureformatShadow:
+            if (data->specs[0].nchannels != 1) {
+                setPersistentMessage(Message::eMessageError, "", "Shadow maps require a single-channel image (e.g. depth or alpha).");
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            data->textureMode = ImageBufAlgo::MakeTxShadow;
+            break;
+        case eParamTextureformatPlain:
+        default:
+            data->textureMode = ImageBufAlgo::MakeTxTexture;
+            break;
+        }
+
+        return;
+    }
     // Some formats only support opening all subimages at once.
     // See https://openimageio.readthedocs.io/en/stable/imageoutput.html
     if (!data->output->open(filename, data->specs.size(), &data->specs.front())) {
@@ -1513,6 +1534,39 @@ WriteOIIOPlugin::encodePart(void* user_data,
 {
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
+    if (data->makeTexture) {
+        assert(planeIndex == 0);
+        const ImageSpec& outSpec = data->specs[planeIndex];
+        ImageSpec srcSpec(outSpec.width, outSpec.height, outSpec.nchannels, TypeDesc::FLOAT);
+        srcSpec.x = outSpec.x;
+        srcSpec.y = outSpec.y;
+        srcSpec.full_x = outSpec.full_x;
+        srcSpec.full_y = outSpec.full_y;
+        srcSpec.full_width = outSpec.full_width;
+        srcSpec.full_height = outSpec.full_height;
+        srcSpec.channelnames = outSpec.channelnames;
+        srcSpec.alpha_channel = outSpec.alpha_channel;
+        ImageBuf src(srcSpec);
+        // do not use auto-stride as the buffer may have more components that what we want to write
+        src.set_pixels(src.roi(), TypeDesc::FLOAT,
+                       (const char*)pixelData + (outSpec.height - 1) * rowBytes, // invert y
+                       sizeof(float) * pixelDataNComps, // xstride
+                       -rowBytes); // ystride
+        // The output spec carries the data format, tile size, compression and metadata.
+        ImageSpec config = outSpec;
+        if (config.tile_width == 0 || config.tile_height == 0) {
+            config.tile_width = 64;
+            config.tile_height = 64;
+            config.tile_depth = 1;
+        }
+        std::stringstream err;
+        if (!ImageBufAlgo::make_texture(data->textureMode, src, filename, config, &err)) {
+            setPersistentMessage(Message::eMessageError, "", err.str());
+            throwSuiteStatusException(kOfxStatFailed);
+        }
+
+        return;
+    }
     if (planeIndex != 0) {
         if (!data->output->open(filename, data->specs[planeIndex], ImageOutput::AppendSubimage)) {
             setPersistentMessage(Message::eMessageError, "", data->output->geterror());
@@ -1539,7 +1593,9 @@ WriteOIIOPlugin::endEncodeParts(void* user_data)
 {
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
-    data->output->close();
+    if (!data->makeTexture) {
+        data->output->close();
+    }
 }
 
 bool
@@ -1843,8 +1899,6 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->appendOption(kParamOutputTextureformatOptionPlain);
         assert(param->getNOptions() == eParamTextureformatLatLong);
         param->appendOption(kParamOutputTextureformatOptionLatLong);
-        assert(param->getNOptions() == eParamTextureformatCubeFace);
-        param->appendOption(kParamOutputTextureformatOptionCubeFace);
         assert(param->getNOptions() == eParamTextureformatShadow);
         param->appendOption(kParamOutputTextureformatOptionShadow);
         param->setDefault(eParamTextureformatNone);
