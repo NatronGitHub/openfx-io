@@ -270,7 +270,6 @@ enum RawHighlightModeEnum {
 #define kParamRawDemosaicDCB "DCB", "DCB interpolation.", "dcb"
 #define kParamRawDemosaicAHDMod "AHD-Mod", "Modified AHD interpolation by Paul Lee.", "ahdmod"
 #if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 19, 0) && !defined(OFX_IO_LIBRAW_RUNTIME_DEMOSAIC_CAPS)
-#pragma message WARN("Some demosaicing algorithms (AFD, VCD, Mixed, LLMSE, AMaZE) will not be available because LibRaw is more recent than 0.18.3.")
 #define WARN_DEMOSAIC " Not available with this version of LibRaw (" LIBRAW_VERSION_STR "), AHD will be used instead."
 #else
 #define WARN_DEMOSAIC
