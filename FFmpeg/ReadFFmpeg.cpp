@@ -265,7 +265,7 @@ ReadFFmpegPlugin::guessParamsFromFilename(const string& filename,
                                           int* componentCount)
 {
     assert(colorspace && filePremult && components && componentCount);
-    FFmpegFile* file = _manager.get(this, filename);
+    auto file = _manager.get(this, filename);
     if (!file) {
         // Clear all opened files by this plug-in since the user changed the selected file/sequence
         _manager.clear(this);
@@ -335,7 +335,7 @@ ReadFFmpegPlugin::decode(const string& filename,
                          int pixelComponentCount,
                          int rowBytes)
 {
-    FFmpegFile* file = _manager.getOrCreate(this, filename);
+    auto file = _manager.getOrCreate(this, filename);
 
     if (file && file->isInvalid()) {
         setPersistentMessage(Message::eMessageError, "", file->getError());
@@ -442,7 +442,7 @@ ReadFFmpegPlugin::getSequenceTimeDomain(const string& filename,
 
     int width, height, frames;
     double ap;
-    FFmpegFile* file = _manager.getOrCreate(this, filename);
+    auto file = _manager.getOrCreate(this, filename);
     if (!file || file->isInvalid()) {
         range.min = range.max = 0.;
 
@@ -462,7 +462,7 @@ ReadFFmpegPlugin::getFrameRate(const string& filename,
 {
     assert(fps);
 
-    FFmpegFile* file = _manager.getOrCreate(this, filename);
+    auto file = _manager.getOrCreate(this, filename);
     if (!file || file->isInvalid()) {
         return false;
     }
@@ -484,7 +484,7 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
                                  int* tile_height)
 {
     assert(bounds && par);
-    FFmpegFile* file = _manager.getOrCreate(this, filename);
+    auto file = _manager.getOrCreate(this, filename);
     if (!file || file->isInvalid()) {
         if (error && file) {
             *error = file->getError();

@@ -37,6 +37,7 @@
 #include <list>
 #include <locale>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 extern "C" {
@@ -144,6 +145,16 @@ private:
         AVFrame* _avIntermediateFrame; // decode into this if an image conversion is required
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
+        // Source/destination parameters the cached _convertCtx was created for,
+        // used to detect when it must be rebuilt (e.g. if the frame dimensions,
+        // pixel format or color range change mid-stream).
+        AVPixelFormat _convertCtxSrcPixelFormat;
+        int _convertCtxSrcWidth;
+        int _convertCtxSrcHeight;
+        int _convertCtxSrcColorRange;
+        AVPixelFormat _convertCtxDstPixelFormat;
+        int _convertCtxDstWidth;
+        int _convertCtxDstHeight;
 
         int _fpsNum;
         int _fpsDen;
@@ -185,9 +196,17 @@ private:
             , _avIntermediateFrame(nullptr)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
+            , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
+            , _convertCtxSrcWidth(0)
+            , _convertCtxSrcHeight(0)
+            , _convertCtxSrcColorRange(AVCOL_RANGE_UNSPECIFIED)
+            , _convertCtxDstPixelFormat(AV_PIX_FMT_NONE)
+            , _convertCtxDstWidth(0)
+            , _convertCtxDstHeight(0)
             , _fpsNum(1)
             , _fpsDen(1)
             , _startPTS(0)
+            , _startDTS(0)
             , _frames(0)
             , _ptsSeen(false)
             , _timestampField(&AVPacket::pts)
@@ -220,7 +239,11 @@ private:
         ~Stream()
         {
             if (_avFrame) {
-                av_free(_avFrame);
+                av_frame_free(&_avFrame);
+            }
+
+            if (_avIntermediateFrame) {
+                av_frame_free(&_avIntermediateFrame);
             }
 
             if (_codecContext) {
@@ -257,7 +280,7 @@ private:
             // guard against division by zero
             assert(denominator);
 
-            return _startPTS + denominator ? (numerator / denominator) : numerator;
+            return _startPTS + (denominator ? (numerator / denominator) : numerator);
         }
 
         int ptsToFrame(int64_t pts) const
@@ -539,8 +562,11 @@ private:
 };
 
 class FFmpegFileManager {
-    /// For each plug-in instance, a list of opened files
-    typedef std::map<void const*, std::list<FFmpegFile*>> FilesMap;
+    /// For each plug-in instance, a list of opened files.
+    /// Files are held by shared_ptr so a caller that obtained a file via get()/getOrCreate()
+    /// keeps it alive for the duration of its use, even if clear() or invalid-eviction
+    /// removes it from the map on another thread. This prevents use-after-free during decode.
+    typedef std::map<void const*, std::list<std::shared_ptr<FFmpegFile>>> FilesMap;
     mutable FilesMap _files;
     mutable FFmpegFile::Mutex* _lock;
 
@@ -553,8 +579,8 @@ public:
 
     void clear(void const* plugin);
 
-    FFmpegFile* get(void const* plugin, const std::string& filename) const;
-    FFmpegFile* getOrCreate(void const* plugin, const std::string& filename) const;
+    std::shared_ptr<FFmpegFile> get(void const* plugin, const std::string& filename) const;
+    std::shared_ptr<FFmpegFile> getOrCreate(void const* plugin, const std::string& filename) const;
 };
 
 #endif /* defined(__Io__FFmpegHandler__) */
