@@ -576,7 +576,7 @@ ReadEXRPlugin::decode(const string& filename,
             DecodingChannelsMap d;
 
             /// This line means we only support FLOAT dst images with the RGBA format.
-            d.buf = (float*)((char*)pixelData + (size_t)(y - roi.y1) * (size_t)rowBytes) + (int)it->first;
+            d.buf = (float*)((char*)pixelData + (ptrdiff_t)(y - roi.y1) * (ptrdiff_t)rowBytes) + (int)it->first;
 
             d.subsampled = it->second == "BY" || it->second == "RY";
             d.channelName = it->second;
