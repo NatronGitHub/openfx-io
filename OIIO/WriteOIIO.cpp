@@ -1480,7 +1480,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
     // do not use auto-stride as the buffer may have more components that what we want to write
     std::size_t xStride = format.size() * pixelDataNComps;
     data->output->write_image(format,
-                              (char*)pixelData + (data->specs[planeIndex].height - 1) * rowBytes, // invert y
+                              (char*)pixelData + (size_t)(data->specs[planeIndex].height - 1) * (size_t)rowBytes, // invert y
                               xStride, // xstride
                               -rowBytes, // ystride
                               AutoStride // zstride
