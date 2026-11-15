@@ -185,6 +185,9 @@ protected:
      * evaluate animated parameters at getRenderTime(). GenericReader then sets the output as
      * frame varying (kOfxImageEffectFrameVarying) in getClipPreferences(), so that the host
      * renders every frame instead of reusing a single image.
+     * The host only calls getClipPreferences() again when a param listed in
+     * kOfxImageEffectPropClipPreferencesSlaveParam changes: a reader whose answer depends on
+     * whether some params are animated must add these params to that list (desc.addClipPreferencesSlaveParam()).
      **/
     virtual bool isOutputFrameVarying() const { return false; }
 
@@ -194,6 +197,8 @@ protected:
      * `time` argument, which is the time in the file sequence (constant for a held still image),
      * this is the time to use to evaluate animated parameters of the reader. Safe with concurrent
      * renders: the value is per thread.
+     * Threads started from decode() (e.g. with the OFX multithread suite) do not see it: read it
+     * in decode() and pass it to them.
      **/
     static double getRenderTime();
 
