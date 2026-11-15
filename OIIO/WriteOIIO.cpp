@@ -1480,7 +1480,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         }
     }
     int textureformat_i = eParamTextureformatNone;
-    if (!_textureformat->getIsSecret()) {
+    if (strcmp(data->output->format_name(), "openexr") == 0) { // texture output is EXR-only
         _textureformat->getValue(textureformat_i);
     }
     if (textureformat_i != eParamTextureformatNone) {
@@ -1549,7 +1549,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
         ImageBuf src(srcSpec);
         // do not use auto-stride as the buffer may have more components that what we want to write
         src.set_pixels(src.roi(), TypeDesc::FLOAT,
-                       (const char*)pixelData + (outSpec.height - 1) * rowBytes, // invert y
+                       (const char*)pixelData + (ptrdiff_t)(outSpec.height - 1) * (ptrdiff_t)rowBytes, // invert y
                        sizeof(float) * pixelDataNComps, // xstride
                        -rowBytes); // ystride
         // The output spec carries the data format, tile size, compression and metadata.
