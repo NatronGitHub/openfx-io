@@ -1322,8 +1322,17 @@ GenericOCIO::swapColorspaces(double time)
     string outputSpace;
     getInputColorspaceAtTime(time, inputSpace);
     getOutputColorspaceAtTime(time, outputSpace);
-    _inputSpace->setValue(outputSpace);
-    _outputSpace->setValue(inputSpace);
+    // if a param is animated, set a key at the current time rather than its non-animated value
+    if (_inputSpace->getNumKeys() > 0) {
+        _inputSpace->setValueAtTime(time, outputSpace);
+    } else {
+        _inputSpace->setValue(outputSpace);
+    }
+    if (_outputSpace->getNumKeys() > 0) {
+        _outputSpace->setValueAtTime(time, inputSpace);
+    } else {
+        _outputSpace->setValue(inputSpace);
+    }
     // update the choice menus from the new string values
     refreshInputAndOutputState(time);
 #else
