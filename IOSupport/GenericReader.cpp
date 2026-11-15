@@ -1827,9 +1827,6 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 return;
             }
 
-            if (opaqueAlpha) {
-                setOpaqueAlpha(renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
-            }
 
             /// do the color-space conversion
             if (!isOCIOIdentity && isColor) {
@@ -1849,6 +1846,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 DBG(std::printf("OCIO (tmp in-place)\n"));
                 _ocio->apply(args.time, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
 #endif
+            }
+
+            // after the colorspace conversion, which may also modify the alpha channel
+            if (opaqueAlpha) {
+                setOpaqueAlpha(renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
             }
 
             if (kSupportsRenderScale && (downscaleLevels > 0)) {
