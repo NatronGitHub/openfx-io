@@ -140,7 +140,7 @@ enum ETuttlePluginComponents {
 #define kParamOutputLineOrderHint "Order in which the scanlines (or tiles) are stored in the file. Only matters for downstream tools that depend on the storage order; the image itself is the same. [EXR]"
 
 #define kParamOutputLineOrderOptionIncreasingY "increasingY", "First scanline stored in the file is the top of the image (lowest y in the EXR data window). This is the default.", "increasingY"
-#define kParamOutputLineOrderOptionDecreasingY "decreasingY", "First scanline stored in the file is the bottom of the image (highest y in the EXR data window).", "decreasingY"
+#define kParamOutputLineOrderOptionDecreasingY "decreasingY", "First scanline stored in the file is the bottom of the image (highest y in the EXR data window). Requires OpenImageIO 2.6.2 or later.", "decreasingY"
 // randomY is not offered: WriteOIIO always writes tiles in order, so it would not be meaningful.
 
 enum EParamLineOrder {
@@ -1132,6 +1132,16 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         lineOrder = "increasingY";
         break;
     case eParamLineOrderDecreasingY:
+#if OIIO_VERSION < 20602
+        // OpenImageIO < 2.6.2 reads out of bounds when writing decreasingY EXR files
+        // (fixed by https://github.com/AcademySoftwareFoundation/OpenImageIO/pull/4215)
+        if (strcmp(data->output->format_name(), "openexr") == 0) {
+            setPersistentMessage(Message::eMessageError, "", "Line Order decreasingY requires OpenImageIO 2.6.2 or later.");
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+#endif
         lineOrder = "decreasingY";
         break;
     }
@@ -1221,7 +1231,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
-    if (!_lineOrder->getIsSecret() && !lineOrder.empty()) { // EXR only
+    if (isEXR && !lineOrder.empty()) {
         spec.attribute("openexr:lineOrder", lineOrder);
     }
     if (!compression.empty()) { // some formats have a good value for the default compression
