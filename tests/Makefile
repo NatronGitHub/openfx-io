@@ -33,19 +33,36 @@ FMT_INC   := $(shell $(PKGCONF) --cflags fmt 2>/dev/null)
 
 # Opt-in RAW support: `make test-ofx WITH_LIBRAW=1`.
 # Homebrew's libraw (0.22.x) headers #include <omp.h>, and Apple clang has no
-# OpenMP out of the box, so this also wires in Homebrew's libomp. ReadOIIO builds
+# OpenMP out of the box, so this also wires in libomp (Homebrew or MacPorts). ReadOIIO builds
 # against libraw >= 0.19 with some advanced demosaicing algorithms disabled.
 WITH_LIBRAW ?= 0
 ifeq ($(WITH_LIBRAW),1)
   OFX_PKGS += libraw
   OFX_DEFS += -DOFX_IO_USING_LIBRAW
+  # libomp location: Homebrew (brew --prefix libomp), or MacPorts (/opt/local/{include,lib}/libomp)
   LIBOMP_PREFIX := $(shell brew --prefix libomp 2>/dev/null)
-  OMP_CFLAGS := -Xpreprocessor -fopenmp $(if $(LIBOMP_PREFIX),-I$(LIBOMP_PREFIX)/include,)
-  OMP_LDLIBS := $(if $(LIBOMP_PREFIX),-L$(LIBOMP_PREFIX)/lib,) -lomp
+  ifneq ($(LIBOMP_PREFIX),)
+    LIBOMP_INC := $(LIBOMP_PREFIX)/include
+    LIBOMP_LIB := $(LIBOMP_PREFIX)/lib
+  else ifneq ($(wildcard /opt/local/lib/libomp/libomp.dylib),)
+    LIBOMP_INC := /opt/local/include/libomp
+    LIBOMP_LIB := /opt/local/lib/libomp
+  endif
+  OMP_CFLAGS := -Xpreprocessor -fopenmp $(if $(LIBOMP_INC),-I$(LIBOMP_INC),)
+  OMP_LDLIBS := $(if $(LIBOMP_LIB),-L$(LIBOMP_LIB),) -lomp
 endif
 
+# Work around a oneTBB 2023.2 exit crash (seen with MacPorts' OpenImageIO, which
+# links TBB, on macOS 27): libtbb dlopen()s libtbbmalloc and frees memory through
+# it from a static destructor at exit, after dyld has already unloaded it. Any
+# program that links TBB but never uses it, such as these tests, then segfaults
+# in tbb::detail::r1::governor::release_resources() after main() returns. Linking
+# libtbbmalloc directly keeps it loaded until libtbb is finalized. (A host that
+# dlopen()s the IO.ofx bundle is not affected.)
+TBBMALLOC_LIBS := $(shell $(PKGCONF) --exists tbb 2>/dev/null && echo "$$($(PKGCONF) --libs-only-L tbb) -ltbbmalloc")
+
 OFX_CXXFLAGS := -std=c++17 -O0 -g $(OFX_DEFS) $(OFX_INC) $(shell $(PKGCONF) --cflags $(OFX_PKGS)) $(FMT_INC) $(OMP_CFLAGS)
-OFX_LIBS  := $(shell $(PKGCONF) --libs $(OFX_PKGS)) $(OMP_LDLIBS)
+OFX_LIBS  := $(shell $(PKGCONF) --libs $(OFX_PKGS)) $(OMP_LDLIBS) $(TBBMALLOC_LIBS)
 
 # OFX C++ Support library (host-facing plugin runtime); ofxsHWNDInteract.cpp is Windows-only.
 OFX_SUPPORT := \
