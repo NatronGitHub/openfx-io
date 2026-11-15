@@ -87,6 +87,13 @@ NAMESPACE_OFX_IO_ENTER
 #define kOCIOParamOutputSpaceLabel ""
 #endif
 
+#define kOCIOParamInverse "ocioInverse"
+#define kOCIOParamInverseLabel "Inverse"
+#define kOCIOParamInverseHint "Invert the transform: convert from the output colorspace to the input colorspace."
+#define kOCIOParamSwapColorspaces "ocioSwapColorspaces"
+#define kOCIOParamSwapColorspacesLabel "Swap Colorspaces"
+#define kOCIOParamSwapColorspacesHint "Swap the input and output colorspaces."
+
 #define kOCIOParamContext "Context"
 #define kOCIOParamContextLabel "OCIO Context"
 #define kOCIOParamContextHint                                                                                             \
@@ -152,6 +159,11 @@ public:
     bool hasColorspace(const char* name) const;
     void setInputColorspace(const char* name);
     void setOutputColorspace(const char* name);
+    // the colorspaces actually used for processing (input and output are swapped if the optional Inverse param is checked)
+    void getProcessingColorspacesAtTime(double time, std::string& inputSpace, std::string& outputSpace) const;
+    // swap the input and output colorspace params
+    void swapColorspaces(double time);
+    static void describeInContextInverseAndSwap(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page);
 #ifdef OFX_IO_USING_OCIO
     OCIO_NAMESPACE::ConstContextRcPtr getLocalContext(double time) const;
     OCIO_NAMESPACE::ConstConfigRcPtr getConfig() const { return _config; };
@@ -199,6 +211,7 @@ private:
     OFX::StringParam* _ocioConfigFile; //< filepath of the OCIO config file
     OFX::StringParam* _inputSpace;
     OFX::StringParam* _outputSpace;
+    OFX::BooleanParam* _inverse; //< optional: swap input and output colorspaces when processing
 #ifdef OFX_OCIO_CHOICE
     bool _choiceIsOk; //< true if the choice menu contains the right entries
     std::string _choiceFileName; //< the name of the OCIO config file that was used for the choice menu

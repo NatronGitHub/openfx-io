@@ -53,7 +53,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription "ColorSpace transformation using OpenColorIO configuration file."
 #define kPluginIdentifier "fr.inria.openfx.OCIOColorSpace"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -683,6 +683,11 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
     }
 #endif
 
+    if (paramName == kOCIOParamSwapColorspaces) {
+        _ocio->swapColorspaces(args.time);
+        return;
+    }
+
     return _ocio->changedParam(args, paramName);
 }
 
@@ -758,6 +763,7 @@ OCIOColorSpacePluginFactory::describeInContext(ImageEffectDescriptor& desc,
     // insert OCIO parameters
     GenericOCIO::describeInContextInput(desc, context, page, OCIO::ROLE_REFERENCE);
     GenericOCIO::describeInContextOutput(desc, context, page, OCIO::ROLE_REFERENCE);
+    GenericOCIO::describeInContextInverseAndSwap(desc, context, page);
     GenericOCIO::describeInContextContext(desc, context, page);
     {
         PushButtonParamDescriptor* param = desc.definePushButtonParam(kOCIOHelpButton);
