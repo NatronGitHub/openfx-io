@@ -1407,7 +1407,8 @@ setOpaqueAlpha(const OfxRectI& renderWindow,
     const OfxRectI w = { (std::max)(renderWindow.x1, bounds.x1), (std::max)(renderWindow.y1, bounds.y1),
                          (std::min)(renderWindow.x2, bounds.x2), (std::min)(renderWindow.y2, bounds.y2) };
     for (int y = w.y1; y < w.y2; ++y) {
-        float* pix = (float*)((char*)pixelData + (size_t)(y - bounds.y1) * (size_t)rowBytes) + (size_t)(w.x1 - bounds.x1) * pixelComponentCount + 3;
+        // rowBytes may be negative (OFX images may be stored bottom-up): use signed offsets
+        float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * (ptrdiff_t)rowBytes) + (ptrdiff_t)(w.x1 - bounds.x1) * pixelComponentCount + 3;
         for (int x = w.x1; x < w.x2; ++x, pix += pixelComponentCount) {
             *pix = 1.f;
         }
