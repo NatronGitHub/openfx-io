@@ -1393,6 +1393,27 @@ public:
     }
 };
 
+// Set the alpha channel of an RGBA float buffer to the white point (1) over renderWindow.
+// Used for files whose premultiplication state is Opaque: the OpenFX spec defines kOfxImageOpaque as "the image is
+// opaque and so has no premultiplication state, but the alpha component in all pixels is set to the white point".
+static void
+setOpaqueAlpha(const OfxRectI& renderWindow,
+               float* pixelData,
+               const OfxRectI& bounds,
+               int pixelComponentCount,
+               int rowBytes)
+{
+    assert(pixelComponentCount == 4);
+    const OfxRectI w = { (std::max)(renderWindow.x1, bounds.x1), (std::max)(renderWindow.y1, bounds.y1),
+                         (std::min)(renderWindow.x2, bounds.x2), (std::min)(renderWindow.y2, bounds.y2) };
+    for (int y = w.y1; y < w.y2; ++y) {
+        float* pix = (float*)((char*)pixelData + (size_t)(y - bounds.y1) * (size_t)rowBytes) + (size_t)(w.x1 - bounds.x1) * pixelComponentCount + 3;
+        for (int x = w.x1; x < w.x2; ++x, pix += pixelComponentCount) {
+            *pix = 1.f;
+        }
+    }
+}
+
 void
 GenericReaderPlugin::render(const RenderArguments& args)
 {
@@ -1726,6 +1747,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
         //   OR
         //   - premult is unpremultiplied
         bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
+        // An Opaque file has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
+        const bool opaqueAlpha = (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
+        if (opaqueAlpha) {
+            mustPremult = false;
+        }
 
         if (!mustPremult && isOCIOIdentity && (!kSupportsRenderScale || (renderMipmapLevel == 0))) {
             // no colorspace conversion, no premultiplication, no proxy, just read file
@@ -1735,6 +1761,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
             } else {
                 decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
+            }
+            if (opaqueAlpha) {
+                setOpaqueAlpha(args.renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
             }
         } else {
             int pixelBytes;
@@ -1795,6 +1824,10 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
             if (abort()) {
                 return;
+            }
+
+            if (opaqueAlpha) {
+                setOpaqueAlpha(renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
             }
 
             /// do the color-space conversion
