@@ -59,7 +59,9 @@ endif
 # in tbb::detail::r1::governor::release_resources() after main() returns. Linking
 # libtbbmalloc directly keeps it loaded until libtbb is finalized. (A host that
 # dlopen()s the IO.ofx bundle is not affected.)
-TBBMALLOC_LIBS := $(shell $(PKGCONF) --exists tbb 2>/dev/null && echo "$$($(PKGCONF) --libs-only-L tbb) -ltbbmalloc")
+# Only if libtbbmalloc is actually installed next to libtbb.
+TBB_LIBDIR := $(shell $(PKGCONF) --variable=libdir tbb 2>/dev/null)
+TBBMALLOC_LIBS := $(if $(and $(TBB_LIBDIR),$(wildcard $(TBB_LIBDIR)/libtbbmalloc.*)),-L$(TBB_LIBDIR) -ltbbmalloc,)
 
 OFX_CXXFLAGS := -std=c++17 -O0 -g $(OFX_DEFS) $(OFX_INC) $(shell $(PKGCONF) --cflags $(OFX_PKGS)) $(FMT_INC) $(OMP_CFLAGS)
 OFX_LIBS  := $(shell $(PKGCONF) --libs $(OFX_PKGS)) $(OMP_LDLIBS) $(TBBMALLOC_LIBS)
