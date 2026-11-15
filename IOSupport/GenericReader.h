@@ -179,6 +179,24 @@ protected:
                                    OFX::PixelComponentEnum dstPixelComponents,
                                    int dstRowBytes);
 
+    /**
+     * @brief Override and return true if the output may change over time even when the file
+     * sequence is a single still image held before and after, e.g. because decode()/decodePlane()
+     * evaluate animated parameters at getRenderTime(). GenericReader then sets the output as
+     * frame varying (kOfxImageEffectFrameVarying) in getClipPreferences(), so that the host
+     * renders every frame instead of reusing a single image.
+     **/
+    virtual bool isOutputFrameVarying() const { return false; }
+
+    /**
+     * @brief The time of the render action being processed (RenderArguments::time), in host time.
+     * Only meaningful when called from decode() or decodePlane() (it is 0 otherwise). Unlike their
+     * `time` argument, which is the time in the file sequence (constant for a held still image),
+     * this is the time to use to evaluate animated parameters of the reader. Safe with concurrent
+     * renders: the value is per thread.
+     **/
+    static double getRenderTime();
+
 private:
     /**
      * @brief Called when the input image/video file changed.
