@@ -3164,7 +3164,7 @@ ReadOIIOPluginFactory::load()
             extensionsl.push_back(extension);
         }
     }
-    const char* extensions_blacklist[] = {
+    const char* extensions_denylist[] = {
 #if OIIO_VERSION < 10605
         "pfm", // PFM was flipped before 1.6.5
 #endif
@@ -3182,7 +3182,7 @@ ReadOIIOPluginFactory::load()
         "bmp", // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp, which is better handled by ImageMagick/ReadMisc from Arena.ofx
         NULL
     };
-    for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
+    for (const char* const* e = extensions_denylist; *e != NULL; ++e) {
         extensionsl.remove(*e);
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());

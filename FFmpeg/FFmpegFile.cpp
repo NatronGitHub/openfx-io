@@ -146,7 +146,7 @@ struct FilterEntry {
 // Bug 11027 - Nuke write: ffmpeg codec fails has details on individual codecs
 
 // For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
-const FilterEntry kFormatWhitelist[] = {
+const FilterEntry kFormatAllowlist[] = {
     { "3gp", true, true },
     { "3g2", true, true },
     { "avi", true, true },
@@ -177,7 +177,7 @@ const FilterEntry kFormatWhitelist[] = {
 #define TERRIBLE false
 //#define SHOULDWORK true
 #define SHOULDWORK false
-const FilterEntry kCodecWhitelist[] = {
+const FilterEntry kCodecAllowlist[] = {
     // Video codecs.
     { "aic", true, false }, // Apple Intermediate Codec (no encoder)
     { "av1", true, false }, // Alliance for Open Media AV1 (encoders: libaom-av1 librav1e)
@@ -269,38 +269,38 @@ const FilterEntry kCodecWhitelist[] = {
 
 const FilterEntry*
 getEntry(const char* name,
-         const FilterEntry* whitelist,
-         const FilterEntry* blacklist = nullptr)
+         const FilterEntry* allowlist,
+         const FilterEntry* denylist = nullptr)
 {
-    const FilterEntry* iterWhitelist = whitelist;
+    const FilterEntry* iterAllowlist = allowlist;
     const size_t nameLength = strlen(name);
 
     // check for normal mode
-    while (iterWhitelist->name != nullptr) {
-        size_t iteNameLength = strlen(iterWhitelist->name);
+    while (iterAllowlist->name != nullptr) {
+        size_t iteNameLength = strlen(iterAllowlist->name);
         size_t maxLength = (nameLength > iteNameLength) ? nameLength : iteNameLength;
-        if (strncmp(name, iterWhitelist->name, maxLength) == 0) {
-            // Found in whitelist, now check blacklist
-            if (blacklist) {
-                const FilterEntry* iterBlacklist = blacklist;
+        if (strncmp(name, iterAllowlist->name, maxLength) == 0) {
+            // Found in allowlist, now check denylist
+            if (denylist) {
+                const FilterEntry* iterDenylist = denylist;
 
-                while (iterBlacklist->name != nullptr) {
-                    iteNameLength = strlen(iterBlacklist->name);
+                while (iterDenylist->name != nullptr) {
+                    iteNameLength = strlen(iterDenylist->name);
                     maxLength = (nameLength > iteNameLength) ? nameLength : iteNameLength;
-                    if (strncmp(name, iterBlacklist->name, maxLength) == 0) {
-                        // Found in codec whitelist but blacklisted too
+                    if (strncmp(name, iterDenylist->name, maxLength) == 0) {
+                        // Found in codec allowlist but denylisted too
                         return nullptr;
                     }
 
-                    ++iterBlacklist;
+                    ++iterDenylist;
                 }
             }
 
-            // Found in whitelist and not in blacklist
-            return iterWhitelist;
+            // Found in allowlist and not in denylist
+            return iterAllowlist;
         }
 
-        ++iterWhitelist;
+        ++iterAllowlist;
     }
 
     return nullptr;
@@ -308,35 +308,35 @@ getEntry(const char* name,
 } // namespace {
 
 bool
-FFmpegFile::isFormatWhitelistedForReading(const char* formatName)
+FFmpegFile::isFormatAllowedForReading(const char* formatName)
 {
-    const FilterEntry* whitelistEntry = getEntry(formatName, kFormatWhitelist);
+    const FilterEntry* allowlistEntry = getEntry(formatName, kFormatAllowlist);
 
-    return (whitelistEntry && whitelistEntry->enableReader);
+    return (allowlistEntry && allowlistEntry->enableReader);
 }
 
 bool
-FFmpegFile::isFormatWhitelistedForWriting(const char* formatName)
+FFmpegFile::isFormatAllowedForWriting(const char* formatName)
 {
-    const FilterEntry* whitelistEntry = getEntry(formatName, kFormatWhitelist);
+    const FilterEntry* allowlistEntry = getEntry(formatName, kFormatAllowlist);
 
-    return (whitelistEntry && whitelistEntry->enableWriter);
+    return (allowlistEntry && allowlistEntry->enableWriter);
 }
 
 bool
-FFmpegFile::isCodecWhitelistedForReading(const char* codecName)
+FFmpegFile::isCodecAllowedForReading(const char* codecName)
 {
-    const FilterEntry* whitelistEntry = getEntry(codecName, kCodecWhitelist);
+    const FilterEntry* allowlistEntry = getEntry(codecName, kCodecAllowlist);
 
-    return (whitelistEntry && whitelistEntry->enableReader);
+    return (allowlistEntry && allowlistEntry->enableReader);
 }
 
 bool
-FFmpegFile::isCodecWhitelistedForWriting(const char* codecName)
+FFmpegFile::isCodecAllowedForWriting(const char* codecName)
 {
-    const FilterEntry* whitelistEntry = getEntry(codecName, kCodecWhitelist);
+    const FilterEntry* allowlistEntry = getEntry(codecName, kCodecAllowlist);
 
-    return (whitelistEntry && whitelistEntry->enableWriter);
+    return (allowlistEntry && allowlistEntry->enableWriter);
 }
 
 SwsContext*
@@ -861,7 +861,7 @@ FFmpegFile::FFmpegFile(const string& filename)
 
         // skip codecs not in the white list
         // string reason;
-        if (!isCodecWhitelistedForReading(videoCodec->name)) {
+        if (!isCodecAllowedForReading(videoCodec->name)) {
 #if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" disallowed, skipping..." << std::endl;
 #endif

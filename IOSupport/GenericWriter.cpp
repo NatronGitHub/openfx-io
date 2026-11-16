@@ -703,6 +703,12 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             // black (it was zeroed above), and so is the output image (the writer is a no-op).
             auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
+                if (abort()) {
+                    // no data: the callers write nothing when aborted (they check abort() before encoding)
+                    *tmpMemPtr = 0;
+
+                    return;
+                }
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                 throwSuiteStatusException(kOfxStatFailed);
 
@@ -1038,23 +1044,12 @@ GenericWriterPlugin::render(const RenderArguments& args)
             // this case "the plugin should continue operation, but assume the image was
             // black and transparent": encode a black image the size of the render window,
             // instead of passing a NULL pointer and an uninitialized rowBytes to encode().
-            // But don't write black over a file if the render was aborted, or if the input
-            // image should have existed (its RoD intersects the render window: e.g. an
-            // upstream node failed): that would silently replace a good frame.
+            // This applies whatever the input RoD is: hosts also return kOfxStatFailed for a time outside of the
+            // input's frame range, or for a gap in a timeline, while the RoD is that of the project. (When an
+            // upstream node fails, Natron gives an empty RoD.) But don't write over a file if the render was
+            // aborted.
             if (abort()) {
                 return;
-            }
-            {
-                OfxRectD rod = _inputClip->getRegionOfDefinition(time, viewIndex);
-                OfxRectI rodPixel;
-                Coords::toPixelEnclosing(rod, args.renderScale, _inputClip->getPixelAspectRatio(), &rodPixel);
-                OfxRectI overlap;
-                if (!Coords::rectIsEmpty(rodPixel) && intersect(rodPixel, args.renderWindow, &overlap)) {
-                    setPersistentMessage(Message::eMessageError, "", "Input image could not be fetched");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
-                }
             }
             const string& plane = args.planes.front();
             if (doAnyPacking) {
@@ -1088,13 +1083,24 @@ GenericWriterPlugin::render(const RenderArguments& args)
             // the writer is a no-op: the output image is black too
             if (_outputClip && _outputClip->isConnected()) {
                 auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, args.renderView, args.planes.front().c_str()));
-                if (dstImg.get()) {
-                    fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
+                if (!dstImg.get()) {
+                    if (abort()) {
+                        return;
+                    }
+                    setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
                 }
+                fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
             }
         }
 
-        encode(filename, time, viewNames[0], data.srcPixelData, args.renderWindow, pixelAspectRatio, data.pixelComponentsCount, dstNCompsStartIndex, dstNComps, data.rowBytes);
+        // don't write over the file if the render was aborted meanwhile (e.g. while fetching the images)
+        if (abort()) {
+            return;
+        }
+        encode(filename, time, viewNames.begin()->second, data.srcPixelData, args.renderWindow, pixelAspectRatio, data.pixelComponentsCount, dstNCompsStartIndex, dstNComps, data.rowBytes);
     } else {
         /*
            Use the beginEncodeParts/encodePart/endEncodeParts API when there are multiple views/planes to render
@@ -1152,6 +1158,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 } // for each plane
             } // for each view
             if (nChannels == 0) {
+                if (abort()) { // not an error: the host is aborting the render
+                    return;
+                }
                 setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
                 throwSuiteStatusException(kOfxStatFailed);
 
@@ -1200,6 +1209,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 interleaveIndex += dstNComps;
             }
 
+            if (abort()) { // don't write over the file if the render was aborted
+                return;
+            }
             beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
             encodePart(encodeData.getData(), filename, tmpMemPtr, nChannels, 0, tmpRowBytes);
 
@@ -1247,6 +1259,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                     nChannels += dstNComps;
                 }
                 if (nChannels == 0) {
+                    if (abort()) { // not an error: the host is aborting the render
+                        return;
+                    }
                     setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
                     throwSuiteStatusException(kOfxStatFailed);
 
@@ -1296,6 +1311,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 }
 
                 if (view == viewNames.begin()) {
+                    if (abort()) { // don't write over the file if the render was aborted
+                        return;
+                    }
                     beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
                 }
 
@@ -1341,6 +1359,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 } // for each plane
 
                 if (view == viewNames.begin()) {
+                    if (abort()) { // don't write over the file if the render was aborted
+                        return;
+                    }
                     beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
                 }
                 for (vector<ImageData>::iterator it = datas.begin(); it != datas.end(); ++it) {
