@@ -1,7 +1,7 @@
 name: Continuous Integration
 
 # Per push/PR: exactly three full builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64), C++17.
-# Extra variants (debug builds with C++20) only run weekly (if master changed) or on demand.
+# Extra variants (debug builds with C++20) only run nightly (if master changed) or on demand.
 #
 # Frugal CI (NatronGitHub runners are shared by all repos): one run per change. Pushes run CI only on
 # master, RB-* and tags; feature branches run through their pull request. Draft pull requests don't run
@@ -9,7 +9,7 @@ name: Continuous Integration
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: '17 3 * * 1' # weekly, Monday 03:17 UTC: extra variants
+    - cron: '17 3 * * *' # nightly, 03:17 UTC: extra variants (skipped if master didn't change)
   push:
     branches: [master, 'RB-*']
     tags: ['*']
@@ -38,7 +38,7 @@ env:
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # Skip the scheduled run if master didn't change since the previous one (this job only runs on schedule)
+  # Skip the nightly run if master didn't change since the previous one (this job only runs on schedule)
   changes:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
@@ -51,10 +51,10 @@ jobs:
           fetch-depth: 50
       - id: check
         run: |
-          if [ -n "$(git log --since='8 days ago' --format=%h -1)" ]; then
+          if [ -n "$(git log --since='25 hours ago' --format=%h -1)" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No commits in the last 8 days: skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No commits in the last 25 hours: skipping."
           fi
 
   linux:
