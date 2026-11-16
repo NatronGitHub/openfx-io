@@ -431,7 +431,7 @@ main()
         vector<string> errLines;
         unsigned long code = 0;
         DWORD t0 = GetTickCount();
-        RunResult r = runScript("@echo off\nstart \"\" /b ping -n 8 127.0.0.1 >NUL\necho done 1>&2\n", args, &errLines, &code, &error);
+        RunResult r = runScript("@echo off\nstart \"\" /b ping -n 8 127.0.0.1 >NUL\n>&2 echo done\n", args, &errLines, &code, &error);
         DWORD dt = GetTickCount() - t0;
         CHECK(r == eRunOK && code == 0, ("started: " + error).c_str());
         CHECK(dt < 4000, ("does not wait for a started process that keeps stderr open (" + std::to_string(dt) + " ms)").c_str());
