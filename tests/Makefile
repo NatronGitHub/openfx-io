@@ -14,8 +14,9 @@ PKGCONF  ?= pkg-config
 
 FFMPEG_PKGS := libavcodec libavformat libavutil libswscale
 
-# C++17 by default (OpenImageIO 3.x); e.g. `make test CXXSTD=-std=c++20` to test C++20
-CXXSTD   ?= -std=c++17
+# C++17 by default (OpenImageIO 3.x), unless CXX already has a -std option; e.g. `make test CXXSTD=-std=c++20`
+# or `make test CXX="clang++ -std=c++20"` to test C++20
+CXXSTD   ?= $(if $(findstring -std=,$(CXX)),,-std=c++17)
 
 CXXFLAGS += $(CXXSTD) -O2 -g -Wall
 

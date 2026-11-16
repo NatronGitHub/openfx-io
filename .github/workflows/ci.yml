@@ -28,7 +28,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # nightly and manual runs have their own groups, so that they don't cancel (or get cancelled by) master's push CI
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event_name || 'ci' }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
@@ -38,23 +39,26 @@ env:
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # Skip the nightly run if master didn't change since the previous one (this job only runs on schedule)
+  # Skip the nightly run if master didn't change since the last successful nightly run (this job only runs
+  # on schedule). Compare commits rather than dates: commit dates may be older than the push.
   changes:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      actions: read
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
-      - uses: actions/checkout@v4.1.1
-        with:
-          fetch-depth: 50
       - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "$(git log --since='25 hours ago' --format=%h -1)" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+          if [ -n "$last" ] && [ "$last" = "$GITHUB_SHA" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "master ($GITHUB_SHA) didn't change since the last nightly run: skipping."
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No commits in the last 25 hours: skipping."
+            echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
   linux:
@@ -103,6 +107,9 @@ jobs:
         run: make -j4 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="g++ -std=c++20"
       - name: Tests
         run: make -C tests test
+      - name: Tests (C++20)
+        if: env.EXTRA_VARIANTS == 'true'
+        run: make -C tests clean test CXXSTD=-std=c++20
       - name: Generate testing bundle
         run: |
           # Self-contained bundle used for Natron's automated testing.
@@ -207,6 +214,9 @@ jobs:
           ln -sf /opt/local/bin/ffprobe8 "$RUNNER_TEMP/ffbin/ffprobe"
           export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           make -C tests test CXX=clang++ WITH_LIBRAW=1
+          if [ "$EXTRA_VARIANTS" = true ]; then
+            make -C tests clean test CXX=clang++ WITH_LIBRAW=1 CXXSTD=-std=c++20
+          fi
       - name: Verify the plugin loads
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
@@ -217,6 +227,11 @@ jobs:
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
           clang++ -std=c++17 -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
           ./verify_plugin_loads Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx
+          # Loading alone doesn't prove self-containment (the /opt/local paths exist on this runner): the plug-in
+          # and its bundled libraries must only reference @rpath/@loader_path libraries and system libraries.
+          if otool -L Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx Bundle/IO.ofx.bundle/Contents/Libraries/* | grep -E '^[[:space:]]+/(opt|usr/local)/'; then
+            echo "error: the bundle references the libraries above outside of the bundle"; exit 1
+          fi
       - name: Upload artifacts
         if: env.UPLOAD_BUNDLES == 'true'
         uses: actions/upload-artifact@v4.3.1
@@ -266,6 +281,11 @@ jobs:
         run: |
           set -eo pipefail
           make -C tests test
+      - name: Tests (C++20)
+        if: env.EXTRA_VARIANTS == 'true'
+        run: |
+          set -eo pipefail
+          make -C tests clean test CXXSTD=-std=c++20
       - name: Generate testing bundle
         run: |
           set -eo pipefail
