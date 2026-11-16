@@ -1381,7 +1381,8 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 } else {
                     // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
                     // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
-                    const string prefix = ((viewsToRender.size() > 1) && (view != viewsToRender.begin())) ? view->second + "." : string();
+                    // same prefix (view and/or layer name) as the plane's own channel names, e.g. "right." or "Forward."
+                    const string prefix = planeChannels.empty() ? string() : planeChannels[0].substr(0, planeChannels[0].rfind('.') + 1);
                     static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
                         const int c = packingMapping[i];
@@ -1445,7 +1446,8 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 } else {
                     // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
                     // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
-                    const string prefix = ((viewsToRender.size() > 1) && (view != viewsToRender.begin())) ? view->second + "." : string();
+                    // same prefix (view and/or layer name) as the plane's own channel names, e.g. "right." or "Forward."
+                    const string prefix = planeChannels.empty() ? string() : planeChannels[0].substr(0, planeChannels[0].rfind('.') + 1);
                     static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
                         const int c = packingMapping[i];
@@ -1507,7 +1509,8 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 } else {
                     // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
                     // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
-                    const string prefix = ((viewsToRender.size() > 1) && (view != viewsToRender.begin())) ? view->second + "." : string();
+                    // same prefix (view and/or layer name) as the plane's own channel names, e.g. "right." or "Forward."
+                    const string prefix = planeChannels.empty() ? string() : planeChannels[0].substr(0, planeChannels[0].rfind('.') + 1);
                     static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
                         const int c = packingMapping[i];
