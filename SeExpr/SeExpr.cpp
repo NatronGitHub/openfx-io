@@ -2935,6 +2935,9 @@ SeExprInteract::penUp(const PenArgs& args)
     _boundingBox->getValue(boundingBox_i);
     RegionOfDefinitionEnum boundingBox = (RegionOfDefinitionEnum)boundingBox_i;
     if (boundingBox != eRegionOfDefinitionOptionSize) {
+        // the bounding box changed during the drag (if any): abandon it, as GeneratorInteract does
+        abandonDrag();
+
         return false;
     }
 
