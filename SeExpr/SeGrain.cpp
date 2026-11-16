@@ -303,7 +303,7 @@ public:
             Matrix3x3 sizeMat(1. / _renderScale.x / (std::max)(size[c], kSizeMin), 0., 0.,
                               0., 1. / _renderScale.x / (std::max)(size[c], kSizeMin), 0.,
                               0., 0., (staticSeed ? 0. : _time) + (1 + c) * seed + irregularity[c] / 2.);
-            double rads = irregularity[c] * 45. * M_PI / 180.;
+            double rads = irregularity[c] * 45. * OFXS_PI / 180.;
             double ca = std::cos(rads);
             double sa = std::sin(rads);
             Matrix3x3 rotX(1, 0, 0,
