@@ -45,6 +45,7 @@
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h> // WIFEXITED, WEXITSTATUS
 #include <unistd.h>
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
@@ -183,7 +184,8 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamScriptHint                                                                                                                         \
     "Contents of the script. Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n" \
     "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces).\n" \
-    "Under Windows, the script is a batch file run by cmd.exe (argument 1 is \"%~1\", always within double quotes: unquoted, it allows command injection), unless it begins with a shebang line (see the plug-in description).\n"
+    "Under Windows, the script is a batch file run by cmd.exe (argument 1 is \"%~1\", always within double quotes: unquoted, it allows command injection), unless it begins with a shebang line (see the plug-in description).\n" \
+    "If the script exits with a non-zero code, a warning shows the code and the last lines of its standard error."
 
 #ifdef RUNSCRIPT_WIN32
 #define kParamScriptDefault "@echo off\n"
@@ -455,6 +457,8 @@ RunScriptPlugin::render(const RenderArguments& args)
 
     // execute the script
     vector<string> errors;
+    // a non-empty failure is reported as a warning (the render still succeeds): "exited with code 2"
+    string failure;
 #ifdef RUNSCRIPT_WIN32
     {
         string script;
@@ -475,7 +479,9 @@ RunScriptPlugin::render(const RenderArguments& args)
         }
         DBG(for (size_t i = 0; i < errors.size(); ++i) std::cout << "output: " << errors[i] << std::endl);
         DBG(std::cout << "exit code: " << exitCode << std::endl);
-        (void)exitCode; // like the POSIX version, a non-zero exit code is not an error
+        if (exitCode != 0) {
+            failure = "exited with code " + std::to_string(exitCode);
+        }
     }
 #else
     redi::ipstream in(scriptname, argv, redi::pstreambuf::pstderr | redi::pstreambuf::pstderr);
@@ -484,10 +490,33 @@ RunScriptPlugin::render(const RenderArguments& args)
         errors.push_back(errmsg);
         DBG(std::cout << "output: " << errmsg << std::endl);
     }
+    // wait for the script, and get its exit status
+    in.close();
+    const int status = in.rdbuf()->status();
+    if (status != -1) {
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            failure = "exited with code " + std::to_string(WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+            failure = "was killed by signal " + std::to_string(WTERMSIG(status));
+        }
+    }
 
     // remove the script
     (void)unlink(scriptname);
 #endif // RUNSCRIPT_WIN32
+    if (failure.empty()) {
+        clearPersistentMessage(); // a warning from a previous run
+    } else {
+        string msg = "The script " + failure + ".";
+        if (!errors.empty()) {
+            const size_t kLastLines = 5;
+            msg += " Last lines of its standard error:";
+            for (size_t i = errors.size() > kLastLines ? errors.size() - kLastLines : 0; i < errors.size(); ++i) {
+                msg += "\n" + errors[i];
+            }
+        }
+        setPersistentMessage(Message::eMessageWarning, "", msg);
+    }
 
     // now copy the first input to output
 
