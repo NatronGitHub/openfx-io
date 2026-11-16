@@ -47,13 +47,19 @@ endif
 # (only on macOS, for the plugins that link FFmpeg, and not for "make clean")
 FFMPEG_CHECK_BUNDLE := $(and $(filter Darwin,$(shell uname -s)),$(filter IO FFmpeg,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes))
 ifneq ($(FFMPEG_CHECK_BUNDLE),)
-# Guard: if OpenImageIO links an FFmpeg from another directory (e.g. MacPorts' ffmpeg8 in
-# /opt/local/libexec/ffmpeg8, while the plugins would use /opt/local/lib), both are libavcodec.NN.dylib and the
-# deployment script (osxDeploy.sh copies libraries by name) silently bundles only one of them. Fail instead.
+# Guard: if OpenImageIO and the plugins link two different FFmpeg builds with the same soname (e.g. MacPorts' ffmpeg8
+# in /opt/local/libexec/ffmpeg8 and Natron's ffmpeg in /opt/local/lib, both libavcodec.62.dylib), the deployment
+# script (osxDeploy.sh copies libraries by name) silently bundles only one of them. Fail instead.
 OIIO_AVCODEC := $(shell otool -L "$$(pkg-config --variable=libdir OpenImageIO 2>/dev/null)/libOpenImageIO.dylib" 2>/dev/null | awk '/libavcodec/{print $$1; exit}')
-ifneq ($(and $(OIIO_AVCODEC),$(FFMPEG_LIBDIR)),)
-ifneq ($(patsubst %/,%,$(dir $(OIIO_AVCODEC))),$(FFMPEG_LIBDIR))
-$(error OpenImageIO links $(OIIO_AVCODEC), but the FFmpeg plugins would link FFmpeg from $(FFMPEG_LIBDIR): the bundle would contain only one of the two libavcodec builds. Use the same FFmpeg for both, e.g. make FFMPEG_PKG_CONFIG_PATH=$(patsubst %/lib/,%/lib/pkgconfig,$(dir $(OIIO_AVCODEC))), or build OpenImageIO without FFmpeg)
+# The plugins' libavcodec install name, e.g. /opt/local/lib/libavcodec.62.dylib
+FFMPEG_AVCODEC := $(shell otool -D "$(FFMPEG_LIBDIR)/libavcodec.dylib" 2>/dev/null | tail -1)
+ifneq ($(and $(OIIO_AVCODEC),$(FFMPEG_AVCODEC)),)
+# Two different FFmpegs with different sonames (e.g. libavcodec.62 and .63) can coexist in the bundle;
+# with the same file name, only one of them would be bundled.
+ifeq ($(notdir $(OIIO_AVCODEC)),$(notdir $(FFMPEG_AVCODEC)))
+ifneq ($(OIIO_AVCODEC),$(FFMPEG_AVCODEC))
+$(error OpenImageIO links $(OIIO_AVCODEC), but the FFmpeg plugins would link $(FFMPEG_AVCODEC): both are $(notdir $(OIIO_AVCODEC)), so the bundle would contain only one of them. Use the same FFmpeg for both, e.g. make FFMPEG_PKG_CONFIG_PATH=$(patsubst %/lib/,%/lib/pkgconfig,$(dir $(OIIO_AVCODEC))), or build OpenImageIO without FFmpeg)
+endif
 endif
 endif
 endif
