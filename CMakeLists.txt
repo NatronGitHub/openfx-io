@@ -492,8 +492,8 @@ endif()
 set(OFX_ARCH ${ARCHDIR})
 
 set(OFX_ARCH_NAME ${OFX_ARCH} CACHE STRING "OpenFX target OS and architecture")
-if("${OFX_ARCH_NAME}" EQUAL "UNKNOWN")
-  message(SEND_ERROR "OFX_ARCH_NAME was not detected. Install targets will be unavailable. See http://openeffects.org/documentation/reference/ch02s02.html to pick an arch name.")
+if(OFX_ARCH_NAME STREQUAL "unknown-arch")
+  message(SEND_ERROR "OFX_ARCH_NAME was not detected. Install targets will be unavailable. Set it to the bundle folder name, see https://openfx.readthedocs.io/en/main/Reference/ofxPackaging.html")
 else()
   install(TARGETS IO
     RUNTIME DESTINATION IO.ofx.bundle/Contents/${OFX_ARCH_NAME}
