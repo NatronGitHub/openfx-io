@@ -1,4 +1,4 @@
-openfx-io [![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?style=flat-square)](https://github.com/NatronGitHub/openfx-io/blob/master/LICENSE) [![Open Hub](https://www.openhub.net/p/openfx-io/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/openfx-io?ref=Thin+badge) [![Build Status](https://api.travis-ci.org/NatronGitHub/openfx-io.png?branch=master)](https://travis-ci.org/NatronGitHub/openfx-io) [![Build status](https://ci.appveyor.com/api/projects/status/rnc35ji6mcwvpbip?svg=true)](https://ci.appveyor.com/project/NatronGitHub/openfx-io)
+openfx-io [![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?style=flat-square)](https://github.com/NatronGitHub/openfx-io/blob/master/LICENSE) [![Open Hub](https://www.openhub.net/p/openfx-io/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/openfx-io?ref=Thin+badge) [![CI](https://github.com/NatronGitHub/openfx-io/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/NatronGitHub/openfx-io/actions/workflows/ci.yml)
 =========
 
 A set of Readers/Writers plugins written using the OpenFX standard.
