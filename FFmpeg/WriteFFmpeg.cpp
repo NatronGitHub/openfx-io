@@ -590,7 +590,7 @@ CreateCodecKnobLabelsMap()
     m["avrp"] = "AVrp\tAvid 1:1 10-bit RGB Packer";
     m["ayuv"] = "AYUV\tUncompressed packed MS 4:4:4:4";
     m["cfhd"] = "CFHD\tGoPro Cineform HD";
-    m["cinepak"] = "cvid\tCinepak"; // disabled in whitelist (bad quality)
+    m["cinepak"] = "cvid\tCinepak"; // disabled in allowlist (bad quality)
     m["dnxhd"] = "AVdn\tAvid DNxHD / DNxHR / SMPTE VC-3";
     m["dpx"] = "dpx \tDPX (Digital Picture Exchange) image";
     m["exr"] = "exr \tEXR image";
@@ -601,8 +601,8 @@ CreateCodecKnobLabelsMap()
     m["h263p"] = "H263\tH.263+ / H.263-1998 / H.263 version 2";
     m["hap"] = "Hap1\tVidvox Hap";
     m["huffyuv"] = "HFYU\tHuffYUV";
-    m["jpeg2000"] = "mjp2\tJPEG 2000"; // disabled in whitelist (bad quality)
-    m["jpegls"] = "MJLS\tJPEG-LS"; // disabled in whitelist
+    m["jpeg2000"] = "mjp2\tJPEG 2000"; // disabled in allowlist (bad quality)
+    m["jpegls"] = "MJLS\tJPEG-LS"; // disabled in allowlist
     m["libaom-av1"] = "AV1\tlibaom AV1 encoder";
     m["libopenh264"] = "H264\tCisco libopenh264 H.264/MPEG-4 AVC encoder";
     m["libopenjpeg"] = "mjp2\tOpenJPEG JPEG 2000";
@@ -610,32 +610,32 @@ CreateCodecKnobLabelsMap()
     m["libschroedinger"] = "drac\tSMPTE VC-2 (previously BBC Dirac Pro)";
     m["libtheora"] = "theo\tTheora";
     m["libvpx"] = "VP80\tOn2 VP8"; // write doesn't work yet
-    m["libvpx-vp9"] = "VP90\tGoogle VP9"; // disabled in whitelist (bad quality)
+    m["libvpx-vp9"] = "VP90\tGoogle VP9"; // disabled in allowlist (bad quality)
     m["libx264"] = "avc1\tH.264 / AVC / MPEG-4 AVC / MPEG-4 part 10";
     m["libx264rgb"] = "avc1\tH.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB";
-    m["libx265"] = "hev1\tH.265 / HEVC (High Efficiency Video Coding)"; // disabled in whitelist (does not work will all sizes)
-    m["libxavs"] = "CAVS\tChinese AVS (Audio Video Standard)"; // disabled in whitelist
+    m["libx265"] = "hev1\tH.265 / HEVC (High Efficiency Video Coding)"; // disabled in allowlist (does not work will all sizes)
+    m["libxavs"] = "CAVS\tChinese AVS (Audio Video Standard)"; // disabled in allowlist
 
     m["libxvid"] = "mp4v\tMPEG-4 part 2";
-    m["ljpeg"] = "LJPG\tLossless JPEG"; // disabled in whitelist
+    m["ljpeg"] = "LJPG\tLossless JPEG"; // disabled in allowlist
     m["mjpeg"] = "jpeg\tPhoto JPEG";
-    m["mpeg1video"] = "m1v \tMPEG-1 Video"; // disabled in whitelist (random blocks)
+    m["mpeg1video"] = "m1v \tMPEG-1 Video"; // disabled in allowlist (random blocks)
     m["mpeg2video"] = "m2v1\tMPEG-2 Video";
     m["mpeg4"] = "mp4v\tMPEG-4 part 2";
     m["msmpeg4v2"] = "MP42\tMPEG-4 part 2 Microsoft variant version 2";
     m["msmpeg4"] = "3IVD\tMPEG-4 part 2 Microsoft variant version 3";
     m["png"] = "png \tPNG (Portable Network Graphics) image";
     m["qtrle"] = "rle \tQuickTime Animation (RLE) video";
-    m["r10k"] = "R10k\tAJA Kona 10-bit RGB Codec"; // disabled in whitelist
-    m["r210"] = "r210\tUncompressed RGB 10-bit"; // disabled in whitelist
+    m["r10k"] = "R10k\tAJA Kona 10-bit RGB Codec"; // disabled in allowlist
+    m["r210"] = "r210\tUncompressed RGB 10-bit"; // disabled in allowlist
     m["rawvideo"] = "raw \traw video";
     m["svq1"] = "SVQ1\tSorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1";
     m["targa"] = "tga \tTruevision Targa image";
-    m["tiff"] = "tiff\tTIFF image"; // disabled in whitelist
+    m["tiff"] = "tiff\tTIFF image"; // disabled in allowlist
     m["v210"] = "v210\tUncompressed 10-bit 4:2:2";
     m["v308"] = "v308\tUncompressed 8-bit 4:4:4";
     m["v408"] = "v408\tUncompressed 8-bit QT 4:4:4:4";
-    m["v410"] = "v410\tUncompressed 4:4:4 10-bit"; // disabled in whitelist
+    m["v410"] = "v410\tUncompressed 4:4:4 10-bit"; // disabled in allowlist
     m["vc2"] = "drac\tSMPTE VC-2 (previously BBC Dirac Pro)";
 
     // add the FFmpeg encoder name at the end of each codec description
@@ -1236,7 +1236,7 @@ FFmpegSingleton::FFmpegSingleton()
     const AVOutputFormat* fmt = nullptr;
     while ((fmt = av_muxer_iterate(&opaqueMuxerIter))) {
         if (fmt->video_codec != AV_CODEC_ID_NONE) { // if this is a video format, it should have a default video codec
-            if (FFmpegFile::isFormatWhitelistedForWriting(fmt->name)) {
+            if (FFmpegFile::isFormatAllowedForWriting(fmt->name)) {
                 if (fmt->long_name) {
                     _formatsLongNames.push_back(string(fmt->long_name) + string(" [") + string(fmt->name) + string("]"));
                 } else {
@@ -1287,11 +1287,11 @@ FFmpegSingleton::FFmpegSingleton()
     const AVCodec* c = nullptr;
     while ((c = av_codec_iterate(&opaqueCodecIter))) {
         if ((c->type == AVMEDIA_TYPE_VIDEO) && av_codec_is_encoder(c)) {
-            if (FFmpegFile::isCodecWhitelistedForWriting(c->name) && (c->long_name)) {
+            if (FFmpegFile::isCodecAllowedForWriting(c->name) && (c->long_name)) {
                 const char* knobLabel = getCodecKnobLabel(c->name);
                 if (knobLabel == nullptr) {
 #if OFX_FFMPEG_PRINT_CODECS
-                    std::cout << "Codec whitelisted but unknown: " << c->name << " = " << c->long_name << std::endl;
+                    std::cout << "Codec allowlisted but unknown: " << c->name << " = " << c->long_name << std::endl;
 #endif //  FFMPEG_PRINT_CODECS
                 } else {
 #if OFX_FFMPEG_PRINT_CODECS
@@ -2952,7 +2952,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
 ////////////////////////////////////////////////////////////////////////////////
 // addStream
 // Add a new stream to the AVFormatContext of the file. This will search for
-// the codec and if found, validate it against the codec whitelist. If the codec
+// the codec and if found, validate it against the codec allowlist. If the codec
 // can be used, a new stream is created and configured.
 //
 // @param avFormatContext A reference to an AVFormatContext of the file.
@@ -4936,7 +4936,7 @@ WriteFFmpegPluginFactory::load()
         extensionsl.push_back("mxf"); // mxf (MXF (Material eXchange Format))
 
         // remove audio and subtitle-only formats
-        const char* extensions_blacklist[] = {
+        const char* extensions_denylist[] = {
             "aa", // aa (Audible AA format files)
             "aac", // aac (raw ADTS AAC (Advanced Audio Coding))
             "ac3", // ac3 (raw AC-3)
@@ -5187,7 +5187,7 @@ WriteFFmpegPluginFactory::load()
 
             nullptr
         };
-        for (const char* const* e = extensions_blacklist; *e != nullptr; ++e) {
+        for (const char* const* e = extensions_denylist; *e != nullptr; ++e) {
             extensionsl.remove(*e);
         }
 

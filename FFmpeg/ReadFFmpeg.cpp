@@ -639,7 +639,7 @@ ReadFFmpegPluginFactory::load()
     extensionsl.push_back("ogv"); // ogv (Ogg Video)
 
     // remove audio and subtitle-only formats
-    const char* extensions_blacklist[] = {
+    const char* extensions_denylist[] = {
         "aa", // aa (Audible AA format files)
         "aac", // aac (raw ADTS AAC (Advanced Audio Coding))
         "ac3", // ac3 (raw AC-3)
@@ -890,7 +890,7 @@ ReadFFmpegPluginFactory::load()
 
         NULL
     };
-    for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
+    for (const char* const* e = extensions_denylist; *e != NULL; ++e) {
         extensionsl.remove(*e);
     }
 

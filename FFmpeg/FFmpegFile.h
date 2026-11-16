@@ -545,13 +545,13 @@ public:
 
     static bool isImageFile(const std::string& filename);
 
-    //! Check whether a named container format is Whitelisted
-    static bool isFormatWhitelistedForReading(const char* name);
-    static bool isFormatWhitelistedForWriting(const char* name);
+    //! Check whether a named container format is allowed
+    static bool isFormatAllowedForReading(const char* name);
+    static bool isFormatAllowedForWriting(const char* name);
 
-    //! Check whether a certain codec name is Whitelisted
-    static bool isCodecWhitelistedForReading(const char* name);
-    static bool isCodecWhitelistedForWriting(const char* name);
+    //! Check whether a certain codec name is allowed
+    static bool isCodecAllowedForReading(const char* name);
+    static bool isCodecAllowedForWriting(const char* name);
 
 private:
     bool seekToFrame(int64_t frame, int seekFlags);
