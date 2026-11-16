@@ -48,6 +48,7 @@
 #include <string>
 
 #include "ofxsImageEffect.h"
+#include "ofxsMacros.h" // OFXS_LN2
 
 #define NAMESPACE_OFX_ENTER namespace OFX {
 #define NAMESPACE_OFX_EXIT }
@@ -330,14 +331,11 @@ getScaleFromMipMapLevel(unsigned int level)
     return 1. / (1 << level);
 }
 
-#ifndef M_LN2
-#define M_LN2 0.693147180559945309417232121458176568 /* loge(2)        */
-#endif
 inline unsigned int
 getLevelFromScale(double s)
 {
     assert(0. < s && s <= 1.);
-    int retval = -(int)std::floor(std::log(s) / M_LN2 + 0.5);
+    int retval = -(int)std::floor(std::log(s) / OFXS_LN2 + 0.5);
     assert(retval >= 0);
 
     return retval;
