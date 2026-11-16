@@ -39,6 +39,7 @@
 #include "RunScriptWin32.h"
 
 #include <cstdio> // snprintf, _snwprintf
+#include <cwchar> // wcslen
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -109,9 +110,7 @@ quoteArg(const wstring& arg)
 {
     // See "Everyone quotes command line arguments the wrong way" (Daniel Colascione) and the
     // "Parsing C++ command-line arguments" page of the Microsoft C++ documentation.
-    if (!arg.empty() && (arg.find_first_of(L" \t\n\v\"") == wstring::npos)) {
-        return arg;
-    }
+    // Always quoted: MSYS2/Cygwin programs expand wildcards in unquoted arguments.
     wstring quoted(1, L'"');
     for (wstring::const_iterator it = arg.begin();; ++it) {
         size_t backslashes = 0;
@@ -205,31 +204,186 @@ endsWith(const wstring& s,
     return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
 }
 
+wstring
+stripTrailingDotsAndSpaces(const wstring& path)
+{
+    size_t n = path.size();
+    while (n > 0 && (path[n - 1] == L'.' || path[n - 1] == L' ')) {
+        --n;
+    }
+
+    return path.substr(0, n);
+}
+
 bool
 isBatchFile(const wstring& program)
 {
-    const wstring l = toLower(program);
+    const wstring l = toLower(stripTrailingDotsAndSpaces(program));
 
     return endsWith(l, L".bat") || endsWith(l, L".cmd");
 }
 
+static bool
+isExeFile(const wstring& program)
+{
+    const wstring l = toLower(stripTrailingDotsAndSpaces(program));
+
+    return endsWith(l, L".exe") || endsWith(l, L".com");
+}
+
+static bool
+isAbsolutePath(const wstring& p)
+{
+    // C:\... or \\server\share\...
+    return (p.size() >= 3 && p[1] == L':' && p[2] == L'\\' && ((p[0] >= L'A' && p[0] <= L'Z') || (p[0] >= L'a' && p[0] <= L'z')))
+        || (p.size() >= 2 && p[0] == L'\\' && p[1] == L'\\');
+}
+
+static bool
+isFile(const wstring& p)
+{
+    DWORD a = GetFileAttributesW(p.c_str());
+
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// the file names to look for: name itself if it has an executable extension, else name.exe and name.com
+static vector<wstring>
+programCandidates(const wstring& name)
+{
+    vector<wstring> c;
+    if (isExeFile(name) || isBatchFile(name)) {
+        c.push_back(name);
+    } else {
+        c.push_back(name + L".exe");
+        c.push_back(name + L".com");
+    }
+
+    return c;
+}
+
+static wstring
+withoutTrailingBackslash(const wstring& dir)
+{
+    wstring d = dir;
+    while (d.size() > 3 && d[d.size() - 1] == L'\\') {
+        d.erase(d.size() - 1);
+    }
+
+    return d;
+}
+
 bool
-buildCommandLine(const wstring& program,
+resolveProgram(const wstring& programName,
+               bool fromUnixPath,
+               wstring* fullPath,
+               string* error)
+{
+    wstring name = stripTrailingDotsAndSpaces(programName);
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (name[i] == L'/') {
+            name[i] = L'\\';
+        }
+    }
+    if (name.empty() || name.find_first_of(L"\"*?<>|") != wstring::npos) {
+        *error = "invalid program name \"" + wideToUtf8(programName) + "\"";
+
+        return false;
+    }
+    // a ':' is only allowed after the drive letter (not "prog:stream", not "C:prog")
+    size_t colon = name.find(L':');
+    if (colon != wstring::npos && (colon != 1 || name.find(L':', 2) != wstring::npos || !isAbsolutePath(name))) {
+        *error = "invalid program name \"" + wideToUtf8(programName) + "\" (use a full path, e.g. C:\\dir\\prog.exe)";
+
+        return false;
+    }
+    vector<wstring> candidates = programCandidates(name);
+    if (isAbsolutePath(name)) {
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            if (isFile(candidates[i])) {
+                *fullPath = candidates[i];
+
+                return true;
+            }
+        }
+        *error = "cannot find " + wideToUtf8(name);
+
+        return false;
+    }
+    if (name.find(L'\\') != wstring::npos) {
+        *error = "the program \"" + wideToUtf8(programName) + "\" must be a file name, found in the PATH, or a full path";
+
+        return false;
+    }
+
+    // search %PATH% only: CreateProcess and SearchPath (with the default search path) would look in the host's
+    // directory and in the current directory (often the project directory) first
+    wstring systemDir;
+    {
+        wchar_t sysdir[MAX_PATH + 1];
+        UINT n = GetSystemDirectoryW(sysdir, MAX_PATH + 1);
+        if (n > 0 && n <= MAX_PATH) {
+            systemDir = toLower(withoutTrailingBackslash(wstring(sysdir, n)));
+        }
+    }
+    wstring path;
+    DWORD n = GetEnvironmentVariableW(L"PATH", NULL, 0);
+    if (n > 0) {
+        vector<wchar_t> buf(n + 1);
+        n = GetEnvironmentVariableW(L"PATH", &buf[0], (DWORD)buf.size());
+        if (n > 0 && n < buf.size()) {
+            path.assign(&buf[0], n);
+        }
+    }
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t end = path.find(L';', start);
+        if (end == wstring::npos) {
+            end = path.size();
+        }
+        wstring dir = path.substr(start, end - start);
+        start = end + 1;
+        if (dir.size() >= 2 && dir[0] == L'"' && dir[dir.size() - 1] == L'"') {
+            dir = dir.substr(1, dir.size() - 2);
+        }
+        dir = withoutTrailingBackslash(dir);
+        // skip relative directories (relative to the current directory), and the system directory for Unix names
+        if (!isAbsolutePath(dir) || (fromUnixPath && toLower(dir) == systemDir)) {
+            continue;
+        }
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            wstring p = dir + L"\\" + candidates[i];
+            if (isFile(p)) {
+                *fullPath = p;
+
+                return true;
+            }
+        }
+    }
+    *error = "cannot find " + wideToUtf8(name) + " in the PATH";
+
+    return false;
+} // resolveProgram
+
+bool
+buildCommandLine(const wstring& programPath,
                  const wstring& extraArgs,
                  const vector<wstring>& args,
                  wstring* applicationName,
                  wstring* commandLine,
                  string* error)
 {
-    if (program.empty() || program.find(L'"') != wstring::npos) {
-        *error = "invalid program name \"" + wideToUtf8(program) + "\"";
+    const wstring program = stripTrailingDotsAndSpaces(programPath);
+    if (program.empty() || program.find(L'"') != wstring::npos || !isAbsolutePath(program)) {
+        *error = "invalid program name \"" + wideToUtf8(programPath) + "\"";
 
         return false;
     }
     if (isBatchFile(program)) {
-        // CreateProcess cannot run a batch file: run it with cmd.exe /c, from the system directory
-        // (not from the PATH). cmd.exe removes the first and the last quote after /c, and parses the rest
-        // as a command line.
+        // CreateProcess would run a batch file with cmd.exe, but with the quoting of the arguments for
+        // CommandLineToArgvW, which is not safe for cmd.exe (CVE-2024-24576, CVE-2024-43402): run cmd.exe /c
+        // explicitly, from the system directory. cmd.exe removes the first and the last quote after /c, and
+        // parses the rest as a command line.
         wchar_t sysdir[MAX_PATH + 1];
         UINT n = GetSystemDirectoryW(sysdir, MAX_PATH + 1);
         if (n == 0 || n > MAX_PATH) {
@@ -259,10 +413,9 @@ buildCommandLine(const wstring& program,
         }
         cmd.push_back(L'"');
         *commandLine = cmd;
-    } else {
-        // No application name: CreateProcess searches the program in the PATH, and appends .exe if needed.
+    } else if (isExeFile(program)) {
         // The program name is quoted without escapes (CommandLineToArgvW does not process backslashes in it).
-        applicationName->clear();
+        *applicationName = program;
         wstring cmd = L"\"" + program + L"\"";
         if (!extraArgs.empty()) {
             cmd.push_back(L' ');
@@ -273,6 +426,10 @@ buildCommandLine(const wstring& program,
             cmd.append(quoteArg(args[i]));
         }
         *commandLine = cmd;
+    } else {
+        *error = "cannot run " + wideToUtf8(program) + ": not a .exe, .com, .bat or .cmd file";
+
+        return false;
     }
 
     return true;
@@ -286,6 +443,9 @@ closeHandle(HANDLE* h)
     }
     *h = NULL;
 }
+
+// keep at most this many stderr lines (the last ones)
+#define kMaxErrLines 1000
 
 static void
 addLines(string* pending,
@@ -303,105 +463,225 @@ addLines(string* pending,
         lines->push_back(line);
         pending->erase(0, pos + 1);
     }
+    if (lines->size() > 2 * kMaxErrLines) {
+        lines->erase(lines->begin(), lines->begin() + (lines->size() - kMaxErrLines));
+    }
 }
 
-bool
+// read what is available in the pipe without blocking; returns false at the end of file (or on error)
+static bool
+readAvailable(HANDLE pipe,
+              string* pending,
+              vector<string>* lines)
+{
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(pipe, NULL, 0, NULL, &avail, NULL)) {
+            return false; // ERROR_BROKEN_PIPE: all the writers have closed it
+        }
+        if (avail == 0) {
+            return true;
+        }
+        char buf[4096];
+        DWORD n = 0;
+        if (!ReadFile(pipe, buf, avail < sizeof(buf) ? avail : (DWORD)sizeof(buf), &n, NULL) || n == 0) {
+            return false;
+        }
+        addLines(pending, buf, n, lines);
+    }
+}
+
+// an inheritable copy of h
+static HANDLE
+inheritableCopy(HANDLE h)
+{
+    HANDLE dup = NULL;
+    if (!DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        return NULL;
+    }
+
+    return dup;
+}
+
+// the environment of the host, with NoDefaultCurrentDirectoryInExePath set, so that cmd.exe (when it runs a batch
+// file) does not search the programs in the current directory first
+static vector<wchar_t>
+childEnvironment()
+{
+    vector<wchar_t> env;
+    const wstring var = L"NoDefaultCurrentDirectoryInExePath=";
+    wchar_t* block = GetEnvironmentStringsW();
+    if (block) {
+        for (const wchar_t* p = block; *p; p += wcslen(p) + 1) {
+            const wstring entry(p);
+            if (toLower(entry.substr(0, var.size())) == toLower(var)) {
+                continue;
+            }
+            env.insert(env.end(), entry.begin(), entry.end());
+            env.push_back(L'\0');
+        }
+        FreeEnvironmentStringsW(block);
+    }
+    const wstring mine = var + L"1";
+    env.insert(env.end(), mine.begin(), mine.end());
+    env.push_back(L'\0');
+    env.push_back(L'\0');
+
+    return env;
+}
+
+RunResult
 runProcess(const wstring& applicationName,
            const wstring& commandLine,
            vector<string>* errLines,
            unsigned long* exitCode,
-           string* error)
+           string* error,
+           AbortCallback aborted,
+           void* abortContext)
 {
     *exitCode = 0;
-    SECURITY_ATTRIBUTES sa;
-    sa.nLength = sizeof(sa);
-    sa.lpSecurityDescriptor = NULL;
-    sa.bInheritHandle = TRUE;
+    const string programName = wideToUtf8(applicationName);
 
+    // All our handles are created non-inheritable, and only the copies given to the child are inheritable,
+    // for the shortest possible time: another thread of the host that starts a process without a handle list
+    // could inherit them (and if it inherited the write end of the pipe, we would never see its end of file).
     HANDLE errRead = NULL;
     HANDLE errWrite = NULL;
-    if (!CreatePipe(&errRead, &errWrite, &sa, 0)) {
+    if (!CreatePipe(&errRead, &errWrite, NULL, 0)) {
         *error = "cannot create a pipe: " + systemErrorMessage(GetLastError());
 
-        return false;
+        return eRunFailed;
     }
-    // our end of the pipe must not be inherited, or the read would never see the end of file
-    SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
-
     // stdin: NUL, so that a script waiting for input (e.g. "pause") does not block the render forever
-    HANDLE inNul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    HANDLE inNul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     // stdout: the host's stdout (like on POSIX) if it is redirected to a file or a pipe, else NUL: a GUI host
     // usually has none, and a console handle would not be valid in the child, which runs without a console window
-    HANDLE out = NULL;
-    HANDLE parentOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD parentOutType = (parentOut == NULL || parentOut == INVALID_HANDLE_VALUE) ? FILE_TYPE_UNKNOWN : GetFileType(parentOut);
-    if ((parentOutType != FILE_TYPE_DISK && parentOutType != FILE_TYPE_PIPE)
-        || !DuplicateHandle(GetCurrentProcess(), parentOut, GetCurrentProcess(), &out, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
-        out = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    HANDLE outNul = NULL;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD outType = (out == NULL || out == INVALID_HANDLE_VALUE) ? FILE_TYPE_UNKNOWN : GetFileType(out);
+    if (outType != FILE_TYPE_DISK && outType != FILE_TYPE_PIPE) {
+        out = outNul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     }
-    if (inNul == INVALID_HANDLE_VALUE || out == NULL || out == INVALID_HANDLE_VALUE) {
+    if (inNul == INVALID_HANDLE_VALUE || out == INVALID_HANDLE_VALUE) {
         *error = "cannot open NUL: " + systemErrorMessage(GetLastError());
         closeHandle(&errRead);
         closeHandle(&errWrite);
         closeHandle(&inNul);
-        closeHandle(&out);
+        closeHandle(&outNul);
 
-        return false;
+        return eRunFailed;
     }
 
-    // Only let the child inherit these three handles (and not, e.g., the pipe of a RunScript running
-    // concurrently in another thread, which would keep that pipe open until our child exits).
-    HANDLE inherited[3] = { inNul, out, errWrite };
-    SIZE_T attrSize = 0;
-    InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
-    vector<char> attrBuf(attrSize ? attrSize : 1);
-    LPPROC_THREAD_ATTRIBUTE_LIST attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(&attrBuf[0]);
-    bool attrsOK = InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize) != 0;
-    if (attrsOK) {
-        attrsOK = UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), NULL, NULL) != 0;
-        if (!attrsOK) {
-            DeleteProcThreadAttributeList(attrs);
+    // a job object, so that the process and its children can be killed on abort, and are killed if the host
+    // dies while waiting (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+        ZeroMemory(&info, sizeof(info));
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+            closeHandle(&job);
         }
     }
 
-    STARTUPINFOEXW si;
-    ZeroMemory(&si, sizeof(si));
-    si.StartupInfo.cb = attrsOK ? sizeof(STARTUPINFOEXW) : sizeof(STARTUPINFOW);
-    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    si.StartupInfo.hStdInput = inNul;
-    si.StartupInfo.hStdOutput = out;
-    si.StartupInfo.hStdError = errWrite;
-    si.lpAttributeList = attrsOK ? attrs : NULL;
-
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&pi, sizeof(pi));
+    vector<wchar_t> env = childEnvironment();
     vector<wchar_t> cmdBuf(commandLine.begin(), commandLine.end()); // CreateProcessW may modify it
     cmdBuf.push_back(L'\0');
-    DWORD flags = CREATE_NO_WINDOW | (attrsOK ? EXTENDED_STARTUPINFO_PRESENT : 0);
-    BOOL created = CreateProcessW(applicationName.empty() ? NULL : applicationName.c_str(),
-                                  &cmdBuf[0], NULL, NULL, TRUE, flags, NULL, NULL, &si.StartupInfo, &pi);
-    DWORD createError = GetLastError();
-    if (attrsOK) {
-        DeleteProcThreadAttributeList(attrs);
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+    BOOL created = FALSE;
+    DWORD createError = 0;
+    {
+        HANDLE childIn = inheritableCopy(inNul);
+        HANDLE childOut = inheritableCopy(out);
+        HANDLE childErr = inheritableCopy(errWrite);
+        closeHandle(&errWrite); // the child's copy is the only write end
+        if (childIn && childOut && childErr) {
+            // Only let the child inherit these three handles
+            HANDLE inherited[3] = { childIn, childOut, childErr };
+            SIZE_T attrSize = 0;
+            InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
+            vector<char> attrBuf(attrSize ? attrSize : 1);
+            LPPROC_THREAD_ATTRIBUTE_LIST attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(&attrBuf[0]);
+            bool attrsOK = InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize) != 0;
+            if (attrsOK) {
+                attrsOK = UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), NULL, NULL) != 0;
+                if (!attrsOK) {
+                    DeleteProcThreadAttributeList(attrs);
+                }
+            }
+
+            STARTUPINFOEXW si;
+            ZeroMemory(&si, sizeof(si));
+            si.StartupInfo.cb = attrsOK ? sizeof(STARTUPINFOEXW) : sizeof(STARTUPINFOW);
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.StartupInfo.hStdInput = childIn;
+            si.StartupInfo.hStdOutput = childOut;
+            si.StartupInfo.hStdError = childErr;
+            si.lpAttributeList = attrsOK ? attrs : NULL;
+            // suspended until it is in the job, so that its children are in the job too
+            DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | (attrsOK ? EXTENDED_STARTUPINFO_PRESENT : 0);
+            created = CreateProcessW(applicationName.c_str(), &cmdBuf[0], NULL, NULL, TRUE, flags, &env[0], NULL, &si.StartupInfo, &pi);
+            createError = GetLastError();
+            if (attrsOK) {
+                DeleteProcThreadAttributeList(attrs);
+            }
+        } else {
+            createError = GetLastError();
+        }
+        closeHandle(&childIn);
+        closeHandle(&childOut);
+        closeHandle(&childErr);
     }
-    // the child has its own copies now
-    closeHandle(&errWrite);
     closeHandle(&inNul);
-    closeHandle(&out);
+    closeHandle(&outNul);
     if (!created) {
         closeHandle(&errRead);
-        *error = "cannot run " + wideToUtf8(commandLine) + ": " + systemErrorMessage(createError);
+        closeHandle(&job);
+        *error = "cannot run " + programName + ": " + systemErrorMessage(createError);
 
-        return false;
+        return eRunFailed;
     }
+    if (job && !AssignProcessToJobObject(job, pi.hProcess)) {
+        // e.g. the host is in a job that does not allow nested jobs (before Windows 8): run without
+        closeHandle(&job);
+    }
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
 
-    // read stderr until the end of file (all the writers have exited or closed it)
+    // Read stderr while waiting for the process, and poll for abort. After the process exits, read what remains
+    // for a short time only: a process that it started (e.g. "start viewer") may keep the pipe open.
+    RunResult result = eRunOK;
     string pending;
-    char buf[4096];
-    DWORD n = 0;
-    while (ReadFile(errRead, buf, sizeof(buf), &n, NULL) && n > 0) {
-        addLines(&pending, buf, n, errLines);
+    bool eof = false;
+    bool exited = false;
+    DWORD exitTick = 0;
+    for (;;) {
+        if (!eof) {
+            eof = !readAvailable(errRead, &pending, errLines);
+        }
+        if (exited && (eof || (GetTickCount() - exitTick) > 200)) {
+            break;
+        }
+        if (!exited && aborted && aborted(abortContext)) {
+            if (job) {
+                TerminateJobObject(job, 1);
+            } else {
+                TerminateProcess(pi.hProcess, 1);
+            }
+            WaitForSingleObject(pi.hProcess, 5000);
+            result = eRunAborted;
+            *error = "aborted";
+            break;
+        }
+        if (!exited) {
+            if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) {
+                exited = true;
+                exitTick = GetTickCount();
+            }
+        } else {
+            Sleep(10);
+        }
     }
     if (!pending.empty()) {
         if (pending[pending.size() - 1] == '\r') {
@@ -411,14 +691,22 @@ runProcess(const wstring& applicationName,
     }
     closeHandle(&errRead);
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 0;
     if (GetExitCodeProcess(pi.hProcess, &code)) {
         *exitCode = code;
     }
     CloseHandle(pi.hProcess);
+    if (job) {
+        if (result == eRunOK) {
+            // let the processes started by the script (e.g. a viewer) run, like on POSIX
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+            ZeroMemory(&info, sizeof(info));
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info));
+        }
+        closeHandle(&job);
+    }
 
-    return true;
+    return result;
 } // runProcess
 
 // the file name of a Unix path
@@ -471,14 +759,14 @@ splitFirstWord(const string& s,
 
 // an extension for the script file, which some interpreters require (e.g. PowerShell needs .ps1)
 static const wchar_t*
-scriptExtension(const string& interpreter)
+scriptExtension(const wstring& interpreterPath)
 {
-    wstring name = toLower(utf8ToWide(interpreter));
+    wstring name = toLower(interpreterPath);
     size_t sep = name.find_last_of(L"\\/");
     if (sep != wstring::npos) {
         name.erase(0, sep + 1);
     }
-    if (endsWith(name, L".exe")) {
+    if (endsWith(name, L".exe") || endsWith(name, L".com")) {
         name.erase(name.size() - 4);
     }
     if (name == L"powershell" || name == L"pwsh") {
@@ -499,6 +787,7 @@ scriptExtension(const string& interpreter)
     if (name == L"node") {
         return L".js";
     }
+
     return L".txt";
 }
 
@@ -570,12 +859,14 @@ writeTempFile(const wchar_t* extension,
     return true;
 } // writeTempFile
 
-bool
+RunResult
 runScript(const string& scriptContents,
           const vector<string>& args,
           vector<string>* errLines,
           unsigned long* exitCode,
-          string* error)
+          string* error,
+          AbortCallback aborted,
+          void* abortContext)
 {
     string script = scriptContents;
     // a UTF-8 BOM would hide the shebang, and breaks the first line of a batch file
@@ -583,30 +874,39 @@ runScript(const string& scriptContents,
         script.erase(0, 3);
     }
 
-    string interpreter;
+    wstring interpreter; // full path
     string options;
     string data;
     const wchar_t* extension;
     if (script.compare(0, 2, "#!") == 0) {
+        string name;
         string line = trimRight(script.substr(2, script.find('\n') == string::npos ? string::npos : script.find('\n') - 2));
-        splitFirstWord(line, &interpreter, &options);
+        splitFirstWord(line, &name, &options);
+        bool fromUnixPath = false;
         // "#!/usr/bin/env name [options]": search name in the PATH
-        if ((interpreter == "env" || (!interpreter.empty() && interpreter[0] == '/' && unixBaseName(interpreter) == "env"))) {
+        if ((name == "env" || (!name.empty() && name[0] == '/' && unixBaseName(name) == "env"))) {
+            fromUnixPath = name[0] == '/';
             string rest = options;
-            splitFirstWord(rest, &interpreter, &options);
-            if (interpreter == "-S") {
+            splitFirstWord(rest, &name, &options);
+            if (name == "-S") {
                 rest = options;
-                splitFirstWord(rest, &interpreter, &options);
+                splitFirstWord(rest, &name, &options);
             }
         }
         // a Unix path ("/bin/sh", "/usr/bin/python3"): search its file name in the PATH
-        if (!interpreter.empty() && interpreter[0] == '/') {
-            interpreter = unixBaseName(interpreter);
+        if (!name.empty() && name[0] == '/') {
+            name = unixBaseName(name);
+            fromUnixPath = true;
         }
-        if (interpreter.empty()) {
+        if (name.empty()) {
             *error = "no interpreter on the first line of the script (\"#!\" must be followed by a program name)";
 
-            return false;
+            return eRunFailed;
+        }
+        if (!resolveProgram(utf8ToWide(name), fromUnixPath, &interpreter, error)) {
+            *error = "interpreter on the first line of the script: " + *error;
+
+            return eRunFailed;
         }
         extension = scriptExtension(interpreter);
         data = script;
@@ -624,7 +924,7 @@ runScript(const string& scriptContents,
 
     wstring scriptPath;
     if (!writeTempFile(extension, data, &scriptPath, error)) {
-        return false;
+        return eRunFailed;
     }
 
     vector<wstring> wargs;
@@ -632,7 +932,7 @@ runScript(const string& scriptContents,
     if (interpreter.empty()) {
         program = scriptPath;
     } else {
-        program = utf8ToWide(interpreter);
+        program = interpreter;
         wargs.push_back(scriptPath);
     }
     for (size_t i = 0; i < args.size(); ++i) {
@@ -641,13 +941,15 @@ runScript(const string& scriptContents,
 
     wstring applicationName;
     wstring commandLine;
-    bool ok = buildCommandLine(program, utf8ToWide(options), wargs, &applicationName, &commandLine, error)
-        && runProcess(applicationName, commandLine, errLines, exitCode, error);
+    RunResult result = eRunFailed;
+    if (buildCommandLine(program, utf8ToWide(options), wargs, &applicationName, &commandLine, error)) {
+        result = runProcess(applicationName, commandLine, errLines, exitCode, error, aborted, abortContext);
+    }
 
     // remove the script (this may fail if a process started by the script still has it open)
     DeleteFileW(scriptPath.c_str());
 
-    return ok;
+    return result;
 } // runScript
 
 } // namespace RunScriptWin32

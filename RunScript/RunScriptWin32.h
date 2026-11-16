@@ -36,6 +36,7 @@ std::wstring utf8ToWide(const std::string& s);
 std::string wideToUtf8(const std::wstring& s);
 
 // Quote one argument so that CommandLineToArgvW() (and the MSVC/UCRT runtime) gives it back unchanged.
+// It is always quoted, so that MSYS2/Cygwin programs do not expand wildcards (*.exr, a[1].png) in it.
 std::wstring quoteArg(const std::wstring& arg);
 
 // Quote one argument passed to a batch file through "cmd.exe /c" (same escaping as Rust's std::process
@@ -43,13 +44,28 @@ std::wstring quoteArg(const std::wstring& arg);
 // Returns false if the argument cannot be passed to cmd.exe (it contains CR, LF or NUL).
 bool quoteBatchArg(const std::wstring& arg, std::wstring* quoted);
 
-// true if the program is a batch file (.bat or .cmd, case-insensitive), which must be run by cmd.exe
+// Windows ignores trailing dots and spaces in file names ("x.bat. " opens "x.bat")
+std::wstring stripTrailingDotsAndSpaces(const std::wstring& path);
+
+// true if the program is a batch file (.bat or .cmd, case-insensitive, ignoring trailing dots and spaces),
+// which must be run by cmd.exe (CVE-2024-43402)
 bool isBatchFile(const std::wstring& program);
 
-// Build the CreateProcessW() application name (may be empty: search PATH) and command line for running
-// program with args. Batch files are run with "cmd.exe /e:ON /v:OFF /d /c". extraArgs is inserted verbatim
-// after the program (used for the options on a shebang line). Returns false and sets *error if an argument
-// cannot be passed.
+// Find the full path of a program:
+// - an absolute path (C:\dir\prog, \\server\share\prog) is used as is, ".exe" or ".com" being appended if
+//   it has no executable extension;
+// - a relative path with a directory (dir\prog) is rejected;
+// - a file name is searched for in the directories of %PATH% only (not in the host's directory or the current
+//   directory, unlike CreateProcess), with ".exe" or ".com" appended if it has no executable extension.
+//   If fromUnixPath (it comes from "#!/bin/bash" or "#!/usr/bin/env python3"), the system directory is skipped,
+//   so that "bash" is not WSL's System32\bash.exe.
+// Returns false and sets *error if it is not found.
+bool resolveProgram(const std::wstring& name, bool fromUnixPath, std::wstring* fullPath, std::string* error);
+
+// Build the CreateProcessW() application name and command line for running program (a full path, see
+// resolveProgram()) with args. Batch files are run with "cmd.exe /e:ON /v:OFF /d /c", other programs must be
+// .exe or .com. extraArgs is inserted verbatim after the program (used for the options on a shebang line).
+// Returns false and sets *error if an argument cannot be passed.
 bool buildCommandLine(const std::wstring& program,
                       const std::wstring& extraArgs,
                       const std::vector<std::wstring>& args,
@@ -57,30 +73,42 @@ bool buildCommandLine(const std::wstring& program,
                       std::wstring* commandLine,
                       std::string* error);
 
-// Run a command line built by buildCommandLine(), without a console window, with stdin from NUL, stdout to the
-// host's stdout (or NUL if there is none), and stderr captured line by line into *errLines (like the POSIX
-// version, which reads the script's stderr with pstream). Waits for the process to exit.
-// Returns false and sets *error (UTF-8) if the process could not be started.
-bool runProcess(const std::wstring& applicationName,
-                const std::wstring& commandLine,
-                std::vector<std::string>* errLines,
-                unsigned long* exitCode,
-                std::string* error);
+// polled while the process runs: return true to kill it
+typedef bool (*AbortCallback)(void* context);
+
+enum RunResult {
+    eRunOK = 0, // the process ran (its exit code may be non-zero)
+    eRunFailed, // it could not be started (*error is set)
+    eRunAborted // it was killed because the abort callback returned true
+};
+
+// Run a command line built by buildCommandLine(), in a job object, without a console window, with stdin from NUL,
+// stdout to the host's stdout if it is a file or a pipe (else NUL), and stderr captured line by line into
+// *errLines (like the POSIX version, which reads the script's stderr with pstream; only the last lines are kept).
+// Waits for the process to exit, polling aborted(abortContext) if aborted is not NULL. Processes that it started
+// and which are still running are left running (e.g. a viewer started with "start"), unless it is aborted.
+RunResult runProcess(const std::wstring& applicationName,
+                     const std::wstring& commandLine,
+                     std::vector<std::string>* errLines,
+                     unsigned long* exitCode,
+                     std::string* error,
+                     AbortCallback aborted = NULL,
+                     void* abortContext = NULL);
 
 // Write the script contents to a new temporary file and run it with the given UTF-8 arguments:
 // - if the script starts with a shebang line ("#!interpreter [options]"), it is saved with an extension
 //   matching the interpreter and run as "interpreter [options] script args...". A Unix path
-//   ("#!/usr/bin/python3", "#!/bin/sh") is reduced to its file name, and "#!/usr/bin/env name" to "name",
-//   which are searched for in the PATH (like the Python launcher for Windows does).
+//   ("#!/usr/bin/python3", "#!/bin/sh") is reduced to its file name, and "#!/usr/bin/env name" to "name";
+//   the interpreter is found with resolveProgram().
 // - otherwise, it is a batch file, saved as a .bat file (with CRLF line endings) and run by cmd.exe.
 // The temporary file is removed afterwards.
-// Returns false and sets *error (UTF-8) if the script could not be written or started. A non-zero exit
-// code is not an error (the POSIX version ignores it too).
-bool runScript(const std::string& script,
-               const std::vector<std::string>& args,
-               std::vector<std::string>* errLines,
-               unsigned long* exitCode,
-               std::string* error);
+RunResult runScript(const std::string& script,
+                    const std::vector<std::string>& args,
+                    std::vector<std::string>* errLines,
+                    unsigned long* exitCode,
+                    std::string* error,
+                    AbortCallback aborted = NULL,
+                    void* abortContext = NULL);
 
 } // namespace RunScriptWin32
 

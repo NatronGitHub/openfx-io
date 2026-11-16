@@ -65,24 +65,33 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginName "RunScriptOFX"
 
-#define kPluginDescriptionWindows                                                                                                                                    \
-    "Under Windows, the script is a batch file, which is run by cmd.exe (`cmd.exe /c script.bat arguments...`). "                                                    \
-    "The arguments are passed within double quotes, and `%~1` is argument 1 without the quotes "                                                                     \
-    "(use `\"%~1\"` to pass it to a program). Start the script with `@echo off` to avoid echoing each command, "                                                       \
-    "and with `chcp 65001 >NUL` if it contains non-ASCII characters (cmd.exe reads batch files in the console code page). "                                          \
-    "The example above would be:\n"                                                                                                                                  \
-    "\n"                                                                                                                                                             \
-    "```\n"                                                                                                                                                          \
-    "@echo off\n"                                                                                                                                                    \
-    "del \"%~1\" \"%~2\"\n"                                                                                                                                          \
-    "```\n"                                                                                                                                                          \
-    "\n"                                                                                                                                                             \
-    "Under Windows, a script that begins with a shebang line is instead run by the given interpreter, as `interpreter [options] script arguments...`, "             \
-    "e.g. `#!python`, `#!powershell -ExecutionPolicy Bypass -File` or `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. "                                                \
-    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name` (so that `#!/bin/sh` runs the `sh` found in the PATH, e.g. from Git for Windows), " \
-    "and a program without a full path is searched for in the PATH.\n"                                                                                               \
-    "The script runs without a console window, with no standard input. A double quote in an argument passed to a batch file is doubled (`\"\"`), "                     \
-    "and an argument passed to a batch file cannot contain a line break.\n"
+#define kPluginDescriptionWindows \
+    "Under Windows, the script is a batch file, which is run by cmd.exe (`cmd.exe /c script.bat arguments...`). " \
+    "Each argument is passed within double quotes: `%~1` is argument 1 without the quotes, and it must always be used within double quotes, as `\"%~1\"`. " \
+    "An unquoted `%~1`, passing it to `call`, or delayed expansion (`!var!`, `setlocal enabledelayedexpansion`) lets a file name or string containing `&`, `|`, `>` or `%` run commands, not only split words. " \
+    "In a batch file, a double quote in an argument arrives doubled (`\"\"`), and a trailing backslash too (`C:\\dir\\` arrives as `C:\\dir\\\\`), so that `\"%~1\"` or `%*` passed to a program gives it back the original argument. " \
+    "An argument passed to a batch file cannot contain a line break. " \
+    "Start the script with `@echo off` to avoid echoing each command, and with `chcp 65001 >NUL` if it contains non-ASCII characters (cmd.exe reads batch files in the console code page). " \
+    "The example above would be:\n" \
+    "\n" \
+    "```\n" \
+    "@echo off\n" \
+    "del \"%~1\" \"%~2\"\n" \
+    "```\n" \
+    "\n" \
+    "Under Windows, a script that begins with a shebang line is instead run by the given interpreter, as `interpreter [options] scriptfile arguments...`, " \
+    "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass -File`, but not `cmd /c` or `powershell -Command`). " \
+    "A path that contains spaces must be quoted: `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. " \
+    "A program name without a directory is searched for in the directories of the PATH only (not in the current directory), with `.exe` or `.com` appended if needed; a relative path such as `bin\\prog.exe` is not allowed. " \
+    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH (e.g. from Git for Windows), not the WSL `bash.exe`. " \
+    "`python3` or `python` in the PATH may be the Microsoft Store installer stub: prefer `#!py -3` (the Python launcher) or a full path. " \
+    "Arguments are always quoted, so that MSYS2/Cygwin programs do not expand wildcards in them, but some programs read an argument that begins with `@` as a file of arguments.\n" \
+    "The script runs without a console window, with no standard input. Rendering waits for the script to exit (not for the programs it started with `start`), and aborting the render kills the script and the programs it started.\n"
+#ifdef RUNSCRIPT_WIN32
+#define kPluginDescriptionPstream ""
+#else
+#define kPluginDescriptionPstream "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
+#endif
 #define kPluginGrouping "Image"
 #define kPluginDescription                                                                                                                                                                                                         \
     "Run a script with the given arguments.\n"                                                                                                                                                                                     \
@@ -130,7 +139,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "\n"                                                                                                                                                                                                                           \
     kPluginDescriptionWindows                                                                                                                                                                                                      \
     "\n"                                                                                                                                                                                                                           \
-    "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
+    kPluginDescriptionPstream
 
 #define kPluginIdentifier "fr.inria.openfx.RunScript"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
@@ -174,7 +183,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamScriptHint                                                                                                                         \
     "Contents of the script. Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n" \
     "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces).\n" \
-    "Under Windows, the script is a batch file run by cmd.exe (argument 1 is \"%~1\"), unless it begins with a shebang line (see the plug-in description)."
+    "Under Windows, the script is a batch file run by cmd.exe (argument 1 is \"%~1\", always within double quotes: unquoted, it allows command injection), unless it begins with a shebang line (see the plug-in description).\n"
 
 #ifdef RUNSCRIPT_WIN32
 #define kParamScriptDefault "@echo off\n"
@@ -192,6 +201,15 @@ enum ERunScriptPluginParamType {
     eRunScriptPluginParamTypeDouble,
     eRunScriptPluginParamTypeInteger
 };
+
+#ifdef RUNSCRIPT_WIN32
+// polled while the script runs
+static bool
+runScriptAborted(void* effect)
+{
+    return static_cast<const ImageEffect*>(effect)->abort();
+}
+#endif
 
 static string
 unsignedToString(unsigned i)
@@ -443,7 +461,13 @@ RunScriptPlugin::render(const RenderArguments& args)
         _script->getValue(script);
         unsigned long exitCode = 0;
         string error;
-        if (!RunScriptWin32::runScript(script, argv, &errors, &exitCode, &error)) {
+        RunScriptWin32::RunResult r = RunScriptWin32::runScript(script, argv, &errors, &exitCode, &error, &runScriptAborted, this);
+        if (r == RunScriptWin32::eRunAborted) {
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+        if (r != RunScriptWin32::eRunOK) {
             setPersistentMessage(Message::eMessageError, "", "RunScript: " + error);
             throwSuiteStatusException(kOfxStatFailed);
 
