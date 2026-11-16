@@ -177,7 +177,8 @@ OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxProp
 OfxStatus ieClipReleaseImage(OfxPropertySetHandle) { return kOfxStatOK; }
 OfxStatus ieClipGetRoD(OfxImageClipHandle c, OfxTime, OfxRectD* rod)
 { Clip* clip = reinterpret_cast<Clip*>(c); double v; if (pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &v) == kOfxStatOK) { pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &rod->x1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 1, &rod->y1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 2, &rod->x2); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 3, &rod->y2); return kOfxStatOK; } return kOfxStatFailed; }
-int ieAbort(OfxImageEffectHandle) { return 0; }
+int gAbort = 0; // what ieAbort() returns (a render the host is aborting)
+int ieAbort(OfxImageEffectHandle) { return gAbort; }
 OfxStatus ieMemAlloc(OfxImageEffectHandle, size_t n, OfxImageMemoryHandle* h) { *h = reinterpret_cast<OfxImageMemoryHandle>(malloc(n)); return *h ? kOfxStatOK : kOfxStatErrMemory; }
 OfxStatus ieMemFree(OfxImageMemoryHandle h) { free(reinterpret_cast<void*>(h)); return kOfxStatOK; }
 OfxStatus ieMemLock(OfxImageMemoryHandle h, void** p) { *p = reinterpret_cast<void*>(h); return kOfxStatOK; }
@@ -685,11 +686,12 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
 // Expected: render succeeds and writes a black W x H image.
 // With channelCheckboxes, the R/G/B/A "process" checkboxes are visible as in Natron, so
 // GenericWriter packs the channels (doAnyPacking); otherwise they are hidden.
-// overlappingRoD: the input RoD intersects the render window, so the image should have existed (e.g. an
-// upstream node failed): the writer must fail rather than write black over the file.
+// overlappingRoD: the input RoD intersects the render window (e.g. a time outside of the input's frame range,
+// or a gap in a timeline, with the project's RoD): per the spec, a black image is written too.
 // outputConnected: the output image must be filled with black too.
+// aborted: the host is aborting the render: nothing is written (the previous file is kept).
 int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool channelCheckboxes,
-                              bool overlappingRoD = false, bool outputConnected = false)
+                              bool overlappingRoD = false, bool outputConnected = false, bool aborted = false)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
     if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
@@ -728,7 +730,7 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
         setupClipImage(o, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
         std::fill((float*)o->buffer.data(), (float*)o->buffer.data() + (size_t)W * H * 4, 0.25f);
     }
-    if (overlappingRoD) {
+    if (aborted) {
         // a file from a previous render, which must not be replaced by a black image
         std::FILE* f = std::fopen(outFile.c_str(), "wb");
         if (f) { std::fputs("previous", f); std::fclose(f); }
@@ -737,18 +739,20 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
 
     PropSet a = makeRenderInArgs(1., W, H);
+    gAbort = aborted ? 1 : 0;
     OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    gAbort = 0;
 
     p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
-    if (overlappingRoD) {
+    if (aborted) {
         std::FILE* f = std::fopen(outFile.c_str(), "rb");
         char buf[16] = { 0 };
         const bool kept = f && std::fread(buf, 1, 8, f) == 8 && std::strncmp(buf, "previous", 8) == 0;
         if (f) std::fclose(f);
         std::printf("  render = %d, previous file %s\n", st, kept ? "kept" : "REPLACED");
-        if (ok(st) || !kept) { std::printf("  FAIL (expected a failed render, and the previous file kept)\n"); return 1; }
+        if (!kept) { std::printf("  FAIL (expected the previous file kept)\n"); return 1; }
         std::printf("  PASS\n");
         return 0;
     }
@@ -950,8 +954,10 @@ main(int argc, char** argv)
     failures += testWriteOIIODisjointInputImage(outFile + ".i79.png", 72, 128);
     std::printf("==== WriteOIIO, no input image, output clip connected (#79) ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/true);
-    std::printf("==== WriteOIIO, no input image although its RoD overlaps: must fail, not write black ====\n");
+    std::printf("==== WriteOIIO, no input image although its RoD overlaps: black, per the spec ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/true);
+    std::printf("==== WriteOIIO, no input image, render aborted: nothing written ====\n");
+    failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/false, /*aborted=*/true);
 
     {
         // #90: G,B,A of an RGB source: the output is G, B, and the missing alpha, which is opaque
