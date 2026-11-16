@@ -72,6 +72,10 @@ the real render pipeline, linked directly (no host binary):
   (returns the encoded 128x128) -> `render` each frame into a host output image.
   The decoded gray levels ramp 0.091..0.909 (== N/11), i.e. the decode
   round-trips the encode.
+* **WriteOIIO** (regression test for issue #79): render a JPEG while the
+  host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
+  render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
+  The plugin must write a black image the size of the render window.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test

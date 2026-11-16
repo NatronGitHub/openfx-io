@@ -1005,6 +1005,44 @@ GenericWriterPlugin::render(const RenderArguments& args)
         int dstNComps = doAnyPacking ? packingMapping.size() : data.pixelComponentsCount;
         int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
 
+        if (!data.srcPixelData) {
+            // The input image could not be fetched, e.g. because the render window does not
+            // intersect the input RoD (a Crop outside of the output format, see
+            // https://github.com/NatronGitHub/openfx-io/issues/79). The OFX spec says that in
+            // this case "the plugin should continue operation, but assume the image was
+            // black and transparent": encode a black image the size of the render window,
+            // instead of passing a NULL pointer and an uninitialized rowBytes to encode().
+            dstNComps = doAnyPacking ? (int)packingMapping.size() : _inputClip->getPixelComponentCount();
+            dstNCompsStartIndex = 0;
+            if ((dstNComps < 1) || (dstNComps > 4)) {
+                setPersistentMessage(Message::eMessageError, "", "Input image could not be fetched");
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            data.bounds = args.renderWindow;
+            data.rowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * dstNComps * getComponentBytes(eBitDepthFloat);
+            data.pixelComponentsCount = dstNComps;
+            const size_t memSize = (size_t)(args.renderWindow.y2 - args.renderWindow.y1) * (size_t)data.rowBytes;
+            ImageMemory* blackMem = new ImageMemory(memSize, this);
+            dataHolder.addMemory(blackMem);
+            data.srcPixelData = (float*)blackMem->lock();
+            if (!data.srcPixelData) {
+                throwSuiteStatusException(kOfxStatErrMemory);
+
+                return;
+            }
+            std::memset(data.srcPixelData, 0, memSize);
+
+            // the writer is a no-op: the output image is black too
+            if (_outputClip && _outputClip->isConnected()) {
+                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, args.renderView, args.planes.front().c_str()));
+                if (dstImg.get()) {
+                    fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
+                }
+            }
+        }
+
         encode(filename, time, viewNames[0], data.srcPixelData, args.renderWindow, pixelAspectRatio, data.pixelComponentsCount, dstNCompsStartIndex, dstNComps, data.rowBytes);
     } else {
         /*

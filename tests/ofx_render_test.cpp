@@ -20,6 +20,10 @@
  *       output image, then verify the decoded gray level ramps with frame number
  *       (i.e. the decode round-trips the encode)
  *
+ *   WriteOIIO test (issue #79):
+ *     - render a JPEG while the host has no source image for the render window
+ *       (clipGetImage fails with kOfxStatFailed): a black image must be written
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofxCore.h"
@@ -31,6 +35,9 @@
 #include "ofxParam.h"
 #include "ofxProperty.h"
 #include "nuke/fnOfxExtensions.h" // kOfxImageEffectPropRenderPlanes, kFnOfxImagePlaneColour, kFnOfxImageEffectPropView
+#include "ofxNatron.h" // kNatronOfxParamProcessR/G/B/A
+
+#include <OpenImageIO/imageio.h>
 
 #include <cmath>
 #include <algorithm>
@@ -79,6 +86,7 @@ struct Clip {
     PropSet image;            // image props returned by clipGetImage
     std::vector<uint8_t> buffer; // pixel buffer backing the image
     bool connected = false;
+    bool noImage = false;     // clipGetImage fails with kOfxStatFailed ("assume black and transparent")
 };
 
 struct Effect {
@@ -163,7 +171,7 @@ OfxStatus ieClipDefine(OfxImageEffectHandle e, const char* name, OfxPropertySetH
 OfxStatus ieClipGetHandle(OfxImageEffectHandle e, const char* name, OfxImageClipHandle* clip, OfxPropertySetHandle* props)
 { Effect* eff = EF(e)->src(); auto it = eff->clips.find(name); if (it == eff->clips.end()) return kOfxStatErrBadIndex; if (clip) *clip = reinterpret_cast<OfxImageClipHandle>(it->second); if (props) *props = PH(&it->second->props); return kOfxStatOK; }
 OfxStatus ieClipGetPropertySet(OfxImageClipHandle c, OfxPropertySetHandle* out) { *out = PH(&reinterpret_cast<Clip*>(c)->props); return kOfxStatOK; }
-OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxPropertySetHandle* out) { if (out) *out = PH(&reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
+OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxPropertySetHandle* out) { if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(&reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus ieClipReleaseImage(OfxPropertySetHandle) { return kOfxStatOK; }
 OfxStatus ieClipGetRoD(OfxImageClipHandle c, OfxTime, OfxRectD* rod)
 { Clip* clip = reinterpret_cast<Clip*>(c); double v; if (pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &v) == kOfxStatOK) { pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &rod->x1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 1, &rod->y1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 2, &rod->x2); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 3, &rod->y2); return kOfxStatOK; } return kOfxStatFailed; }
@@ -280,7 +288,7 @@ OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 
 // ------------------------------------------------------------------ FnOfx multi-plane suite v2
 OfxStatus fnClipGetImagePlaneV2(OfxImageClipHandle c, OfxTime, int, const char*, const OfxRectD*, OfxPropertySetHandle* out)
-{ if (out) *out = PH(&reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
+{ if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(&reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus fnClipGetRoDV2(OfxImageClipHandle c, OfxTime t, int, OfxRectD* b) { return ieClipGetRoD(c, t, b); }
 OfxStatus fnGetViewName(OfxImageEffectHandle, int, const char** n) { if (n) *n = "main"; return kOfxStatOK; }
 OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = 1; return kOfxStatOK; }
@@ -574,6 +582,75 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
     return 0;
 }
 
+// Regression test for https://github.com/NatronGitHub/openfx-io/issues/79:
+// WriteOIIO segfaulted in OIIO's contiguize() when writing a JPEG whose render window
+// (the output format) does not intersect the input RoD (e.g. Crop outside of the format).
+// The host then fails clipGetImage with kOfxStatFailed, and the OFX spec says the plugin
+// "should continue operation, but assume the image was black and transparent".
+// GenericWriter used to call encode() with a NULL pixel pointer and an uninitialized rowBytes.
+// Expected: render succeeds and writes a black W x H image.
+// With channelCheckboxes, the R/G/B/A "process" checkboxes are visible as in Natron, so
+// GenericWriter packs the channels (doAnyPacking); otherwise they are hidden.
+int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool channelCheckboxes)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
+    if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
+    std::remove(outFile.c_str());
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    for (const char* name : { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA }) {
+        auto it = ctx.params.find(name);
+        if (it != ctx.params.end()) {
+            pSetInt(PH(it->second.props), kOfxParamPropSecret, 0, channelCheckboxes ? 0 : 1);
+        }
+    }
+
+    Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+    if (!src) { std::printf("  FAIL: no Source clip\n"); return 1; }
+    src->connected = true;
+    setupClipImage(src, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+    // Input RoD entirely to the right of the render window, as in the issue's project
+    // (format 720x1280, Crop RoD 727,19 -> 1450,1277): the host has no image to give.
+    double rod[4] = { W + 7., 19., 2. * W + 10., H - 3. };
+    pSetDoubleN(PH(&src->props), kOfxImageEffectPropRegionOfDefinition, 4, rod);
+    src->noImage = true;
+    if (ctx.clips.count(kOfxImageEffectOutputClipName)) {
+        Clip* o = ctx.clips[kOfxImageEffectOutputClipName];
+        o->connected = false;
+        setupClipImage(o, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+    }
+
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+
+    PropSet a = makeRenderInArgs(1., W, H);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
+
+    auto in = OIIO::ImageInput::open(outFile);
+    if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", outFile.c_str(), OIIO::geterror().c_str()); return 1; }
+    const OIIO::ImageSpec& spec = in->spec();
+    std::vector<unsigned char> pix((size_t)spec.width * spec.height * spec.nchannels);
+    bool rd = in->read_image(0, 0, 0, spec.nchannels, OIIO::TypeDesc::UINT8, pix.data());
+    in->close();
+    int maxv = 0;
+    for (unsigned char v : pix) maxv = std::max(maxv, (int)v);
+    std::printf("  wrote %s: %dx%d, %d channels, max value %d\n", outFile.c_str(), spec.width, spec.height, spec.nchannels, maxv);
+    if (!rd || spec.width != W || spec.height != H || maxv > 2) { std::printf("  FAIL (expected a black %dx%d image)\n", W, H); return 1; }
+    std::printf("  PASS\n");
+    return 0;
+}
+
 } // namespace
 
 int
@@ -588,6 +665,10 @@ main(int argc, char** argv)
     failures += testWriteFFmpeg(outFile, W, H, N);
     std::printf("==== ReadFFmpeg render integration ====\n");
     failures += testReadFFmpeg(outFile, W, H, N);
+    std::printf("==== WriteOIIO JPEG, input image outside of the render window (issue #79) ====\n");
+    failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true);
+    std::printf("==== same, with hidden R/G/B/A checkboxes ====\n");
+    failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/false);
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");
