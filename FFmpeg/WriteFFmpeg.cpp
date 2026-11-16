@@ -385,14 +385,16 @@ enum X26xSpeedEnum {
 #define kParamWriteNCLCHint \
     "Write nclc data in the colr atom of the video header. QuickTime only."
 
-#define kParamOptionsSyntaxHint                                                                                                                  \
-    "Syntax: a list of key=value pairs, separated by colons or spaces, e.g. \"g=1:bf=0\" or \"g=1 bf=0\". "                        \
-    "This is FFmpeg's own option string syntax (see av_dict_parse_string), not the ffmpeg command line: write \"g=1\", not \"-g 1\". "        \
-    "A value that contains a colon, a space or a quote must be quoted with single quotes or escaped with a backslash, "              \
-    "e.g. x264-params='keyint=1:bframes=0'.\n"                                                                                                 \
-    "These options are applied last, so they override the values that the plug-in sets from its own parameters. "                             \
-    "Options that are not recognized are reported in a warning message, and the file is written without them. "                              \
-    "An option that is recognized but has an invalid value, or a syntax error, makes the render fail."
+#define kParamOptionsSyntaxHint                                                                                                              \
+    "Syntax: a list of key=value pairs, separated by colons or spaces, e.g. \"g=1:bf=0\" or \"g=1 bf=0\". "                                 \
+    "This is FFmpeg's own option string syntax (see av_dict_parse_string), not the ffmpeg command line: write \"g=1\", not \"-g 1\". "     \
+    "There must be no space after '=', and values cannot be empty (\"tune= preset=slow\" is an error). " \
+    "A value that contains a colon, a space or a quote must be enclosed in single quotes (inside which a backslash is literal), "          \
+    "or each such character escaped with a backslash, e.g. x264-params='keyint=1:bframes=0'. Double quotes are not supported.\n"          \
+    "These options are applied last, so they override the values that the plug-in sets from its own parameters. "                         \
+    "Options that the encoder or muxer does not apply (unknown keys, or generic options that it ignores) are reported in a warning "      \
+    "message when the render starts (which may show a dialog in interactive hosts), and the file is written without them. "              \
+    "An option that has an invalid value, or a syntax error, makes the render fail."
 
 #define kParamCodecOptions "codecOptions"
 #define kParamCodecOptionsLabel "Codec Options"
@@ -1045,87 +1047,138 @@ private:
     AVDictionary* _dict = nullptr;
 };
 
-// Iterate over all entries of an AVDictionary (av_dict_iterate() only exists since FFmpeg 6.0).
-static const AVDictionaryEntry*
-dictNext(const AVDictionary* dict,
-         const AVDictionaryEntry* prev)
+static bool
+isOptionSeparator(char c)
 {
-    return av_dict_get(dict, "", prev, AV_DICT_IGNORE_SUFFIX);
+    return c == ':' || c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-// Normalize a user option string to the strict syntax of av_dict_parse_string(dict, str, "=", ":", 0):
-// unquoted runs of separators (colons and whitespace) become a single colon, leading and trailing
-// separators are removed, and separators around an unquoted '=' are removed, so that
-// "g=1 bf=0", "g = 1\nbf = 0" and "g=1::bf=0:" all mean "g=1:bf=0".
-// Quoting (single quotes) and backslash escapes are kept verbatim; av_get_token() interprets them.
-static string
-normalizeOptionString(const string& str)
+// Normalize a user option string (see kParamOptionsSyntaxHint) to the strict syntax of
+// av_dict_parse_string(dict, str, "=", ":", 0), whose tokens are read by av_get_token():
+// - unquoted runs of separators (colons and whitespace) become a single colon, and leading and
+//   trailing separators are removed, so that "g=1 bf=0" and "g=1::bf=0:" both mean "g=1:bf=0";
+// - whitespace between a key and its '=' is removed ("g =1" is "g=1");
+// - a separator (or the end of the string) right after '=' is an error: av_dict_parse_string()
+//   rejects empty values, and dropping the separator would make "a= b=1" mean {a: "b=1"};
+// - quoting is kept verbatim for av_get_token(): outside single quotes, a backslash escapes the
+//   next character; inside single quotes, every character (including a backslash) is literal.
+// Double quotes are not a quoting character for av_get_token(), so they are rejected.
+// Returns false and sets *error on error.
+static bool
+normalizeOptionString(const string& str,
+                      string* out,
+                      string* error)
 {
-    string out;
+    out->clear();
     bool quoted = false;
-    bool pendingSep = false; // an unquoted separator was skipped since the last emitted character
-    bool afterEqual = false; // the last emitted character is an unquoted '='
+    bool pendingSep = false; // unquoted separators were skipped since the last emitted character
+    bool pendingColon = false; // ... and one of them was a colon
+    size_t keyStart = 0; // position in *out of the current key
+    bool inValue = false; // the '=' of the current pair was emitted
+    bool afterEqual = false; // the last emitted character is the '=' of the current pair
+    auto missingValue = [&]() {
+        *error = "missing value after \"" + out->substr(keyStart) + "\" (there must be no space after '=', and values cannot be empty)";
+
+        return false;
+    };
 
     for (size_t i = 0; i < str.size(); ++i) {
         const char c = str[i];
-        if (!quoted && (c == ':' || c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
+        if (quoted) {
+            *out += c;
+            if (c == '\'') {
+                quoted = false;
+            }
+            continue;
+        }
+        if (isOptionSeparator(c)) {
+            if (afterEqual) {
+                return missingValue();
+            }
             pendingSep = true;
+            pendingColon = pendingColon || (c == ':');
             continue;
         }
-        if (!quoted && c == '=') {
-            out += c;
-            pendingSep = false;
-            afterEqual = true;
-            continue;
+        if (c == '"') {
+            *error = "double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'";
+
+            return false;
         }
-        if (pendingSep && !out.empty() && !afterEqual) {
-            out += ':';
+        // whitespace before '=' is dropped; any other separator is kept as a colon
+        if (pendingSep && !out->empty() && (c != '=' || pendingColon)) {
+            *out += ':';
+            keyStart = out->size();
+            inValue = false;
         }
         pendingSep = false;
-        afterEqual = false;
-        out += c;
+        pendingColon = false;
+        *out += c;
+        afterEqual = (c == '=' && !inValue);
+        inValue = inValue || afterEqual;
         if (c == '\\') {
             if (i + 1 < str.size()) {
-                out += str[++i];
+                *out += str[++i];
             }
         } else if (c == '\'') {
-            quoted = !quoted;
+            quoted = true;
         }
     }
+    if (afterEqual) {
+        return missingValue();
+    }
 
-    return out;
+    return true;
 }
 
 // Parse a user option string (see kParamOptionsSyntaxHint) into dict.
-// Returns 0 on success, a negative AVERROR code on a syntax error.
-static int
+// Returns false and sets *error on a syntax error.
+static bool
 parseOptionString(const string& str,
-                  AVDictionary** dict)
+                  AVDictionary** dict,
+                  string* error)
 {
-    const string normalized = normalizeOptionString(str);
+    string normalized;
+    if (!normalizeOptionString(str, &normalized, error)) {
+        return false;
+    }
     if (normalized.empty()) {
-        return 0;
+        return true;
+    }
+    int ret = av_dict_parse_string(dict, normalized.c_str(), "=", ":", 0);
+    if (ret < 0) {
+        char szError[1024] = { 0 };
+        av_strerror(ret, szError, sizeof(szError));
+        *error = string("expected key=value pairs separated by colons or spaces, with no space after '=' (") + szError + ")";
+
+        return false;
     }
 
-    return av_dict_parse_string(dict, normalized.c_str(), "=", ":", 0);
+    return true;
 }
 
-// "key=value, key=value" for the entries of dict (only those also in filter, if filter is not NULL).
+// "key=value, key=value" for the entries of dict.
+// If userOptions is not NULL, only the keys of dict that are also in userOptions are listed, with
+// the value from userOptions (the plug-in may have merged its own value, e.g. for movflags).
 static string
 dictToString(const AVDictionary* dict,
-             const AVDictionary* filter = nullptr)
+             const AVDictionary* userOptions = nullptr)
 {
     string ret;
-    for (const AVDictionaryEntry* e = dictNext(dict, nullptr); e; e = dictNext(dict, e)) {
-        if (filter && !av_dict_get(filter, e->key, nullptr, 0)) {
-            continue;
+    for (const AVDictionaryEntry* e = av_dict_iterate(dict, nullptr); e; e = av_dict_iterate(dict, e)) {
+        const char* value = e->value;
+        if (userOptions) {
+            const AVDictionaryEntry* u = av_dict_get(userOptions, e->key, nullptr, 0);
+            if (!u) {
+                continue;
+            }
+            value = u->value;
         }
         if (!ret.empty()) {
             ret += ", ";
         }
         ret += e->key;
         ret += '=';
-        ret += e->value;
+        ret += value;
     }
 
     return ret;
@@ -3772,29 +3825,22 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     AVDictionaryHolder codecOptions;
     AVDictionaryHolder formatOptions;
     {
-        string str;
-        _codecOptions->getValue(str);
-        int error = parseOptionString(str, codecOptions.ptr());
-        if (error < 0) {
-            char szError[1024] = { 0 };
-            av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Syntax error in ") + kParamCodecOptionsLabel + " \"" + str + "\" (expected key=value pairs separated by colons or spaces): " + szError);
-            throwSuiteStatusException(kOfxStatFailed);
+        StringParam* params[2] = { _codecOptions, _formatOptions };
+        const char* labels[2] = { kParamCodecOptionsLabel, kParamFormatOptionsLabel };
+        AVDictionary** dicts[2] = { codecOptions.ptr(), formatOptions.ptr() };
+        for (int i = 0; i < 2; ++i) {
+            string str;
+            string error;
+            params[i]->getValue(str);
+            if (!parseOptionString(str, dicts[i], &error)) {
+                setPersistentMessage(Message::eMessageError, "", string("Syntax error in ") + labels[i] + " \"" + str + "\": " + error);
+                throwSuiteStatusException(kOfxStatFailed);
 
-            return;
-        }
-        _formatOptions->getValue(str);
-        error = parseOptionString(str, formatOptions.ptr());
-        if (error < 0) {
-            char szError[1024] = { 0 };
-            av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Syntax error in ") + kParamFormatOptionsLabel + " \"" + str + "\" (expected key=value pairs separated by colons or spaces): " + szError);
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+                return;
+            }
         }
     }
-    // Options that were not recognized by the encoder or the muxer, reported once the file is open.
+    // Options that were not applied by the encoder or the muxer, reported once the file is open.
     string unrecognizedOptions;
 
     ////////////////////                        ////////////////////
@@ -4055,7 +4101,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             return;
         }
         if (av_dict_count(codecOptionsLeft.get()) > 0) {
-            unrecognizedOptions += string(kParamCodecOptionsLabel) + " not recognized by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
+            unrecognizedOptions += string(kParamCodecOptionsLabel) + " not applied by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
         }
 
         avcodec_parameters_from_context(_streamVideo.stream->codecpar, avCodecContext);
@@ -4086,7 +4132,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         // The user format options override the plug-in options, except that a relative movflags
         // value ("+flag" or "-flag") is appended to the plug-in movflags.
-        for (const AVDictionaryEntry* e = dictNext(formatOptions.get(), nullptr); e; e = dictNext(formatOptions.get(), e)) {
+        for (const AVDictionaryEntry* e = av_dict_iterate(formatOptions.get(), nullptr); e; e = av_dict_iterate(formatOptions.get(), e)) {
             if (!strcmp(e->key, "movflags") && (e->value[0] == '+' || e->value[0] == '-')) {
                 av_dict_set(header_params.ptr(), e->key, (movflags + e->value).c_str(), 0);
             } else {
@@ -4113,7 +4159,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         if (hasFormatOptions) {
             string left = dictToString(header_params.get(), formatOptions.get());
             if (!left.empty()) {
-                unrecognizedOptions += string(kParamFormatOptionsLabel) + " not recognized by the " + _formatContext->oformat->name + " muxer: " + left + "\n";
+                unrecognizedOptions += string(kParamFormatOptionsLabel) + " not applied by the " + _formatContext->oformat->name + " muxer: " + left + "\n";
             }
         }
 
@@ -4131,6 +4177,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         if (!unrecognizedOptions.empty()) {
             // Not a persistent message: GenericWriterPlugin::render() clears it after each frame.
+            // This is sent during beginSequenceRender, and may pop up a dialog in interactive hosts.
             sendMessage(Message::eMessageWarning, "", unrecognizedOptions + "These options were ignored.");
         }
 

@@ -74,12 +74,17 @@ the real render pipeline, linked directly (no host binary):
   (returns the encoded 128x128) -> `render` each frame into a host output image.
   The decoded gray levels ramp 0.091..0.909 (== N/11), i.e. the decode
   round-trips the encode.
-* **WriteFFmpeg Codec Options / Format Options** (issue #71): encode MPEG-4
-  part 2 with Keyframe Interval = 5 (some P frames), then with the codec
+* **WriteFFmpeg Codec Options / Format Options** (issue #71), in an MP4: encode
+  MPEG-4 part 2 with Keyframe Interval = 5 (some P frames), then with the codec
   option `g=1`, which must override it (every frame decoded by libavcodec in
   the test is an I frame), and the format option `movflags=+faststart` (the
-  `moov` atom must precede `mdat`). Unknown keys must be reported in a
-  warning, and a syntax error must make `beginSequenceRender` fail.
+  `moov` atom must precede `mdat`). With Fast Start checked,
+  `movflags=+use_metadata_tags` must be appended to the plug-in movflags
+  (faststart kept, `mdta` keys written), and `movflags=use_metadata_tags` must
+  replace them. Options the encoder or muxer does not apply must be reported
+  in a warning (with the user's value), and syntax errors (an empty value,
+  double quotes) and invalid values (`g=abc`, `write_tmcd=abc`) must make
+  `beginSequenceRender` fail.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.

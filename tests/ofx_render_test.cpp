@@ -198,8 +198,8 @@ int probeVideoFrames(const std::string& file, int* nFrames, int* nIFrames)
     return ret;
 }
 
-// Offset of the first top-level QuickTime atom of the given type, or -1.
-long findTopLevelAtom(const std::string& file, const char* type)
+// Offset and size of the first top-level QuickTime atom of the given type; offset -1 if not found.
+long findTopLevelAtom(const std::string& file, const char* type, uint64_t* atomSize = nullptr)
 {
     std::FILE* f = std::fopen(file.c_str(), "rb");
     if (!f) return -1;
@@ -211,12 +211,27 @@ long findTopLevelAtom(const std::string& file, const char* type)
             if (std::fread(h + 8, 1, 8, f) != 8) break;
             size = 0; for (int k = 8; k < 16; ++k) size = (size << 8) | h[k];
         }
-        if (!std::memcmp(h + 4, type, 4)) { found = pos; break; }
+        if (!std::memcmp(h + 4, type, 4)) { found = pos; if (atomSize) *atomSize = size; break; }
         if (size < 8) break;
         pos += (long)size;
     }
     std::fclose(f);
     return found;
+}
+
+// Whether the top-level moov atom contains the given 4-character code (e.g. the mdta handler of the
+// metadata keys written with movflags use_metadata_tags). A byte search is enough for these small files.
+bool moovContains(const std::string& file, const char* fourcc)
+{
+    uint64_t size = 0;
+    const long moov = findTopLevelAtom(file, "moov", &size);
+    if (moov < 0 || size < 8 || size > (1 << 24)) return false;
+    std::vector<char> buf((size_t)size);
+    std::FILE* f = std::fopen(file.c_str(), "rb");
+    if (!f) return false;
+    const bool read = std::fseek(f, moov, SEEK_SET) == 0 && std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    return read && std::search(buf.begin(), buf.end(), fourcc, fourcc + 4) != buf.end();
 }
 
 // Issue #71: the Codec Options and Format Options params of WriteFFmpeg.
@@ -230,58 +245,106 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
     base.ints = { { "gopSize", 5 } };
     base.constantImage = true; // with the ramp, each frame is a scene change, which gives an I frame
 
-    std::printf("  -- reference: mpeg4, Keyframe Interval = 5, no options\n");
-    if (testWriteFFmpeg(outFile, W, H, nFrames, base) || probeVideoFrames(outFile, &n, &nI)) return 1;
-    std::printf("  decoded %d frames, %d I frames\n", n, nI);
-    if (n != nFrames || nI >= n) { std::printf("  FAIL: expected %d frames, including P frames\n", nFrames); ++failures; }
-    if (findTopLevelAtom(outFile, "moov") < findTopLevelAtom(outFile, "mdat")) { std::printf("  FAIL: without faststart, mdat must precede moov\n"); ++failures; }
-
-    std::printf("  -- Codec Options \"g=1\" (overrides Keyframe Interval), Format Options \"movflags=+faststart\"\n");
-    {
-        WriterParams wp = base;
-        wp.strings.push_back({ "codecOptions", "g=1" });
-        wp.strings.push_back({ "formatOptions", "movflags=+faststart" });
-        gMessages.clear();
-        if (testWriteFFmpeg(outFile, W, H, nFrames, wp) || probeVideoFrames(outFile, &n, &nI)) return 1;
-        std::printf("  decoded %d frames, %d I frames\n", n, nI);
-        if (n != nFrames || nI != n) { std::printf("  FAIL: expected %d frames, all I frames\n", nFrames); ++failures; }
+    auto check = [&](bool cond, const char* what) {
+        if (!cond) { std::printf("  FAIL: %s\n", what); ++failures; }
+    };
+    // faststart: moov must precede mdat; mdta: the metadata is written as mdta keys (use_metadata_tags)
+    auto checkAtoms = [&](bool faststart, bool mdta) {
         const long moov = findTopLevelAtom(outFile, "moov"), mdat = findTopLevelAtom(outFile, "mdat");
-        std::printf("  moov at %ld, mdat at %ld\n", moov, mdat);
-        if (moov < 0 || mdat < 0 || moov > mdat) { std::printf("  FAIL: movflags=+faststart: moov must precede mdat\n"); ++failures; }
-        if (gMessages.find("not recognized") != std::string::npos) { std::printf("  FAIL: unexpected warning:\n%s", gMessages.c_str()); ++failures; }
-    }
-
-    std::printf("  -- several options, spaces as separators, and unknown keys\n");
-    {
+        const bool hasMdta = moovContains(outFile, "mdta");
+        std::printf("  moov at %ld, mdat at %ld, mdta in moov: %s\n", moov, mdat, hasMdta ? "yes" : "no");
+        check(moov >= 0 && mdat >= 0, "no moov or mdat atom");
+        check(faststart ? moov < mdat : mdat < moov, faststart ? "moov must precede mdat (faststart)" : "mdat must precede moov (no faststart)");
+        check(hasMdta == mdta, mdta ? "no mdta keys (use_metadata_tags)" : "unexpected mdta keys");
+    };
+    // encode with the given options; returns false if the encode or decode failed
+    auto encode = [&](const char* codecOptions, const char* formatOptions, bool fastStartParam = false) {
         WriterParams wp = base;
-        wp.strings.push_back({ "codecOptions", " g = 1  bogus_codec_key=3 " });
-        wp.strings.push_back({ "formatOptions", "bogus_format_key=4" });
+        if (fastStartParam) wp.ints.push_back({ "fastStart", 1 });
+        if (codecOptions) wp.strings.push_back({ "codecOptions", codecOptions });
+        if (formatOptions) wp.strings.push_back({ "formatOptions", formatOptions });
         gMessages.clear();
-        if (testWriteFFmpeg(outFile, W, H, nFrames, wp) || probeVideoFrames(outFile, &n, &nI)) return 1;
+        if (testWriteFFmpeg(outFile, W, H, nFrames, wp) || probeVideoFrames(outFile, &n, &nI)) return false;
         std::printf("  decoded %d frames, %d I frames\n", n, nI);
-        if (n != nFrames || nI != n) { std::printf("  FAIL: expected %d frames, all I frames\n", nFrames); ++failures; }
-        if (gMessages.find(kOfxMessageWarning) == std::string::npos ||
-            gMessages.find("bogus_codec_key=3") == std::string::npos ||
-            gMessages.find("bogus_format_key=4") == std::string::npos) {
-            std::printf("  FAIL: expected a warning about bogus_codec_key and bogus_format_key, got:\n%s", gMessages.c_str());
-            ++failures;
-        } else {
-            std::printf("  PASS (unknown keys reported in a warning)\n");
-        }
-    }
-
-    std::printf("  -- syntax error in Codec Options\n");
-    {
+        return true;
+    };
+    // the render must fail in beginSequenceRender, with an error that mentions label
+    auto expectFailure = [&](const char* codecOptions, const char* formatOptions, const char* label) {
         WriterParams wp = base;
-        wp.strings.push_back({ "codecOptions", "g" });
+        if (codecOptions) wp.strings.push_back({ "codecOptions", codecOptions });
+        if (formatOptions) wp.strings.push_back({ "formatOptions", formatOptions });
         wp.expectBeginFailure = true;
         gMessages.clear();
         if (testWriteFFmpeg(outFile, W, H, nFrames, wp)) ++failures;
-        if (gMessages.find(kOfxMessageError) == std::string::npos || gMessages.find("Codec Options") == std::string::npos) {
-            std::printf("  FAIL: expected an error about Codec Options, got:\n%s", gMessages.c_str());
+        if (gMessages.find(kOfxMessageError) == std::string::npos || gMessages.find(label) == std::string::npos) {
+            std::printf("  FAIL: expected an error about %s, got:\n%s", label, gMessages.c_str());
+            ++failures;
+        }
+    };
+
+    std::printf("  -- reference: mpeg4, Keyframe Interval = 5, no options\n");
+    if (!encode(nullptr, nullptr)) return 1;
+    check(n == nFrames && nI < n, "expected P frames");
+    checkAtoms(/*faststart=*/false, /*mdta=*/false);
+
+    std::printf("  -- Codec Options \"g=1\" (overrides Keyframe Interval), Format Options \"movflags=+faststart\"\n");
+    if (!encode("g=1", "movflags=+faststart")) return 1;
+    check(n == nFrames && nI == n, "expected all I frames");
+    checkAtoms(/*faststart=*/true, /*mdta=*/false);
+    check(gMessages.find("not applied") == std::string::npos, "unexpected warning");
+
+    // The plug-in movflags are write_colr+faststart when Fast Start is checked. (write_colr cannot be
+    // checked: FFmpeg 8 writes a colr atom in MP4 whenever the color properties are known.)
+    std::printf("  -- Fast Start checked, \"movflags=+use_metadata_tags\" is appended to the plug-in movflags\n");
+    if (!encode(nullptr, "movflags=+use_metadata_tags", /*fastStartParam=*/true)) return 1;
+    checkAtoms(/*faststart=*/true, /*mdta=*/true);
+
+    std::printf("  -- Fast Start checked, \"movflags=use_metadata_tags\" replaces the plug-in movflags\n");
+    if (!encode(nullptr, "movflags=use_metadata_tags", /*fastStartParam=*/true)) return 1;
+    checkAtoms(/*faststart=*/false, /*mdta=*/true);
+
+    std::printf("  -- several options, spaces as separators, and unknown keys\n");
+    if (!encode(" g=1  bogus_codec_key=3 ", "bogus_format_key=4")) return 1;
+    check(n == nFrames && nI == n, "expected all I frames");
+    if (gMessages.find(kOfxMessageWarning) == std::string::npos ||
+        gMessages.find("not applied by the mpeg4 encoder: bogus_codec_key=3") == std::string::npos ||
+        gMessages.find("not applied by the mp4 muxer: bogus_format_key=4") == std::string::npos) {
+        std::printf("  FAIL: expected a warning about bogus_codec_key and bogus_format_key, got:\n%s", gMessages.c_str());
+        ++failures;
+    }
+
+    std::printf("  -- a backslash is literal in single quotes, an '=' may end a value\n");
+    if (!encode("bogus_path='C:\\' g=1 bogus_eq=a=", nullptr)) return 1;
+    check(n == nFrames && nI == n, "expected all I frames (g=1 must not be swallowed)");
+    if (gMessages.find("bogus_path=C:\\") == std::string::npos || gMessages.find("bogus_eq=a=") == std::string::npos) {
+        std::printf("  FAIL: expected a warning about bogus_path=C:\\ and bogus_eq=a=, got:\n%s", gMessages.c_str());
+        ++failures;
+    }
+
+    std::printf("  -- a leftover relative movflags is reported with the user value\n");
+    {
+        WriterParams wp = base;
+        wp.strings.push_back({ "formatOptions", "movflags=+faststart" });
+        // the avi muxer has no movflags option: the warning must not show "write_colr+faststart"
+        const std::string aviFile = outFile + ".avi";
+        gMessages.clear();
+        if (testWriteFFmpeg(aviFile, W, H, nFrames, wp)) return 1;
+        std::remove(aviFile.c_str());
+        if (gMessages.find("not applied by the avi muxer: movflags=+faststart\n") == std::string::npos) {
+            std::printf("  FAIL: expected a warning about movflags=+faststart, got:\n%s", gMessages.c_str());
             ++failures;
         }
     }
+
+    std::printf("  -- syntax errors\n");
+    expectFailure("g", nullptr, "Syntax error in Codec Options");
+    // an empty value must not swallow the next pair (tune="preset=slow")
+    expectFailure("bogus_empty= g=1", nullptr, "missing value after \"bogus_empty=\"");
+    expectFailure("g=1 bogus_empty=", nullptr, "missing value after \"bogus_empty=\"");
+    expectFailure(nullptr, "x264-params=\"keyint=1:bframes=0\"", "double quotes");
+    std::printf("  -- invalid values: avcodec_open2 and avformat_init_output fail\n");
+    expectFailure("g=abc", nullptr, "Could not open video codec");
+    expectFailure(nullptr, "write_tmcd=abc", "Unable to initialize output");
 
     std::printf(failures ? "  FAIL (codec/format options)\n" : "  PASS (codec/format options)\n");
     return failures;
@@ -777,7 +840,7 @@ main(int argc, char** argv)
         failures += testWriteOIIOChannelSelection(outFile + ".i90b.png", 32, 16, kOfxImageComponentAlpha, v, chk, 1, exp);
     }
     std::printf("==== WriteFFmpeg Codec Options and Format Options (issue #71) ====\n");
-    failures += testWriteFFmpegOptions(outFile + ".i71.mov", 64, 48, N);
+    failures += testWriteFFmpegOptions(outFile + ".i71.mp4", 64, 48, N);
     std::printf("==== WriteFFmpeg, Alpha source, A checked (issue #90) ====\n");
     failures += testWriteFFmpegAlphaSource(outFile + ".i90c.mov", 64, 48, 3);
 
