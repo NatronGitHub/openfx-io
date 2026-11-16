@@ -392,7 +392,7 @@ ReadFFmpegPlugin::decode(const string& filename,
     assert(sizeOfData == sizeof(unsigned char) || sizeOfData == sizeof(unsigned short));
 
     int srcRowBytes = width * numComponents * sizeOfData;
-    std::size_t bufferSize = height * srcRowBytes;
+    std::size_t bufferSize = (std::size_t)height * (std::size_t)srcRowBytes;
 
     RamBuffer bufferRaii(bufferSize);
     unsigned char* buffer = bufferRaii.getData();

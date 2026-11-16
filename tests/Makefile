@@ -14,8 +14,9 @@ PKGCONF  ?= pkg-config
 
 FFMPEG_PKGS := libavcodec libavformat libavutil libswscale
 
-# C++17 by default (OpenImageIO 3.x); e.g. `make test CXXSTD=-std=c++20` to test C++20
-CXXSTD   ?= -std=c++17
+# C++17 by default (OpenImageIO 3.x), unless CXX already has a -std option; e.g. `make test CXXSTD=-std=c++20`
+# or `make test CXX="clang++ -std=c++20"` to test C++20
+CXXSTD   ?= $(if $(findstring -std=,$(CXX)),,-std=c++17)
 
 CXXFLAGS += $(CXXSTD) -O2 -g -Wall
 
@@ -96,8 +97,8 @@ PLUGIN_SRCS := \
 EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
                     fr.inria.openfx.ReadOIIO fr.inria.openfx.WriteOIIO
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-layers clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -112,8 +113,12 @@ ofx_actions_test: ofx_actions_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 ofx_render_test: ofx_render_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
 
+# includes ../OIIO/ReadOIIO.cpp (to reach its file-static helpers), so it's left out of the sources
+oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGIN_SRCS)) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
+
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render
+test: test-ffmpeg test-oiio test-ofx test-render test-layers
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -132,8 +137,13 @@ test-ofx: ofx_entrypoints_test ofx_actions_test
 test-render: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov
 
+# ReadOIIO's EXR channel name -> view/layer mapping (multi-view EXRs, #75)
+test-layers: oiio_layers_test
+	./oiio_layers_test
+
 clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png ofxTestLog.txt
+	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png ofxTestLog.txt \
+	       oiio_layers_test oiio_layers_test.dSYM

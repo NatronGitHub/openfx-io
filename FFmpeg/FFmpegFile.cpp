@@ -58,6 +58,7 @@
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
 #include <windows.h> // for GetSystemInfo()
 #define strncasecmp _strnicmp
+#define strcasecmp _stricmp // strcasecmp is POSIX: not declared by MinGW without -U__STRICT_ANSI__ under a strict -std
 #else
 #include <unistd.h> // for sysconf()
 #endif
@@ -88,7 +89,7 @@ video_decoding_threads()
     static long n = -1;
 
     if (n < 0) {
-#if defined(WIN32) || defined(WIN64)
+#if defined(_WIN32) // also defined for 64-bit Windows; WIN32 is not defined by MinGW under a strict -std (e.g. -std=c++17)
         SYSTEM_INFO si;
         GetSystemInfo(&si);
         n = si.dwNumberOfProcessors;

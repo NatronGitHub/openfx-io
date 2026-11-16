@@ -290,7 +290,7 @@ ReadPFMPlugin::decode(const string& filename,
         }
 
         // now copy to the dstImg
-        float* dstPix = (float*)((char*)pixelData + (y - bounds.y1) * rowBytes);
+        float* dstPix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * (ptrdiff_t)rowBytes);
         if (C == 1) {
             switch (pixelComponentCount) {
             case 1:

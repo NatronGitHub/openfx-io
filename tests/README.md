@@ -10,6 +10,7 @@ make test-ffmpeg   # FFmpeg reader-core: frame-accuracy + seek validation
 make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
+make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 ```
 
 Requires: a C++14/17 compiler, `pkg-config`, and dev libs for FFmpeg, OpenColorIO,
@@ -115,13 +116,14 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 |------|---------|
 | `ofx_actions_test.cpp`      | In-process OFX host + action-dispatch integration test (all plugins). |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
+| `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |
 | `ffmpeg_read_test.cpp`      | Standalone FFmpeg reader-core harness (links `FFmpegFile.cpp`). |
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render`. |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers`. |
 
 ## Notes / limitations
 

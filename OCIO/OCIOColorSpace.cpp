@@ -53,7 +53,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription "ColorSpace transformation using OpenColorIO configuration file."
 #define kPluginIdentifier "fr.inria.openfx.OCIOColorSpace"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -610,7 +610,7 @@ OCIOColorSpacePlugin::render(const RenderArguments& args)
     // allocate temporary image
     int pixelBytes = pixelComponentCount * getComponentBytes(srcBitDepth);
     int tmpRowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * pixelBytes;
-    size_t memSize = (args.renderWindow.y2 - args.renderWindow.y1) * tmpRowBytes;
+    size_t memSize = (size_t)(args.renderWindow.y2 - args.renderWindow.y1) * (size_t)tmpRowBytes;
     ImageMemory mem(memSize, this);
     float* tmpPixelData = (float*)mem.lock();
     bool premult;
@@ -682,6 +682,11 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
         return;
     }
 #endif
+
+    if (paramName == kOCIOParamSwapColorspaces) {
+        _ocio->swapColorspaces(args.time);
+        return;
+    }
 
     return _ocio->changedParam(args, paramName);
 }
@@ -758,6 +763,7 @@ OCIOColorSpacePluginFactory::describeInContext(ImageEffectDescriptor& desc,
     // insert OCIO parameters
     GenericOCIO::describeInContextInput(desc, context, page, OCIO::ROLE_REFERENCE);
     GenericOCIO::describeInContextOutput(desc, context, page, OCIO::ROLE_REFERENCE);
+    GenericOCIO::describeInContextInverseAndSwap(desc, context, page);
     GenericOCIO::describeInContextContext(desc, context, page);
     {
         PushButtonParamDescriptor* param = desc.definePushButtonParam(kOCIOHelpButton);

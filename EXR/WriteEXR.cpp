@@ -256,7 +256,7 @@ WriteEXRPlugin::encode(const string& filename,
             /*First we create a row that will serve as the output buffer.
                We copy the scan-line (with y inverted) in the inputImage to the row.*/
             int exrY = bounds.y2 - y - 1;
-            float* src_pixels = (float*)((char*)pixelData + (exrY - bounds.y1) * rowBytes);
+            float* src_pixels = (float*)((char*)pixelData + (ptrdiff_t)(exrY - bounds.y1) * (ptrdiff_t)rowBytes);
 
             /*we create the frame buffer*/
             Imf_::FrameBuffer fbuf;
