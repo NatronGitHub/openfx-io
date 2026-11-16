@@ -5,8 +5,7 @@
 #include <glad.h>
 // GLU is not used: the plugins do not link libGLU (see
 // https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560), so gluErrorString() was an
-// undefined symbol on Linux. Use the shared GLU-free glErrorString() from openfx-supportext instead.
-#include <cstddef> // NULL, used by ofxsOGLDebug.h
+// undefined symbol on Linux. Use the shared GLU-free OFX::glErrorString() from openfx-supportext instead.
 #include "ofxsOGLDebug.h"
 #else
 #ifdef __APPLE__
@@ -42,7 +41,7 @@ namespace {
     {
         const GLenum glErr = glGetError();
         if (glErr != GL_NO_ERROR) {
-            const char* errorString = ::glErrorString(glErr); // from ofxsOGLDebug.h
+            const char* errorString = OFX::glErrorString(glErr); // from ofxsOGLDebug.h
             error = errorString ? errorString : "unknown OpenGL error";
             return true;
         }
