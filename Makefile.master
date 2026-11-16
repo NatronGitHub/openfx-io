@@ -31,20 +31,31 @@ OPENEXR_LINKFLAGS =`pkg-config --libs IlmBase 2>/dev/null` `pkg-config --libs Im
 #OPENEXR_CXXFLAGS += -DOFX_IO_MT_EXR
 
 # FFmpeg
-# With MacPorts, OpenImageIO links the FFmpeg of the ffmpegN port (installed in /opt/local/libexec/ffmpegN), not
-# the one in /opt/local/lib. Link the same FFmpeg, otherwise the bundle gets two different libavcodec.NN.dylib
-# with the same name (the deployment script copies libraries by name), and one silently replaces the other.
-# Override with "make FFMPEG_PKG_CONFIG_PATH=..." (empty: use the default pkg-config search path).
-FFMPEG_PKG_CONFIG_PATH ?= $(firstword $(wildcard /opt/local/libexec/ffmpeg8/lib/pkgconfig))
+# FFMPEG_PKG_CONFIG_PATH: optional pkg-config directory for FFmpeg (e.g. /opt/local/libexec/ffmpeg8/lib/pkgconfig
+# for MacPorts' ffmpeg8 port). Empty (default): use the default pkg-config search path.
+FFMPEG_PKG_CONFIG_PATH ?=
 FFMPEG_PKG_CONFIG = $(if $(FFMPEG_PKG_CONFIG_PATH),PKG_CONFIG_PATH="$(FFMPEG_PKG_CONFIG_PATH):$$PKG_CONFIG_PATH" ,)pkg-config
 FFMPEG_CXXFLAGS = `$(FFMPEG_PKG_CONFIG) --cflags libavformat libavcodec libswscale libavutil`
+FFMPEG_LIBDIR := $(shell $(if $(FFMPEG_PKG_CONFIG_PATH),PKG_CONFIG_PATH="$(FFMPEG_PKG_CONFIG_PATH):$$PKG_CONFIG_PATH" ,)pkg-config --variable=libdir libavcodec 2>/dev/null)
 ifneq ($(FFMPEG_PKG_CONFIG_PATH),)
-# Link these libraries by full path: with -L/-l, another -L/opt/local/lib earlier on the link line (e.g. from
-# OpenColorIO) would make the linker pick the FFmpeg in /opt/local/lib instead.
-FFMPEG_LIBDIR := $(shell PKG_CONFIG_PATH="$(FFMPEG_PKG_CONFIG_PATH)" pkg-config --variable=libdir libavcodec)
-FFMPEG_LINKFLAGS = $(foreach l,avformat avcodec swscale avutil,$(FFMPEG_LIBDIR)/lib$(l).dylib)
+# Link these libraries by full path: with -L/-l, another -L earlier on the link line (e.g. -L/opt/local/lib from
+# OpenColorIO) would make the linker pick a different FFmpeg.
+FFMPEG_LINKFLAGS = $(foreach l,avformat avcodec swscale avutil,$(FFMPEG_LIBDIR)/lib$(l)$(if $(filter Darwin,$(shell uname -s)),.dylib,.so))
 else
 FFMPEG_LINKFLAGS = `$(FFMPEG_PKG_CONFIG) --libs libavformat libavcodec libswscale libavutil`
+endif
+# (only on macOS, for the plugins that link FFmpeg, and not for "make clean")
+FFMPEG_CHECK_BUNDLE := $(and $(filter Darwin,$(shell uname -s)),$(filter IO FFmpeg,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes))
+ifneq ($(FFMPEG_CHECK_BUNDLE),)
+# Guard: if OpenImageIO links an FFmpeg from another directory (e.g. MacPorts' ffmpeg8 in
+# /opt/local/libexec/ffmpeg8, while the plugins would use /opt/local/lib), both are libavcodec.NN.dylib and the
+# deployment script (osxDeploy.sh copies libraries by name) silently bundles only one of them. Fail instead.
+OIIO_AVCODEC := $(shell otool -L "$$(pkg-config --variable=libdir OpenImageIO 2>/dev/null)/libOpenImageIO.dylib" 2>/dev/null | awk '/libavcodec/{print $$1; exit}')
+ifneq ($(and $(OIIO_AVCODEC),$(FFMPEG_LIBDIR)),)
+ifneq ($(patsubst %/,%,$(dir $(OIIO_AVCODEC))),$(FFMPEG_LIBDIR))
+$(error OpenImageIO links $(OIIO_AVCODEC), but the FFmpeg plugins would link FFmpeg from $(FFMPEG_LIBDIR): the bundle would contain only one of the two libavcodec builds. Use the same FFmpeg for both, e.g. make FFMPEG_PKG_CONFIG_PATH=$(patsubst %/lib/,%/lib/pkgconfig,$(dir $(OIIO_AVCODEC))), or build OpenImageIO without FFmpeg)
+endif
+endif
 endif
 # Uncomment the following line to enable multithreaded ffmpeg reading
 FFMPEG_CXXFLAGS += -DOFX_IO_MT_FFMPEG
