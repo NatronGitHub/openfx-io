@@ -1379,9 +1379,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 if (!packingRequired) {
                     channels.insert(channels.end(), planeChannels.begin(), planeChannels.end());
                 } else {
-                    assert(planeChannels.size() >= packingMapping.size());
+                    // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
+                    // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
+                    // same prefix (view and/or layer name) as the plane's own channel names, e.g. "right." or "Forward."
+                    const string prefix = planeChannels.empty() ? string() : planeChannels[0].substr(0, planeChannels[0].rfind('.') + 1);
+                    static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
-                        channels.push_back(planeChannels[packingMapping[i]]);
+                        const int c = packingMapping[i];
+                        if ((c >= 0) && (c < (int)planeChannels.size())) {
+                            channels.push_back(planeChannels[c]);
+                        } else {
+                            channels.push_back(prefix + rgbaNames[(c >= 0 && c < 4) ? c : (i < 4 ? i : 3)]);
+                        }
                     }
                 }
             }
@@ -1435,9 +1444,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 if (!packingRequired) {
                     channels.insert(channels.end(), planeChannels.begin(), planeChannels.end());
                 } else {
-                    assert(planeChannels.size() >= packingMapping.size());
+                    // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
+                    // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
+                    // same prefix (view and/or layer name) as the plane's own channel names, e.g. "right." or "Forward."
+                    const string prefix = planeChannels.empty() ? string() : planeChannels[0].substr(0, planeChannels[0].rfind('.') + 1);
+                    static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
-                        channels.push_back(planeChannels[packingMapping[i]]);
+                        const int c = packingMapping[i];
+                        if ((c >= 0) && (c < (int)planeChannels.size())) {
+                            channels.push_back(planeChannels[c]);
+                        } else {
+                            channels.push_back(prefix + rgbaNames[(c >= 0 && c < 4) ? c : (i < 4 ? i : 3)]);
+                        }
                     }
                 }
             }
@@ -1489,9 +1507,18 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 if (!packingRequired) {
                     channels.insert(channels.end(), planeChannels.begin(), planeChannels.end());
                 } else {
-                    assert(planeChannels.size() >= packingMapping.size());
+                    // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
+                    // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
+                    // same prefix (view and/or layer name) as the plane's own channel names, e.g. "right." or "Forward."
+                    const string prefix = planeChannels.empty() ? string() : planeChannels[0].substr(0, planeChannels[0].rfind('.') + 1);
+                    static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
-                        channels.push_back(planeChannels[packingMapping[i]]);
+                        const int c = packingMapping[i];
+                        if ((c >= 0) && (c < (int)planeChannels.size())) {
+                            channels.push_back(planeChannels[c]);
+                        } else {
+                            channels.push_back(prefix + rgbaNames[(c >= 0 && c < 4) ? c : (i < 4 ? i : 3)]);
+                        }
                     }
                 }
 

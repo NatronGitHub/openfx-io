@@ -510,6 +510,98 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames)
     return 0;
 }
 
+// Regression test for issue #90 with a writer that uses the start index: an Alpha-only source with only
+// the A checkbox checked, written by WriteFFmpeg (which can't write alpha, so the channel is padded to RGB).
+// render() passed packingMapping[0] = 3 as the start index, and WriteFFmpeg asserts that it is 0.
+int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFrames)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    std::remove(outFile.c_str());
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    {
+        const char* const boxes[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+        for (int k = 0; k < 4; ++k) {
+            auto it = ctx.params.find(boxes[k]);
+            if (it != ctx.params.end()) {
+                pSetInt(PH(it->second.props), kOfxParamPropSecret, 0, 0);
+                it->second.hasOv = true;
+                it->second.ov.i = { k == 3 ? 1 : 0 };
+            }
+        }
+    }
+
+    Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+    if (!src) { std::printf("  FAIL: no Source clip\n"); return 1; }
+    src->connected = true;
+    setupClipImage(src, W, H, kOfxImageComponentAlpha, kOfxBitDepthFloat, true);
+    pSetString(PH(&src->props), kOfxImageEffectPropComponents, 0, kOfxImageComponentAlpha);
+    pSetString(PH(&src->props), kOfxImageClipPropUnmappedComponents, 0, kOfxImageComponentAlpha);
+    if (ctx.clips.count(kOfxImageEffectOutputClipName)) {
+        Clip* o = ctx.clips[kOfxImageEffectOutputClipName];
+        o->connected = false;
+        setupClipImage(o, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+        pSetInt(PH(&o->props), kOfxImageClipPropConnected, 0, 0);
+    }
+
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); std::printf("  getClipPreferences = %d\n", cp); }
+
+    {
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        double fr[2] = { 1., (double)nFrames }; pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
+        pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
+        pSetInt(ap, kOfxPropIsInteractive, 0, 0);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
+        pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
+        pSetInt(ap, kFnOfxImageEffectPropView, 0, 0);
+        if (!ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr))) { std::printf("  FAIL: beginSequenceRender\n"); return 1; }
+    }
+
+    float* fp = reinterpret_cast<float*>(src->buffer.data());
+    const size_t npix = (size_t)W * H;
+    int rfail = 0;
+    for (int t = 1; t <= nFrames; ++t) {
+        const float v = (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
+        for (size_t i = 0; i < npix; ++i) { fp[i] = v; }
+        PropSet a = makeRenderInArgs((double)t, W, H);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        if (!ok(st)) { std::printf("  FAIL: render frame %d = %d\n", t, st); ++rfail; }
+    }
+
+    {
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        double fr[2] = { 1., (double)nFrames }; pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
+        pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
+        pSetInt(ap, kOfxPropIsInteractive, 0, 0);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
+        pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
+    }
+
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    std::FILE* f = std::fopen(outFile.c_str(), "rb");
+    long sz = 0;
+    if (f) { std::fseek(f, 0, SEEK_END); sz = std::ftell(f); std::fclose(f); }
+    std::printf("  encoded %s (%ld bytes), render failures=%d\n", outFile.c_str(), sz, rfail);
+    if (rfail || sz <= 0) { std::printf("  FAIL (encode)\n"); return 1; }
+    std::printf("  PASS (encode)\n");
+    return 0;
+}
+
 int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
@@ -682,6 +774,80 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     return 0;
 }
 
+// Regression test for issue #90: the R/G/B/A checkboxes select a subset of the source channels.
+// After fetchPlaneConvertAndCopy() the buffer always starts at component 0, but render()
+// passed packingMapping[0] as the start index, and a contiguous selection with as many
+// channels as the source (e.g. G,B,A of an RGB source) was not packed at all, so the writer
+// read past the end of each pixel. checked[] are the R/G/B/A checkbox values, expected[] the
+// expected 8-bit values of the written channels.
+int testWriteOIIOChannelSelection(const std::string& outFile, int W, int H, const char* srcComps,
+                                  const float srcVals[4], const bool checked[4],
+                                  int expectedNChannels, const int expected[4])
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
+    if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
+    std::remove(outFile.c_str());
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    const char* const boxes[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+    for (int k = 0; k < 4; ++k) {
+        auto it = ctx.params.find(boxes[k]);
+        if (it != ctx.params.end()) {
+            pSetInt(PH(it->second.props), kOfxParamPropSecret, 0, 0);
+            it->second.hasOv = true;
+            it->second.ov.i = { checked[k] ? 1 : 0 };
+        }
+    }
+
+    Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+    if (!src) { std::printf("  FAIL: no Source clip\n"); return 1; }
+    src->connected = true;
+    setupClipImage(src, W, H, srcComps, kOfxBitDepthFloat, true);
+    const int nc = (!std::strcmp(srcComps, kOfxImageComponentRGBA)) ? 4 : (!std::strcmp(srcComps, kOfxImageComponentAlpha) ? 1 : 3);
+    float* sp = (float*)src->buffer.data();
+    for (size_t i = 0; i < (size_t)W * H; ++i) for (int c = 0; c < nc; ++c) sp[i * nc + c] = srcVals[c];
+    pSetString(PH(&src->props), kOfxImageEffectPropComponents, 0, srcComps);
+    pSetString(PH(&src->props), kOfxImageClipPropUnmappedComponents, 0, srcComps);
+    if (ctx.clips.count(kOfxImageEffectOutputClipName)) {
+        ctx.clips[kOfxImageEffectOutputClipName]->connected = false;
+    }
+
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+
+    PropSet a = makeRenderInArgs(1., W, H);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
+
+    auto in = OIIO::ImageInput::open(outFile);
+    if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", outFile.c_str(), OIIO::geterror().c_str()); return 1; }
+    const OIIO::ImageSpec& spec = in->spec();
+    std::vector<unsigned char> pix((size_t)spec.width * spec.height * spec.nchannels);
+    bool rd = in->read_image(0, 0, 0, spec.nchannels, OIIO::TypeDesc::UINT8, pix.data());
+    in->close();
+    int fail = (!rd || spec.width != W || spec.height != H || spec.nchannels != expectedNChannels) ? 1 : 0;
+    int maxErr = 0;
+    for (size_t i = 0; !fail && i < pix.size(); ++i) {
+        maxErr = std::max(maxErr, std::abs((int)pix[i] - expected[i % spec.nchannels]));
+    }
+    std::printf("  wrote %s: %dx%d, %d channels, first pixel", outFile.c_str(), spec.width, spec.height, spec.nchannels);
+    for (int c = 0; c < spec.nchannels && !pix.empty(); ++c) std::printf(" %d", (int)pix[c]);
+    std::printf(", max error %d\n", maxErr);
+    if (fail || maxErr > 1) { std::printf("  FAIL (expected %d channels:", expectedNChannels); for (int c = 0; c < expectedNChannels; ++c) std::printf(" %d", expected[c]); std::printf(")\n"); return 1; }
+    std::printf("  PASS\n");
+    return 0;
+}
+
 // Second regression test for issue #79: the host returns a valid source image, but its
 // bounds do not intersect the render window. GenericWriter returned early from
 // fetchPlaneConvertAndCopy(): the output image was not filled, and the channel packing was
@@ -786,6 +952,25 @@ main(int argc, char** argv)
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/true);
     std::printf("==== WriteOIIO, no input image although its RoD overlaps: must fail, not write black ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/true);
+
+    {
+        // #90: G,B,A of an RGB source: the output is G, B, and the missing alpha, which is opaque
+        const float v[4] = { 0.2f, 0.5f, 0.8f, 0.f };
+        const bool chk[4] = { false, true, true, true };
+        const int exp[4] = { 128, 204, 255, 0 };
+        std::printf("==== WriteOIIO PNG, RGB source, G/B/A checked (issue #90) ====\n");
+        failures += testWriteOIIOChannelSelection(outFile + ".i90a.png", 32, 16, kOfxImageComponentRGB, v, chk, 3, exp);
+    }
+    {
+        // #90: an Alpha-only source with A checked: a 1-channel image of the alpha
+        const float v[4] = { 0.7f, 0.f, 0.f, 0.f };
+        const bool chk[4] = { false, false, false, true };
+        const int exp[4] = { 179, 0, 0, 0 };
+        std::printf("==== WriteOIIO PNG, Alpha source, A checked (issue #90) ====\n");
+        failures += testWriteOIIOChannelSelection(outFile + ".i90b.png", 32, 16, kOfxImageComponentAlpha, v, chk, 1, exp);
+    }
+    std::printf("==== WriteFFmpeg, Alpha source, A checked (issue #90) ====\n");
+    failures += testWriteFFmpegAlphaSource(outFile + ".i90c.mov", 64, 48, 3);
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");
