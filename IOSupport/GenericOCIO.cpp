@@ -1323,8 +1323,33 @@ GenericOCIO::swapColorspaces(double time)
     string outputSpace;
     getInputColorspaceAtTime(time, inputSpace);
     getOutputColorspaceAtTime(time, outputSpace);
-    // one undoable change (and no render of the intermediate state where both colorspaces are equal)
-    _parent->beginEditBlock("Swap Colorspaces");
+    // one undoable change (hosts may also skip rendering the intermediate state, where both colorspaces are
+    // equal, but OFX edit blocks are only defined for undo). The block is closed even if a setValue() throws,
+    // and hosts without edit blocks get no block.
+    struct EditBlockGuard
+    {
+        ImageEffect* effect;
+        bool open;
+        EditBlockGuard(ImageEffect* e, const char* name)
+            : effect(e)
+            , open(false)
+        {
+            try {
+                effect->beginEditBlock(name);
+                open = true;
+            } catch (...) {
+            }
+        }
+        ~EditBlockGuard()
+        {
+            if (open) {
+                try {
+                    effect->endEditBlock();
+                } catch (...) {
+                }
+            }
+        }
+    } editBlock(_parent, "Swap Colorspaces");
     // if a param is animated, set a key at the current time rather than its non-animated value
     if (_inputSpace->getNumKeys() > 0) {
         _inputSpace->setValueAtTime(time, outputSpace);
@@ -1338,7 +1363,6 @@ GenericOCIO::swapColorspaces(double time)
     }
     // update the choice menus from the new string values
     refreshInputAndOutputState(time);
-    _parent->endEditBlock();
 #else
     (void)time;
 #endif

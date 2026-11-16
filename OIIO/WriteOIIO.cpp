@@ -1642,6 +1642,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
             config.tile_depth = 1;
         }
         std::stringstream err;
+        (void)OIIO::geterror(); // clear any stale error message, which would be reported if make_texture fails
         if (!ImageBufAlgo::make_texture(data->textureMode, src, filename, config, &err)) {
             // make_texture reports its errors through OIIO::geterror(); outstream gets the verbose output
             string msg = OIIO::geterror();
@@ -1750,7 +1751,7 @@ WriteOIIOPluginFactory::load()
             extensionsl.push_back(extension);
         }
     }
-    const char* extensions_blacklist[] = {
+    const char* extensions_denylist[] = {
 #if OIIO_VERSION < 10605
         "pfm", // PFM was flipped before 1.6.5
 #endif
@@ -1769,7 +1770,7 @@ WriteOIIOPluginFactory::load()
         "term", // OIIO's terminal output
         NULL
     };
-    for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
+    for (const char* const* e = extensions_denylist; *e != NULL; ++e) {
         extensionsl.remove(*e);
     }
     // keep only the extensions that OIIO can actually write
