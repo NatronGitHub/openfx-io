@@ -798,7 +798,8 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     }
 
     pixelBytes = numChannels * sizeof(float);
-    size_t pixelDataOffset = (size_t)(renderWindow.y1 - _dstBounds.y1) * _dstRowBytes + (size_t)(renderWindow.x1 - _dstBounds.x1) * pixelBytes;
+    // signed: _dstRowBytes may be negative (OFX images may be stored bottom-up)
+    ptrdiff_t pixelDataOffset = (ptrdiff_t)(renderWindow.y1 - _dstBounds.y1) * (ptrdiff_t)_dstRowBytes + (ptrdiff_t)(renderWindow.x1 - _dstBounds.x1) * pixelBytes;
     float* pix = (float*)(((char*)_dstPixelData) + pixelDataOffset); // (char*)dstImg->getPixelAddress(renderWindow.x1, renderWindow.y1);
     try {
         AutoSetAndRestoreThreadLocale locale;
