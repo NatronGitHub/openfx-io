@@ -39,8 +39,9 @@ env:
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # Skip the nightly run if master didn't change since the last successful nightly run (this job only runs
-  # on schedule). Compare commits rather than dates: commit dates may be older than the push.
+  # Skip the nightly run if master didn't change since the last completed nightly run (this job only runs on
+  # schedule): once per commit, even if that run failed. Compare commits rather than dates: commit dates may be
+  # older than the push. If the API call fails, run anyway.
   changes:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
@@ -54,7 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status completed --limit 1 --json headSha --jq '.[0].headSha // empty') || last=
           if [ -n "$last" ] && [ "$last" = "$GITHUB_SHA" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"; echo "master ($GITHUB_SHA) didn't change since the last nightly run: skipping."
           else
@@ -229,6 +230,7 @@ jobs:
           ./verify_plugin_loads Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx
           # Loading alone doesn't prove self-containment (the /opt/local paths exist on this runner): the plug-in
           # and its bundled libraries must only reference @rpath/@loader_path libraries and system libraries.
+          shopt -s nullglob
           if otool -L Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx Bundle/IO.ofx.bundle/Contents/Libraries/* | grep -E '^[[:space:]]+/(opt|usr/local)/'; then
             echo "error: the bundle references the libraries above outside of the bundle"; exit 1
           fi
