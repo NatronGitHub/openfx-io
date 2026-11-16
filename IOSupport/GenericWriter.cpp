@@ -1158,6 +1158,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 } // for each plane
             } // for each view
             if (nChannels == 0) {
+                if (abort()) { // not an error: the host is aborting the render
+                    return;
+                }
                 setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
                 throwSuiteStatusException(kOfxStatFailed);
 
@@ -1256,6 +1259,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                     nChannels += dstNComps;
                 }
                 if (nChannels == 0) {
+                    if (abort()) { // not an error: the host is aborting the render
+                        return;
+                    }
                     setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
                     throwSuiteStatusException(kOfxStatFailed);
 
