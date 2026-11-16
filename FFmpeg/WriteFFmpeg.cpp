@@ -73,6 +73,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
+#include <libavutil/timecode.h>
 #include <libswscale/swscale.h>
 }
 #include "IOUtility.h"
@@ -91,7 +92,6 @@ extern "C" {
 #endif
 
 #define OFX_FFMPEG_PRINT_CODECS 0 // print list of supported/ignored codecs and formats
-#define OFX_FFMPEG_TIMECODE 0 // timecode support
 #define OFX_FFMPEG_AUDIO 0 // audio support
 #define OFX_FFMPEG_MBDECISION 0 // add the macroblock decision parameter
 
@@ -255,25 +255,23 @@ enum PrefBitDepthEnum {
 #define kParamResetFPSLabel "Reset FPS"
 #define kParamResetFPSHint "Reset FPS from the input FPS."
 
-#if OFX_FFMPEG_TIMECODE
-#define kParamWriteTimeCode "writeTimeCode"
-#define kParamWriteTimeCodeLabel "Write Time Code"
-#define kParamWriteTimeCodeHint                                               \
-    "Add a time code track to the generated QuickTime file. "                 \
-    "This requires the presence of the \"input/timecode\" key in "            \
-    "the metadata. It is possible to give the time code track its reel name " \
-    "though the \"quicktime/reel\" key in metadata. This is automatically "   \
-    "read from any QuickTime file already containing a time code track and "  \
-    "propagated through the tree. If this is not present the reel name will " \
-    "be written blank. Use the ModifyMetaData node to add it.\n"              \
-    "If the timecode is missing, the track will not be written."
-#endif
-
 #define kParamFastStart "fastStart"
 #define kParamFastStartLabel "Fast Start"
 #define kParamFastStartHint                                                     \
     "Write decoding critical metadata (moov atom) at beginning of the file to " \
     "allow playback when streaming."
+
+#define kParamStartTimecode "startTimecode"
+#define kParamStartTimecodeLabel "Start Timecode"
+#define kParamStartTimecodeHint                                                        \
+    "Timecode of the first frame of the movie, as HH:MM:SS:FF (hours, minutes, "       \
+    "seconds, frames), or HH:MM:SS;FF for a drop-frame timecode (only at 29.97 fps "   \
+    "and its multiples). The frame number FF must be less than the frame rate, "       \
+    "rounded to the nearest integer.\n"                                                \
+    "It is written as the \"timecode\" metadata of the file and of its video stream: " \
+    "QuickTime (mov) and MP4 files get a timecode (tmcd) track, and other formats "    \
+    "that support it (e.g. MXF) write it in their own way.\n"                          \
+    "Leave empty to write no timecode."
 
 #define kParamAdvanced "advanced"
 #define kParamAdvancedLabel "Advanced"
@@ -571,6 +569,78 @@ unused(const T&)
 // The fourccs for MJPEGA, MJPEGB, and Photo JPEG
 static const char* kJpegCodecs[] = { "jpeg", "mjpa", "mjpb" };
 static const int kNumJpegCodecs = sizeof(kJpegCodecs) / sizeof(kJpegCodecs[0]);
+
+// Trap fractional frame rates so that they can be specified correctly
+// in a QuickTime movie. The rational number representation of fractional
+// frame rates is 24000/1001, 30000/1001, 60000/1001, etc.
+// WARNING: There are some big assumptions here. The assumption is
+//          that by specifying 23.98, 29.97 on the UI the intended
+//          frame rate is 24/1.001, 30/1.001, etc. so the frame rate
+//          is corrected here.
+// This is the frame rate of the video stream (AVStream::avg_frame_rate).
+static AVRational
+frameRateFromFps(double fps)
+{
+    AVRational frame_rate;
+    if (((23.969 < fps) && (fps < 23.981)) || ((29.969 < fps) && (fps < 29.981)) || ((59.939 < fps) && (fps < 59.941))) {
+        frame_rate.num = std::ceil(fps) * 1000;
+        frame_rate.den = 1001;
+    } else {
+        // integers are represented exactly as float, so most of the time the denominator will be 1
+        frame_rate = av_d2q(fps, INT_MAX);
+    }
+    return frame_rate;
+}
+
+// Parse and validate a start timecode, HH:MM:SS:FF (or HH:MM:SS;FF for drop-frame), at the given
+// frame rate, using libavutil's timecode API (which is also what the muxers use to parse it).
+// av_timecode_init_from_string() only checks the frame rate and the drop-frame flag, so the ranges
+// of the fields (and trailing characters) are checked here too.
+// On success, returns true and sets canonical to the normalized timecode (as written by
+// av_timecode_make_string()); otherwise returns false and sets error.
+static bool
+parseTimecode(const string& str,
+              AVRational rate,
+              string* canonical,
+              string* error)
+{
+    int hh, mm, ss, ff, n = 0;
+    char c;
+    if ((std::sscanf(str.c_str(), "%d:%d:%d%c%d%n", &hh, &mm, &ss, &c, &ff, &n) != 5) || (n != (int)str.size()) || (c != ':' && c != ';')) {
+        *error = "cannot parse \"" + str + "\": expected HH:MM:SS:FF, or HH:MM:SS;FF for drop-frame";
+
+        return false;
+    }
+    const bool dropFrame = (c == ';');
+    AVTimecode tc;
+    if (av_timecode_init_from_string(&tc, rate, str.c_str(), nullptr) < 0) {
+        char rateStr[64];
+        std::snprintf(rateStr, sizeof(rateStr), "%g", av_q2d(rate));
+        *error = "\"" + str + "\" is not valid at " + rateStr + " fps";
+        if (dropFrame) {
+            *error += " (drop-frame timecodes require 29.97 fps or a multiple of it)";
+        }
+
+        return false;
+    }
+    if ((hh < 0) || (hh > 23) || (mm < 0) || (mm > 59) || (ss < 0) || (ss > 59) || (ff < 0) || (ff >= (int)tc.fps)) {
+        *error = "\"" + str + "\" is out of range: hours must be 0-23, minutes and seconds 0-59, and frames 0-" + std::to_string(tc.fps - 1);
+
+        return false;
+    }
+    // in drop-frame timecode, the first frame numbers of each minute are skipped, except every tenth minute
+    const int droppedFrames = (int)(tc.fps / 30 * 2);
+    if (dropFrame && (ss == 0) && (mm % 10 != 0) && (ff < droppedFrames)) {
+        *error = "\"" + str + "\" does not exist in drop-frame timecode: frames 0-" + std::to_string(droppedFrames - 1) + " are skipped at the start of each minute, except every tenth minute";
+
+        return false;
+    }
+    char buf[AV_TIMECODE_STR_SIZE];
+    *canonical = av_timecode_make_string(&tc, buf, 0);
+
+    return true;
+}
+
 static bool
 IsJpeg(ChoiceParam* codecParam,
        int codecValue)
@@ -1279,7 +1349,6 @@ private:
 
     void configureAudioStream(const AVCodec* avCodec, AVStream* avStream);
     void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
-    void configureTimecodeStream(AVCodec* avCodec, AVStream* avStream);
     void addStream(AVFormatContext* avFormatContext, enum AVCodecID avCodecId, const AVCodec** pavCodec, MyAVStream* myStreamOut);
     int openCodec(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myAVStream, AVDictionary** options = nullptr);
     int writeAudio(AVFormatContext* avFormatContext, AVStream* avStream, bool flush);
@@ -1311,7 +1380,6 @@ private:
     SwsContext* _convertCtx;
     MyAVStream _streamVideo;
     MyAVStream _streamAudio;
-    AVStream* _streamTimecode;
     tthread::mutex _nextFrameToEncodeMutex;
     tthread::condition_variable _nextFrameToEncodeCond;
     int _nextFrameToEncode; //< the frame index we need to encode next, INT_MIN means uninitialized
@@ -1329,9 +1397,6 @@ private:
     ChoiceParam* _dnxhdCodecProfile;
     ChoiceParam* _encodeVideoRange;
     ChoiceParam* _hapFormat;
-#if OFX_FFMPEG_TIMECODE
-    BooleanParam* _writeTimeCode;
-#endif
 
     ChoiceParam* _codec;
     StringParam* _codecShortName;
@@ -1347,12 +1412,10 @@ private:
 #if OFX_FFMPEG_MBDECISION
     ChoiceParam* _mbDecision;
 #endif
-#if OFX_FFMPEG_TIMECODE
-    BooleanParam* _writeTimecode;
-#endif
     BooleanParam* _fastStart;
     StringParam* _codecOptions;
     StringParam* _formatOptions;
+    StringParam* _startTimecode;
 
     // we use shared_ptr here as both frames can point to the same AVFrame (ProRes, DNxHD case)
     std::shared_ptr<AVFrame> inputFrame_;
@@ -1579,7 +1642,6 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _convertCtx(nullptr)
     , _streamVideo({ nullptr, nullptr })
     , _streamAudio({ nullptr, nullptr })
-    , _streamTimecode(nullptr)
     , _nextFrameToEncodeMutex()
     , _nextFrameToEncodeCond()
     , _nextFrameToEncode(INT_MIN)
@@ -1597,9 +1659,6 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _dnxhdCodecProfile(nullptr)
     , _encodeVideoRange(nullptr)
     , _hapFormat(nullptr)
-#if OFX_FFMPEG_TIMECODE
-    , _writeTimeCode(nullptr)
-#endif
     , _codec(nullptr)
     , _codecShortName(nullptr)
     , _crf(nullptr)
@@ -1630,9 +1689,6 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     _dnxhdCodecProfile = fetchChoiceParam(kParamDNxHDCodecProfile);
     _encodeVideoRange = fetchChoiceParam(kParamDNxHDEncodeVideoRange);
     _hapFormat = fetchChoiceParam(kParamHapFormat);
-#if OFX_FFMPEG_TIMECODE
-    _writeTimeCode = fetchBooleanParam(kParamWriteTimeCode);
-#endif
     _codec = fetchChoiceParam(kParamCodec);
     _codecShortName = fetchStringParam(kParamCodecShortName);
     _crf = fetchChoiceParam(kParamCRF);
@@ -1647,12 +1703,10 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
 #if OFX_FFMPEG_MBDECISION
     _mbDecision = fetchChoiceParam(kParamMBDecision);
 #endif
-#if OFX_FFMPEG_TIMECODE
-    _writeTimecode = fetchBooleanParam(kParamWriteTimeCode);
-#endif
     _fastStart = fetchBooleanParam(kParamFastStart);
     _codecOptions = fetchStringParam(kParamCodecOptions);
     _formatOptions = fetchStringParam(kParamFormatOptions);
+    _startTimecode = fetchStringParam(kParamStartTimecode);
 
     // finally
     syncPrivateData();
@@ -2751,22 +2805,8 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // avCodecContext->time_base.num = (int)CONVERSION_FACTOR;
     // avCodecContext->time_base.den = (int)(fps * CONVERSION_FACTOR);
 
-    // Trap fractional frame rates so that they can be specified correctly
-    // in a QuickTime movie. The rational number representation of fractional
-    // frame rates is 24000/1001, 30000/1001, 60000/1001, etc.
-    // WARNING: There are some big assumptions here. The assumption is
-    //          that by specifying 23.98, 29.97 on the UI the intended
-    //          frame rate is 24/1.001, 30/1.001, etc. so the frame rate
-    //          is corrected here.
     int frameRate = (0.0 < fps) ? (int)fps : 0;
-    AVRational frame_rate;
-    if (((23.969 < fps) && (fps < 23.981)) || ((29.969 < fps) && (fps < 29.981)) || ((59.939 < fps) && (fps < 59.941))) {
-        frame_rate.num = std::ceil(fps) * 1000;
-        frame_rate.den = 1001;
-    } else {
-        // integers are represented exactly as float, so most of the time the denominator will be 1
-        frame_rate = av_d2q(fps, INT_MAX);
-    }
+    AVRational frame_rate = frameRateFromFps(fps);
     AVRational time_base = av_inv_q(frame_rate);
     // copy timebase while removing common factors
     const AVRational zero = { 0, 1 };
@@ -3109,30 +3149,6 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     avCodecContext->mb_decision = mbDecision;
 #else
     avCodecContext->mb_decision = FF_MB_DECISION_SIMPLE;
-#endif
-
-#if OFX_FFMPEG_TIMECODE
-    bool writeTimecode = _writeTimecode->getValue();
-
-    // Create a timecode stream for QuickTime movies. (There was no
-    // requirement at the time of writing for any other file format.
-    // Also not all containers support timecode.)
-    if (writeTimecode && !strcmp(_formatContext->oformat->name, "mov")) {
-        // Retrieve the timecode from Nuke/NukeStudio.
-        // Adding a 'timecode' metadata item to the video stream
-        // metadata will automagically create a timecode track
-        // in the QuickTime movie created by FFmpeg.
-        const MetaData::Bundle& metaData = iop->_fetchMetaData("");
-        size_t size = metaData.size();
-        MetaData::Bundle::PropertyPtr property = metaData.getData("input/timecode");
-        if (property) {
-            string timecode = MetaData::propertyToString(property).c_str();
-            if (0 == timecode.size()) {
-                timecode = "00:00:00:00"; // Set a sane default.
-            }
-            av_dict_set(&avStream->metadata, "timecode", timecode.c_str(), 0);
-        }
-    }
 #endif
 } // WriteFFmpegPlugin::configureVideoStream
 
@@ -3840,6 +3856,26 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             }
         }
     }
+
+    // check the start timecode before touching the output file
+    string startTimecode;
+    {
+        string str;
+        _startTimecode->getValue(str);
+        const char* const whitespace = " \t\r\n";
+        const size_t first = str.find_first_not_of(whitespace);
+        if (first != string::npos) {
+            str = str.substr(first, str.find_last_not_of(whitespace) - first + 1);
+            string error;
+            if (!parseTimecode(str, frameRateFromFps(_fps->getValue()), &startTimecode, &error)) {
+                setPersistentMessage(Message::eMessageError, "", string("Invalid ") + kParamStartTimecodeLabel + ": " + error);
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+        }
+    }
+
     // Options that were not applied by the encoder or the muxer, reported once the file is open.
     string unrecognizedOptions;
 
@@ -4023,6 +4059,14 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
+        }
+
+        // The muxers read the "timecode" metadata when the output is initialized (avformat_init_output):
+        // mov and mp4 write a timecode (tmcd) track for each video stream that has one (or for all
+        // video streams, if it is set on the format context, as "ffmpeg -timecode" does).
+        if (!startTimecode.empty()) {
+            av_dict_set(&_formatContext->metadata, "timecode", startTimecode.c_str(), 0);
+            av_dict_set(&_streamVideo.stream->metadata, "timecode", startTimecode.c_str(), 0);
         }
 
         AVCodecContext* avCodecContext = _streamVideo.codecContext;
@@ -5722,20 +5766,6 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         }
     }
 
-#if OFX_FFMPEG_TIMECODE
-    ///////////Write Time Code
-    {
-        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamWriteTimeCode);
-        param->setLabel(kParamWriteTimeCodeLabel);
-        param->setHint(kParamWriteTimeCodeHint);
-        param->setDefault(false);
-        param->setAnimates(false);
-        if (page) {
-            page->addChild(*param);
-        }
-    }
-#endif
-
     ///////////Fast Start
     {
         BooleanParamDescriptor* param = desc.defineBooleanParam(kParamFastStart);
@@ -5976,6 +6006,19 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     {
         PushButtonParamDescriptor* param = desc.definePushButtonParam(kParamLibraryInfo);
         param->setLabelAndHint(kParamLibraryInfoLabel);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+
+    ///////////Start Timecode
+    // Defined last, so that the existing parameters keep their order.
+    {
+        StringParamDescriptor* param = desc.defineStringParam(kParamStartTimecode);
+        param->setLabel(kParamStartTimecodeLabel);
+        param->setHint(kParamStartTimecodeHint);
+        param->setDefault("");
+        param->setAnimates(false);
         if (page) {
             page->addChild(*param);
         }
