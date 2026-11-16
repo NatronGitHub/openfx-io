@@ -123,8 +123,9 @@ READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/GenericOCIO.cpp
     ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp
 
+# -pthread: the test uses std::thread
 reader_hooks_test: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(OFX_SUPPORT)
-	$(CXX) $(OFX_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+	$(CXX) $(OFX_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
 # ---- run targets ----
 test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks

@@ -39,6 +39,7 @@ using namespace OFX::IO;
 #define kPluginGrouping "Image/Readers"
 #define kPluginIdentifierDefault "fr.inria.openfx.tests.ReaderHooks"
 #define kPluginIdentifierFrameVarying "fr.inria.openfx.tests.ReaderHooksFrameVarying"
+#define kPluginIdentifierMultiPlanar "fr.inria.openfx.tests.ReaderHooksMultiPlanar"
 #define kSupportsRGBA true
 #define kSupportsRGB false
 #define kSupportsXY false
@@ -61,6 +62,7 @@ pixelValue(double t)
 struct DecodeRecord {
     double renderTime; // getRenderTime() in decode()
     double time; // decode()'s time argument (the sequence time)
+    bool plane; // recorded by decodePlane() rather than decode()
 };
 
 // A reader of fake files: "video" files (whose name contains "video") have kVideoRange frames,
@@ -68,12 +70,12 @@ struct DecodeRecord {
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
-    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions)
-        : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false)
+    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false)
+        : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, multiPlanar)
     {
     }
 
-    // what decode() saw, in call order
+    // what decode() or decodePlane() saw, in call order
     std::vector<DecodeRecord> records;
     // called from decode(), after recording
     std::function<void()> onDecode;
@@ -101,8 +103,21 @@ private:
 
     virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& /*renderScale*/, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
     {
+        decodeImpl(time, false, renderWindow, pixelData, bounds, pixelComponentCount, rowBytes);
+    }
+
+    // called instead of decode() by multi-planar readers
+    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& /*renderScale*/, float* pixelData, const OfxRectI& bounds,
+                             PixelComponentEnum /*pixelComponents*/, PixelComponentEnum /*remappedComponents*/,
+                             int pixelComponentCount, const std::string& /*rawComponents*/, int rowBytes) OVERRIDE FINAL
+    {
+        decodeImpl(time, true, renderWindow, pixelData, bounds, pixelComponentCount, rowBytes);
+    }
+
+    void decodeImpl(OfxTime time, bool plane, const OfxRectI& renderWindow, float* pixelData, const OfxRectI& bounds, int pixelComponentCount, int rowBytes)
+    {
         const double t = getRenderTime();
-        records.push_back({ t, time });
+        records.push_back({ t, time, plane });
         if (onDecode) {
             onDecode();
         }
@@ -157,10 +172,23 @@ private:
     virtual bool isOutputFrameVarying() const OVERRIDE FINAL { return true; }
 };
 
+// Same as FrameVaryingTestReaderPlugin, but multi-planar: GenericReader calls decodePlane() instead of decode()
+class MultiPlanarTestReaderPlugin
+    : public TestReaderPlugin {
+public:
+    MultiPlanarTestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions)
+        : TestReaderPlugin(handle, extensions, true)
+    {
+    }
+
+private:
+    virtual bool isOutputFrameVarying() const OVERRIDE FINAL { return true; }
+};
+
 void
-describeTestReader(ImageEffectDescriptor& desc, const std::vector<std::string>& extensions, const char* label)
+describeTestReader(ImageEffectDescriptor& desc, const std::vector<std::string>& extensions, const char* label, bool multiPlanar = false)
 {
-    GenericReaderDescribe(desc, extensions, /*evaluation=*/-1, kSupportsTiles, false);
+    GenericReaderDescribe(desc, extensions, /*evaluation=*/-1, kSupportsTiles, multiPlanar);
     desc.setLabel(label);
 }
 
@@ -198,10 +226,25 @@ FrameVaryingTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle,
     return ret;
 }
 
+mDeclareReaderPluginFactory(MultiPlanarTestReaderPluginFactory, {}, false);
+void MultiPlanarTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
+void MultiPlanarTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksMultiPlanarTest", true); }
+void MultiPlanarTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
+ImageEffect*
+MultiPlanarTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
+{
+    TestReaderPlugin* ret = new MultiPlanarTestReaderPlugin(handle, _extensions);
+    ret->restoreStateFromParams();
+
+    return ret;
+}
+
 TestReaderPluginFactory gDefaultFactory(kPluginIdentifierDefault, 1, 0);
 mRegisterPluginFactoryInstance(gDefaultFactory)
 FrameVaryingTestReaderPluginFactory gFrameVaryingFactory(kPluginIdentifierFrameVarying, 1, 0);
 mRegisterPluginFactoryInstance(gFrameVaryingFactory)
+MultiPlanarTestReaderPluginFactory gMultiPlanarFactory(kPluginIdentifierMultiPlanar, 1, 0);
+mRegisterPluginFactoryInstance(gMultiPlanarFactory)
 
 // ------------------------------------------------------------------ host side
 
@@ -496,6 +539,59 @@ testRenderTime(OfxPlugin* pFrameVarying, const std::string& still, const std::st
     }
 }
 
+// 2d. the same through decodePlane(), for multi-planar readers
+void
+testDecodePlane(OfxPlugin* pMultiPlanar, const std::string& still, const std::string& video)
+{
+    std::printf("==== getRenderTime() in decodePlane() (multi-planar reader) ====\n");
+    {
+        Reader r;
+        if (!r.create(pMultiPlanar, still)) {
+            ++gFailures;
+
+            return;
+        }
+        check(r.frameVarying() == 1, "multi-planar reader, isOutputFrameVarying() = true, held still image: frame varying = 1");
+        const double times[] = { 2.5, -1.25, 6. };
+        for (double t : times) {
+            r.plugin->records.clear();
+            OfxStatus st = r.render(t);
+            check(ok(st), "render(%g) = %d", t, st);
+            if (r.plugin->records.size() != 1) {
+                check(false, "render(%g): decodePlane() called once (%zu)", t, r.plugin->records.size());
+                continue;
+            }
+            const DecodeRecord& rec = r.plugin->records[0];
+            check(rec.plane, "render(%g): decodePlane() was called, not decode()", t);
+            check(rec.renderTime == t, "render(%g): getRenderTime() = %g, decodePlane time = %g (held)", t, rec.renderTime, rec.time);
+            check(rec.time == 1., "render(%g): decodePlane time is the held frame 1", t);
+            check(std::fabs(r.outputValue() - pixelValue(t)) < 1e-6f, "render(%g): output %g = value at the render time %g", t, r.outputValue(), pixelValue(t));
+            check(TestReaderPlugin::renderTime() == 0., "after render(%g) returned: getRenderTime() = %g (restored to 0)", t, TestReaderPlugin::renderTime());
+        }
+        r.plugin->records.clear();
+        r.plugin->throwInDecode = true;
+        OfxStatus st = r.render(4.5);
+        check(st == kOfxStatFailed, "render(4.5) with decodePlane() throwing = %d (kOfxStatFailed)", st);
+        check(r.plugin->records.size() == 1 && r.plugin->records[0].renderTime == 4.5, "decodePlane() saw getRenderTime() = 4.5 before throwing");
+        check(TestReaderPlugin::renderTime() == 0., "after render(4.5) threw: getRenderTime() = %g (restored to 0)", TestReaderPlugin::renderTime());
+    }
+    {
+        Reader r;
+        if (!r.create(pMultiPlanar, video)) {
+            ++gFailures;
+
+            return;
+        }
+        setParamInt(r.ctx, "timeOffset", 5);
+        r.plugin->records.clear();
+        OfxStatus st = r.render(9.5);
+        check(ok(st), "video, time offset 5: render(9.5) = %d", st);
+        check(r.plugin->records.size() == 1 && r.plugin->records[0].plane && r.plugin->records[0].renderTime == 9.5 && r.plugin->records[0].time == 4.5,
+              "video, time offset 5: decodePlane() saw getRenderTime() = %g, time = %g (expected 9.5, 4.5)",
+              r.plugin->records.empty() ? -1. : r.plugin->records[0].renderTime, r.plugin->records.empty() ? -1. : r.plugin->records[0].time);
+    }
+}
+
 // Waits until n threads arrived, or a timeout (if the renders are serialized), so that both
 // threads are in decode() at the same time.
 class Rendezvous {
@@ -576,6 +672,8 @@ int
 main(int argc, char** argv)
 {
     initHost();
+    // GenericReader only calls decodePlane() for multi-planar readers on a multi-planar host
+    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
     const std::string prefix = (argc > 1) ? argv[1] : "/tmp/reader_hooks_test";
     // the test readers only check that the files exist
     const std::string still = prefix + ".still.tst";
@@ -590,10 +688,11 @@ main(int argc, char** argv)
         std::fclose(fp);
     }
 
-    Effect descDefault, descFrameVarying;
+    Effect descDefault, descFrameVarying, descMultiPlanar;
     OfxPlugin* pDefault = loadPlugin(kPluginIdentifierDefault, descDefault);
     OfxPlugin* pFrameVarying = loadPlugin(kPluginIdentifierFrameVarying, descFrameVarying);
-    if (!pDefault || !pFrameVarying) {
+    OfxPlugin* pMultiPlanar = loadPlugin(kPluginIdentifierMultiPlanar, descMultiPlanar);
+    if (!pDefault || !pFrameVarying || !pMultiPlanar) {
         std::printf("FAIL: cannot load the test readers\n");
 
         return 1;
@@ -602,9 +701,11 @@ main(int argc, char** argv)
     testFrameVarying(pDefault, pFrameVarying, still, video);
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
+    testDecodePlane(pMultiPlanar, still, video);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pFrameVarying->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    pMultiPlanar->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::remove(still.c_str());
     std::remove(video.c_str());
 

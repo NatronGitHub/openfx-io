@@ -89,7 +89,7 @@ generates its own media (WriteFFmpeg), so it needs no external clip.
 
 ### 1c. `test-reader-hooks` — GenericReader's hooks for animated reader params
 
-`reader_hooks_test.cpp` defines two minimal test readers (`GenericReaderPlugin`
+`reader_hooks_test.cpp` defines three minimal test readers (`GenericReaderPlugin`
 subclasses reading fake files that only need to exist: still images, or "video"
 files of 10 frames) and drives them through the OFX actions with the in-process
 host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies only:
@@ -107,6 +107,8 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   a render nested in another one's `decode()` on the same thread.
 * Two threads rendering different times concurrently (synchronized inside
   `decode()`) each see their own render time.
+* The same through `decodePlane()`, with a multi-planar test reader (the host
+  then declares `kFnOfxImageEffectPropMultiPlanar`).
 
 Like `test-render`, it sets `OCIO=test.ocio`.
 

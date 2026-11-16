@@ -203,7 +203,7 @@ OfxStatus prmGetV(OfxParamHandle ph, va_list ap)
     return kOfxStatOK;
 }
 OfxStatus prmGetValue(OfxParamHandle ph, ...) { va_list ap; va_start(ap, ph); OfxStatus s = prmGetV(ph, ap); va_end(ap); return s; }
-OfxStatus prmGetValueAtTime(OfxParamHandle ph, OfxTime, ...) { va_list ap; va_start(ap, ph); OfxStatus s = prmGetV(ph, ap); va_end(ap); return s; }
+OfxStatus prmGetValueAtTime(OfxParamHandle ph, OfxTime time, ...) { va_list ap; va_start(ap, time); OfxStatus s = prmGetV(ph, ap); va_end(ap); return s; }
 OfxStatus prmGetDerivative(OfxParamHandle, OfxTime, ...) { return kOfxStatErrUnsupported; }
 OfxStatus prmGetIntegral(OfxParamHandle, OfxTime, OfxTime, ...) { return kOfxStatErrUnsupported; }
 OfxStatus prmSetV(OfxParamHandle ph, va_list ap)
@@ -223,7 +223,7 @@ OfxStatus prmSetV(OfxParamHandle ph, va_list ap)
     return kOfxStatOK;
 }
 OfxStatus prmSetValue(OfxParamHandle ph, ...) { va_list ap; va_start(ap, ph); OfxStatus s = prmSetV(ph, ap); va_end(ap); return s; }
-OfxStatus prmSetValueAtTime(OfxParamHandle ph, OfxTime, ...) { va_list ap; va_start(ap, ph); OfxStatus s = prmSetV(ph, ap); va_end(ap); return s; }
+OfxStatus prmSetValueAtTime(OfxParamHandle ph, OfxTime time, ...) { va_list ap; va_start(ap, time); OfxStatus s = prmSetV(ph, ap); va_end(ap); return s; }
 OfxStatus prmGetNumKeys(OfxParamHandle, unsigned int* n) { if (n) *n = 0; return kOfxStatOK; }
 OfxStatus prmGetKeyTime(OfxParamHandle, unsigned int, OfxTime*) { return kOfxStatErrBadIndex; }
 OfxStatus prmGetKeyIndex(OfxParamHandle, OfxTime, int, int*) { return kOfxStatFailed; }
