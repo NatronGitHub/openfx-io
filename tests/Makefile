@@ -25,6 +25,8 @@ READ_SRCS := ffmpeg_read_test.cpp ../FFmpeg/FFmpegFile.cpp ofx_stubs.cpp
 # ---- (2) Direct-link OFX plugin/host tests -------------------------------------
 # OpenImageIO 3.1 requires C++17; its headers also pull in fmt.
 OFX_PKGS  := OpenColorIO OpenImageIO $(FFMPEG_PKGS)
+# OIIOGlobal.cpp includes <IlmThreadPool.h> directly: add OpenEXR's include path (include/OpenEXR) when available.
+OFX_PKGS  += $(shell $(PKGCONF) --exists OpenEXR 2>/dev/null && echo OpenEXR)
 OFX_DEFS  := -DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE \
              -DOFX_EXTENSIONS_NATRON -DOFX_IO_MT_FFMPEG -DOFX_IO_USING_OCIO
 OFX_INC   := -I../FFmpeg -I../OIIO -I../IOSupport -I../IOSupport/SequenceParsing -I../SupportExt \
