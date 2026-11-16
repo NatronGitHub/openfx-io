@@ -42,7 +42,13 @@ namespace {
         const GLenum glErr = glGetError();
         if (glErr != GL_NO_ERROR) {
             const char* errorString = OFX::glErrorString(glErr); // from ofxsOGLDebug.h
-            error = errorString ? errorString : "unknown OpenGL error";
+            if (errorString) {
+                error = errorString;
+            } else {
+                std::ostringstream oss;
+                oss << "unknown OpenGL error 0x" << std::hex << glErr;
+                error = oss.str();
+            }
             return true;
         }
         return false;
