@@ -894,14 +894,14 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase& processor,
 
     double xRotate, yRotate, rads, c, s;
     _xRotate->getValueAtTime(time, xRotate);
-    rads = xRotate * M_PI / 180.;
+    rads = xRotate * OFXS_PI / 180.;
     c = std::cos(rads);
     s = std::sin(rads);
     Matrix3x3 rotX(1, 0, 0,
                    0, c, s,
                    0, -s, c);
     _yRotate->getValueAtTime(time, yRotate);
-    rads = yRotate * M_PI / 180.;
+    rads = yRotate * OFXS_PI / 180.;
     c = std::cos(rads);
     s = std::sin(rads);
     Matrix3x3 rotY(0, 1, 0,
