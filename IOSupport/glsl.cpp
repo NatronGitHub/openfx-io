@@ -3,18 +3,9 @@
 
 #if 1
 #include <glad.h>
-#define HAVE_GLU 1
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-// https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560
-#undef HAVE_GLU
-#endif
-#if HAVE_GLU
-#ifdef __APPLE__
-#include <OpenGL/glu.h>
-#else
-#include <GL/glu.h>
-#endif
-#endif
+// GLU is not used: it was only needed for gluErrorString(), and the plugins do not link libGLU
+// (https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560 for Windows;
+// on Linux the symbol was left undefined unless another library happened to pull in libGLU).
 #else
 #ifdef __APPLE__
 
@@ -45,15 +36,40 @@
 namespace OCIO_NAMESPACE {
 
 namespace {
+    // The OpenGL error names (what gluErrorString() would return, without depending on GLU)
+    const char* GLErrorString(GLenum glErr)
+    {
+        switch (glErr) {
+        case GL_INVALID_ENUM:
+            return "OpenGL error: invalid enumerant";
+        case GL_INVALID_VALUE:
+            return "OpenGL error: invalid value";
+        case GL_INVALID_OPERATION:
+            return "OpenGL error: invalid operation";
+        case GL_OUT_OF_MEMORY:
+            return "OpenGL error: out of memory";
+#ifdef GL_STACK_OVERFLOW
+        case GL_STACK_OVERFLOW:
+            return "OpenGL error: stack overflow";
+#endif
+#ifdef GL_STACK_UNDERFLOW
+        case GL_STACK_UNDERFLOW:
+            return "OpenGL error: stack underflow";
+#endif
+#ifdef GL_INVALID_FRAMEBUFFER_OPERATION
+        case GL_INVALID_FRAMEBUFFER_OPERATION:
+            return "OpenGL error: invalid framebuffer operation";
+#endif
+        default:
+            return "OpenGL error";
+        }
+    }
+
     bool GetGLError(std::string& error)
     {
         const GLenum glErr = glGetError();
         if (glErr != GL_NO_ERROR) {
-#if HAVE_GLU
-            error = (const char*)gluErrorString(glErr);
-#else
-            error = "OpenGL Error";
-#endif
+            error = GLErrorString(glErr);
             return true;
         }
         return false;
