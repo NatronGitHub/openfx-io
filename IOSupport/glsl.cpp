@@ -3,9 +3,11 @@
 
 #if 1
 #include <glad.h>
-// GLU is not used: it was only needed for gluErrorString(), and the plugins do not link libGLU
-// (https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560 for Windows;
-// on Linux the symbol was left undefined unless another library happened to pull in libGLU).
+// GLU is not used: the plugins do not link libGLU (see
+// https://github.com/NatronGitHub/openfx-io/issues/4#issuecomment-997284560), so gluErrorString() was an
+// undefined symbol on Linux. Use the shared GLU-free glErrorString() from openfx-supportext instead.
+#include <cstddef> // NULL, used by ofxsOGLDebug.h
+#include "ofxsOGLDebug.h"
 #else
 #ifdef __APPLE__
 
@@ -36,40 +38,12 @@
 namespace OCIO_NAMESPACE {
 
 namespace {
-    // The OpenGL error names (what gluErrorString() would return, without depending on GLU)
-    const char* GLErrorString(GLenum glErr)
-    {
-        switch (glErr) {
-        case GL_INVALID_ENUM:
-            return "OpenGL error: invalid enumerant";
-        case GL_INVALID_VALUE:
-            return "OpenGL error: invalid value";
-        case GL_INVALID_OPERATION:
-            return "OpenGL error: invalid operation";
-        case GL_OUT_OF_MEMORY:
-            return "OpenGL error: out of memory";
-#ifdef GL_STACK_OVERFLOW
-        case GL_STACK_OVERFLOW:
-            return "OpenGL error: stack overflow";
-#endif
-#ifdef GL_STACK_UNDERFLOW
-        case GL_STACK_UNDERFLOW:
-            return "OpenGL error: stack underflow";
-#endif
-#ifdef GL_INVALID_FRAMEBUFFER_OPERATION
-        case GL_INVALID_FRAMEBUFFER_OPERATION:
-            return "OpenGL error: invalid framebuffer operation";
-#endif
-        default:
-            return "OpenGL error";
-        }
-    }
-
     bool GetGLError(std::string& error)
     {
         const GLenum glErr = glGetError();
         if (glErr != GL_NO_ERROR) {
-            error = GLErrorString(glErr);
+            const char* errorString = ::glErrorString(glErr); // from ofxsOGLDebug.h
+            error = errorString ? errorString : "unknown OpenGL error";
             return true;
         }
         return false;
