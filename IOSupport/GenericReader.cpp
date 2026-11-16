@@ -57,6 +57,7 @@
 #include "GenericOCIO.h"
 #endif
 #include "IOUtility.h"
+#include "tinythread.h" // thread_local, for pre-C++11 compilers
 
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;
@@ -1393,6 +1394,33 @@ public:
     }
 };
 
+// The time of the render action being processed by this thread, see GenericReaderPlugin::getRenderTime()
+static thread_local double gRenderTime = 0.;
+
+namespace {
+// Sets gRenderTime for the duration of a render action (restores the previous value on exit, including on exceptions)
+class RenderTimeSetter
+{
+public:
+    explicit RenderTimeSetter(double t)
+        : _previous(gRenderTime)
+    {
+        gRenderTime = t;
+    }
+
+    ~RenderTimeSetter() { gRenderTime = _previous; }
+
+private:
+    double _previous;
+};
+}
+
+double
+GenericReaderPlugin::getRenderTime()
+{
+    return gRenderTime;
+}
+
 // Set the alpha channel of an RGBA float buffer to the white point (1) over renderWindow.
 // Used for files whose premultiplication state is Opaque: the OpenFX spec defines kOfxImageOpaque as "the image is
 // opaque and so has no premultiplication state, but the alpha component in all pixels is set to the white point".
@@ -1418,6 +1446,7 @@ setOpaqueAlpha(const OfxRectI& renderWindow,
 void
 GenericReaderPlugin::render(const RenderArguments& args)
 {
+    RenderTimeSetter renderTimeSetter(args.time); // for getRenderTime(), used by decode()/decodePlane()
     if (!_outputClip) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2351,6 +2380,10 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
         if ((beforeChoice == eBeforeAfterHold) && (afterChoice == eBeforeAfterHold)) {
             frameVarying = false;
         }
+    }
+    if (!frameVarying && isOutputFrameVarying()) {
+        // e.g. a still image rendered with animated reader params
+        frameVarying = true;
     }
     clipPreferences.setOutputFrameVarying(frameVarying); // true for readers and frame-varying generators/effects @see kOfxImageEffectFrameVarying
 
