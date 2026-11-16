@@ -31,6 +31,8 @@
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imageio.h>
 #include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/imagebufalgo.h>
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 
@@ -255,6 +257,25 @@ enum EParamTileSize {
     eParamTileSize512
 };
 
+#define kParamOutputTextureformat "textureFormat"
+#define kParamOutputTextureformatLabel "Texture Format"
+#define kParamOutputTextureformatHint                                                                      \
+    "Write the image as a tiled, MIP-mapped texture, as made by OpenImageIO's maketx. "                     \
+    "Only available for EXR, with a single layer and view. Uses the Tile Size param (64x64 if scan-line based)." \
+    " [EXR]"
+#define kParamOutputTextureformatOptionNone "None", "Write a regular image.", "none"
+#define kParamOutputTextureformatOptionPlain "Plain Texture", "Ordinary MIP-mapped 2D texture (maketx default).", "texture"
+#define kParamOutputTextureformatOptionLatLong "LatLong Environment", "MIP-mapped latitude-longitude environment map (maketx --envlatl).", "envlatl"
+#define kParamOutputTextureformatOptionShadow "Shadow", "Shadow map (maketx --shadow).", "shadow"
+
+enum EParamTextureformat {
+    eParamTextureformatNone = 0,
+    eParamTextureformatPlain,
+    eParamTextureformatLatLong,
+    eParamTextureformatShadow
+};
+
+
 #define kParamProcessAllLayers "processAllLayers"
 #define kParamProcessAllLayersLabel "All Layers"
 #define kParamProcessAllLayersHint "When checked, all layers will be written to the file"
@@ -400,6 +421,7 @@ private:
     ChoiceParam* _lineOrder;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
+    ChoiceParam* _textureformat;
     ChoiceParam* _tileSize;
     ChoiceParam* _outputLayers;
     ChoiceParam* _parts;
@@ -419,6 +441,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _lineOrder(NULL)
     , _orientation(NULL)
     , _compression(NULL)
+    , _textureformat(NULL)
     , _tileSize(NULL)
     , _outputLayers(NULL)
     , _parts(NULL)
@@ -435,6 +458,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
     _lineOrder = fetchChoiceParam(kParamOutputLineOrder);
+    _textureformat = fetchChoiceParam(kParamOutputTextureformat);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
         _outputLayers = fetchChoiceParam(kParamOutputChannels);
@@ -881,6 +905,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_lineOrder) {
             _lineOrder->setIsSecretAndDisabled(!isEXR);
         }
+        if (_textureformat) {
+            _textureformat->setIsSecretAndDisabled(!isEXR);
+        }
         if (_parts) {
             _parts->setIsSecretAndDisabled(!output->supports("multiimage"));
         }
@@ -897,6 +924,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_lineOrder) {
             _lineOrder->setIsSecretAndDisabled(true);
         }
+        if (_textureformat) {
+            _textureformat->setIsSecretAndDisabled(true);
+        }
         if (_parts) {
             _parts->setIsSecretAndDisabled(true);
         }
@@ -910,6 +940,8 @@ struct WriteOIIOEncodePlanesData {
     auto_ptr<ImageOutput> output;
 #endif
     vector<ImageSpec> specs;
+    bool makeTexture = false;
+    ImageBufAlgo::MakeTextureMode textureMode = ImageBufAlgo::MakeTxTexture;
 };
 
 void*
@@ -1493,6 +1525,41 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
             throwSuiteStatusException(kOfxStatFailed);
         }
     }
+    int textureformat_i = eParamTextureformatNone;
+    if (strcmp(data->output->format_name(), "openexr") == 0) { // texture output is EXR-only
+        _textureformat->getValue(textureformat_i);
+    }
+    if (textureformat_i != eParamTextureformatNone) {
+        // Textures are written by ImageBufAlgo::make_texture() in encodePart(), which
+        // creates the tiled, MIP-mapped file itself.
+        if (data->specs.size() != 1) {
+            setPersistentMessage(Message::eMessageError, "", "Texture output only supports writing a single layer and view.");
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+        data->makeTexture = true;
+        switch ((EParamTextureformat)textureformat_i) {
+        case eParamTextureformatLatLong:
+            data->textureMode = ImageBufAlgo::MakeTxEnvLatl;
+            break;
+        case eParamTextureformatShadow:
+            if (data->specs[0].nchannels != 1) {
+                setPersistentMessage(Message::eMessageError, "", "Shadow maps require a single-channel image (e.g. depth or alpha).");
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            data->textureMode = ImageBufAlgo::MakeTxShadow;
+            break;
+        case eParamTextureformatPlain:
+        default:
+            data->textureMode = ImageBufAlgo::MakeTxTexture;
+            break;
+        }
+
+        return;
+    }
     // Some formats only support opening all subimages at once.
     // See https://openimageio.readthedocs.io/en/stable/imageoutput.html
     if (!data->output->open(filename, data->specs.size(), &data->specs.front())) {
@@ -1513,6 +1580,49 @@ WriteOIIOPlugin::encodePart(void* user_data,
 {
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
+    if (data->makeTexture) {
+        assert(planeIndex == 0);
+        const ImageSpec& outSpec = data->specs[planeIndex];
+        ImageSpec srcSpec(outSpec.width, outSpec.height, outSpec.nchannels, TypeDesc::FLOAT);
+        srcSpec.x = outSpec.x;
+        srcSpec.y = outSpec.y;
+        srcSpec.full_x = outSpec.full_x;
+        srcSpec.full_y = outSpec.full_y;
+        srcSpec.full_width = outSpec.full_width;
+        srcSpec.full_height = outSpec.full_height;
+        srcSpec.channelnames = outSpec.channelnames;
+        srcSpec.alpha_channel = outSpec.alpha_channel;
+        ImageBuf src(srcSpec);
+        // do not use auto-stride as the buffer may have more components that what we want to write
+        if (!src.set_pixels(src.roi(), TypeDesc::FLOAT,
+                            (const char*)pixelData + (ptrdiff_t)(outSpec.height - 1) * (ptrdiff_t)rowBytes, // invert y
+                            sizeof(float) * pixelDataNComps, // xstride
+                            -rowBytes)) { // ystride
+            setPersistentMessage(Message::eMessageError, "", src.geterror());
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+        // The output spec carries the data format, tile size, compression and metadata.
+        ImageSpec config = outSpec;
+        if (config.tile_width == 0 || config.tile_height == 0) {
+            config.tile_width = 64;
+            config.tile_height = 64;
+            config.tile_depth = 1;
+        }
+        std::stringstream err;
+        if (!ImageBufAlgo::make_texture(data->textureMode, src, filename, config, &err)) {
+            // make_texture reports its errors through OIIO::geterror(); outstream gets the verbose output
+            string msg = OIIO::geterror();
+            if (msg.empty()) {
+                msg = err.str();
+            }
+            setPersistentMessage(Message::eMessageError, "", msg.empty() ? string("Could not write the texture file.") : msg);
+            throwSuiteStatusException(kOfxStatFailed);
+        }
+
+        return;
+    }
     if (planeIndex != 0) {
         if (!data->output->open(filename, data->specs[planeIndex], ImageOutput::AppendSubimage)) {
             setPersistentMessage(Message::eMessageError, "", data->output->geterror());
@@ -1539,7 +1649,9 @@ WriteOIIOPlugin::endEncodeParts(void* user_data)
 {
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
-    data->output->close();
+    if (!data->makeTexture) {
+        data->output->close();
+    }
 }
 
 bool
@@ -1842,6 +1954,23 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         assert(param->getNOptions() == eParamLineOrderDecreasingY);
         param->appendOption(kParamOutputLineOrderOptionDecreasingY);
         param->setDefault(eParamLineOrderIncreasingY);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputTextureformat);
+        param->setLabel(kParamOutputTextureformatLabel);
+        param->setHint(kParamOutputTextureformatHint);
+        assert(param->getNOptions() == eParamTextureformatNone);
+        param->appendOption(kParamOutputTextureformatOptionNone);
+        assert(param->getNOptions() == eParamTextureformatPlain);
+        param->appendOption(kParamOutputTextureformatOptionPlain);
+        assert(param->getNOptions() == eParamTextureformatLatLong);
+        param->appendOption(kParamOutputTextureformatOptionLatLong);
+        assert(param->getNOptions() == eParamTextureformatShadow);
+        param->appendOption(kParamOutputTextureformatOptionShadow);
+        param->setDefault(eParamTextureformatNone);
         if (page) {
             page->addChild(*param);
         }
