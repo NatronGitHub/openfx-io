@@ -676,7 +676,10 @@ public:
         assert(_point0 && _point1 && _color0 && _color1 && _type && _rampInteractive);
 
         // update visibility
-        InstanceChangedArgs args = { eChangeUserEdit, 0., { 0., 0. } };
+        InstanceChangedArgs args = {}; // value-initialize: the struct may gain members (e.g. isThumbnailRender)
+        args.reason = eChangeUserEdit;
+        args.time = 0.;
+        args.renderScale.x = args.renderScale.y = 0.;
         changedParam(args, kParamNoiseType);
         changedParam(args, kParamRampType);
     }
