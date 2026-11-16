@@ -89,8 +89,10 @@ the real render pipeline, linked directly (no host binary):
   files with the `startTimecode` param set (including a drop-frame timecode at
   29.97 fps), and read them back with libavformat: the timecode (tmcd) track
   and the video stream must have the expected `timecode` tag, as `ffprobe`
-  shows it. Invalid timecodes must make `beginSequenceRender` fail without
-  writing a file, and an empty one must write no timecode track.
+  shows it. Invalid timecodes (syntax, field ranges, drop-frame frame numbers
+  and frame rates, more than 255 fps in mov) must make `beginSequenceRender`
+  fail without writing a file, and must be reported as soon as the param is
+  edited; an empty one must write no timecode track.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.

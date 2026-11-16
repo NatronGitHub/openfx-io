@@ -181,7 +181,7 @@ codecPixelFormats(const AVCodec* codec)
 
 #define kPluginIdentifier "fr.inria.openfx.WriteFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 0 // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated
 
 #define kSupportsRGBA true
@@ -270,7 +270,8 @@ enum PrefBitDepthEnum {
     "rounded to the nearest integer.\n"                                                \
     "It is written as the \"timecode\" metadata of the file and of its video stream: " \
     "QuickTime (mov) and MP4 files get a timecode (tmcd) track, and other formats "    \
-    "that support it (e.g. MXF) write it in their own way.\n"                          \
+    "that support it (e.g. MXF) write it in their own way. QuickTime and MP4 "         \
+    "files can not have a timecode above 255 fps.\n"                                   \
     "Leave empty to write no timecode."
 
 #define kParamAdvanced "advanced"
@@ -592,38 +593,91 @@ frameRateFromFps(double fps)
     return frame_rate;
 }
 
+// Read 1 to maxDigits decimal digits at p (and nothing else: no sign or whitespace), and advance p.
+static bool
+parseDigits(const char*& p,
+            int maxDigits,
+            int* value)
+{
+    int n = 0;
+    int v = 0;
+    while (n < maxDigits && '0' <= *p && *p <= '9') {
+        v = v * 10 + (*p - '0');
+        ++p;
+        ++n;
+    }
+    if (n == 0 || ('0' <= *p && *p <= '9')) {
+        return false;
+    }
+    *value = v;
+
+    return true;
+}
+
+// Is the muxer one of the mov family (libavformat/movenc.c), which write the timecode as a tmcd track?
+static bool
+isMovMuxer(const AVOutputFormat* fmt)
+{
+    if (!fmt || !fmt->name) {
+        return false;
+    }
+    static const char* const movMuxers[] = { "mov", "mp4", "ipod", "psp", "3gp", "3g2", "ismv", "f4v", "avif" };
+    for (const char* name : movMuxers) {
+        if (!std::strcmp(fmt->name, name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Parse and validate a start timecode, HH:MM:SS:FF (or HH:MM:SS;FF for drop-frame), at the given
 // frame rate, using libavutil's timecode API (which is also what the muxers use to parse it).
-// av_timecode_init_from_string() only checks the frame rate and the drop-frame flag, so the ranges
-// of the fields (and trailing characters) are checked here too.
+// av_timecode_init_from_string() uses sscanf("%d") and only checks the frame rate and the drop-frame
+// flag, so the syntax (digits only), the ranges of the fields, and drop-frame are checked here too.
+// fmt (may be null) is the output format: the mov family can not write a timecode above 255 fps.
 // On success, returns true and sets canonical to the normalized timecode (as written by
 // av_timecode_make_string()); otherwise returns false and sets error.
 static bool
 parseTimecode(const string& str,
               AVRational rate,
+              const AVOutputFormat* fmt,
               string* canonical,
               string* error)
 {
-    int hh, mm, ss, ff, n = 0;
-    char c;
-    if ((std::sscanf(str.c_str(), "%d:%d:%d%c%d%n", &hh, &mm, &ss, &c, &ff, &n) != 5) || (n != (int)str.size()) || (c != ':' && c != ';')) {
+    int hh = 0, mm = 0, ss = 0, ff = 0;
+    const char* p = str.c_str();
+    char c = 0;
+    if (!parseDigits(p, 2, &hh) || *p++ != ':' || !parseDigits(p, 2, &mm) || *p++ != ':' || !parseDigits(p, 2, &ss) || ((c = *p++) != ':' && c != ';') || !parseDigits(p, 3, &ff) || *p != '\0') {
         *error = "cannot parse \"" + str + "\": expected HH:MM:SS:FF, or HH:MM:SS;FF for drop-frame";
 
         return false;
     }
     const bool dropFrame = (c == ';');
-    AVTimecode tc;
-    if (av_timecode_init_from_string(&tc, rate, str.c_str(), nullptr) < 0) {
-        char rateStr[64];
-        std::snprintf(rateStr, sizeof(rateStr), "%g", av_q2d(rate));
-        *error = "\"" + str + "\" is not valid at " + rateStr + " fps";
-        if (dropFrame) {
-            *error += " (drop-frame timecodes require 29.97 fps or a multiple of it)";
-        }
+    char rateStr[64];
+    std::snprintf(rateStr, sizeof(rateStr), "%g", av_q2d(rate));
+    // the timecode frame rate, as computed by libavutil/timecode.c
+    const int64_t fps = (rate.num > 0 && rate.den > 0) ? (rate.num + rate.den / 2LL) / rate.den : 0;
+    // FFmpeg only checks that the rounded frame rate is a multiple of 30, but drop-frame timecode is
+    // only meaningful at the NTSC rates, 30000/1001 and its multiples
+    if (dropFrame && ((fps <= 0) || (fps % 30 != 0) || ((int64_t)rate.num * 1001 != fps * 1000 * rate.den))) {
+        *error = "\"" + str + "\" is not valid at " + rateStr + " fps (drop-frame timecodes require 29.97 fps or a multiple of it)";
 
         return false;
     }
-    if ((hh < 0) || (hh > 23) || (mm < 0) || (mm > 59) || (ss < 0) || (ss > 59) || (ff < 0) || (ff >= (int)tc.fps)) {
+    if (isMovMuxer(fmt) && fps > 255) {
+        // movenc.c: mov_write_tmcd_tag() fails ("fps is too large") when writing the moov atom
+        *error = string("the ") + fmt->name + " format can not write a timecode at more than 255 fps (" + rateStr + " fps)";
+
+        return false;
+    }
+    AVTimecode tc;
+    if (av_timecode_init_from_string(&tc, rate, str.c_str(), nullptr) < 0) {
+        *error = "\"" + str + "\" is not valid at " + rateStr + " fps";
+
+        return false;
+    }
+    if ((hh > 23) || (mm > 59) || (ss > 59) || (ff >= (int)tc.fps)) {
         *error = "\"" + str + "\" is out of range: hours must be 0-23, minutes and seconds 0-59, and frames 0-" + std::to_string(tc.fps - 1);
 
         return false;
@@ -1330,6 +1384,7 @@ private:
     void freeFormat();
     void getColorInfo(AVColorPrimaries* color_primaries, AVColorTransferCharacteristic* color_trc) const;
     const AVOutputFormat* initFormat(bool reportErrors) const;
+    bool getStartTimecode(const AVOutputFormat* fmt, string* canonical, string* error) const;
     bool initCodec(const AVOutputFormat* fmt, AVCodecID& outCodecId, const AVCodec*& outCodec) const;
 
     void getPixelFormats(const AVCodec* videoCodec,
@@ -1416,6 +1471,7 @@ private:
     StringParam* _codecOptions;
     StringParam* _formatOptions;
     StringParam* _startTimecode;
+    bool _startTimecodeError; // an invalid Start Timecode is reported by a persistent message
 
     // we use shared_ptr here as both frames can point to the same AVFrame (ProRes, DNxHD case)
     std::shared_ptr<AVFrame> inputFrame_;
@@ -1707,6 +1763,7 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     _codecOptions = fetchStringParam(kParamCodecOptions);
     _formatOptions = fetchStringParam(kParamFormatOptions);
     _startTimecode = fetchStringParam(kParamStartTimecode);
+    _startTimecodeError = false;
 
     // finally
     syncPrivateData();
@@ -1855,6 +1912,32 @@ WriteFFmpegPlugin::getColorInfo(AVColorPrimaries* color_primaries,
     }
 #endif // ifdef OFX_IO_USING_OCIO
 } // WriteFFmpegPlugin::getColorInfo
+
+// The validated and normalized Start Timecode, or an empty string if it is empty.
+// fmt is the output format (may be null if unknown).
+// Returns false and sets error if it is invalid.
+bool
+WriteFFmpegPlugin::getStartTimecode(const AVOutputFormat* fmt,
+                                    string* canonical,
+                                    string* error) const
+{
+    canonical->clear();
+    string str;
+    _startTimecode->getValue(str);
+    const char* const whitespace = " \t\r\n";
+    const size_t first = str.find_first_not_of(whitespace);
+    if (first == string::npos) {
+        return true;
+    }
+    str = str.substr(first, str.find_last_not_of(whitespace) - first + 1);
+    if (!parseTimecode(str, frameRateFromFps(_fps->getValue()), fmt, canonical, error)) {
+        *error = string("Invalid ") + kParamStartTimecodeLabel + ": " + *error;
+
+        return false;
+    }
+
+    return true;
+}
 
 const AVOutputFormat*
 WriteFFmpegPlugin::initFormat(bool reportErrors) const
@@ -3857,25 +3940,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         }
     }
 
-    // check the start timecode before touching the output file
-    string startTimecode;
-    {
-        string str;
-        _startTimecode->getValue(str);
-        const char* const whitespace = " \t\r\n";
-        const size_t first = str.find_first_not_of(whitespace);
-        if (first != string::npos) {
-            str = str.substr(first, str.find_last_not_of(whitespace) - first + 1);
-            string error;
-            if (!parseTimecode(str, frameRateFromFps(_fps->getValue()), &startTimecode, &error)) {
-                setPersistentMessage(Message::eMessageError, "", string("Invalid ") + kParamStartTimecodeLabel + ": " + error);
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
-        }
-    }
-
     // Options that were not applied by the encoder or the muxer, reported once the file is open.
     string unrecognizedOptions;
 
@@ -3896,6 +3960,18 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
+    }
+
+    // check the start timecode before touching the output file
+    string startTimecode;
+    {
+        string error;
+        if (!getStartTimecode(avOutputFormat, &startTimecode, &error)) {
+            setPersistentMessage(Message::eMessageError, "", error);
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
     }
 
     // If the file exists (which means "overwrite" was checked), remove it first.
@@ -4537,11 +4613,19 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
 #endif
 
     // Finalise the movie.
-    av_write_trailer(_formatContext);
+    int error = av_write_trailer(_formatContext);
 
     freeFormat();
 
     _pts_counter = 0;
+
+    if (error < 0) {
+        // e.g. the moov atom of a mov/mp4 file could not be written: the file is unreadable
+        char szError[1024] = { 0 };
+        av_strerror(error, szError, sizeof(szError));
+        setPersistentMessage(Message::eMessageError, "", string("Unable to finalize the file: ") + szError);
+        throwSuiteStatusException(kOfxStatFailed);
+    }
 }
 
 void
@@ -5092,6 +5176,8 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
         updatePixelFormat();
     } else if ((paramName == kParamFPS) || (paramName == kParamBitrate)) {
         updateBitrateToleranceRange();
+    } else if (paramName == kParamStartTimecode) {
+        // the FPS and the format are checked too, below
     } else if ((paramName == kParamResetFPS) && (args.reason == eChangeUserEdit)) {
         double fps = _inputClip->getFrameRate();
         _fps->setValue(fps);
@@ -5117,6 +5203,18 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
     }
     // also check that the codec setting is OK
     checkCodec();
+
+    // report an invalid Start Timecode right away, rather than only when rendering
+    if ((paramName == kParamStartTimecode) || (paramName == kParamFPS) || (paramName == kParamResetFPS) || (paramName == kParamFormat) || (paramName == kOfxImageEffectFileParamName)) {
+        string canonical, error;
+        if (!getStartTimecode(initFormat(false), &canonical, &error)) {
+            setPersistentMessage(Message::eMessageError, "", error);
+            _startTimecodeError = true;
+        } else if (_startTimecodeError) {
+            clearPersistentMessage();
+            _startTimecodeError = false;
+        }
+    }
 }
 
 void
@@ -5778,6 +5876,19 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         }
     }
 
+    ///////////Start Timecode
+    // Defined after the existing parameters of the main page, so that they keep their order.
+    {
+        StringParamDescriptor* param = desc.defineStringParam(kParamStartTimecode);
+        param->setLabel(kParamStartTimecodeLabel);
+        param->setHint(kParamStartTimecodeHint);
+        param->setDefault("");
+        param->setAnimates(false);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+
     /////////// Advanced group
     {
         GroupParamDescriptor* group = desc.defineGroupParam(kParamAdvanced);
@@ -6006,19 +6117,6 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     {
         PushButtonParamDescriptor* param = desc.definePushButtonParam(kParamLibraryInfo);
         param->setLabelAndHint(kParamLibraryInfoLabel);
-        if (page) {
-            page->addChild(*param);
-        }
-    }
-
-    ///////////Start Timecode
-    // Defined last, so that the existing parameters keep their order.
-    {
-        StringParamDescriptor* param = desc.defineStringParam(kParamStartTimecode);
-        param->setLabel(kParamStartTimecodeLabel);
-        param->setHint(kParamStartTimecodeHint);
-        param->setDefault("");
-        param->setAnimates(false);
         if (page) {
             page->addChild(*param);
         }
