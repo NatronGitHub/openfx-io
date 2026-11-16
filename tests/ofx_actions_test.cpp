@@ -24,6 +24,9 @@
 #include "ofxMultiThread.h"
 #include "ofxParam.h"
 #include "ofxProperty.h"
+#include "tuttle/ofxReadWrite.h" // kTuttleOfxImageEffectPropSupportedExtensions
+
+#include <OpenImageIO/imageio.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -301,6 +304,25 @@ main()
         for (const std::string& c : contexts) std::printf(" %s", c.c_str());
         std::printf("\n");
         if (contexts.empty()) { std::printf("  FAIL: no contexts declared\n"); ++failures; }
+
+        // WriteOIIO must only declare extensions that OpenImageIO can write (#80: it declared "cin", which OIIO
+        // can only read, and crashed when rendering)
+        if (std::strcmp(p->pluginIdentifier, "fr.inria.openfx.WriteOIIO") == 0) {
+            auto it = describeEffect.props.props.find(kTuttleOfxImageEffectPropSupportedExtensions);
+            const std::vector<std::string> none;
+            const std::vector<std::string>& exts = (it != describeEffect.props.props.end()) ? it->second.s : none;
+            int notWritable = 0;
+            for (const std::string& e : exts) {
+                auto out = OIIO::ImageOutput::create("x." + e);
+                if (!out) {
+                    (void)OIIO::geterror(); // clear the error message of ImageOutput::create()
+                    std::printf("  FAIL: WriteOIIO declares extension \"%s\", which OpenImageIO cannot write\n", e.c_str());
+                    ++notWritable;
+                }
+            }
+            std::printf("  WriteOIIO: %zu extensions, %d not writable\n", exts.size(), notWritable);
+            if (exts.empty() || notWritable) { ++failures; }
+        }
 
         for (const std::string& c : contexts) {
             Effect ctxEffect;

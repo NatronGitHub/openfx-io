@@ -23,6 +23,9 @@
  */
 
 #include <cfloat> // DBL_MAX
+#include <list>
+#include <set>
+#include <sstream>
 
 #include "ofxsMacros.h"
 
@@ -815,7 +818,8 @@ WriteOIIOPlugin::supportsAlpha(const std::string& filename) const
 {
     auto output = ImageOutput::create(filename);
 
-    return kSupportsRGBA && output->supports("alpha");
+    // output is NULL if OIIO cannot write this format (#80)
+    return kSupportsRGBA && output && output->supports("alpha");
 }
 
 void
@@ -1531,9 +1535,21 @@ WriteOIIOPluginFactory::load()
         _extensions.push_back(*ext);
     }
 #else
-    // get extensions from OIIO (but there is no distinctions between readers and writers)
+    // get extensions from OIIO: extension_list has the extensions of all formats, readers and writers, so
+    // keep only those of the formats in output_format_list (e.g. OIIO reads but can't write Cineon, #80),
+    // and among them those that a writer accepts (e.g. the BMP writer takes .bmp but not .dib), see below
     string extensions_list;
     getattribute("extension_list", extensions_list);
+    string output_format_list;
+    getattribute("output_format_list", output_format_list);
+    std::set<string> outputFormats;
+    {
+        stringstream outputss(output_format_list);
+        string outputFormat;
+        while (std::getline(outputss, outputFormat, ',')) {
+            outputFormats.insert(outputFormat);
+        }
+    }
     stringstream formatss(extensions_list);
     string format;
     std::list<string> extensionsl;
@@ -1541,6 +1557,9 @@ WriteOIIOPluginFactory::load()
         stringstream extensionss(format);
         string extension;
         std::getline(extensionss, extension, ':'); // extract the format
+        if (!outputFormats.empty() && (outputFormats.count(extension) == 0)) {
+            continue; // OIIO has no writer for this format
+        }
         while (std::getline(extensionss, extension, ',')) {
             extensionsl.push_back(extension);
         }
@@ -1564,6 +1583,20 @@ WriteOIIOPluginFactory::load()
     };
     for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
         extensionsl.remove(*e);
+    }
+    // keep only the extensions that OIIO can actually write
+    for (std::list<string>::iterator it = extensionsl.begin(); it != extensionsl.end();) {
+#if OIIO_PLUGIN_VERSION >= 22
+        ImageOutputPtr output = ImageOutput::create("x." + *it);
+#else
+        auto_ptr<ImageOutput> output(ImageOutput::create("x." + *it));
+#endif
+        if (output.get()) {
+            ++it;
+        } else {
+            (void)OIIO::geterror(); // clear the error message of ImageOutput::create()
+            it = extensionsl.erase(it);
+        }
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());
 #endif
