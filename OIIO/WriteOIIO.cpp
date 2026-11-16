@@ -1612,33 +1612,15 @@ WriteOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
 
     // basic labels
     desc.setLabel(kPluginName);
-    desc.setPluginDescription("Write images using OpenImageIO.\n\n"
-                              "OpenImageIO supports writing the following file formats:\n"
-                              "BMP (*.bmp)\n"
-                              "Cineon (*.cin)\n"
-                              //"Direct Draw Surface (*.dds)\n"
-                              "DPX (*.dpx)\n"
-                              //"Field3D (*.f3d)\n"
-                              "FITS (*.fits)\n"
-                              "HDR/RGBE (*.hdr)\n"
-#if OIIO_VERSION >= 20100
-                              "HEIC/HEIF (*.heic *.heif)\n"
-#endif
-                              "Icon (*.ico)\n"
-                              "IFF (*.iff)\n"
-                              "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
-                              "JPEG-2000 (*.jp2 *.j2k)\n"
-                              "OpenEXR (*.exr)\n"
-                              "Portable Network Graphics (*.png)\n"
-                              "PNM / Netpbm (*.pbm *.pgm *.ppm)\n"
-                              "PSD (*.psd *.pdd *.psb)\n"
-                              //"Ptex (*.ptex)\n"
-                              "RLA (*.rla)\n"
-                              "SGI (*.sgi *.rgb *.rgba *.bw *.int *.inta)\n"
-                              "Softimage PIC (*.pic)\n"
-                              "Targa (*.tga *.tpic)\n"
-                              "TIFF (*.tif *.tiff *.tx *.env *.sm *.vsm)\n"
-                              "Zfile (*.zfile)");
+    // the list of extensions that OIIO can actually write (see load())
+    string description = "Write images using OpenImageIO.\n\n"
+                         "The OpenImageIO library used by this plug-in can write files with the following extensions:\n";
+    for (std::size_t i = 0; i < _extensions.size(); ++i) {
+        description += (i == 0 ? "" : ", ");
+        description += _extensions[i];
+    }
+    description += ".";
+    desc.setPluginDescription(description);
 
 #if defined(OFX_EXTENSIONS_NATRON) && defined(OFX_EXTENSIONS_NUKE)
     gIsMultiplanarV2 = (getImageEffectHostDescription()->supportsDynamicChoices && getImageEffectHostDescription()->isMultiPlanar && fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true));
