@@ -1579,6 +1579,8 @@ WriteOIIOPluginFactory::load()
         "m4v",
         "mpg", // FFmpeg extensions - better supported by WriteFFmpeg
         "gif", // animated GIFs are only supported by FFmpeg
+        "null", "nul", // OIIO's null output (discards the image)
+        "term", // OIIO's terminal output
         NULL
     };
     for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {

@@ -28,6 +28,7 @@
 
 #include <OpenImageIO/imageio.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -322,6 +323,15 @@ main()
             }
             std::printf("  WriteOIIO: %zu extensions, %d not writable\n", exts.size(), notWritable);
             if (exts.empty() || notWritable) { ++failures; }
+            // and independently of OIIO's answers: formats that OIIO only reads, or that are not files, must be
+            // absent; common writable formats must be present
+            auto has = [&exts](const char* e) { return std::find(exts.begin(), exts.end(), std::string(e)) != exts.end(); };
+            for (const char* e : { "cin", "psd", "dds", "cr2", "dib", "null", "term" }) {
+                if (has(e)) { std::printf("  FAIL: WriteOIIO declares extension \"%s\"\n", e); ++failures; }
+            }
+            for (const char* e : { "exr", "png", "tif", "jpg", "dpx", "bmp" }) {
+                if (!has(e)) { std::printf("  FAIL: WriteOIIO does not declare extension \"%s\"\n", e); ++failures; }
+            }
         }
 
         for (const std::string& c : contexts) {
