@@ -17,496 +17,398 @@
 # along with openfx-io.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-########################################################################
-if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
-message(FATAL_ERROR "Prevented in-tree built. This is bad practice.")
-endif(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
+# CMake build of the IO.ofx bundle. It builds what IO/Makefile builds (same plug-ins, sources, defines, include
+# paths and resources), except that a group of plug-ins is left out when its libraries are not found.
+#
+#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
+#   cmake --build build
+#   cmake --install build --prefix /usr     # installs /usr/OFX/Plugins/IO.ofx.bundle (PLUGIN_INSTALLDIR)
+#
+# The bundle is also assembled in build/Plugins/IO.ofx.bundle. Options:
+#   SEEXPR_HOME             SeExpr 2.11 prefix (SeExpr 1 API: include/SeExpression.h, lib/libSeExpr)
+#   FFMPEG_PKG_CONFIG_PATH  pkg-config directory of the FFmpeg to use (e.g. /opt/local/libexec/ffmpeg8/lib/pkgconfig)
+#   OFX_DEPLOY_BUNDLES      install step that makes the bundle self-contained (macOS: osxDeploy.sh, like the
+#                           Makefile's release builds)
+#   BUILD_TESTING           ctest runs the tests of tests/Makefile (IO_TESTS_MAKE_ARGS: extra make arguments)
+# The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
-########################################################################
-# Project setup
-########################################################################
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.16...3.31)
 project(OpenFXIO CXX)
-enable_testing()
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/Modules/")
 
-# ========================== build platform ==========================
-
-message(STATUS "  Platform:")
-message(STATUS "    Host:"             ${CMAKE_HOST_SYSTEM_NAME} ${CMAKE_HOST_SYSTEM_VERSION} ${CMAKE_HOST_SYSTEM_PROCESSOR})
-if(CMAKE_CROSSCOMPILING)
-  message(STATUS "    Target:"         ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_VERSION} ${CMAKE_SYSTEM_PROCESSOR})
-endif()
-message(STATUS "    CMake:"            ${CMAKE_VERSION})
-message(STATUS "    CMake generator:"  ${CMAKE_GENERATOR})
-message(STATUS "    CMake build tool:" ${CMAKE_BUILD_TOOL})
-if(MSVC)
-  message(STATUS "    MSVC:"           ${MSVC_VERSION})
-endif()
-if(CMAKE_GENERATOR MATCHES Xcode)
-  message(STATUS "    Xcode:"          ${XCODE_VERSION})
-endif()
-if(NOT CMAKE_GENERATOR MATCHES "Xcode|Visual Studio")
-  message(STATUS "    Configuration:"  ${CMAKE_BUILD_TYPE})
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+  message(FATAL_ERROR "Prevented in-tree built. This is bad practice.")
 endif()
 
-include(FindOpenGL REQUIRED)
-find_package(OpenImageIO)
-find_package(PNG)
-find_package(OpenColorIO)
-find_package(FFmpeg)
-find_package(OpenEXR)
-find_package(LibRaw)
-find_package(SeExpr2)
-
-# C++17 by default (required by OpenImageIO 3.x and OpenColorIO 2.5+); the caller may ask for a newer
-# standard, e.g. -DCMAKE_CXX_STANDARD=20 (Natron's Qt6 builds)
-if(NOT DEFINED CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-elseif(CMAKE_CXX_STANDARD LESS 17 OR CMAKE_CXX_STANDARD EQUAL 98)
-  message(FATAL_ERROR "CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}: openfx-io needs C++17 or later")
-endif()
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Use -Ofast when applicable (implies -ffast-math)
-if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-    set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -Ofast -DNDEBUG")
-    set(CMAKE_C_FLAGS_RELEASE   "-Wall -Wextra -Ofast -DNDEBUG")
-elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
-    set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Ofast -DNDEBUG")
-    set(CMAKE_C_FLAGS_RELEASE   "-Wall -Ofast -DNDEBUG")
-elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-    set(CMAKE_CXX_FLAGS_RELEASE "-Wall -Wextra -Ofast -DNDEBUG")
-    set(CMAKE_C_FLAGS_RELEASE   "-Wall -Wextra -Ofast -DNDEBUG")
-endif()
-set(OPENFX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/openfx)
-
-# Check that submodule have been initialized and updated
-if(NOT EXISTS ${PROJECT_SOURCE_DIR}/openfx/include)
-  message(FATAL_ERROR
-    "\n submodule(s) are missing, please update your repository:\n"
-    "  > git submodule update -i\n")
-endif()
-
-# C++ Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/SupportExt)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/SupportExt/glad)
-include_directories(${OPENFX_PATH}/include)
-include_directories(${OPENFX_PATH}/Support/include)
-include_directories(${OPENFX_PATH}/Support/Plugins/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/IOSupport)
-
-# Define "DEBUG" on debug builds
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG")
-
-# /MP on MSVC
-add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/MP>)
-
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG")
-
-set(OFX_SUPPORT_HEADER_DIR "${OPENFX_PATH}/Support/include")
-set(OFX_SUPPORT_LIBRARY_DIR "${OPENFX_PATH}/Support/Library")
-
-file(GLOB SUPPORT_SOURCES
-    "${OFX_SUPPORT_HEADER_DIR}/*.h"
-
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsCore.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsImageEffect.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsInteract.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsLog.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsMultiThread.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsParams.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsProperty.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/ofxsPropertyValidation.cpp"
-    "${OFX_SUPPORT_LIBRARY_DIR}/*.h"
-)
-
-#add_library(Support STATIC )
-#target_compile_definitions(Support PRIVATE OFX_SUPPORTS_OPENGLRENDER OFX_EXTENSIONS_TUTTLE OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_NATRON OFX_EXTENSIONS_VEGAS NOMINMAX)
-
-file(GLOB IO_SOURCES_EXR
-  "EXR/*.cpp"
-)
-file(GLOB IO_SOURCES_FFMPEG
-  "FFmpeg/*.cpp"
-)
-file(GLOB IO_SOURCES_OPENCOLORIO
-  "OCIO/*.cpp"
-)
-file(GLOB IO_SOURCES_OPENIMAGEIO
-  "OIIO/*.cpp"
-  "SupportExt/ofxsOGLTextRenderer.cpp"
-  "SupportExt/ofxsOGLFontData.cpp"
-)
-file(GLOB IO_SOURCES_PNG
-  "PNG/*.cpp"
-  "SupportExt/ofxsLut.cpp"
-)
-file(GLOB IO_SOURCES_SEEXPR
-  "SeExpr/*.cpp"
-  "SupportExt/ofxsOGLFontData.cpp"
-  "SupportExt/ofxsOGLTextRenderer.cpp"
-  "SupportExt/ofxsOGLUtilities.cpp"
-  "SupportExt/ofxsRamp.cpp"
-  "SupportExt/ofxsRectangleInteract.cpp"
-  "SupportExt/ofxsShutter.cpp"
-  "SupportExt/ofxsTransform3x3.cpp"
-  "SupportExt/ofxsTransformInteract.cpp"
-)
-file(GLOB IO_SOURCES
-  "PFM/*.cpp"
-  "IOSupport/*.cpp"
-  "IOSupport/*.h"
-  "IOSupport/SequenceParsing/*.cpp"
-  "IOSupport/SequenceParsing/*.h"  
-  "SupportExt/tinythread.cpp"
-  "SupportExt/ofxsThreadSuite.cpp"
-  "SupportExt/ofxsFileOpen.cpp"
-#  "SupportExt/ofxsGenerator.cpp"
-  "SupportExt/ofxsMultiPlane.cpp"
-  "SupportExt/ofxsOGLUtilities.cpp"
-  "RunScript/*.cpp"
-  "RunScript/*.h"
-#  "SupportExt/ofxsTracking.cpp"
-  "SupportExt/*.h"
-  "SupportExt/glad/*.cpp"
-  "SupportExt/glad/*.h"
-)
-
-file(GLOB IO_RESOURCES_EXR
-  "EXR/fr.inria.openfx.ReadEXR.png"
-  "EXR/fr.inria.openfx.ReadEXR.svg"
-  "EXR/fr.inria.openfx.WriteEXR.png"
-  "EXR/fr.inria.openfx.WriteEXR.svg"
-)
-file(GLOB IO_RESOURCES_FFMPEG
-  "FFmpeg/fr.inria.openfx.ReadFFmpeg.png"
-  "FFmpeg/fr.inria.openfx.ReadFFmpeg.svg"
-  "FFmpeg/fr.inria.openfx.WriteFFmpeg.png"
-  "FFmpeg/fr.inria.openfx.WriteFFmpeg.svg"
-)
-file(GLOB IO_RESOURCES_OPENCOLORIO
-  "OCIO/fr.inria.openfx.OCIOCDLTransform.png"
-  "OCIO/fr.inria.openfx.OCIOColorSpace.png"
-  "OCIO/fr.inria.openfx.OCIODisplay.png"
-  "OCIO/fr.inria.openfx.OCIOFileTransform.png"
-  "OCIO/fr.inria.openfx.OCIOLogConvert.png"
-  "OCIO/fr.inria.openfx.OCIOLookTransform.png"
-)
-file(GLOB IO_RESOURCES_OPENIMAGEIO
-  "OIIO/fr.inria.openfx.OIIOResize.png"
-  "OIIO/fr.inria.openfx.OIIOResize.svg"
-  "OIIO/fr.inria.openfx.OIIOText.png"
-  "OIIO/fr.inria.openfx.OIIOText.svg"
-  "OIIO/fr.inria.openfx.ReadOIIO.png"
-  "OIIO/fr.inria.openfx.ReadOIIO.svg"
-  "OIIO/fr.inria.openfx.WriteOIIO.png"
-  "OIIO/fr.inria.openfx.WriteOIIO.svg"
-)
-file(GLOB IO_RESOURCES_PNG
-  "PNG/fr.inria.openfx.ReadPNG.png"
-  "PNG/fr.inria.openfx.ReadPNG.svg"
-  "PNG/fr.inria.openfx.WritePNG.png"
-  "PNG/fr.inria.openfx.WritePNG.svg"
-)
-file(GLOB IO_RESOURCES_SEEXPR
-  "SeExpr/fr.inria.openfx.SeExpr.png"
-  "SeExpr/fr.inria.openfx.SeExpr.svg"
-  "SeExpr/fr.inria.openfx.SeExprSimple.png"
-  "SeExpr/fr.inria.openfx.SeExprSimple.svg"
-)
-file(GLOB IO_RESOURCES
-  "PFM/fr.inria.openfx.ReadPFM.png"
-  "PFM/fr.inria.openfx.ReadPFM.svg"
-  "PFM/fr.inria.openfx.WritePFM.png"
-  "PFM/fr.inria.openfx.WritePFM.svg"
-  "RunScript/fr.inria.openfx.RunScript.png"
-  "RunScript/fr.inria.openfx.RunScript.svg"
-)
-
-if(${OPENEXR_FOUND})
-  list(APPEND IO_RESOURCES ${IO_RESOURCES_EXR})
-  list(APPEND IO_SOURCES ${IO_SOURCES_EXR})
-endif()
-
-if(${OPENCOLORIO_FOUND})
-  list(APPEND IO_RESOURCES ${IO_RESOURCES_OPENCOLORIO})
-  list(APPEND IO_SOURCES ${IO_SOURCES_OPENCOLORIO})
-endif()
-
-if(${OPENIMAGEIO_FOUND})
-  list(APPEND IO_RESOURCES ${IO_RESOURCES_OPENIMAGEIO})
-  list(APPEND IO_SOURCES ${IO_SOURCES_OPENIMAGEIO})
-endif()
-
-if(${FFMPEG_FOUND})
-  list(APPEND IO_RESOURCES ${IO_RESOURCES_FFMPEG})
-  list(APPEND IO_SOURCES ${IO_SOURCES_FFMPEG})
-endif()
-
-if(${PNG_FOUND})
-  list(APPEND IO_RESOURCES ${IO_RESOURCES_PNG})
-  list(APPEND IO_SOURCES ${IO_SOURCES_PNG})
-endif()
-
-if(${SEEXPR2_FOUND})
-  list(APPEND IO_RESOURCES ${IO_RESOURCES_SEEXPR})
-  list(APPEND IO_SOURCES ${IO_SOURCES_SEEXPR})
-endif()
-
-add_library(IO SHARED ${IO_SOURCES} ${SUPPORT_SOURCES})
-SET_TARGET_PROPERTIES(IO PROPERTIES PREFIX "")
-SET_TARGET_PROPERTIES(IO PROPERTIES SUFFIX ".ofx")
-
-# Add extra flags to the link step of the plugin
-if(APPLE)
-    set_target_properties(IO PROPERTIES LINK_FLAGS "-fvisibility=hidden -exported_symbols_list,${OFX_SUPPORT_HEADER_DIR}/osxSymbols")
-    set_target_properties(IO PROPERTIES INSTALL_RPATH "@loader_path/../Frameworks;@loader_path/../Libraries")
-elseif(MINGW)
-    set_target_properties(IO PROPERTIES LINK_FLAGS "-shared -fvisibility=hidden -Xlinker --version-script=${OFX_SUPPORT_HEADER_DIR}/linuxSymbols")
-elseif(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD" OR ${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-# Linux & FreeBSD
-    set_target_properties(IO PROPERTIES LINK_FLAGS "-Wl,-fvisibility=hidden,--version-script=${OFX_SUPPORT_HEADER_DIR}/linuxSymbols")
-    set_target_properties(IO PROPERTIES INSTALL_RPATH "$ORIGIN/../../Libraries")
-endif()
-
-target_compile_definitions(IO
-  PRIVATE
-    OFX_EXTENSIONS_VEGAS
-    OFX_EXTENSIONS_NUKE
-    OFX_EXTENSIONS_NATRON
-    OFX_EXTENSIONS_TUTTLE
-    OFX_SUPPORTS_OPENGLRENDER
-    NOMINMAX)
-target_include_directories(IO
-  PUBLIC
-    ${CMAKE_INSTALL_FULL_INCLUDEDIR}
-)
-target_link_libraries(IO
-  PUBLIC
-    ${OPENGL_gl_LIBRARY}
-)
-
-message(STATUS "External library support:")
-
-if(${OPENCOLORIO_FOUND})
-  message(STATUS "  Adding OpenColorIO nodes")
-  target_compile_definitions(IO PRIVATE OFX_IO_USING_OCIO ${OPENCOLORIO_DEFINITIONS})
-  target_include_directories(IO
-    PUBLIC
-      ${OPENCOLORIO_INCLUDES}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      ${OPENCOLORIO_LIBRARIES}
-  )
-else()
-  message(STATUS "  Not adding OpenColorIO nodes")
-endif()
-
-if(${OPENEXR_FOUND})
-  message(STATUS "  Adding OpenEXR nodes")
-  target_include_directories(IO
-    PUBLIC
-      ${OPENEXR_INCLUDES} ${ILMBASE_INCLUDES}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      # For OpenEXR/Imath 3.x:
-      $<$<TARGET_EXISTS:OpenEXR::OpenEXR>:OpenEXR::OpenEXR>
-      $<$<TARGET_EXISTS:Imath::Imath>:Imath::Imath>
-      $<$<TARGET_EXISTS:Imath::Half>:Imath::Half>
-      # For OpenEXR >= 2.4/2.5 with reliable exported targets
-      $<$<TARGET_EXISTS:OpenEXR::IlmImf>:OpenEXR::IlmImf>
-      $<$<TARGET_EXISTS:IlmBase::Imath>:IlmBase::Imath>
-      $<$<TARGET_EXISTS:IlmBase::Half>:IlmBase::Half>
-      $<$<TARGET_EXISTS:IlmBase::IlmThread>:IlmBase::IlmThread>
-      $<$<TARGET_EXISTS:IlmBase::Iex>:IlmBase::Iex>
-      # These two are for OpenEXR <= 2.3:    ${OPENEXR_LIBRARIES} ${ILMBASE_LIBRARIES}
-  )
-else()
-  message(STATUS "  Not adding OpenEXR nodes")
-endif()
-
-if(${OPENIMAGEIO_FOUND})
-  message(STATUS "  Adding OpenImageIO nodes")
-  target_include_directories(IO
-    PUBLIC
-      ${OPENIMAGEIO_INCLUDES}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      ${OPENIMAGEIO_LIBRARIES}
-  )
-  if(LibRaw_VERSION_STRING)
-    target_compile_definitions(IO PRIVATE OFX_IO_USING_LIBRAW ${LibRaw_r_DEFINITIONS})
-    target_include_directories(IO
-      PUBLIC
-        ${LibRaw_INCLUDE_DIR}/libraw
-    )
-    target_link_libraries(IO
-      PUBLIC
-        ${LibRaw_r_LIBRARIES}
-    )
+# Check that the submodules have been initialized and updated
+foreach(_sub openfx/include SupportExt/ofxsMacros.h IOSupport/SequenceParsing/SequenceParsing.h)
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${_sub}")
+    message(FATAL_ERROR "\n submodule(s) are missing, please update your repository:\n"
+                        "  > git submodule update -i --recursive\n")
   endif()
-else()
-  message(STATUS "  Not adding OpenImageIO nodes")
+endforeach()
+
+# Makefile.master: -O2 for release builds (CMake's default is -O3)
+if(NOT MSVC)
+  string(REPLACE "-O3" "-O2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 endif()
 
-if(${FFMPEG_FOUND})
-  message(STATUS "  Adding FFmpeg nodes")
-  target_compile_definitions(IO PRIVATE OFX_IO_MT_FFMPEG)
-  target_include_directories(IO
-    PUBLIC
-      ${FFMPEG_INCLUDES}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      ${FFMPEG_LIBRARIES}
-  )
-else()
-  message(STATUS "  Not adding FFmpeg nodes")
+set(OPENFX_PATH "${PROJECT_SOURCE_DIR}/openfx")
+set(OFXS_EXT_PATH "${PROJECT_SOURCE_DIR}/SupportExt")
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" "${PROJECT_SOURCE_DIR}/IOSupport/cmake")
+# openfx's add_ofx_plugin() & co. (or a stand-in until the openfx submodule has them) and SupportExt's helper
+include(OpenFXLocal)
+include(IOSupport)
+
+if(OFX_CXX_STANDARD LESS 17 OR OFX_CXX_STANDARD EQUAL 98)
+  message(FATAL_ERROR "OFX_CXX_STANDARD=${OFX_CXX_STANDARD}: openfx-io needs C++17 or later (OpenImageIO 3.x, OpenColorIO 2.5)")
 endif()
 
-if(${PNG_FOUND})
-  message(STATUS "  Adding PNG nodes")
-  target_compile_definitions(IO PRIVATE ${PNG_DEFINITIONS})
-  target_include_directories(IO
-    PUBLIC
-      ${PNG_INCLUDE_DIRS}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      ${PNG_LIBRARIES}
-  )
-else()
-  message(STATUS "  Not adding PNG nodes")
+message(STATUS "Platform: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}, bundle folder ${ARCHDIR}, C++${OFX_CXX_STANDARD}")
+
+# ---------------------------------------------------------------------------------------------------------------
+# Dependencies. Each one gives an imported target; a group of plug-ins is only built if its libraries are found.
+
+# Makefile.master links -lGL (Linux, FreeBSD), -framework OpenGL, -lopengl32: the legacy libGL, not GLVND's
+# libOpenGL + libGLX
+if(NOT DEFINED OpenGL_GL_PREFERENCE)
+  set(OpenGL_GL_PREFERENCE LEGACY)
 endif()
+find_package(OpenGL REQUIRED)
+find_package(PkgConfig)
 
-if(${SEEXPR2_FOUND})
-  message(STATUS "  Adding SeExpr nodes")
-  target_include_directories(IO
-    PUBLIC
-      ${SEEXPR2_INCLUDES}
-  )
-  target_link_libraries(IO
-    PUBLIC
-      ${SEEXPR2_LIBRARIES}
-  )
-else()
-  message(STATUS "  Not adding SeExpr nodes")
-endif()
-
-
-# Find and set the arch name.
-# http://openeffects.org/documentation/reference/ch02s02.html
-# Bundle architecture folder (OFX packaging spec, ofxPackaging.rst): copied from openfx/cmake/OpenFX.cmake
-# (NatronGitHub/openfx #105, #106). The names must match what HostSupport looks for
-# (HostSupport/src/ofxhPluginCache.cpp, ofxhArchDirs.h) and the Makefiles (Support/Plugins/Makefile.master).
-if(APPLE)
-  set(ARCHDIR "MacOS") # universal or arch-specific: no arm64 folder
-elseif(WIN32)
-  # MSVC: the target architecture (ARM64EC, ARM64, x64, X86); other compilers: pointer size
-  string(TOUPPER "${CMAKE_CXX_COMPILER_ARCHITECTURE_ID};${CMAKE_GENERATOR_PLATFORM}" _OFX_WINARCH)
-  if(NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID)
-    # MinGW (MSYS2 CLANGARM64, llvm-mingw) on CMake < 4.1: the architecture ID is only set for MSVC, and
-    # CMAKE_SYSTEM_PROCESSOR is the build machine's unless a toolchain file sets it: ask the compiler for
-    # its target (CMAKE_CXX_COMPILER_TARGET, or `-dumpmachine`), e.g. aarch64-w64-mingw32 or
-    # arm64ec-w64-windows-gnu (llvm-mingw Arm64EC)
-    set(_OFX_TARGET "${CMAKE_CXX_COMPILER_TARGET}")
-    if(NOT _OFX_TARGET)
-      # CMAKE_CXX_COMPILER_ARG1 is one string (e.g. " --target=aarch64-w64-mingw32"): split it
-      # (UNIX_COMMAND works with any CMake version, for projects that copy this block)
-      separate_arguments(_OFX_CXX_ARGS UNIX_COMMAND "${CMAKE_CXX_COMPILER_ARG1}")
-      execute_process(COMMAND ${CMAKE_CXX_COMPILER} ${_OFX_CXX_ARGS} -dumpmachine
-                      OUTPUT_VARIABLE _OFX_TARGET OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    endif()
-    string(TOLOWER "${_OFX_TARGET}" _OFX_TARGET)
-    if(_OFX_TARGET MATCHES "^arm64ec")
-      set(_OFX_WINARCH "ARM64EC")
-    elseif(_OFX_TARGET MATCHES "^(aarch64|arm64)")
-      set(_OFX_WINARCH "ARM64")
-    endif()
+# pkg-config with a different PKG_CONFIG_PATH: forget the cached results when the path changes
+macro(_io_pkg_config_path prefix path)
+  if(NOT "${path}" STREQUAL "${_IO_PKG_CONFIG_PATH_${prefix}}")
+    unset(__pkg_config_checked_${prefix} CACHE)
+    get_cmake_property(_io_vars CACHE_VARIABLES)
+    foreach(_v ${_io_vars})
+      if(_v MATCHES "^pkgcfg_lib_${prefix}_")
+        unset(${_v} CACHE)
+      endif()
+    endforeach()
+    set(_IO_PKG_CONFIG_PATH_${prefix} "${path}" CACHE INTERNAL "")
   endif()
-  if(_OFX_WINARCH MATCHES "ARM64EC" OR CMAKE_CXX_FLAGS MATCHES "/arm64EC")
-    set(ARCHDIR "Win-arm64ec") # normative (upstream main, 2026): Arm64EC (and Arm64X) plug-ins
-  elseif(_OFX_WINARCH MATCHES "ARM64|AARCH64")
-    # CMake >= 4.1 reports "aarch64" as the MinGW architecture ID
-    set(ARCHDIR "Win-arm64")   # reserved, not yet normative: native Arm64 hosts
-    message(WARNING "Native Arm64 plug-in: installed to Win-arm64, a reserved, not yet normative folder. "
-                    "Current Windows-on-Arm hosts (Resolve, Vegas) are Arm64EC: build for Arm64EC for them.")
-  elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(ARCHDIR "Win64")
+endmacro()
+
+# OpenColorIO: OpenColorIO::OpenColorIO
+find_package(OpenColorIO CONFIG QUIET)
+if(NOT TARGET OpenColorIO::OpenColorIO AND PKG_CONFIG_FOUND)
+  pkg_check_modules(OCIO_PC QUIET IMPORTED_TARGET OpenColorIO)
+  if(OCIO_PC_FOUND)
+    add_library(OpenColorIO::OpenColorIO INTERFACE IMPORTED)
+    target_link_libraries(OpenColorIO::OpenColorIO INTERFACE PkgConfig::OCIO_PC)
+  endif()
+endif()
+
+# OpenEXR and Imath: OpenEXR::OpenEXR (which links Imath::Imath)
+find_package(OpenEXR CONFIG QUIET)
+if(NOT TARGET OpenEXR::OpenEXR AND PKG_CONFIG_FOUND)
+  pkg_check_modules(OPENEXR_PC QUIET IMPORTED_TARGET OpenEXR)
+  if(OPENEXR_PC_FOUND)
+    # OpenEXR 3 needs Imath, OpenEXR 2 IlmBase
+    pkg_check_modules(IMATH_PC QUIET IMPORTED_TARGET Imath)
+    if(NOT IMATH_PC_FOUND)
+      pkg_check_modules(IMATH_PC QUIET IMPORTED_TARGET IlmBase)
+    endif()
+    add_library(OpenEXR::OpenEXR INTERFACE IMPORTED)
+    target_link_libraries(OpenEXR::OpenEXR INTERFACE PkgConfig::OPENEXR_PC $<TARGET_NAME_IF_EXISTS:PkgConfig::IMATH_PC>)
+  endif()
+endif()
+
+# OpenImageIO: OpenImageIO::OpenImageIO
+find_package(OpenImageIO CONFIG QUIET)
+if(NOT TARGET OpenImageIO::OpenImageIO AND PKG_CONFIG_FOUND)
+  pkg_check_modules(OIIO_PC QUIET IMPORTED_TARGET OpenImageIO)
+  if(OIIO_PC_FOUND)
+    add_library(OpenImageIO::OpenImageIO INTERFACE IMPORTED)
+    target_link_libraries(OpenImageIO::OpenImageIO INTERFACE PkgConfig::OIIO_PC)
+  endif()
+endif()
+
+# LibRaw (thread-safe libraw_r), for ReadOIIO's RAW options: PkgConfig::LIBRAW
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(LIBRAW QUIET IMPORTED_TARGET libraw_r)
+endif()
+
+# libpng and zlib (ReadPNG and WritePNG use both): PkgConfig::LIBPNG, or CMake's PNG::PNG
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(LIBPNG QUIET IMPORTED_TARGET libpng)
+  pkg_check_modules(ZLIB_PC QUIET IMPORTED_TARGET zlib)
+endif()
+if(LIBPNG_FOUND)
+  add_library(io_png INTERFACE)
+  if(ZLIB_PC_FOUND)
+    target_link_libraries(io_png INTERFACE PkgConfig::LIBPNG PkgConfig::ZLIB_PC)
   else()
-    set(ARCHDIR "Win32")
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(io_png INTERFACE PkgConfig::LIBPNG ZLIB::ZLIB)
   endif()
-elseif(UNIX)
-  if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
-    set(_OFX_OS "FreeBSD")
-  else()
-    set(_OFX_OS "Linux")
+else()
+  find_package(PNG QUIET)
+  if(TARGET PNG::PNG)
+    add_library(io_png INTERFACE)
+    target_link_libraries(io_png INTERFACE PNG::PNG)
   endif()
-  string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _OFX_CPU)
-  if(_OFX_CPU MATCHES "^(x86_64|amd64|i[3-6]86|x86)$")
-    # x86: use the pointer size, the userland may be 32-bit on a 64-bit kernel
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set(ARCHDIR "${_OFX_OS}-x86-64")
+endif()
+
+# FFmpeg: PkgConfig::FFMPEG. FFMPEG_PKG_CONFIG_PATH selects another FFmpeg, as in Makefile.master; the imported
+# target links the libraries by full path, so another -L on the link line cannot pick a different FFmpeg.
+set(FFMPEG_PKG_CONFIG_PATH "" CACHE PATH
+    "pkg-config directory of FFmpeg (e.g. /opt/local/libexec/ffmpeg8/lib/pkgconfig for MacPorts' ffmpeg8); empty: the default search path")
+if(PKG_CONFIG_FOUND)
+  _io_pkg_config_path(FFMPEG "${FFMPEG_PKG_CONFIG_PATH}")
+  set(_io_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
+  if(FFMPEG_PKG_CONFIG_PATH)
+    if(CMAKE_HOST_WIN32)
+      set(ENV{PKG_CONFIG_PATH} "${FFMPEG_PKG_CONFIG_PATH};$ENV{PKG_CONFIG_PATH}")
     else()
-      set(ARCHDIR "${_OFX_OS}-x86")
+      set(ENV{PKG_CONFIG_PATH} "${FFMPEG_PKG_CONFIG_PATH}:$ENV{PKG_CONFIG_PATH}")
     endif()
-  elseif(_OFX_OS STREQUAL "Linux")
-    # the spec's name, literally: Linux-${uname -m} (CMAKE_SYSTEM_PROCESSOR is uname -m for native builds;
-    # cross toolchain files set it). HostSupport also searches the compiled architecture's name.
-    set(ARCHDIR "Linux-${CMAKE_SYSTEM_PROCESSOR}")
-  elseif(_OFX_CPU MATCHES "^armv[2-6]" AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(ARCHDIR "FreeBSD-armv6")
-  elseif(_OFX_CPU MATCHES "^(aarch64|arm64|armv8l|arm.*)$")
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set(ARCHDIR "FreeBSD-aarch64")
-    else()
-      set(ARCHDIR "FreeBSD-armv7")
+  endif()
+  pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET libavformat libavcodec libswscale libavutil)
+  set(ENV{PKG_CONFIG_PATH} "${_io_saved_pkg_config_path}")
+endif()
+
+# macOS guard (Makefile.master): if OpenImageIO and the plug-ins link two different FFmpeg builds with the same
+# file name (e.g. MacPorts' ffmpeg8 in /opt/local/libexec/ffmpeg8 and Natron's ffmpeg in /opt/local/lib, both
+# libavcodec.62.dylib), osxDeploy.sh, which copies libraries by name, silently bundles only one of them. Fail instead.
+if(APPLE AND FFMPEG_FOUND AND TARGET OpenImageIO::OpenImageIO)
+  set(_io_oiio_lib "")
+  get_target_property(_io_oiio_type OpenImageIO::OpenImageIO TYPE)
+  if(NOT _io_oiio_type STREQUAL "INTERFACE_LIBRARY")
+    get_target_property(_io_oiio_lib OpenImageIO::OpenImageIO LOCATION)
+  elseif(PKG_CONFIG_FOUND)
+    pkg_get_variable(_io_oiio_libdir OpenImageIO libdir)
+    set(_io_oiio_lib "${_io_oiio_libdir}/libOpenImageIO.dylib")
+  endif()
+  set(_io_ffmpeg_avcodec "")
+  foreach(_l ${FFMPEG_LINK_LIBRARIES})
+    if(_l MATCHES "/libavcodec[^/]*\\.dylib$")
+      set(_io_ffmpeg_avcodec "${_l}")
     endif()
-  elseif(_OFX_OS STREQUAL "FreeBSD" AND _OFX_CPU MATCHES "^riscv")
-    set(ARCHDIR "FreeBSD-riscv64")
-  elseif(_OFX_OS STREQUAL "FreeBSD" AND _OFX_CPU MATCHES "^powerpc")
-    # uname -p: powerpc64, powerpc64le (uname -m only says powerpc)
-    if(NOT DEFINED CMAKE_CXX_BYTE_ORDER) # CMake < 3.20
-      include(TestBigEndian)
-      test_big_endian(_OFX_BIG_ENDIAN)
-      if(NOT _OFX_BIG_ENDIAN)
-        set(CMAKE_CXX_BYTE_ORDER "LITTLE_ENDIAN")
+  endforeach()
+  if(_io_oiio_lib AND EXISTS "${_io_oiio_lib}" AND _io_ffmpeg_avcodec)
+    execute_process(COMMAND otool -L "${_io_oiio_lib}" OUTPUT_VARIABLE _io_out ERROR_QUIET)
+    string(REGEX MATCH "[^ \t\n]*libavcodec[^ \t\n]*" _io_oiio_avcodec "${_io_out}")
+    # the plug-ins' libavcodec install name, e.g. /opt/local/lib/libavcodec.62.dylib
+    execute_process(COMMAND otool -D "${_io_ffmpeg_avcodec}" OUTPUT_VARIABLE _io_out ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+    string(REGEX REPLACE "^.*\n" "" _io_ffmpeg_avcodec_id "${_io_out}")
+    if(_io_oiio_avcodec AND _io_ffmpeg_avcodec_id)
+      get_filename_component(_io_n1 "${_io_oiio_avcodec}" NAME)
+      get_filename_component(_io_n2 "${_io_ffmpeg_avcodec_id}" NAME)
+      if(_io_n1 STREQUAL _io_n2 AND NOT _io_oiio_avcodec STREQUAL _io_ffmpeg_avcodec_id)
+        get_filename_component(_io_hint "${_io_oiio_avcodec}" DIRECTORY)
+        message(FATAL_ERROR "OpenImageIO links ${_io_oiio_avcodec}, but the FFmpeg plug-ins would link "
+          "${_io_ffmpeg_avcodec_id}: both are ${_io_n1}, so the bundle would contain only one of them. Use the "
+          "same FFmpeg for both, e.g. -DFFMPEG_PKG_CONFIG_PATH=${_io_hint}/pkgconfig, "
+          "or build OpenImageIO without FFmpeg.")
       endif()
     endif()
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_CXX_BYTE_ORDER STREQUAL "LITTLE_ENDIAN")
-      set(ARCHDIR "FreeBSD-powerpc64le")
-    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set(ARCHDIR "FreeBSD-powerpc64")
-    else()
-      set(ARCHDIR "FreeBSD-powerpc")
+  endif()
+endif()
+
+# SeExpr: the SeExpr 1 API of SeExpr 2.11 (SeExpression.h, libSeExpr), not SeExpr2 (SeExpr2/Expression.h).
+# SEEXPR_HOME is its prefix, as in Makefile.master; empty: CMake's default search paths.
+set(SEEXPR_HOME "" CACHE PATH "SeExpr 2.11 prefix (include/SeExpression.h, lib/libSeExpr)")
+if(NOT "${SEEXPR_HOME}" STREQUAL "${_IO_SEEXPR_HOME}")
+  unset(SEEXPR_INCLUDE_DIR CACHE)
+  unset(SEEXPR_LIBRARY CACHE)
+  set(_IO_SEEXPR_HOME "${SEEXPR_HOME}" CACHE INTERNAL "")
+endif()
+if(SEEXPR_HOME)
+  find_path(SEEXPR_INCLUDE_DIR SeExpression.h PATHS "${SEEXPR_HOME}/include" NO_DEFAULT_PATH)
+  find_library(SEEXPR_LIBRARY NAMES SeExpr PATHS "${SEEXPR_HOME}/lib" NO_DEFAULT_PATH)
+else()
+  find_path(SEEXPR_INCLUDE_DIR SeExpression.h)
+  find_library(SEEXPR_LIBRARY NAMES SeExpr)
+endif()
+if(SEEXPR_INCLUDE_DIR AND SEEXPR_LIBRARY)
+  add_library(SeExpr::SeExpr UNKNOWN IMPORTED)
+  set_target_properties(SeExpr::SeExpr PROPERTIES
+    IMPORTED_LOCATION "${SEEXPR_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${SEEXPR_INCLUDE_DIR}")
+endif()
+
+# ---------------------------------------------------------------------------------------------------------------
+# The IO.ofx bundle (IO/Makefile)
+
+add_ofx_plugin(IO INFO_PLIST IO/Info.plist)
+target_link_libraries(IO PRIVATE openfx::Support)
+# no IO_EXPORTS define (the Makefiles have none; OfxExport does the exporting)
+set_target_properties(IO PROPERTIES DEFINE_SYMBOL "")
+if(UNIX AND NOT APPLE)
+  # as Makefile.master, which adds -rpath for the libdirs of OpenColorIO, OpenImageIO, LibRaw, SeExpr and libpng
+  set_target_properties(IO PROPERTIES INSTALL_RPATH_USE_LINK_PATH ON)
+endif()
+
+# Include paths of IO/Makefile and Makefile.master (which also has openfx/Support/Plugins/include, for
+# ofxsProcessing.H)
+target_include_directories(IO PRIVATE
+  EXR FFmpeg OIIO PFM OCIO SeExpr PNG "${OPENFX_PATH}/Support/Plugins/include")
+
+# Always built: SupportExt, IOSupport and PFM (IO/Makefile's PLUGINOBJECTS and OCIO_OPENGL_OBJS).
+# The plug-in sources are added at the end, in the order of IO/Makefile's PLUGINOBJECTS, which is the order of the
+# plug-ins in the bundle.
+# SupportExt: IO/Makefile's objects (ofxsGenerator and the text renderer are in IO/Makefile, built on every OS,
+# like glad/gladegl.cpp)
+supportext_add_sources(IO OPENGL EGL COMPONENTS THREADS FILEOPEN MULTIPLANE GENERATOR TEXT)
+# GenericReader, GenericWriter, GenericOCIO (+ OpenGL; OFX_IO_USING_OCIO with OpenColorIO), SequenceParsing
+ioSupport_add_sources(IO ALL)
+foreach(_g SEEXPR OCIO EXR FFMPEG OIIO PNG RUNSCRIPT)
+  set(_io_src_${_g} "")
+endforeach()
+target_link_libraries(IO PRIVATE OpenGL::GL) # as Makefile.master, also without the OpenGL sources
+ofx_plugin_resources(IO
+  PFM/fr.inria.openfx.ReadPFM.png PFM/fr.inria.openfx.ReadPFM.svg
+  PFM/fr.inria.openfx.WritePFM.png PFM/fr.inria.openfx.WritePFM.svg)
+
+set(_io_groups "PFM")
+set(_io_missing "")
+
+if(TARGET OpenColorIO::OpenColorIO)
+  string(APPEND _io_groups " OCIO")
+  # OFX_IO_USING_OCIO and OpenColorIO::OpenColorIO: from ioSupport_add_sources(IO ALL) above
+  set(_io_src_OCIO
+    OCIO/OCIOPluginBase.cpp OCIO/OCIOColorSpace.cpp OCIO/OCIODisplay.cpp OCIO/OCIOCDLTransform.cpp
+    OCIO/OCIOFileTransform.cpp OCIO/OCIOLogConvert.cpp OCIO/OCIOLookTransform.cpp)
+  ofx_plugin_resources(IO
+    OCIO/fr.inria.openfx.OCIOCDLTransform.png OCIO/fr.inria.openfx.OCIOColorSpace.png
+    OCIO/fr.inria.openfx.OCIODisplay.png OCIO/fr.inria.openfx.OCIOFileTransform.png
+    OCIO/fr.inria.openfx.OCIOLogConvert.png OCIO/fr.inria.openfx.OCIOLookTransform.png)
+else()
+  string(APPEND _io_missing " OCIO(OpenColorIO)")
+endif()
+
+if(TARGET OpenEXR::OpenEXR)
+  string(APPEND _io_groups " EXR")
+  target_link_libraries(IO PRIVATE OpenEXR::OpenEXR)
+  set(_io_src_EXR EXR/ReadEXR.cpp EXR/WriteEXR.cpp)
+  ofx_plugin_resources(IO
+    EXR/fr.inria.openfx.ReadEXR.png EXR/fr.inria.openfx.ReadEXR.svg
+    EXR/fr.inria.openfx.WriteEXR.png EXR/fr.inria.openfx.WriteEXR.svg)
+else()
+  string(APPEND _io_missing " EXR(OpenEXR)")
+endif()
+
+if(FFMPEG_FOUND)
+  string(APPEND _io_groups " FFmpeg")
+  target_compile_definitions(IO PRIVATE OFX_IO_MT_FFMPEG)
+  target_link_libraries(IO PRIVATE PkgConfig::FFMPEG)
+  set(_io_src_FFMPEG FFmpeg/ReadFFmpeg.cpp FFmpeg/FFmpegFile.cpp FFmpeg/WriteFFmpeg.cpp FFmpeg/PixelFormat.cpp)
+  ofx_plugin_resources(IO
+    FFmpeg/fr.inria.openfx.ReadFFmpeg.png FFmpeg/fr.inria.openfx.ReadFFmpeg.svg
+    FFmpeg/fr.inria.openfx.WriteFFmpeg.png FFmpeg/fr.inria.openfx.WriteFFmpeg.svg)
+else()
+  string(APPEND _io_missing " FFmpeg(libavformat,libavcodec,libswscale,libavutil)")
+endif()
+
+if(TARGET OpenImageIO::OpenImageIO)
+  string(APPEND _io_groups " OIIO")
+  supportext_add_sources(IO COMPONENTS THREADS MULTIPLANE)
+  # OIIOGlobal.cpp includes <IlmThreadPool.h>: OpenEXR's include paths too, as in Makefile.master
+  target_link_libraries(IO PRIVATE OpenImageIO::OpenImageIO $<TARGET_NAME_IF_EXISTS:OpenEXR::OpenEXR>)
+  set(_io_src_OIIO OIIO/ReadOIIO.cpp OIIO/WriteOIIO.cpp OIIO/OIIOGlobal.cpp OIIO/OIIOText.cpp OIIO/OIIOResize.cpp)
+  ofx_plugin_resources(IO
+    OIIO/fr.inria.openfx.OIIOText.png OIIO/fr.inria.openfx.OIIOText.svg
+    OIIO/fr.inria.openfx.ReadOIIO.png OIIO/fr.inria.openfx.ReadOIIO.svg
+    OIIO/fr.inria.openfx.OIIOResize.png OIIO/fr.inria.openfx.OIIOResize.svg
+    OIIO/fr.inria.openfx.WriteOIIO.png OIIO/fr.inria.openfx.WriteOIIO.svg)
+  if(LIBRAW_FOUND)
+    string(APPEND _io_groups " (with LibRaw ${LIBRAW_VERSION})")
+    target_compile_definitions(IO PRIVATE OFX_IO_USING_LIBRAW)
+    target_link_libraries(IO PRIVATE PkgConfig::LIBRAW)
+    # LibRaw's headers include <omp.h> when compiled with OpenMP (_OPENMP): link OpenMP only if libraw_r.pc
+    # asks for it (e.g. -fopenmp), as the Makefiles do; MacPorts' LibRaw does not.
+    if("${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIBRARIES}" MATCHES "openmp|(^|;)-?l?gomp(;|$)|(^|;)-?l?omp(;|$)")
+      ofx_target_openmp(IO)
     endif()
   else()
-    set(ARCHDIR "${_OFX_OS}-${CMAKE_SYSTEM_PROCESSOR}") # Linux: uname -m (riscv64, ppc64le, s390x, ...)
+    string(APPEND _io_missing " LibRaw(libraw_r)")
   endif()
 else()
-  set(ARCHDIR "unknown-arch")
+  string(APPEND _io_missing " OIIO(OpenImageIO)")
 endif()
-set(OFX_ARCH ${ARCHDIR})
 
-set(OFX_ARCH_NAME ${OFX_ARCH} CACHE STRING "OpenFX target OS and architecture")
-if(OFX_ARCH_NAME STREQUAL "unknown-arch")
-  message(SEND_ERROR "OFX_ARCH_NAME was not detected. Install targets will be unavailable. Set it to the bundle folder name, see https://openfx.readthedocs.io/en/main/Reference/ofxPackaging.html")
+if(TARGET io_png)
+  string(APPEND _io_groups " PNG")
+  supportext_add_sources(IO COMPONENTS FILEOPEN LUT)
+  target_link_libraries(IO PRIVATE io_png)
+  set(_io_src_PNG PNG/ReadPNG.cpp PNG/WritePNG.cpp)
+  ofx_plugin_resources(IO
+    PNG/fr.inria.openfx.ReadPNG.png PNG/fr.inria.openfx.ReadPNG.svg
+    PNG/fr.inria.openfx.WritePNG.png PNG/fr.inria.openfx.WritePNG.svg)
 else()
-  install(TARGETS IO
-    RUNTIME DESTINATION IO.ofx.bundle/Contents/${OFX_ARCH_NAME}
-    LIBRARY DESTINATION IO.ofx.bundle/Contents/${OFX_ARCH_NAME}
-  )
+  string(APPEND _io_missing " PNG(libpng)")
+endif()
 
-  install(FILES ${IO_RESOURCES}
-    DESTINATION IO.ofx.bundle/Contents/Resources
-  )
+if(TARGET SeExpr::SeExpr)
+  string(APPEND _io_groups " SeExpr SeGrain SeNoise")
+  # SeGrain and SeNoise use libSeExpr's noise functions
+  supportext_add_sources(IO COMPONENTS RECTANGLE_INTERACT RAMP TRANSFORM_INTERACT)
+  target_link_libraries(IO PRIVATE SeExpr::SeExpr)
+  set(_io_src_SEEXPR SeExpr/SeExpr.cpp SeExpr/SeGrain.cpp SeExpr/SeNoise.cpp)
+  # IO/Makefile has no SeExprSimple icons
+  ofx_plugin_resources(IO SeExpr/fr.inria.openfx.SeExpr.png SeExpr/fr.inria.openfx.SeExpr.svg)
+else()
+  string(APPEND _io_missing " SeExpr(SeExpr 2.11, SEEXPR_HOME)")
+endif()
 
-  install(FILES IO/Info.plist
-    DESTINATION IO.ofx.bundle/Contents
-  )
+# RunScript: only on Linux, FreeBSD and macOS, as in IO/Makefile
+if(APPLE OR CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+  string(APPEND _io_groups " RunScript")
+  target_include_directories(IO PRIVATE RunScript)
+  set(_io_src_RUNSCRIPT RunScript/RunScript.cpp)
+  ofx_plugin_resources(IO RunScript/fr.inria.openfx.RunScript.png RunScript/fr.inria.openfx.RunScript.svg)
+endif()
+
+# IO/Makefile's PLUGINOBJECTS order
+target_sources(IO PRIVATE
+  ${_io_src_SEEXPR}
+  ${_io_src_EXR} ${_io_src_FFMPEG} ${_io_src_OIIO}
+  PFM/ReadPFM.cpp PFM/WritePFM.cpp
+  ${_io_src_PNG} ${_io_src_OCIO} ${_io_src_RUNSCRIPT})
+
+message(STATUS "IO.ofx plug-ins: ${_io_groups}")
+if(_io_missing)
+  message(STATUS "IO.ofx: not building (libraries not found):${_io_missing}")
+endif()
+
+ofx_deploy_bundle(IO)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Tests: ctest runs the tests of tests/Makefile (which builds them in tests/), with this build's compiler and
+# FFmpeg. IO_TESTS_MAKE_ARGS: extra make arguments, e.g. WITH_LIBRAW=1.
+option(BUILD_TESTING "ctest: run the tests of tests/Makefile" ON)
+if(BUILD_TESTING)
+  enable_testing()
+  find_program(IO_MAKE_PROGRAM NAMES gmake make mingw32-make)
+  set(IO_TESTS_MAKE_ARGS "" CACHE STRING "Extra arguments for tests/Makefile (e.g. WITH_LIBRAW=1)")
+  set(IO_TESTS_CXX "${CMAKE_CXX_COMPILER}" CACHE STRING "C++ compiler for tests/Makefile")
+  if(IO_MAKE_PROGRAM)
+    set(_io_test_env "")
+    if(FFMPEG_PKG_CONFIG_PATH)
+      if(CMAKE_HOST_WIN32)
+        list(APPEND _io_test_env "PKG_CONFIG_PATH=${FFMPEG_PKG_CONFIG_PATH}\;$ENV{PKG_CONFIG_PATH}")
+      else()
+        list(APPEND _io_test_env "PKG_CONFIG_PATH=${FFMPEG_PKG_CONFIG_PATH}:$ENV{PKG_CONFIG_PATH}")
+      endif()
+    endif()
+    if(APPLE AND CMAKE_OSX_SYSROOT)
+      # CMake resolves the compiler to the toolchain's clang++, which needs the SDK (/usr/bin/clang++ finds it)
+      list(APPEND _io_test_env "SDKROOT=${CMAKE_OSX_SYSROOT}")
+    endif()
+    separate_arguments(_io_make_args NATIVE_COMMAND "${IO_TESTS_MAKE_ARGS}")
+    foreach(_t ffmpeg oiio ofx render layers)
+      add_test(NAME tests-make-${_t}
+               COMMAND "${IO_MAKE_PROGRAM}" -C "${PROJECT_SOURCE_DIR}/tests" test-${_t}
+                       "CXX=${IO_TESTS_CXX}" ${_io_make_args})
+      # the tests are built in the source tree: one at a time
+      set_tests_properties(tests-make-${_t} PROPERTIES RESOURCE_LOCK openfx-io-tests-dir)
+      if(_io_test_env)
+        set_tests_properties(tests-make-${_t} PROPERTIES ENVIRONMENT "${_io_test_env}")
+      endif()
+    endforeach()
+  else()
+    message(STATUS "make not found: no tests")
+  endif()
 endif()
