@@ -53,11 +53,11 @@ class GenericReaderPlugin
 public:
     GenericReaderPlugin(OfxImageEffectHandle handle,
                         const std::vector<std::string>& extensions,
-                        bool supportsTiles,
                         bool supportsRGBA,
                         bool supportsRGB,
                         bool supportsXY,
                         bool supportsAlpha,
+                        bool supportsTiles,
                         bool isMultiPlanar);
 
     virtual ~GenericReaderPlugin();
