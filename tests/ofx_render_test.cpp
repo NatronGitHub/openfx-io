@@ -23,6 +23,8 @@
  *   WriteOIIO test (issue #79):
  *     - render a JPEG while the host has no source image for the render window
  *       (clipGetImage fails with kOfxStatFailed): a black image must be written
+ *     - same, with a source image whose bounds do not intersect the render window:
+ *       a black image must be written, and the output image must be black
  *
  * Exit status: 0 = all checks passed.
  */
@@ -651,6 +653,86 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     return 0;
 }
 
+// Second regression test for issue #79: the host returns a valid source image, but its
+// bounds do not intersect the render window. GenericWriter returned early from
+// fetchPlaneConvertAndCopy(): the output image was not filled, and the channel packing was
+// skipped, so encode() got a buffer with fewer components than the channels to write.
+// Here the source is RGB and the four R/G/B/A checkboxes are visible and checked, so 4
+// channels are written from a 3-component buffer (a heap overflow, caught by ASan). PNG
+// is used because it writes all 4 channels (the JPEG writer only reads 3 of them).
+// Expected: a black W x H image (alpha is opaque, since the RGB source is opaque), and a
+// black output image over the render window.
+int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
+    if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
+    std::remove(outFile.c_str());
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    for (const char* name : { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA }) {
+        auto it = ctx.params.find(name);
+        if (it != ctx.params.end()) {
+            pSetInt(PH(it->second.props), kOfxParamPropSecret, 0, 0);
+        }
+    }
+
+    Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+    if (!src) { std::printf("  FAIL: no Source clip\n"); return 1; }
+    src->connected = true;
+    // A gray RGB source image whose bounds are entirely to the right of the render window.
+    const int sw = W / 2, sh = H / 2;
+    setupClipImage(src, sw, sh, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    std::fill((float*)src->buffer.data(), (float*)src->buffer.data() + (size_t)sw * sh * 3, 0.5f);
+    const int sb[4] = { W + 7, 19, W + 7 + sw, 19 + sh };
+    pSetIntN(PH(&src->image), kOfxImagePropBounds, 4, sb);
+    pSetIntN(PH(&src->image), kOfxImagePropRegionOfDefinition, 4, sb);
+    const double rod[4] = { (double)sb[0], (double)sb[1], (double)sb[2], (double)sb[3] };
+    pSetDoubleN(PH(&src->props), kOfxImageEffectPropRegionOfDefinition, 4, rod);
+
+    Clip* o = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+    if (!o) { std::printf("  FAIL: no Output clip\n"); return 1; }
+    o->connected = true;
+    setupClipImage(o, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    std::fill((float*)o->buffer.data(), (float*)o->buffer.data() + (size_t)W * H * 3, 0.25f);
+
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+
+    PropSet a = makeRenderInArgs(1., W, H);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
+
+    int fail = 0;
+    float outMax = 0.f;
+    for (size_t i = 0; i < (size_t)W * H * 3; ++i) outMax = std::max(outMax, ((const float*)o->buffer.data())[i]);
+    std::printf("  output image max value %g\n", outMax);
+    if (outMax != 0.f) { std::printf("  FAIL (expected a black output image)\n"); ++fail; }
+
+    auto in = OIIO::ImageInput::open(outFile);
+    if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", outFile.c_str(), OIIO::geterror().c_str()); return 1; }
+    const OIIO::ImageSpec& spec = in->spec();
+    std::vector<unsigned char> pix((size_t)spec.width * spec.height * spec.nchannels);
+    bool rd = in->read_image(0, 0, 0, spec.nchannels, OIIO::TypeDesc::UINT8, pix.data());
+    in->close();
+    int maxv = 0;
+    for (size_t i = 0; i < pix.size(); ++i) if ((int)(i % spec.nchannels) < 3) maxv = std::max(maxv, (int)pix[i]);
+    std::printf("  wrote %s: %dx%d, %d channels, max RGB value %d\n", outFile.c_str(), spec.width, spec.height, spec.nchannels, maxv);
+    if (!rd || spec.width != W || spec.height != H || spec.nchannels != 4 || maxv > 2) { std::printf("  FAIL (expected a black %dx%d RGBA image)\n", W, H); ++fail; }
+    if (fail) return 1;
+    std::printf("  PASS\n");
+    return 0;
+}
+
 } // namespace
 
 int
@@ -669,6 +751,8 @@ main(int argc, char** argv)
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true);
     std::printf("==== same, with hidden R/G/B/A checkboxes ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/false);
+    std::printf("==== WriteOIIO PNG, input image bounds outside of the render window (issue #79) ====\n");
+    failures += testWriteOIIODisjointInputImage(outFile + ".i79.png", 72, 128);
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");

@@ -546,161 +546,168 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         // Clip the render window to the bounds of the source image.
         OfxRectI renderWindowClipped;
-        if (!intersect(renderWindow, *bounds, &renderWindowClipped)) {
-            // Nothing to do, exit
-            return;
-        }
+        const bool overlaps = intersect(renderWindow, *bounds, &renderWindowClipped);
+        if (overlaps) {
+            if (isOCIOIdentity) {
+                // bypass OCIO
 
-        if (isOCIOIdentity) {
-            // bypass OCIO
-
-            if (noPremult || (userPremult == pluginExpectedPremult)) {
-                if ((userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha))) {
-                    // Opaque: force the alpha channel to 1
-                    copyPixelsOpaque(*this, renderWindowClipped, renderScale,
-                                     srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                                     tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                if (noPremult || (userPremult == pluginExpectedPremult)) {
+                    if ((userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha))) {
+                        // Opaque: force the alpha channel to 1
+                        copyPixelsOpaque(*this, renderWindowClipped, renderScale,
+                                         srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                                         tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    } else {
+                        // copy the whole raw src image
+                        copyPixels(*this, renderWindowClipped, renderScale,
+                                   srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                                   tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    }
+                } else if (userPremult == eImagePreMultiplied) {
+                    assert(pluginExpectedPremult == eImageUnPreMultiplied);
+                    if (pluginExpectedPremult == eImageUnPreMultiplied) {
+                        unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    } else {
+                        copyPixels(*this, renderWindowClipped, renderScale,
+                                   srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                                   tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    }
                 } else {
-                    // copy the whole raw src image
-                    copyPixels(*this, renderWindowClipped, renderScale,
-                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
-                }
-            } else if (userPremult == eImagePreMultiplied) {
-                assert(pluginExpectedPremult == eImageUnPreMultiplied);
-                if (pluginExpectedPremult == eImageUnPreMultiplied) {
-                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
-                } else {
-                    copyPixels(*this, renderWindowClipped, renderScale,
-                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
-                }
-            } else {
-                assert(userPremult == eImageUnPreMultiplied);
-                assert(pluginExpectedPremult == eImagePreMultiplied);
-                premultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
-            }
-        } else {
-            assert(!isOCIOIdentity);
-            //
-            // We should NEVER premult in a nonlinear colorspace if the output format doesn't support
-            // alpha. https://github.com/NatronGitHub/Natron/issues/582
-            // If the output format doesn't support Alpha, we just do the OCIO colorspace conversion on
-            // premultiplied values.
-            // It corresponds to merging over solid black.
-            // Note that linear OCIO colorspaces do not need the unpremult/premult operations at all,
-            // and could go in the if (isOCIOIdentity) branch above, if we were able to figure out that
-            // they are linear.
-            //
-            // The decision to unpremult/premult before/after OCIO conversion is done this way:
-            // alphaOK | userPremult | pluginExpectedPremult | doUnpremultBeforeOCIO | doPremultAfterOCIO
-            //   true  |      U      |            U          |           no          |         no
-            //   true  |      U      |            P          |           no          |        yes
-            //   true  |      P      |            U          |          yes          |         no
-            //   true  |      P      |            P          |          yes          |        yes
-            //  false  |      U      |            U          |           no          |         no
-            //  false  |      U      |            P          |           no          |         NO
-            //  false  |      P      |            U          |          yes          |         no
-            //  false  |      P      |            P          |           NO          |         NO (2)
-            // Note the last line: it says that when saving to a format that doesn't handle alpha (eg jpg),
-            // users prefer just considering the image as opaque and dropping alpha before color conversion.
-
-            // OCIO expects unpremultiplied input
-            if (noPremult || (userPremult == eImageUnPreMultiplied)) {
-                if ((userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha))) {
-                    // Opaque: force the alpha channel to 1
-                    copyPixelsOpaque(*this, renderWindowClipped, renderScale,
-                                     srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                                     tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
-                } else {
-                    // copy the whole raw src image
-                    copyPixels(*this, renderWindowClipped, renderScale,
-                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    assert(userPremult == eImageUnPreMultiplied);
+                    assert(pluginExpectedPremult == eImagePreMultiplied);
+                    premultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                 }
             } else {
-                assert(userPremult == eImagePreMultiplied);
+                assert(!isOCIOIdentity);
+                //
+                // We should NEVER premult in a nonlinear colorspace if the output format doesn't support
+                // alpha. https://github.com/NatronGitHub/Natron/issues/582
+                // If the output format doesn't support Alpha, we just do the OCIO colorspace conversion on
+                // premultiplied values.
+                // It corresponds to merging over solid black.
+                // Note that linear OCIO colorspaces do not need the unpremult/premult operations at all,
+                // and could go in the if (isOCIOIdentity) branch above, if we were able to figure out that
+                // they are linear.
+                //
+                // The decision to unpremult/premult before/after OCIO conversion is done this way:
+                // alphaOK | userPremult | pluginExpectedPremult | doUnpremultBeforeOCIO | doPremultAfterOCIO
+                //   true  |      U      |            U          |           no          |         no
+                //   true  |      U      |            P          |           no          |        yes
+                //   true  |      P      |            U          |          yes          |         no
+                //   true  |      P      |            P          |          yes          |        yes
+                //  false  |      U      |            U          |           no          |         no
+                //  false  |      U      |            P          |           no          |         NO
+                //  false  |      P      |            U          |          yes          |         no
+                //  false  |      P      |            P          |           NO          |         NO (2)
+                // Note the last line: it says that when saving to a format that doesn't handle alpha (eg jpg),
+                // users prefer just considering the image as opaque and dropping alpha before color conversion.
+
+                // OCIO expects unpremultiplied input
+                if (noPremult || (userPremult == eImageUnPreMultiplied)) {
+                    if ((userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha))) {
+                        // Opaque: force the alpha channel to 1
+                        copyPixelsOpaque(*this, renderWindowClipped, renderScale,
+                                         srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                                         tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    } else {
+                        // copy the whole raw src image
+                        copyPixels(*this, renderWindowClipped, renderScale,
+                                   srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                                   tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    }
+                } else {
+                    assert(userPremult == eImagePreMultiplied);
+                    // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
+                    if (alphaOK || pluginExpectedPremult == eImageUnPreMultiplied) {
+                        // unpremult before colorspace conversion, only if the plugin expects unpremult data (eg WritePNG)
+                        unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    } else {
+                        copyPixels(*this, renderWindowClipped, renderScale,
+                                   srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
+                                   tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    }
+                }
+    #ifdef OFX_IO_USING_OCIO
+                // do the color-space conversion
+                if ((srcMappedComponents == ePixelComponentRGB) || (srcMappedComponents == ePixelComponentRGBA)) {
+                    _ocio->apply(time, renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, tmpRowBytes);
+                }
+    #endif
+
+                // If needed, re-premult the image for the plugin to work correctly
+                // ... but only if output format supports alpha (alphaOK)
                 // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
-                if (alphaOK || pluginExpectedPremult == eImageUnPreMultiplied) {
-                    // unpremult before colorspace conversion, only if the plugin expects unpremult data (eg WritePNG)
-                    unPremultPixelData(renderWindowClipped, renderScale, srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                if (alphaOK && (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA)) {
+                    premultPixelData(renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                }
+            } // if (isOCIOIdentity) {
+
+            // copy to dstImg if necessary
+            if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
+                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+                if (!dstImg.get()) {
+                    setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
+                }
+                /*
+                 // the following will break on Resolve, Fusion, and maybe others
+                if ( (dstImg->getRenderScale().x != renderScale.x) ||
+                     ( dstImg->getRenderScale().y != renderScale.y) ||
+                     ( dstImg->getField() != fieldToRender) ) {
+                    setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
+                }
+                */
+
+                PixelComponentEnum dstMappedComponents;
+                const int dstMappedComponentsCount = getPixelsComponentsCount(dstImg->getPixelComponentsProperty(), &dstMappedComponents);
+
+                // copy the source image (the writer is a no-op)
+                if (srcMappedComponentsCount == dstMappedComponentsCount) {
+                    copyPixelData(renderWindow, renderScale, srcPixelData, *bounds, pixelComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, dstImg.get());
                 } else {
-                    copyPixels(*this, renderWindowClipped, renderScale,
-                               srcPixelData, *bounds, srcMappedComponents, srcMappedComponentsCount, bitDepth, srcRowBytes,
-                               tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
+                    void* dstPixelData;
+                    OfxRectI dstBounds;
+                    PixelComponentEnum dstPixelComponents;
+                    BitDepthEnum dstBitDetph;
+                    int dstRowBytes;
+
+                    getImageData(dstImg.get(), &dstPixelData, &dstBounds, &dstPixelComponents, &dstBitDetph, &dstRowBytes);
+                    // Be careful: src may have more components than dst (eg dst is RGB, src is RGBA).
+                    // In this case, only copy the first components (thus the std::min)
+
+                    assert((/*dstPixelComponentStartIndex=*/0 + /*desiredSrcNComps=*/(std::min)(srcMappedComponentsCount, dstMappedComponentsCount)) <= /*dstPixelComponentCount=*/dstMappedComponentsCount);
+                    interleavePixelBuffers(renderWindowClipped, renderScale,
+                                           srcPixelData,
+                                           *bounds,
+                                           pixelComponents,
+                                           srcMappedComponentsCount,
+                                           0, // srcNCompsStartIndex
+                                           (std::min)(srcMappedComponentsCount, dstMappedComponentsCount), // desiredSrcNComps
+                                           bitDepth,
+                                           srcRowBytes,
+                                           dstBounds,
+                                           dstPixelComponents,
+                                           0, // dstPixelComponentStartIndex
+                                           dstMappedComponentsCount,
+                                           dstRowBytes,
+                                           dstPixelData);
                 }
             }
-#ifdef OFX_IO_USING_OCIO
-            // do the color-space conversion
-            if ((srcMappedComponents == ePixelComponentRGB) || (srcMappedComponents == ePixelComponentRGBA)) {
-                _ocio->apply(time, renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, tmpRowBytes);
-            }
-#endif
-
-            // If needed, re-premult the image for the plugin to work correctly
-            // ... but only if output format supports alpha (alphaOK)
-            // see https://github.com/NatronGitHub/Natron/issues/582#issuecomment-792465844
-            if (alphaOK && (pluginExpectedPremult == eImagePreMultiplied) && (srcMappedComponents == ePixelComponentRGBA)) {
-                premultPixelData(renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
-            }
-        } // if (isOCIOIdentity) {
-
-        // copy to dstImg if necessary
-        if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
+        } else if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
+            // The render window does not intersect the source image: the temporary buffer is
+            // black (it was zeroed above), and so is the output image (the writer is a no-op).
             auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
-            if (!dstImg.get()) {
-                setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
-            /*
-             // the following will break on Resolve, Fusion, and maybe others
-            if ( (dstImg->getRenderScale().x != renderScale.x) ||
-                 ( dstImg->getRenderScale().y != renderScale.y) ||
-                 ( dstImg->getField() != fieldToRender) ) {
-                setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
-            */
-
-            PixelComponentEnum dstMappedComponents;
-            const int dstMappedComponentsCount = getPixelsComponentsCount(dstImg->getPixelComponentsProperty(), &dstMappedComponents);
-
-            // copy the source image (the writer is a no-op)
-            if (srcMappedComponentsCount == dstMappedComponentsCount) {
-                copyPixelData(renderWindow, renderScale, srcPixelData, *bounds, pixelComponents, srcMappedComponentsCount, bitDepth, srcRowBytes, dstImg.get());
-            } else {
-                void* dstPixelData;
-                OfxRectI dstBounds;
-                PixelComponentEnum dstPixelComponents;
-                BitDepthEnum dstBitDetph;
-                int dstRowBytes;
-
-                getImageData(dstImg.get(), &dstPixelData, &dstBounds, &dstPixelComponents, &dstBitDetph, &dstRowBytes);
-                // Be careful: src may have more components than dst (eg dst is RGB, src is RGBA).
-                // In this case, only copy the first components (thus the std::min)
-
-                assert((/*dstPixelComponentStartIndex=*/0 + /*desiredSrcNComps=*/(std::min)(srcMappedComponentsCount, dstMappedComponentsCount)) <= /*dstPixelComponentCount=*/dstMappedComponentsCount);
-                interleavePixelBuffers(renderWindowClipped, renderScale,
-                                       srcPixelData,
-                                       *bounds,
-                                       pixelComponents,
-                                       srcMappedComponentsCount,
-                                       0, // srcNCompsStartIndex
-                                       (std::min)(srcMappedComponentsCount, dstMappedComponentsCount), // desiredSrcNComps
-                                       bitDepth,
-                                       srcRowBytes,
-                                       dstBounds,
-                                       dstPixelComponents,
-                                       0, // dstPixelComponentStartIndex
-                                       dstMappedComponentsCount,
-                                       dstRowBytes,
-                                       dstPixelData);
+            if (dstImg.get()) {
+                fillBlack(*this, renderWindow, renderScale, dstImg.get());
             }
         }
+        // From now on, the data is the temporary buffer, which covers the render window,
+        // and it still has to go through packing below (even if nothing was copied).
         *bounds = renderWindow;
     } // if (renderWindowIsBounds && isOCIOIdentity && (noPremult || userPremult == pluginExpectedPremult))
 
