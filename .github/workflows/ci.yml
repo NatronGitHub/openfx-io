@@ -1,159 +1,293 @@
-name: Continous Integration tests
+name: Continuous Integration
 
+# Per push/PR: exactly three full builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64), C++17.
+# Extra variants (debug builds with C++20) only run nightly (if master changed) or on demand.
+#
+# Frugal CI (NatronGitHub runners are shared by all repos): one run per change. Pushes run CI only on
+# master, RB-* and tags; feature branches run through their pull request. Draft pull requests don't run
+# CI. Superseded runs are cancelled, except for tags. Artifacts only for tags and manual runs.
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: '17 3 * * *' # nightly, 03:17 UTC: extra variants (skipped if master didn't change)
   push:
+    branches: [master, 'RB-*']
+    tags: ['*']
     paths-ignore:
       - LICENSE
       - README.md
+      - 'Documentation/**'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - LICENSE
       - README.md
+      - 'Documentation/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # Debug builds (C++20) are an extra variant: only on schedule or on demand.
+  EXTRA_VARIANTS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+  # Bundles (testing bundles used by Natron's CI) are only uploaded for tags and manual runs.
+  UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  ubuntu_build:
-    name: Build Ubuntu 22.04
-    runs-on: ubuntu-22.04
+  # Skip the nightly run if master didn't change since the previous one (this job only runs on schedule)
+  changes:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4.1.1
+        with:
+          fetch-depth: 50
+      - id: check
+        run: |
+          if [ -n "$(git log --since='25 hours ago' --format=%h -1)" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No commits in the last 25 hours: skipping."
+          fi
+
+  linux:
+    name: Linux (Ubuntu 24.04)
+    needs: changes
+    # no CI for draft pull requests; the scheduled run only if master changed
+    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4.1.1
         with:
           submodules: recursive
-      - name: Checkout SeExpr
-        uses: actions/checkout@v4.1.1
-        with:
-          repository: wdas/SeExpr
-          ref: v1-2.11
-          path: SeExprSrc
       - name: Install Ubuntu system packages
         run: |
-          sudo apt update
-          sudo apt-get install cmake libopencolorio-dev libopenimageio-dev libglu1-mesa-dev libgl-dev libegl-dev liblcms2-dev \
-            libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev \
-            libswscale-dev patchelf
-      - name: Local SeExpr
+          sudo apt-get update
+          sudo apt-get install -y cmake bison flex libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
+            libgl-dev libegl-dev liblcms2-dev libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf
+      - name: Cache SeExpr
+        id: cache-seexpr
+        uses: actions/cache@v4
+        with:
+          path: SeExprBuild
+          key: seexpr-2.11-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
+      - name: Build SeExpr 2.11
+        if: steps.cache-seexpr.outputs.cache-hit != 'true'
         run: |
+          git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
           cd SeExprSrc
           sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          cmake . -B build -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11
-          cd ..
-          make -j2 -C SeExprSrc/build
-          make install -j2 -C SeExprSrc/build
+          cmake . -B build -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          make -j4 -C build
+          make install -C build
       - name: Build (release)
         run: |
-          make -j2 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
+          make -j4 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
           mkdir -p Bundle
           mv IO/Linux-64-release/IO.ofx.bundle Bundle
-      - name: Build (debug)
-        run: |
-          make -j2 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4.3.1
-        with:
-          name: openfx-io-build-ubuntu_22-release
-          path: Bundle
-
+      - name: Build (debug, C++20)
+        if: env.EXTRA_VARIANTS == 'true'
+        run: make -j4 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="g++ -std=c++20"
+      - name: Tests
+        run: make -C tests test
       - name: Generate testing bundle
         run: |
-          # Generate a self contained bundle that can be used for Natron automated testing.
+          # Self-contained bundle used for Natron's automated testing.
           cp -r Bundle TestingBundle
-          MANIFEST_NAME=IO.manifest
-          BINARY_NAME=IO.ofx
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
-          SEARCH_PATHS="SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu"
-          python3 .github/workflows/find_and_copy_deps.py --manifest=${MANIFEST_NAME} ${BINARY_PATH}/${BINARY_NAME} ${BINARY_PATH} ${SEARCH_PATHS}
-
-          patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/${BINARY_NAME}
-
-          # Generate simple plugin tester to make sure we can load the test binary.
-          # Replace RTLD_LAZY with RTLD_NOW so that missing symbols cause plugin loading to fail.
+          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} \
+            SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
+          patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
+          # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
           g++ -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
-
-          ./verify_plugin_loads ${BINARY_PATH}/${BINARY_NAME}
-
+          ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
       - name: Upload testing artifacts
+        if: env.UPLOAD_BUNDLES == 'true'
         uses: actions/upload-artifact@v4.3.1
         with:
-          name: openfx-io-build-ubuntu_22-testing
+          name: openfx-io-build-ubuntu_24-testing
           path: TestingBundle
 
-  windows_build:
-    name: Build Windows Latest
+  macos:
+    name: macOS 15 (Xcode clang, MacPorts)
+    needs: changes
+    # no CI for draft pull requests; the scheduled run only if master changed
+    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    runs-on: macos-15
+    timeout-minutes: 150
+    env:
+      MACPORTS_VERSION: 2.12.7
+      SEEXPR_HOME: /opt/local/libexec/seexpr211
+      MACPORTS_PKG_SHA256: 87b2e87ed7adc4aca947b42eb7ff991614cc0edfccb486237f2bbc75f28aae63
+      # Compile with the system (Xcode) clang, libraries from MacPorts only.
+      CXX: clang++ -std=c++17
+      # MacPorts' OpenImageIO links the ffmpeg8 port: link the plugins (FFMPEG_PKG_CONFIG_PATH, full paths, see
+      # Makefile.master) and the tests (PKG_CONFIG_PATH) against the same FFmpeg.
+      FFMPEG_PKG_CONFIG_PATH: /opt/local/libexec/ffmpeg8/lib/pkgconfig
+      PKG_CONFIG_PATH: /opt/local/libexec/ffmpeg8/lib/pkgconfig
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4.1.1
+        with:
+          submodules: recursive
+      - name: Install MacPorts
+        run: |
+          curl -fsSL -o MacPorts.pkg "https://github.com/macports/macports-base/releases/download/v${MACPORTS_VERSION}/MacPorts-${MACPORTS_VERSION}-15-Sequoia.pkg"
+          echo "${MACPORTS_PKG_SHA256}  MacPorts.pkg" | shasum -a 256 -c -
+          sudo installer -pkg MacPorts.pkg -target /
+      - name: Install MacPorts packages
+        run: |
+          # Use only MacPorts tools and libraries: take Homebrew out of PATH.
+          export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+          sudo port -N selfupdate
+          sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng
+          port installed
+      - name: Prepare the SeExpr prefix
+        # In MacPorts' prefix, so that osxDeploy.sh (which bundles /opt/local libraries) bundles libSeExpr
+        run: sudo mkdir -p "$SEEXPR_HOME" && sudo chown "$USER" "$SEEXPR_HOME"
+      - name: Cache SeExpr
+        id: cache-seexpr
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SEEXPR_HOME }}
+          key: seexpr-2.11-natron-patches-macos-15-arm64-${{ hashFiles('.github/workflows/ci.yml') }}
+      - name: Build SeExpr 2.11
+        if: steps.cache-seexpr.outputs.cache-hit != 'true'
+        run: |
+          export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+          git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
+          cd SeExprSrc
+          # Apply the patches of Natron's MacPorts seexpr211 port, which make SeExpr 2.11 build on arm64:
+          # -msse4.1 and the SSE intrinsics are gated behind USE_SSE41 / __SSE4_1__.
+          NATRON_PORT=https://raw.githubusercontent.com/NatronGitHub/Natron/84a303b3d7b14f92ab445e71a8c4f24eb9285478/tools/MacPorts/graphics/seexpr211/files
+          for p in 0001-seexpr-2.11-fix-cxxflags.patch 0002-seexpr-2.11-fix-inline-error.patch 0004-seexpr-2.11-c++98.patch 0006-seexpr-2.11-cstylecast.patch; do
+            curl -fsSL "${NATRON_PORT}/${p}" | patch -p1
+          done
+          sed -i '' -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
+          # Absolute install name (like MacPorts' libraries), so that osxDeploy.sh finds and bundles libSeExpr
+          cmake . -B build -DCMAKE_INSTALL_PREFIX=$SEEXPR_HOME -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DUSE_SSE41=FALSE \
+            -DCMAKE_INSTALL_NAME_DIR=$SEEXPR_HOME/lib \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBISON_EXECUTABLE=/opt/local/bin/bison -DFLEX_EXECUTABLE=/opt/local/bin/flex
+          make -j3 -C build
+          make install -C build
+      - name: Build (release)
+        run: |
+          export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+          make -j3 CONFIG=release SEEXPR_HOME=$SEEXPR_HOME CXX="$CXX" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
+          otool -L IO/Darwin-64-release/IO.ofx.bundle/Contents/MacOS/IO.ofx | grep -v /System/Library
+          mkdir -p Bundle
+          mv IO/Darwin-64-release/IO.ofx.bundle Bundle
+      - name: Build (debug, C++20)
+        if: env.EXTRA_VARIANTS == 'true'
+        run: |
+          export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+          make -j3 CONFIG=debug SEEXPR_HOME=$SEEXPR_HOME CXX="clang++ -std=c++20" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
+      - name: Tests
+        run: |
+          # MacPorts' ffmpeg8 installs suffixed tools (ffmpeg8, ffprobe8): the test scripts call ffmpeg/ffprobe.
+          mkdir -p "$RUNNER_TEMP/ffbin"
+          ln -sf /opt/local/bin/ffmpeg8 "$RUNNER_TEMP/ffbin/ffmpeg"
+          ln -sf /opt/local/bin/ffprobe8 "$RUNNER_TEMP/ffbin/ffprobe"
+          export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+          make -C tests test CXX=clang++ WITH_LIBRAW=1
+      - name: Verify the plugin loads
+        run: |
+          export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+          # The release bundle is self-contained (osxDeploy.sh copies its libraries into Contents/Libraries):
+          # load it without any DYLD_* path, so that a library missing from the bundle makes the check fail.
+          unset DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
+          # Replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
+          sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
+          clang++ -std=c++17 -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
+          ./verify_plugin_loads Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx
+      - name: Upload artifacts
+        if: env.UPLOAD_BUNDLES == 'true'
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: openfx-io-build-macos_15-release
+          path: Bundle
+
+  windows:
+    name: Windows (MSYS2 UCRT64)
+    needs: changes
+    # no CI for draft pull requests; the scheduled run only if master changed
+    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: windows-latest
+    timeout-minutes: 120
     defaults:
       run:
         shell: msys2 {0}
-
-    env:
-      EXTRA_PKG_CONFIG_PATHS: '/mingw64/ffmpeg-gpl2/lib/pkgconfig/:/mingw64/libraw-gpl2/lib/pkgconfig/'
-
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4.1.1
         with:
           submodules: recursive
-
-      - name: Install Windows system packages
+      - name: Install MSYS2 UCRT64 packages
         uses: msys2/setup-msys2@v2
         with:
-          msystem: mingw64
+          msystem: UCRT64
           update: true
-          install: git base-devel mingw-w64-x86_64-wget unzip mingw-w64-x86_64-cc mingw-w64-x86_64-python3 mingw-w64-x86_64-pkg-config
-
-      - name: Install Natron pacman repository
-        run: |
-          mkdir ${GITHUB_WORKSPACE}/natron_pacman_repo
-          cd ${GITHUB_WORKSPACE}/natron_pacman_repo
-          wget https://github.com/NatronGitHub/Natron/releases/download/windows-mingw-package-repo/natron_package_repo.zip
-          unzip natron_package_repo.zip
-          NATRON_REPO_PATH=`cygpath -u $GITHUB_WORKSPACE`
-          echo -e "#NATRON_REPO_START\n[natron]\nSigLevel = Optional TrustAll\nServer = file://${NATRON_REPO_PATH}/natron_pacman_repo/\n#NATRON_REPO_END" >> /etc/pacman.conf
-          pacman -Syl natron
-          # Install extra Natron packages.
-          pacman -S --needed --noconfirm --overwrite "*" mingw-w64-x86_64-natron_openimageio mingw-w64-x86_64-natron_seexpr-git \
-            mingw-w64-x86_64-natron_poppler mingw-w64-x86_64-natron_imagemagick mingw-w64-x86_64-natron_ffmpeg-gpl2
-
-
+          cache: true
+          install: >-
+            git base-devel unzip
+            mingw-w64-ucrt-x86_64-cc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-openimageio mingw-w64-ucrt-x86_64-opencolorio mingw-w64-ucrt-x86_64-openexr
+            mingw-w64-ucrt-x86_64-libraw mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-seexpr
+            mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-fmt
       - name: Build (release)
         run: |
-          PKG_CONFIG_PATH=${EXTRA_PKG_CONFIG_PATHS}:${PKG_CONFIG_PATH}
-          make -j2 CONFIG=release
+          set -eo pipefail
+          make -j4 CONFIG=release SEEXPR_HOME=/ucrt64
           mkdir -p Bundle
-          mv `find IO -name "MINGW64_NT*-release"`/IO.ofx.bundle Bundle
-
-      - name: Build (debug)
+          mv `find IO -maxdepth 1 -name "*_NT*-release"`/IO.ofx.bundle Bundle
+      - name: Build (debug, C++20)
+        if: env.EXTRA_VARIANTS == 'true'
         run: |
-          PKG_CONFIG_PATH=${EXTRA_PKG_CONFIG_PATHS}:${PKG_CONFIG_PATH}
-          make -j2 CONFIG=debug
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4.3.1
-        with:
-          name: openfx-io-build-windows_latest-release
-          path: Bundle
-
+          set -eo pipefail
+          make -j4 CONFIG=debug SEEXPR_HOME=/ucrt64 CXX="g++ -std=c++20"
+      - name: Tests
+        run: |
+          set -eo pipefail
+          make -C tests test
       - name: Generate testing bundle
         run: |
-          # Generate a self contained bundle that can be used for Natron automated testing.
-          set -x
+          set -eo pipefail
+          # Self-contained bundle used for Natron's automated testing.
           cp -r Bundle TestingBundle
-          MANIFEST_NAME=IO.manifest
-          BINARY_NAME=IO.ofx
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Win64
-          SEARCH_PATHS="/mingw64/ffmpeg-gpl2/bin /mingw64/libraw-gpl2/bin /mingw64/bin"
-          python3 .github/workflows/find_and_copy_deps.py --manifest=${MANIFEST_NAME} ${BINARY_PATH}/${BINARY_NAME} ${BINARY_PATH} ${SEARCH_PATHS}
-
-          "/c/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/mt.exe" -manifest ${MANIFEST_NAME} -outputresource:"${BINARY_PATH}/${BINARY_NAME};2"
-
-          # Generate simple plugin tester to make sure we can load the test binary.
-          g++ -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp openfx/HostSupport/src/ofxhBinary.cpp openfx/HostSupport/src/ofxhUtilities.cpp -I openfx/HostSupport/include/ -I openfx/include/
-
-          ./verify_plugin_loads ${BINARY_PATH}/${BINARY_NAME}
-
+          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} /ucrt64/bin
+          # Use the newest installed Windows SDK's mt.exe (the SDK version on the runner changes over time).
+          MT_EXE=`ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"10.*/x64/mt.exe | sort -V | tail -1`
+          "${MT_EXE}" -manifest IO.manifest -outputresource:"${BINARY_PATH}/IO.ofx;2"
+          # Load check, with only the bundle and System32 on PATH, so that a DLL missing from the bundle makes it fail
+          # (the checker itself is linked statically, so it needs no MSYS2 DLL).
+          g++ -static -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp openfx/HostSupport/src/ofxhBinary.cpp openfx/HostSupport/src/ofxhUtilities.cpp -I openfx/HostSupport/include/ -I openfx/include/
+          if ! ( cd ${BINARY_PATH} && PATH=".:/c/Windows/System32" ../../../../verify_plugin_loads ./IO.ofx ); then
+            # Diagnostics: load each bundled DLL on its own to find unresolved imports (ERROR_PROC_NOT_FOUND etc.)
+            g++ -static -o load_each_dll .github/workflows/load_each_dll.cpp
+            ( cd ${BINARY_PATH} && PATH=".:/c/Windows/System32" ../../../../load_each_dll *.dll ./IO.ofx )
+            exit 1
+          fi
       - name: Upload testing artifacts
+        if: env.UPLOAD_BUNDLES == 'true'
         uses: actions/upload-artifact@v4.3.1
         with:
-          name: openfx-io-build-windows_latest-testing
+          name: openfx-io-build-windows_ucrt64-testing
           path: TestingBundle

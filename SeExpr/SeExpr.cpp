@@ -1912,9 +1912,10 @@ SeExprPlugin::SeExprPlugin(OfxImageEffectHandle handle,
     assert(_format && _btmLeft && _size && _interactive);
 
     // update visibility
-    InstanceChangedArgs args = {
-        eChangeUserEdit, 0, { 1, 1 }
-    };
+    InstanceChangedArgs args = {}; // value-initialize: the struct may gain members (e.g. isThumbnailRender)
+    args.reason = eChangeUserEdit;
+    args.time = 0;
+    args.renderScale.x = args.renderScale.y = 1;
     changedParam(args, kParamDoubleParamNumber);
     changedParam(args, kParamDouble2DParamNumber);
     changedParam(args, kParamColorNumber);
