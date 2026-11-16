@@ -691,6 +691,80 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
 // is used because it writes all 4 channels (the JPEG writer only reads 3 of them).
 // Expected: a black W x H image (alpha is opaque, since the RGB source is opaque), and a
 // black output image over the render window.
+// Regression test for issue #90: the R/G/B/A checkboxes select a subset of the source channels.
+// After fetchPlaneConvertAndCopy() the buffer always starts at component 0, but render()
+// passed packingMapping[0] as the start index, and a contiguous selection with as many
+// channels as the source (e.g. G,B,A of an RGB source) was not packed at all, so the writer
+// read past the end of each pixel. checked[] are the R/G/B/A checkbox values, expected[] the
+// expected 8-bit values of the written channels.
+int testWriteOIIOChannelSelection(const std::string& outFile, int W, int H, const char* srcComps,
+                                  const float srcVals[4], const bool checked[4],
+                                  int expectedNChannels, const int expected[4])
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
+    if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
+    std::remove(outFile.c_str());
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    const char* const boxes[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+    for (int k = 0; k < 4; ++k) {
+        auto it = ctx.params.find(boxes[k]);
+        if (it != ctx.params.end()) {
+            pSetInt(PH(it->second.props), kOfxParamPropSecret, 0, 0);
+            it->second.hasOv = true;
+            it->second.ov.i = { checked[k] ? 1 : 0 };
+        }
+    }
+
+    Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+    if (!src) { std::printf("  FAIL: no Source clip\n"); return 1; }
+    src->connected = true;
+    setupClipImage(src, W, H, srcComps, kOfxBitDepthFloat, true);
+    const int nc = (!std::strcmp(srcComps, kOfxImageComponentRGBA)) ? 4 : (!std::strcmp(srcComps, kOfxImageComponentAlpha) ? 1 : 3);
+    float* sp = (float*)src->buffer.data();
+    for (size_t i = 0; i < (size_t)W * H; ++i) for (int c = 0; c < nc; ++c) sp[i * nc + c] = srcVals[c];
+    pSetString(PH(&src->props), kOfxImageEffectPropComponents, 0, srcComps);
+    pSetString(PH(&src->props), kOfxImageClipPropUnmappedComponents, 0, srcComps);
+    if (ctx.clips.count(kOfxImageEffectOutputClipName)) {
+        ctx.clips[kOfxImageEffectOutputClipName]->connected = false;
+    }
+
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+
+    PropSet a = makeRenderInArgs(1., W, H);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
+
+    auto in = OIIO::ImageInput::open(outFile);
+    if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", outFile.c_str(), OIIO::geterror().c_str()); return 1; }
+    const OIIO::ImageSpec& spec = in->spec();
+    std::vector<unsigned char> pix((size_t)spec.width * spec.height * spec.nchannels);
+    bool rd = in->read_image(0, 0, 0, spec.nchannels, OIIO::TypeDesc::UINT8, pix.data());
+    in->close();
+    int fail = (!rd || spec.width != W || spec.height != H || spec.nchannels != expectedNChannels) ? 1 : 0;
+    int maxErr = 0;
+    for (size_t i = 0; !fail && i < pix.size(); ++i) {
+        maxErr = std::max(maxErr, std::abs((int)pix[i] - expected[i % spec.nchannels]));
+    }
+    std::printf("  wrote %s: %dx%d, %d channels, first pixel", outFile.c_str(), spec.width, spec.height, spec.nchannels);
+    for (int c = 0; c < spec.nchannels && !pix.empty(); ++c) std::printf(" %d", (int)pix[c]);
+    std::printf(", max error %d\n", maxErr);
+    if (fail || maxErr > 1) { std::printf("  FAIL (expected %d channels:", expectedNChannels); for (int c = 0; c < expectedNChannels; ++c) std::printf(" %d", expected[c]); std::printf(")\n"); return 1; }
+    std::printf("  PASS\n");
+    return 0;
+}
+
 int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
@@ -786,6 +860,23 @@ main(int argc, char** argv)
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/true);
     std::printf("==== WriteOIIO, no input image although its RoD overlaps: must fail, not write black ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/true);
+
+    {
+        // #90: G,B,A of an RGB source: the output is G, B, and the missing alpha, which is opaque
+        const float v[4] = { 0.2f, 0.5f, 0.8f, 0.f };
+        const bool chk[4] = { false, true, true, true };
+        const int exp[4] = { 128, 204, 255, 0 };
+        std::printf("==== WriteOIIO PNG, RGB source, G/B/A checked (issue #90) ====\n");
+        failures += testWriteOIIOChannelSelection(outFile + ".i90a.png", 32, 16, kOfxImageComponentRGB, v, chk, 3, exp);
+    }
+    {
+        // #90: an Alpha-only source with A checked: a 1-channel image of the alpha
+        const float v[4] = { 0.7f, 0.f, 0.f, 0.f };
+        const bool chk[4] = { false, false, false, true };
+        const int exp[4] = { 179, 0, 0, 0 };
+        std::printf("==== WriteOIIO PNG, Alpha source, A checked (issue #90) ====\n");
+        failures += testWriteOIIOChannelSelection(outFile + ".i90b.png", 32, 16, kOfxImageComponentAlpha, v, chk, 1, exp);
+    }
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");

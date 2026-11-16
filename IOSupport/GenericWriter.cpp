@@ -715,7 +715,13 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         *bounds = renderWindow;
     } // if (renderWindowIsBounds && isOCIOIdentity && (noPremult || userPremult == pluginExpectedPremult))
 
-    if (doAnyPacking && (!packingContiguous || ((int)packingMapping.size() != srcMappedComponentsCount))) {
+    // Pack unless the selected channels are exactly the source channels, in order: a contiguous selection
+    // that does not start at the first channel (e.g. G,B,A of an RGB source) must be packed too (#90).
+    // A single-channel source is the exception: packPixelBuffer() takes its only channel whatever the
+    // selected checkbox, so the selection is the source itself.
+    const bool packingIsIdentity = doAnyPacking && packingContiguous && ((int)packingMapping.size() == srcMappedComponentsCount) &&
+                                   ((packingMapping[0] == 0) || (srcMappedComponentsCount == 1));
+    if (doAnyPacking && !packingIsIdentity) {
         int pixelBytes = packingMapping.size() * getComponentBytes(bitDepth);
         int tmpRowBytes = (renderWindow.x2 - renderWindow.x1) * pixelBytes;
         size_t memSize = (size_t)(renderWindow.y2 - renderWindow.y1) * (size_t)tmpRowBytes;
@@ -1014,7 +1020,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
         fetchPlaneConvertAndCopy(args.planes.front(), /*failIfNoSrcImg=*/false, viewIndex, args.renderView, time, args.renderWindow, args.renderScale, args.fieldToRender, pluginExpectedPremult, userPremult, isOCIOIdentity, doAnyPacking, packingContiguous, packingMapping, alphaOK, &dataHolder, &data.bounds, &tmpMem, &srcImg, &data.srcPixelData, &data.rowBytes, &data.pixelComponents, &data.pixelComponentsCount);
 
         int dstNComps = doAnyPacking ? packingMapping.size() : data.pixelComponentsCount;
-        int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
+        int dstNCompsStartIndex = 0; // fetchPlaneConvertAndCopy() packed the selected channels at the start of each pixel (#90)
 
         if (!data.srcPixelData) {
             // The input image could not be fetched, e.g. because the render window does not
@@ -1161,7 +1167,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 assert(interleaveIndex < nChannels);
 
                 int dstNComps = doAnyPacking ? packingMapping.size() : it->pixelComponentsCount;
-                int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
+                int dstNCompsStartIndex = 0; // fetchPlaneConvertAndCopy() packed the selected channels at the start of each pixel (#90)
                 OfxRectI intersection;
                 if (Coords::rectIntersection(args.renderWindow, it->bounds, &intersection)) {
                     assert((/*dstPixelComponentStartIndex=*/interleaveIndex + /*desiredSrcNComps=*/dstNComps) <= /*dstPixelComponentCount=*/nChannels);
@@ -1257,7 +1263,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
 
                     OfxRectI intersection;
                     int dstNComps = doAnyPacking ? packingMapping.size() : it->pixelComponentsCount;
-                    int dstNCompsStartIndex = doAnyPacking ? packingMapping[0] : 0;
+                    int dstNCompsStartIndex = 0; // fetchPlaneConvertAndCopy() packed the selected channels at the start of each pixel (#90)
                     if (Coords::rectIntersection(args.renderWindow, it->bounds, &intersection)) {
                         assert((/*dstPixelComponentStartIndex=*/interleaveIndex + /*desiredSrcNComps=*/dstNComps) <= /*dstPixelComponentCount=*/nChannels);
                         interleavePixelBuffers(intersection,
@@ -1412,7 +1418,9 @@ public:
                             if (srcNComps == 1) {
                                 dstPix[c] = *srcPix;
                             } else {
-                                dstPix[c] = c != 3 ? 0 : maxValue;
+                                // a channel that the source doesn't have: a missing alpha (srcCol 3) is opaque,
+                                // other missing channels are black (#90)
+                                dstPix[c] = srcCol != 3 ? 0 : maxValue;
                             }
                         }
                     }
