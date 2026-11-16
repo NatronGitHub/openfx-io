@@ -1135,7 +1135,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #if OIIO_VERSION < 20602
         // OpenImageIO < 2.6.2 reads out of bounds when writing decreasingY EXR files
         // (fixed by https://github.com/AcademySoftwareFoundation/OpenImageIO/pull/4215)
-        if (strcmp(data->output->format_name(), "openexr") == 0) {
+        if (isEXR) {
             setPersistentMessage(Message::eMessageError, "", "Line Order decreasingY requires OpenImageIO 2.6.2 or later.");
             throwSuiteStatusException(kOfxStatFailed);
 
