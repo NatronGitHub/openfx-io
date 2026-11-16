@@ -40,8 +40,10 @@
    texture_paint - Similar to matte_paint but for painting textures for 3D objects (see the description of texture painting in SPI’s pipeline)
  */
 
+#include <algorithm> // std::swap (C++03)
 #include <cstdlib>
 #include <cstring>
+#include <utility> // std::swap (C++11)
 #ifdef DEBUG
 #include <cstdio>
 #define DBG(x) x
@@ -252,6 +254,7 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
     , _ocioConfigFile(NULL)
     , _inputSpace(NULL)
     , _outputSpace(NULL)
+    , _inverse(NULL)
 #ifdef OFX_OCIO_CHOICE
     , _choiceIsOk(true)
     , _choiceFileName()
@@ -276,6 +279,9 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
     }
     if (_parent->paramExists(kOCIOParamOutputSpace)) {
         _outputSpace = _parent->fetchStringParam(kOCIOParamOutputSpace);
+    }
+    if (_parent->paramExists(kOCIOParamInverse)) {
+        _inverse = _parent->fetchBooleanParam(kOCIOParamInverse);
     }
 #ifdef OFX_OCIO_CHOICE
     _ocioConfigFile->getDefault(_choiceFileName);
@@ -592,9 +598,8 @@ GenericOCIO::isIdentity(double time) const
         return false;
     }
     string inputSpace;
-    getInputColorspaceAtTime(time, inputSpace);
     string outputSpace;
-    getOutputColorspaceAtTime(time, outputSpace);
+    getProcessingColorspacesAtTime(time, inputSpace, outputSpace);
     if (inputSpace == outputSpace) {
         return true;
     }
@@ -833,9 +838,8 @@ GenericOCIO::getOrCreateProcessor(double time)
         return OCIO::ConstProcessorRcPtr();
     }
     string inputSpace;
-    getInputColorspaceAtTime(time, inputSpace);
     string outputSpace;
-    getOutputColorspaceAtTime(time, outputSpace);
+    getProcessingColorspacesAtTime(time, inputSpace, outputSpace);
     OCIO::ConstContextRcPtr context = getLocalContext(time); //_config->getCurrentContext();
     setValues(context, inputSpace, outputSpace);
 
@@ -1291,6 +1295,82 @@ GenericOCIO::setOutputColorspace(const char* name)
 #ifdef OFX_IO_USING_OCIO
     assert(_outputSpace);
     _outputSpace->setValue(name);
+#endif
+}
+
+void
+GenericOCIO::getProcessingColorspacesAtTime(double time,
+                                            string& inputSpace,
+                                            string& outputSpace) const
+{
+    getInputColorspaceAtTime(time, inputSpace);
+    getOutputColorspaceAtTime(time, outputSpace);
+#ifdef OFX_IO_USING_OCIO
+    if (_inverse && _inverse->getValueAtTime(time)) {
+        std::swap(inputSpace, outputSpace);
+    }
+#endif
+}
+
+void
+GenericOCIO::swapColorspaces(double time)
+{
+#ifdef OFX_IO_USING_OCIO
+    if (!_inputSpace || !_outputSpace) {
+        return;
+    }
+    string inputSpace;
+    string outputSpace;
+    getInputColorspaceAtTime(time, inputSpace);
+    getOutputColorspaceAtTime(time, outputSpace);
+    // one undoable change (and no render of the intermediate state where both colorspaces are equal)
+    _parent->beginEditBlock("Swap Colorspaces");
+    // if a param is animated, set a key at the current time rather than its non-animated value
+    if (_inputSpace->getNumKeys() > 0) {
+        _inputSpace->setValueAtTime(time, outputSpace);
+    } else {
+        _inputSpace->setValue(outputSpace);
+    }
+    if (_outputSpace->getNumKeys() > 0) {
+        _outputSpace->setValueAtTime(time, inputSpace);
+    } else {
+        _outputSpace->setValue(inputSpace);
+    }
+    // update the choice menus from the new string values
+    refreshInputAndOutputState(time);
+    _parent->endEditBlock();
+#else
+    (void)time;
+#endif
+}
+
+void
+GenericOCIO::describeInContextInverseAndSwap(ImageEffectDescriptor& desc,
+                                             ContextEnum /*context*/,
+                                             PageParamDescriptor* page)
+{
+#ifdef OFX_IO_USING_OCIO
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kOCIOParamInverse);
+        param->setLabel(kOCIOParamInverseLabel);
+        param->setHint(kOCIOParamInverseHint);
+        param->setDefault(false);
+        param->setLayoutHint(eLayoutHintNoNewLine, 1);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        PushButtonParamDescriptor* param = desc.definePushButtonParam(kOCIOParamSwapColorspaces);
+        param->setLabel(kOCIOParamSwapColorspacesLabel);
+        param->setHint(kOCIOParamSwapColorspacesHint);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+#else
+    (void)desc;
+    (void)page;
 #endif
 }
 
