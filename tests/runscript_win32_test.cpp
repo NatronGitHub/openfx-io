@@ -229,6 +229,15 @@ markerExists()
     return GetFileAttributesW(gMarker.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
+// clear the error message before each run, so that a failure message does not show a previous run's error
+static string&
+cleared(string& s)
+{
+    s.clear();
+
+    return s;
+}
+
 static int gAbortPolls = 0;
 
 static bool
@@ -299,7 +308,7 @@ main()
         string error;
         vector<string> errLines;
         unsigned long code = 0;
-        bool ok = buildCommandLine(self, L"", wargs, &app, &cmd, &error) && runProcess(app, cmd, &errLines, &code, &error) == eRunOK;
+        bool ok = buildCommandLine(self, L"", wargs, &app, &cmd, &cleared(error)) && runProcess(app, cmd, &errLines, &code, &cleared(error)) == eRunOK;
         CHECK(ok, ("started" + (ok ? string() : ": " + error)).c_str());
         vector<string> got = readChildArgs(outFile);
         CHECK(got == args, ("arguments: " + show(got)).c_str());
@@ -315,7 +324,7 @@ main()
         string error;
         vector<string> errLines;
         unsigned long code = 0;
-        RunResult r = runScript("@echo off\n\"%RUNSCRIPT_TEST_EXE%\" %*\nexit /b %ERRORLEVEL%\n", args, &errLines, &code, &error);
+        RunResult r = runScript("@echo off\n\"%RUNSCRIPT_TEST_EXE%\" %*\nexit /b %ERRORLEVEL%\n", args, &errLines, &code, &cleared(error));
         CHECK(r == eRunOK, ("started" + (r == eRunOK ? string() : ": " + error)).c_str());
         vector<string> got = readChildArgs(outFile);
         CHECK(got == args, ("arguments: " + show(got)).c_str());
@@ -324,7 +333,7 @@ main()
         CHECK(errLines.size() == 2 && errLines[0] == "child stderr line 1" && errLines[1] == "child stderr line 2",
               ("stderr: " + show(errLines)).c_str());
         vector<string> bad(1, "line\nbreak");
-        CHECK(runScript("@echo off\n", bad, &errLines, &code, &error) == eRunFailed, "a line break in a batch argument is an error");
+        CHECK(runScript("@echo off\n", bad, &errLines, &code, &cleared(error)) == eRunFailed, "a line break in a batch argument is an error");
     }
 
     // 4. a batch script using the documented "%~1" form
@@ -345,7 +354,7 @@ main()
         unsigned long code = 0;
         RunResult r = runScript("@echo off\n\"%RUNSCRIPT_TEST_EXE%\" \"%~1\" \"%~2\" \"%~3\" \"%~4\" \"%~5\" \"%~6\" \"%~7\" \"%~8\" \"%~9\"\n"
                                 "exit /b %ERRORLEVEL%\n",
-                                args, &errLines, &code, &error);
+                                args, &errLines, &code, &cleared(error));
         CHECK(r == eRunOK, ("started" + (r == eRunOK ? string() : ": " + error)).c_str());
         vector<string> got = readChildArgs(outFile);
         CHECK(got == args, ("arguments: " + show(got)).c_str());
@@ -360,15 +369,15 @@ main()
         string error;
         vector<string> errLines;
         unsigned long code = 0;
-        RunResult r = runScript("#!\"" + wideToUtf8(self) + "\" --opt\nprint('hello')\n", args, &errLines, &code, &error);
+        RunResult r = runScript("#!\"" + wideToUtf8(self) + "\" --opt\nprint('hello')\n", args, &errLines, &code, &cleared(error));
         CHECK(r == eRunOK, ("started" + (r == eRunOK ? string() : ": " + error)).c_str());
         vector<string> got = readChildArgs(outFile);
         CHECK(got.size() == args.size() + 2 && got[0] == "--opt" && got[1].size() > 4 && got[1].compare(got[1].size() - 4, 4, ".txt") == 0
                   && vector<string>(got.begin() + 2, got.end()) == args,
               ("arguments: " + show(got)).c_str());
         CHECK(code == 3, "exit code 3");
-        CHECK(runScript("#!\"C:\\does\\not\\exist.exe\"\n", args, &errLines, &code, &error) == eRunFailed, ("missing interpreter is an error: " + error).c_str());
-        CHECK(runScript("#!sub\\prog.exe\n", args, &errLines, &code, &error) == eRunFailed, ("relative interpreter is an error: " + error).c_str());
+        CHECK(runScript("#!\"C:\\does\\not\\exist.exe\"\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("missing interpreter is an error: " + error).c_str());
+        CHECK(runScript("#!sub\\prog.exe\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("relative interpreter is an error: " + error).c_str());
     }
 
     // 6. interpreter search: in %PATH% only, not in the current directory
@@ -397,19 +406,19 @@ main()
         string error;
         vector<string> errLines;
         unsigned long code = 0;
-        RunResult r = runScript("#!rs_onpath\n", args, &errLines, &code, &error);
+        RunResult r = runScript("#!rs_onpath\n", args, &errLines, &code, &cleared(error));
         vector<string> got = readChildArgs(outFile);
         CHECK(r == eRunOK && got.size() == 2 && got[1] == "arg", ("a program in the PATH is found: " + error).c_str());
-        r = runScript("#!/usr/bin/env rs_onpath\n", args, &errLines, &code, &error);
+        r = runScript("#!/usr/bin/env rs_onpath\n", args, &errLines, &code, &cleared(error));
         got = readChildArgs(outFile);
         CHECK(r == eRunOK && got.size() == 2 && got[1] == "arg", ("#!/usr/bin/env name: " + error).c_str());
-        r = runScript("#!rs_planted\n", args, &errLines, &code, &error);
+        r = runScript("#!rs_planted\n", args, &errLines, &code, &cleared(error));
         CHECK(r == eRunFailed && readChildArgs(outFile).empty(), ("a program in the current directory is not run: " + error).c_str());
 
         vector<string> cargs;
         cargs.push_back(kCanaryMarker);
         cargs.push_back(kCanaryBackslash);
-        r = runScript("#!\"" + wideToUtf8(dirPath) + "\\fake.bat.\"\n", cargs, &errLines, &code, &error);
+        r = runScript("#!\"" + wideToUtf8(dirPath) + "\\fake.bat.\"\n", cargs, &errLines, &code, &cleared(error));
         got = readChildArgs(outFile);
         CHECK(r == eRunOK && got.size() == 3 && got[1] == kCanaryMarker && got[2] == kCanaryBackslash, ("\"x.bat.\" is run as a batch file: " + show(got) + error).c_str());
         CHECK(code == 3 && !markerExists(), "no command injection through \"x.bat.\"");
@@ -431,7 +440,7 @@ main()
         vector<string> errLines;
         unsigned long code = 0;
         DWORD t0 = GetTickCount();
-        RunResult r = runScript("@echo off\nstart \"\" /b ping -n 8 127.0.0.1 >NUL\n>&2 echo done\n", args, &errLines, &code, &error);
+        RunResult r = runScript("@echo off\nstart \"\" /b ping -n 8 127.0.0.1 >NUL\n>&2 echo done\n", args, &errLines, &code, &cleared(error));
         DWORD dt = GetTickCount() - t0;
         CHECK(r == eRunOK && code == 0, ("started: " + error).c_str());
         CHECK(dt < 4000, ("does not wait for a started process that keeps stderr open (" + std::to_string(dt) + " ms)").c_str());
@@ -439,7 +448,7 @@ main()
 
         errLines.clear();
         t0 = GetTickCount();
-        r = runScript("@echo off\nping -n 30 127.0.0.1 >NUL\n", args, &errLines, &code, &error, &abortAfterAFewPolls, NULL);
+        r = runScript("@echo off\nping -n 30 127.0.0.1 >NUL\n", args, &errLines, &code, &cleared(error), &abortAfterAFewPolls, NULL);
         dt = GetTickCount() - t0;
         CHECK(r == eRunAborted, "aborted");
         CHECK(dt < 5000, ("abort is quick (" + std::to_string(dt) + " ms)").c_str());

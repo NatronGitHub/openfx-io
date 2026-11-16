@@ -504,14 +504,18 @@ inheritableCopy(HANDLE h)
 }
 
 // the environment of the host, with NoDefaultCurrentDirectoryInExePath set, so that cmd.exe (when it runs a batch
-// file) does not search the programs in the current directory first
+// file) does not search the programs in the current directory first; empty if the host's environment cannot be
+// read (the child then inherits it unchanged, rather than getting an environment without PATH or SystemRoot)
 static vector<wchar_t>
 childEnvironment()
 {
     vector<wchar_t> env;
     const wstring var = L"NoDefaultCurrentDirectoryInExePath=";
     wchar_t* block = GetEnvironmentStringsW();
-    if (block) {
+    if (!block) {
+        return env;
+    }
+    {
         for (const wchar_t* p = block; *p; p += wcslen(p) + 1) {
             const wstring entry(p);
             if (toLower(entry.substr(0, var.size())) == toLower(var)) {
@@ -547,7 +551,9 @@ runProcess(const wstring& applicationName,
     // could inherit them (and if it inherited the write end of the pipe, we would never see its end of file).
     HANDLE errRead = NULL;
     HANDLE errWrite = NULL;
-    if (!CreatePipe(&errRead, &errWrite, NULL, 0)) {
+    // a 64 KB pipe buffer (the default is about 4 KB), so that a script that writes a lot to stderr is not slowed
+    // down by our polling
+    if (!CreatePipe(&errRead, &errWrite, NULL, 65536)) {
         *error = "cannot create a pipe: " + systemErrorMessage(GetLastError());
 
         return eRunFailed;
@@ -620,8 +626,8 @@ runProcess(const wstring& applicationName,
             si.StartupInfo.hStdError = childErr;
             si.lpAttributeList = attrsOK ? attrs : NULL;
             // suspended until it is in the job, so that its children are in the job too
-            DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | (attrsOK ? EXTENDED_STARTUPINFO_PRESENT : 0);
-            created = CreateProcessW(applicationName.c_str(), &cmdBuf[0], NULL, NULL, TRUE, flags, &env[0], NULL, &si.StartupInfo, &pi);
+            DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | (env.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT) | (attrsOK ? EXTENDED_STARTUPINFO_PRESENT : 0);
+            created = CreateProcessW(applicationName.c_str(), &cmdBuf[0], NULL, NULL, TRUE, flags, env.empty() ? NULL : &env[0], NULL, &si.StartupInfo, &pi);
             createError = GetLastError();
             if (attrsOK) {
                 DeleteProcThreadAttributeList(attrs);

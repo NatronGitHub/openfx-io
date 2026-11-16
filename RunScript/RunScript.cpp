@@ -84,7 +84,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass -File`, but not `cmd /c` or `powershell -Command`). " \
     "A path that contains spaces must be quoted: `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. " \
     "A program name without a directory is searched for in the directories of the PATH only (not in the current directory), with `.exe` or `.com` appended if needed; a relative path such as `bin\\prog.exe` is not allowed. " \
-    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH (e.g. from Git for Windows), not the WSL `bash.exe`. " \
+    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH, not the WSL `bash.exe`. " \
+    "Git for Windows does not put its `sh` and `bash` in the PATH by default: add `C:\\Program Files\\Git\\bin` (or `Git\\usr\\bin`) to the PATH, or give the full path on the shebang line. " \
+    "A `bash.exe` alias in `%LOCALAPPDATA%\\Microsoft\\WindowsApps` (WSL) may also be found in the PATH. " \
     "`python3` or `python` in the PATH may be the Microsoft Store installer stub: prefer `#!py -3` (the Python launcher) or a full path. " \
     "Arguments are always quoted, so that MSYS2/Cygwin programs do not expand wildcards in them, but some programs read an argument that begins with `@` as a file of arguments.\n" \
     "The script runs without a console window, with no standard input. Rendering waits for the script to exit (not for the programs it started with `start`), and aborting the render kills the script and the programs it started.\n"
