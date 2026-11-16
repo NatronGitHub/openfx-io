@@ -413,8 +413,12 @@ typedef vector<pair<string, LayersMap>> ViewsLayersMap;
 // <layer name, extended layer info>
 typedef vector<pair<string, LayerUnionData>> LayersUnionVect;
 
+struct ReadOIIOTestAccess; // tests/oiio_layers_test.cpp
+
 class ReadOIIOPlugin
     : public GenericReaderPlugin {
+    friend struct ReadOIIOTestAccess;
+
 public:
     ReadOIIOPlugin(OfxImageEffectHandle handle,
                    const vector<string>& extensions,
@@ -983,9 +987,22 @@ extractLayerName(const string& encodedLayerName,
             if (foundView) {
                 *layerName = layerDotPrefix.substr(0, firstDot);
             } else {
-                // No matching view, assume that this is the layer name and add the layer to the "default" view
                 viewName->clear();
                 *layerName = layerDotPrefix;
+                // Nuke writes view.layer.channel instead (e.g. "right.depth.Z", with the hero view's channels
+                // unprefixed): if the first component is a view, that's the view and the rest is the layer.
+                size_t viewDot = layerDotPrefix.find('.');
+                assert(viewDot != string::npos); // firstDot != npos
+                const string firstComponent = layerDotPrefix.substr(0, viewDot);
+                for (std::size_t i = 0; i < viewsList.size(); ++i) {
+                    if (caseInsensitiveCompare(viewsList[i], firstComponent)) {
+                        *viewName = viewsList[i];
+                        *layerName = layerDotPrefix.substr(viewDot + 1);
+                        break;
+                    }
+                }
+                // otherwise: no matching view, assume that this is the layer name and add the layer to the
+                // "default" view
             }
         } else {
             *layerName = layerDotPrefix;
