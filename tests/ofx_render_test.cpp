@@ -593,7 +593,11 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
 // Expected: render succeeds and writes a black W x H image.
 // With channelCheckboxes, the R/G/B/A "process" checkboxes are visible as in Natron, so
 // GenericWriter packs the channels (doAnyPacking); otherwise they are hidden.
-int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool channelCheckboxes)
+// overlappingRoD: the input RoD intersects the render window, so the image should have existed (e.g. an
+// upstream node failed): the writer must fail rather than write black over the file.
+// outputConnected: the output image must be filled with black too.
+int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool channelCheckboxes,
+                              bool overlappingRoD = false, bool outputConnected = false)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
     if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
@@ -621,12 +625,21 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     // Input RoD entirely to the right of the render window, as in the issue's project
     // (format 720x1280, Crop RoD 727,19 -> 1450,1277): the host has no image to give.
     double rod[4] = { W + 7., 19., 2. * W + 10., H - 3. };
+    if (overlappingRoD) {
+        rod[0] = W / 2.; // overlaps the right half of the render window
+    }
     pSetDoubleN(PH(&src->props), kOfxImageEffectPropRegionOfDefinition, 4, rod);
     src->noImage = true;
-    if (ctx.clips.count(kOfxImageEffectOutputClipName)) {
-        Clip* o = ctx.clips[kOfxImageEffectOutputClipName];
-        o->connected = false;
+    Clip* o = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+    if (o) {
+        o->connected = outputConnected;
         setupClipImage(o, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+        std::fill((float*)o->buffer.data(), (float*)o->buffer.data() + (size_t)W * H * 4, 0.25f);
+    }
+    if (overlappingRoD) {
+        // a file from a previous render, which must not be replaced by a black image
+        std::FILE* f = std::fopen(outFile.c_str(), "wb");
+        if (f) { std::fputs("previous", f); std::fclose(f); }
     }
 
     { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
@@ -637,7 +650,23 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
+    if (overlappingRoD) {
+        std::FILE* f = std::fopen(outFile.c_str(), "rb");
+        char buf[16] = { 0 };
+        const bool kept = f && std::fread(buf, 1, 8, f) == 8 && std::strncmp(buf, "previous", 8) == 0;
+        if (f) std::fclose(f);
+        std::printf("  render = %d, previous file %s\n", st, kept ? "kept" : "REPLACED");
+        if (ok(st) || !kept) { std::printf("  FAIL (expected a failed render, and the previous file kept)\n"); return 1; }
+        std::printf("  PASS\n");
+        return 0;
+    }
     if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
+    if (o && outputConnected) {
+        float outMax = 0.f;
+        for (size_t i = 0; i < (size_t)W * H * 4; ++i) outMax = std::max(outMax, ((const float*)o->buffer.data())[i]);
+        std::printf("  output image max value %g\n", outMax);
+        if (outMax != 0.f) { std::printf("  FAIL (expected a black output image)\n"); return 1; }
+    }
 
     auto in = OIIO::ImageInput::open(outFile);
     if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", outFile.c_str(), OIIO::geterror().c_str()); return 1; }
@@ -753,6 +782,10 @@ main(int argc, char** argv)
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/false);
     std::printf("==== WriteOIIO PNG, input image bounds outside of the render window (issue #79) ====\n");
     failures += testWriteOIIODisjointInputImage(outFile + ".i79.png", 72, 128);
+    std::printf("==== WriteOIIO, no input image, output clip connected (#79) ====\n");
+    failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/true);
+    std::printf("==== WriteOIIO, no input image although its RoD overlaps: must fail, not write black ====\n");
+    failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/true);
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");

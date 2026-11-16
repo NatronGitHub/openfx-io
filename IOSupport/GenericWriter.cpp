@@ -627,12 +627,12 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
                                    tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, bitDepth, tmpRowBytes);
                     }
                 }
-    #ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
                 // do the color-space conversion
                 if ((srcMappedComponents == ePixelComponentRGB) || (srcMappedComponents == ePixelComponentRGBA)) {
                     _ocio->apply(time, renderWindowClipped, renderScale, tmpPixelData, renderWindow, srcMappedComponents, srcMappedComponentsCount, tmpRowBytes);
                 }
-    #endif
+#endif
 
                 // If needed, re-premult the image for the plugin to work correctly
                 // ... but only if output format supports alpha (alphaOK)
@@ -702,9 +702,13 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             // The render window does not intersect the source image: the temporary buffer is
             // black (it was zeroed above), and so is the output image (the writer is a no-op).
             auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
-            if (dstImg.get()) {
-                fillBlack(*this, renderWindow, renderScale, dstImg.get());
+            if (!dstImg.get()) {
+                setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
             }
+            fillBlack(*this, renderWindow, renderScale, dstImg.get());
         }
         // From now on, the data is the temporary buffer, which covers the render window,
         // and it still has to go through packing below (even if nothing was copied).
@@ -1019,7 +1023,32 @@ GenericWriterPlugin::render(const RenderArguments& args)
             // this case "the plugin should continue operation, but assume the image was
             // black and transparent": encode a black image the size of the render window,
             // instead of passing a NULL pointer and an uninitialized rowBytes to encode().
-            dstNComps = doAnyPacking ? (int)packingMapping.size() : _inputClip->getPixelComponentCount();
+            // But don't write black over a file if the render was aborted, or if the input
+            // image should have existed (its RoD intersects the render window: e.g. an
+            // upstream node failed): that would silently replace a good frame.
+            if (abort()) {
+                return;
+            }
+            {
+                OfxRectD rod = _inputClip->getRegionOfDefinition(time, viewIndex);
+                OfxRectI rodPixel;
+                Coords::toPixelEnclosing(rod, args.renderScale, _inputClip->getPixelAspectRatio(), &rodPixel);
+                OfxRectI overlap;
+                if (!Coords::rectIsEmpty(rodPixel) && intersect(rodPixel, args.renderWindow, &overlap)) {
+                    setPersistentMessage(Message::eMessageError, "", "Input image could not be fetched");
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
+                }
+            }
+            const string& plane = args.planes.front();
+            if (doAnyPacking) {
+                dstNComps = (int)packingMapping.size();
+            } else if (plane == kFnOfxImagePlaneColour) {
+                dstNComps = _inputClip->getPixelComponentCount();
+            } else {
+                dstNComps = MultiPlane::ImagePlaneDesc::mapOFXPlaneStringToPlane(plane).getNumComponents();
+            }
             dstNCompsStartIndex = 0;
             if ((dstNComps < 1) || (dstNComps > 4)) {
                 setPersistentMessage(Message::eMessageError, "", "Input image could not be fetched");
