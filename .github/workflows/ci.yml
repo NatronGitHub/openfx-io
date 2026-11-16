@@ -1,7 +1,8 @@
 name: Continuous Integration
 
-# Per push/PR: exactly three full builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64), C++17.
-# Extra variants (debug builds with C++20) only run nightly (if master changed) or on demand.
+# Per push/PR: exactly three full CMake builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64), C++17.
+# Extra variants (debug builds with C++20, built with the Makefiles, which Natron's build-plugins.sh still uses)
+# only run nightly (if master changed) or on demand.
 #
 # Frugal CI (NatronGitHub runners are shared by all repos): one run per change. The macOS job (scarce runners)
 # only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows. Pushes run CI only on
@@ -34,7 +35,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  # Debug builds (C++20) are an extra variant: only on schedule or on demand.
+  # Debug builds (C++20, with the Makefiles) are an extra variant: only on schedule or on demand.
   EXTRA_VARIANTS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
   # Bundles (testing bundles used by Natron's CI) are only uploaded for tags and manual runs.
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
@@ -99,16 +100,18 @@ jobs:
           cmake . -B build -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           make -j4 -C build
           make install -C build
-      - name: Build (release)
+      - name: Build (release, CMake)
         run: |
-          make -j4 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
-          mkdir -p Bundle
-          mv IO/Linux-64-release/IO.ofx.bundle Bundle
-      - name: Build (debug, C++20)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME=$PWD/SeExprBuild -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
+          cmake --build build -j4
+          # installs Bundle/IO.ofx.bundle
+          cmake --install build
+      - name: Build (debug, C++20, Makefiles)
         if: env.EXTRA_VARIANTS == 'true'
         run: make -j4 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="g++ -std=c++20"
       - name: Tests
-        run: make -C tests test
+        # tests/Makefile, run by ctest
+        run: ctest --test-dir build --output-on-failure
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
         run: make -C tests clean test CXXSTD=-std=c++20
@@ -197,14 +200,18 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBISON_EXECUTABLE=/opt/local/bin/bison -DFLEX_EXECUTABLE=/opt/local/bin/flex
           make -j3 -C build
           make install -C build
-      - name: Build (release)
+      - name: Build (release, CMake)
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          make -j3 CONFIG=release SEEXPR_HOME=$SEEXPR_HOME CXX="$CXX" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
-          otool -L IO/Darwin-64-release/IO.ofx.bundle/Contents/MacOS/IO.ofx | grep -v /System/Library
-          mkdir -p Bundle
-          mv IO/Darwin-64-release/IO.ofx.bundle Bundle
-      - name: Build (debug, C++20)
+          # MacPorts' cmake; OFX_DEPLOY_BUNDLES: osxDeploy.sh at install, as the Makefiles do for release builds
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DOFX_CXX_STANDARD=17 \
+            -DSEEXPR_HOME=$SEEXPR_HOME -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DOFX_DEPLOY_BUNDLES=ON \
+            -DIO_TESTS_CXX=clang++ -DIO_TESTS_MAKE_ARGS=WITH_LIBRAW=1 -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
+          cmake --build build -j3
+          # installs Bundle/IO.ofx.bundle
+          cmake --install build
+          otool -L Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx | grep -v /System/Library
+      - name: Build (debug, C++20, Makefiles)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
@@ -216,7 +223,8 @@ jobs:
           ln -sf /opt/local/bin/ffmpeg8 "$RUNNER_TEMP/ffbin/ffmpeg"
           ln -sf /opt/local/bin/ffprobe8 "$RUNNER_TEMP/ffbin/ffprobe"
           export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          make -C tests test CXX=clang++ WITH_LIBRAW=1
+          # tests/Makefile (CXX=clang++ WITH_LIBRAW=1), run by ctest
+          ctest --test-dir build --output-on-failure
           if [ "$EXTRA_VARIANTS" = true ]; then
             make -C tests clean test CXX=clang++ WITH_LIBRAW=1 CXXSTD=-std=c++20
           fi
@@ -267,21 +275,26 @@ jobs:
           install: >-
             git base-devel unzip
             mingw-w64-ucrt-x86_64-cc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-openimageio mingw-w64-ucrt-x86_64-opencolorio mingw-w64-ucrt-x86_64-openexr
             mingw-w64-ucrt-x86_64-libraw mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-seexpr
             mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-fmt
-      - name: Build (release)
+      - name: Build (release, CMake)
         run: |
           set -eo pipefail
-          make -j4 CONFIG=release SEEXPR_HOME=/ucrt64
-          mkdir -p Bundle
-          mv `find IO -maxdepth 1 -name "*_NT*-release"`/IO.ofx.bundle Bundle
-      - name: Build (debug, C++20)
+          # cmake.exe is a native program: pass Windows paths
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m /ucrt64)" \
+            -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle
+          cmake --build build -j4
+          # installs Bundle/IO.ofx.bundle
+          cmake --install build
+      - name: Build (debug, C++20, Makefiles)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
           set -eo pipefail
           make -j4 CONFIG=debug SEEXPR_HOME=/ucrt64 CXX="g++ -std=c++20"
       - name: Tests
+        # tests/Makefile, run directly: ctest would run MSYS2's make outside of the MSYS2 shell
         run: |
           set -eo pipefail
           make -C tests test
