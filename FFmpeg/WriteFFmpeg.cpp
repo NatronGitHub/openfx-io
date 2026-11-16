@@ -127,6 +127,29 @@ using std::vector;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
+// The pixel formats supported by an encoder, terminated by AV_PIX_FMT_NONE, or nullptr if unknown.
+// AVCodec::pix_fmts is deprecated since FFmpeg 7.1 (libavcodec 61.13) and removed in FFmpeg 9:
+// use avcodec_get_supported_config() when available.
+static const AVPixelFormat*
+codecPixelFormats(const AVCodec* codec)
+{
+    if (!codec) {
+        return nullptr;
+    }
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    const void* configs = nullptr;
+    int numConfigs = 0;
+    if ((avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &numConfigs) < 0) || (numConfigs <= 0)) {
+        return nullptr;
+    }
+
+    return static_cast<const AVPixelFormat*>(configs);
+#else
+    return codec->pix_fmts;
+#endif
+}
+
+
 #define kPluginName "WriteFFmpeg"
 #define kPluginGrouping "Image/Writers"
 #define kPluginDescription                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                \
@@ -1706,10 +1729,10 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
         } else {
             outTargetPixelFormat = AV_PIX_FMT_YUV422P;
         }
-    } else if (videoCodec->pix_fmts != nullptr) {
+    } else if (codecPixelFormats(videoCodec) != nullptr) {
         // This is the most frequent path, where we can guess best pix format using ffmpeg.
         // find highest bit depth pix fmt.
-        const AVPixelFormat* currPixFormat = videoCodec->pix_fmts;
+        const AVPixelFormat* currPixFormat = codecPixelFormats(videoCodec);
 
         int prefBPP = FFmpeg::pixelFormatBPPFromSpec(prefPixelCoding, prefBitDepth, prefAlpha);
 
@@ -1791,7 +1814,7 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
         } else {
             // gather the formats that have the target BPP (avcodec_find_best_pix_fmt_of_list doesn't do the best job: it prefers yuv422p over yuv422p10)
             vector<AVPixelFormat> bestFormats;
-            currPixFormat = videoCodec->pix_fmts;
+            currPixFormat = codecPixelFormats(videoCodec);
             while (*currPixFormat != -1) {
                 int currBPP = FFmpeg::pixelFormatBPP(*currPixFormat);
                 if (currBPP == selectedBPP) {
@@ -1806,7 +1829,7 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
             // (the loss of first format is used a a mask for the second, etc) so that if the first pixel format
             // loses resolution, resolution loss is not considered for other formats.
             // If we pass NULL, the considered loss is ~0 for all formats
-            outTargetPixelFormat = avcodec_find_best_pix_fmt_of_list(/*videoCodec->pix_fmts*/ &bestFormats[0], outRgbBufferPixelFormat, hasAlphaInt, nullptr);
+            outTargetPixelFormat = avcodec_find_best_pix_fmt_of_list(/*codecPixelFormats(videoCodec)*/ &bestFormats[0], outRgbBufferPixelFormat, hasAlphaInt, nullptr);
         }
 
 #ifdef DEBUG
@@ -1854,7 +1877,7 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
                 // supported by the QT RLE codec and force the output pixel
                 // format.
                 //
-                currPixFormat = videoCodec->pix_fmts;
+                currPixFormat = codecPixelFormats(videoCodec);
                 while (*currPixFormat != -1) {
                     AVPixelFormat avPixelFormat = *currPixFormat++;
                     if ((AV_PIX_FMT_ARGB == avPixelFormat) || (AV_PIX_FMT_RGBA == avPixelFormat) || (AV_PIX_FMT_ABGR == avPixelFormat) || (AV_PIX_FMT_BGRA == avPixelFormat)) {
@@ -4580,10 +4603,10 @@ WriteFFmpegPlugin::availPixelFormats()
     ret += avOutputFormat->name;
     ret += ":\n";
 
-    if (videoCodec->pix_fmts == nullptr || *videoCodec->pix_fmts == -1) {
+    if (codecPixelFormats(videoCodec) == nullptr || *codecPixelFormats(videoCodec) == -1) {
         ret += "none";
     } else {
-        const AVPixelFormat* currPixFormat = videoCodec->pix_fmts;
+        const AVPixelFormat* currPixFormat = codecPixelFormats(videoCodec);
         bool comma = false;
         while (*currPixFormat != -1) {
             if (comma) {

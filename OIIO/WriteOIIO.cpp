@@ -137,6 +137,19 @@ enum ETuttlePluginComponents {
     "Compression level for Zstandard compression, on a scale from 1 (fastest, minimal compression) to 22 (slowest, maximal compression) [EXR w/ ZSTD comp.]"
 #define kParamOutputZSTDCompressionLevelDefault 5
 
+#define kParamOutputLineOrder "lineOrder"
+#define kParamOutputLineOrderLabel "Line Order"
+#define kParamOutputLineOrderHint "Order in which the scanlines (or tiles) are stored in the file. Only matters for downstream tools that depend on the storage order; the image itself is the same. [EXR]"
+
+#define kParamOutputLineOrderOptionIncreasingY "increasingY", "First scanline stored in the file is the top of the image (lowest y in the EXR data window). This is the default.", "increasingY"
+#define kParamOutputLineOrderOptionDecreasingY "decreasingY", "First scanline stored in the file is the bottom of the image (highest y in the EXR data window). Requires OpenImageIO 2.6.2 or later.", "decreasingY"
+// randomY is not offered: WriteOIIO always writes tiles in order, so it would not be meaningful.
+
+enum EParamLineOrder {
+    eParamLineOrderIncreasingY = 0,
+    eParamLineOrderDecreasingY
+};
+
 #define kParamOutputOrientation "orientation"
 #define kParamOutputOrientationLabel "Orientation"
 #define kParamOutputOrientationHint                                                     \
@@ -405,6 +418,7 @@ private:
     DoubleParam* _dwaCompressionLevel;
     IntParam* _zipCompressionLevel;
     IntParam* _zstdCompressionLevel;
+    ChoiceParam* _lineOrder;
     ChoiceParam* _orientation;
     ChoiceParam* _compression;
     ChoiceParam* _textureformat;
@@ -424,6 +438,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     , _dwaCompressionLevel(NULL)
     , _zipCompressionLevel(NULL)
     , _zstdCompressionLevel(NULL)
+    , _lineOrder(NULL)
     , _orientation(NULL)
     , _compression(NULL)
     , _textureformat(NULL)
@@ -442,6 +457,7 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     _zstdCompressionLevel = fetchIntParam(kParamOutputZSTDCompressionLevel);
     _orientation = fetchChoiceParam(kParamOutputOrientation);
     _compression = fetchChoiceParam(kParamOutputCompression);
+    _lineOrder = fetchChoiceParam(kParamOutputLineOrder);
     _textureformat = fetchChoiceParam(kParamOutputTextureformat);
     _tileSize = fetchChoiceParam(kParamTileSize);
     if (gIsMultiplanarV2) {
@@ -886,6 +902,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         if (_views) {
             _views->setIsSecretAndDisabled(!isEXR);
         }
+        if (_lineOrder) {
+            _lineOrder->setIsSecretAndDisabled(!isEXR);
+        }
         if (_textureformat) {
             _textureformat->setIsSecretAndDisabled(!isEXR);
         }
@@ -901,6 +920,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         _zstdCompressionLevel->setIsSecretAndDisabled(true);
         if (_views) {
             _views->setIsSecretAndDisabled(true);
+        }
+        if (_lineOrder) {
+            _lineOrder->setIsSecretAndDisabled(true);
         }
         if (_textureformat) {
             _textureformat->setIsSecretAndDisabled(true);
@@ -1069,6 +1091,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     int compression_i;
     _compression->getValue(compression_i);
     string compression;
+    int lineOrder_i;
+    _lineOrder->getValue(lineOrder_i);
+    string lineOrder;
 
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto: {
@@ -1134,7 +1159,25 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         break;
     }
 
-    
+    switch ((EParamLineOrder)lineOrder_i) {
+    case eParamLineOrderIncreasingY:
+        lineOrder = "increasingY";
+        break;
+    case eParamLineOrderDecreasingY:
+#if OIIO_VERSION < 20602
+        // OpenImageIO < 2.6.2 reads out of bounds when writing decreasingY EXR files
+        // (fixed by https://github.com/AcademySoftwareFoundation/OpenImageIO/pull/4215)
+        if (isEXR) {
+            setPersistentMessage(Message::eMessageError, "", "Line Order decreasingY requires OpenImageIO 2.6.2 or later.");
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+#endif
+        lineOrder = "decreasingY";
+        break;
+    }
+
     spec.attribute("oiio:BitsPerSample", bitsPerSample);
     // oiio:UnassociatedAlpha should be set if the data buffer is unassociated/unpremultiplied.
     // However, WriteOIIO::getExpectedInputPremultiplication() stated that input to the encode()
@@ -1220,6 +1263,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 #endif
     }
     spec.attribute("Orientation", orientation + 1);
+    if (isEXR && !lineOrder.empty()) {
+        spec.attribute("openexr:lineOrder", lineOrder);
+    }
     if (!compression.empty()) { // some formats have a good value for the default compression
         spec.attribute("compression", compression);
     }
@@ -1548,10 +1594,15 @@ WriteOIIOPlugin::encodePart(void* user_data,
         srcSpec.alpha_channel = outSpec.alpha_channel;
         ImageBuf src(srcSpec);
         // do not use auto-stride as the buffer may have more components that what we want to write
-        src.set_pixels(src.roi(), TypeDesc::FLOAT,
-                       (const char*)pixelData + (ptrdiff_t)(outSpec.height - 1) * (ptrdiff_t)rowBytes, // invert y
-                       sizeof(float) * pixelDataNComps, // xstride
-                       -rowBytes); // ystride
+        if (!src.set_pixels(src.roi(), TypeDesc::FLOAT,
+                            (const char*)pixelData + (ptrdiff_t)(outSpec.height - 1) * (ptrdiff_t)rowBytes, // invert y
+                            sizeof(float) * pixelDataNComps, // xstride
+                            -rowBytes)) { // ystride
+            setPersistentMessage(Message::eMessageError, "", src.geterror());
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
         // The output spec carries the data format, tile size, compression and metadata.
         ImageSpec config = outSpec;
         if (config.tile_width == 0 || config.tile_height == 0) {
@@ -1561,7 +1612,12 @@ WriteOIIOPlugin::encodePart(void* user_data,
         }
         std::stringstream err;
         if (!ImageBufAlgo::make_texture(data->textureMode, src, filename, config, &err)) {
-            setPersistentMessage(Message::eMessageError, "", err.str());
+            // make_texture reports its errors through OIIO::geterror(); outstream gets the verbose output
+            string msg = OIIO::geterror();
+            if (msg.empty()) {
+                msg = err.str();
+            }
+            setPersistentMessage(Message::eMessageError, "", msg.empty() ? string("Could not write the texture file.") : msg);
             throwSuiteStatusException(kOfxStatFailed);
         }
 
@@ -1885,6 +1941,19 @@ WriteOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         assert(param->getNOptions() == eParamCompressionZSTD);
         param->appendOption(kParamOutputCompressionOptionZSTD);
         param->setDefault(eParamCompressionAuto);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOutputLineOrder);
+        param->setLabel(kParamOutputLineOrderLabel);
+        param->setHint(kParamOutputLineOrderHint);
+        assert(param->getNOptions() == eParamLineOrderIncreasingY);
+        param->appendOption(kParamOutputLineOrderOptionIncreasingY);
+        assert(param->getNOptions() == eParamLineOrderDecreasingY);
+        param->appendOption(kParamOutputLineOrderOptionDecreasingY);
+        param->setDefault(eParamLineOrderIncreasingY);
         if (page) {
             page->addChild(*param);
         }

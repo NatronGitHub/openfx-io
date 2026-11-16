@@ -59,10 +59,14 @@ find_package(OpenEXR)
 find_package(LibRaw)
 find_package(SeExpr2)
 
-if(NOT ${OpenImageIO_VERSION} VERSION_LESS 2.3)
-  # C++14 required for OpenImageIO >= 2.3
-  set(CMAKE_CXX_STANDARD 14)
+# C++17 by default (required by OpenImageIO 3.x and OpenColorIO 2.5+); the caller may ask for a newer
+# standard, e.g. -DCMAKE_CXX_STANDARD=20 (Natron's Qt6 builds)
+if(NOT DEFINED CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+elseif(CMAKE_CXX_STANDARD LESS 17)
+  message(FATAL_ERROR "CMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}: openfx-io needs C++17 or later")
 endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Use -Ofast when applicable (implies -ffast-math)
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
