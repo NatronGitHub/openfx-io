@@ -1,4 +1,4 @@
-PLUGINOBJECTS = ofxsThreadSuite.o tinythread.o RunScript.o
+PLUGINOBJECTS = ofxsThreadSuite.o tinythread.o RunScript.o RunScriptWin32.o
 PLUGINNAME = RunScript
 RESOURCES = fr.inria.openfx.RunScript.png fr.inria.openfx.RunScript.svg
 

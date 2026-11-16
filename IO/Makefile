@@ -29,12 +29,9 @@ OCIOCDLTransform.o \
 OCIOFileTransform.o \
 OCIOLogConvert.o \
 OCIOLookTransform.o \
+RunScript.o RunScriptWin32.o \
 
 OCIO_OPENGL_OBJS = GenericOCIOOpenGL.o glsl.o glad.o gladegl.o ofxsOGLUtilities.o
-
-ifeq ($(OS),$(filter $(OS),Linux FreeBSD Darwin))
-    PLUGINOBJECTS += RunScript.o
-endif
 
 PLUGINNAME = IO
 
@@ -71,12 +68,9 @@ $(TOP_SRCDIR)/PFM/fr.inria.openfx.WritePFM.svg \
 $(TOP_SRCDIR)/PNG/fr.inria.openfx.ReadPNG.png \
 $(TOP_SRCDIR)/PNG/fr.inria.openfx.ReadPNG.svg \
 $(TOP_SRCDIR)/PNG/fr.inria.openfx.WritePNG.png \
-$(TOP_SRCDIR)/PNG/fr.inria.openfx.WritePNG.svg
-
-ifeq ($(OS),$(filter $(OS),Linux FreeBSD Darwin))
-RESOURCES += ../RunScript/fr.inria.openfx.RunScript.png \
-             ../RunScript/fr.inria.openfx.RunScript.svg 
-endif
+$(TOP_SRCDIR)/PNG/fr.inria.openfx.WritePNG.svg \
+$(TOP_SRCDIR)/RunScript/fr.inria.openfx.RunScript.png \
+$(TOP_SRCDIR)/RunScript/fr.inria.openfx.RunScript.svg
 
 VPATH += \
 $(TOP_SRCDIR)/EXR \
@@ -86,19 +80,12 @@ $(TOP_SRCDIR)/OIIO \
 $(TOP_SRCDIR)/PFM \
 $(TOP_SRCDIR)/PNG \
 $(TOP_SRCDIR)/SeExpr \
+$(TOP_SRCDIR)/RunScript \
 $(TOP_SRCDIR)/IOSupport/SequenceParsing
-
-ifeq ($(OS),$(filter $(OS),Linux FreeBSD Darwin))
-VPATH += $(TOP_SRCDIR)/RunScript
-endif
 
 include $(TOP_SRCDIR)/Makefile.master
 
-CXXFLAGS += -I$(TOP_SRCDIR)/EXR -I$(TOP_SRCDIR)/FFmpeg -I$(TOP_SRCDIR)/OIIO -I$(TOP_SRCDIR)/PFM -I$(TOP_SRCDIR)/OCIO -I$(TOP_SRCDIR)/SeExpr -I$(TOP_SRCDIR)/PNG
-
-ifeq ($(OS),$(filter $(OS),Linux FreeBSD Darwin))
-CXXFLAGS += -I$(TOP_SRCDIR)/RunScript
-endif
+CXXFLAGS += -I$(TOP_SRCDIR)/EXR -I$(TOP_SRCDIR)/FFmpeg -I$(TOP_SRCDIR)/OIIO -I$(TOP_SRCDIR)/PFM -I$(TOP_SRCDIR)/OCIO -I$(TOP_SRCDIR)/SeExpr -I$(TOP_SRCDIR)/PNG -I$(TOP_SRCDIR)/RunScript
 
 CXXFLAGS  += $(OCIO_CXXFLAGS) $(SEEXPR_CXXFLAGS) $(OPENEXR_CXXFLAGS) $(FFMPEG_CXXFLAGS) $(OIIO_CXXFLAGS) $(PNG_CXXFLAGS)
 LINKFLAGS += $(OCIO_LINKFLAGS) $(SEEXPR_LINKFLAGS) $(OPENEXR_LINKFLAGS) $(FFMPEG_LINKFLAGS) $(OIIO_LINKFLAGS) $(PNG_LINKFLAGS)

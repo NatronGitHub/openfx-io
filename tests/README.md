@@ -11,6 +11,7 @@ make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
+make test-runscript # RunScript on MS Windows: quoting, program/batch/shebang launch (no-op elsewhere)
 ```
 
 Requires: a C++14/17 compiler, `pkg-config`, and dev libs for FFmpeg, OpenColorIO,

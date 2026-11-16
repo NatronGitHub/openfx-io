@@ -33,7 +33,7 @@ OFX_PKGS  := OpenColorIO OpenImageIO $(FFMPEG_PKGS)
 OFX_PKGS  += $(shell $(PKGCONF) --exists OpenEXR 2>/dev/null && echo OpenEXR)
 OFX_DEFS  := -DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE \
              -DOFX_EXTENSIONS_NATRON -DOFX_IO_MT_FFMPEG -DOFX_IO_USING_OCIO
-OFX_INC   := -I../FFmpeg -I../OIIO -I../IOSupport -I../IOSupport/SequenceParsing -I../SupportExt \
+OFX_INC   := -I../FFmpeg -I../OIIO -I../RunScript -I../IOSupport -I../IOSupport/SequenceParsing -I../SupportExt \
              -I../openfx/include -I../openfx/Support/include
 FMT_INC   := $(shell $(PKGCONF) --cflags fmt 2>/dev/null)
 
@@ -92,13 +92,19 @@ PLUGIN_SRCS := \
     ../IOSupport/GenericReader.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/SequenceParsing/SequenceParsing.cpp \
     ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
-    ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp
+    ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp \
+    ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp
 
 EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
-                    fr.inria.openfx.ReadOIIO fr.inria.openfx.WriteOIIO
+                    fr.inria.openfx.ReadOIIO fr.inria.openfx.WriteOIIO \
+                    fr.inria.openfx.RunScript
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-layers clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test
+# ---- (3) RunScript's MS Windows process launching (a no-op elsewhere) ------------
+# CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
+RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32,)
+
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-layers test-runscript clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test runscript_win32_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -117,8 +123,11 @@ ofx_render_test: ofx_render_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGIN_SRCS)) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
 
+runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h
+	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
+
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-runscript
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -137,6 +146,10 @@ test-ofx: ofx_entrypoints_test ofx_actions_test
 test-render: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov
 
+# RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70)
+test-runscript: runscript_win32_test
+	./runscript_win32_test
+
 # ReadOIIO's EXR channel name -> view/layer mapping (multi-view EXRs, #75)
 test-layers: oiio_layers_test
 	./oiio_layers_test
@@ -146,4 +159,5 @@ clean:
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
 	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov ofxTestLog.txt \
-	       oiio_layers_test oiio_layers_test.dSYM
+	       oiio_layers_test oiio_layers_test.dSYM \
+	       runscript_win32_test runscript_win32_test.dSYM
