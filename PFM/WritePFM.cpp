@@ -119,7 +119,7 @@ copyLine(const PIX* pixelData,
 {
     assert(dstC == 3 || dstC == 1);
 
-    const PIX* srcPix = (const PIX*)((char*)pixelData + y * rowbytes);
+    const PIX* srcPix = (const PIX*)((char*)pixelData + (ptrdiff_t)y * (ptrdiff_t)rowbytes);
     PIX* dstPix = image;
 
     for (int x = 0; x < W; ++x) {

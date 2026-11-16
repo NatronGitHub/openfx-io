@@ -3363,7 +3363,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 
             for (int y = 0; y < height; ++y) {
                 int srcY = height - 1 - y;
-                const float* src_pixels = (float*)((char*)pixelData + srcY * rowBytes);
+                const float* src_pixels = (float*)((char*)pixelData + (ptrdiff_t)srcY * (ptrdiff_t)rowBytes);
 
                 if (avCodecContext->bits_per_raw_sample > 8) {
                     assert(pixelFormatNuke == AV_PIX_FMT_RGBA64 || pixelFormatNuke == AV_PIX_FMT_RGB48);

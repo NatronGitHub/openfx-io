@@ -366,7 +366,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
     // allocate temporary image
     int pixelBytes = pixelComponentCount * getComponentBytes(bitDepth);
     int tmpRowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * pixelBytes;
-    size_t memSize = (args.renderWindow.y2 - args.renderWindow.y1) * tmpRowBytes;
+    size_t memSize = (size_t)(args.renderWindow.y2 - args.renderWindow.y1) * (size_t)tmpRowBytes;
     ImageMemory mem(memSize, this);
     float* tmpPixelData = (float*)mem.lock();
     const bool flipit = true;
