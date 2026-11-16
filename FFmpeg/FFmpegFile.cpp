@@ -88,7 +88,7 @@ video_decoding_threads()
     static long n = -1;
 
     if (n < 0) {
-#if defined(WIN32) || defined(WIN64)
+#if defined(_WIN32) // also defined for 64-bit Windows; WIN32 is not defined by MinGW under a strict -std (e.g. -std=c++17)
         SYSTEM_INFO si;
         GetSystemInfo(&si);
         n = si.dwNumberOfProcessors;
