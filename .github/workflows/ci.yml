@@ -131,6 +131,7 @@ jobs:
     timeout-minutes: 150
     env:
       MACPORTS_VERSION: 2.12.7
+      SEEXPR_HOME: /opt/local/libexec/seexpr211
       MACPORTS_PKG_SHA256: 87b2e87ed7adc4aca947b42eb7ff991614cc0edfccb486237f2bbc75f28aae63
       # Compile with the system (Xcode) clang, libraries from MacPorts only.
       CXX: clang++ -std=c++17
@@ -158,11 +159,14 @@ jobs:
           sudo port -N selfupdate
           sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng
           port installed
+      - name: Prepare the SeExpr prefix
+        # In MacPorts' prefix, so that osxDeploy.sh (which bundles /opt/local libraries) bundles libSeExpr
+        run: sudo mkdir -p "$SEEXPR_HOME" && sudo chown "$USER" "$SEEXPR_HOME"
       - name: Cache SeExpr
         id: cache-seexpr
         uses: actions/cache@v4
         with:
-          path: SeExprBuild
+          path: ${{ env.SEEXPR_HOME }}
           key: seexpr-2.11-natron-patches-macos-15-arm64-${{ hashFiles('.github/workflows/ci.yml') }}
       - name: Build SeExpr 2.11
         if: steps.cache-seexpr.outputs.cache-hit != 'true'
@@ -177,21 +181,24 @@ jobs:
             curl -fsSL "${NATRON_PORT}/${p}" | patch -p1
           done
           sed -i '' -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          cmake . -B build -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DUSE_SSE41=FALSE \
+          # Absolute install name (like MacPorts' libraries), so that osxDeploy.sh finds and bundles libSeExpr
+          cmake . -B build -DCMAKE_INSTALL_PREFIX=$SEEXPR_HOME -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DUSE_SSE41=FALSE \
+            -DCMAKE_INSTALL_NAME_DIR=$SEEXPR_HOME/lib \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBISON_EXECUTABLE=/opt/local/bin/bison -DFLEX_EXECUTABLE=/opt/local/bin/flex
           make -j3 -C build
           make install -C build
       - name: Build (release)
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          make -j3 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild CXX="$CXX" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
+          make -j3 CONFIG=release SEEXPR_HOME=$SEEXPR_HOME CXX="$CXX" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
+          otool -L IO/Darwin-64-release/IO.ofx.bundle/Contents/MacOS/IO.ofx | grep -v /System/Library
           mkdir -p Bundle
           mv IO/Darwin-64-release/IO.ofx.bundle Bundle
       - name: Build (debug, C++20)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          make -j3 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="clang++ -std=c++20" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
+          make -j3 CONFIG=debug SEEXPR_HOME=$SEEXPR_HOME CXX="clang++ -std=c++20" FFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
       - name: Tests
         run: |
           # MacPorts' ffmpeg8 installs suffixed tools (ffmpeg8, ffprobe8): the test scripts call ffmpeg/ffprobe.
