@@ -3,7 +3,8 @@ name: Continuous Integration
 # Per push/PR: exactly three full builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64), C++17.
 # Extra variants (debug builds with C++20) only run nightly (if master changed) or on demand.
 #
-# Frugal CI (NatronGitHub runners are shared by all repos): one run per change. Pushes run CI only on
+# Frugal CI (NatronGitHub runners are shared by all repos): one run per change. The macOS job (scarce runners)
+# only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows. Pushes run CI only on
 # master, RB-* and tags; feature branches run through their pull request. Draft pull requests don't run
 # CI. Superseded runs are cancelled, except for tags. Artifacts only for tags and manual runs.
 on:
@@ -132,9 +133,10 @@ jobs:
 
   macos:
     name: macOS 15 (Xcode clang, MacPorts)
-    needs: changes
-    # no CI for draft pull requests; the scheduled run only if master changed
-    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    # macOS runners are scarce: only build on macOS once Linux and Windows passed (they already skip drafts and
+    # unchanged nightlies). macOS is informative: merging only requires Linux and Windows.
+    needs: [linux, windows]
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 150
     env:
