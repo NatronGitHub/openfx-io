@@ -58,6 +58,7 @@
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32) || defined(WIN64)
 #include <windows.h> // for GetSystemInfo()
 #define strncasecmp _strnicmp
+#define strcasecmp _stricmp // strcasecmp is POSIX: not declared by MinGW without -U__STRICT_ANSI__ under a strict -std
 #else
 #include <unistd.h> // for sysconf()
 #endif
