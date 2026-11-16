@@ -861,7 +861,9 @@ int testWriteOIIOChannelSelection(const std::string& outFile, int W, int H, cons
 // is used because it writes all 4 channels (the JPEG writer only reads 3 of them).
 // Expected: a black W x H image (alpha is opaque, since the RGB source is opaque), and a
 // black output image over the render window.
-int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H)
+// outputMissing: the host gives no output image: the render fails, and nothing is written (the previous file is
+// kept). aborted: same, while the host is aborting the render (no error, nothing written).
+int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H, bool aborted = false, bool outputMissing = false)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
     if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
@@ -900,14 +902,33 @@ int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H)
     o->connected = true;
     setupClipImage(o, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
     std::fill((float*)o->buffer.data(), (float*)o->buffer.data() + (size_t)W * H * 3, 0.25f);
+    if (aborted || outputMissing) {
+        o->noImage = true; // e.g. as Natron does for an aborted render
+        std::FILE* f = std::fopen(outFile.c_str(), "wb");
+        if (f) { std::fputs("previous", f); std::fclose(f); }
+    }
 
     { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
 
     PropSet a = makeRenderInArgs(1., W, H);
+    gAbort = aborted ? 1 : 0;
     OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    gAbort = 0;
 
     p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    if (aborted || outputMissing) {
+        std::FILE* f = std::fopen(outFile.c_str(), "rb");
+        char buf[16] = { 0 };
+        const bool kept = f && std::fread(buf, 1, 8, f) == 8 && std::strncmp(buf, "previous", 8) == 0;
+        if (f) std::fclose(f);
+        std::printf("  render = %d, previous file %s\n", st, kept ? "kept" : "REPLACED");
+        if (!kept) { std::printf("  FAIL (expected the previous file kept)\n"); return 1; }
+        if (!aborted && ok(st)) { std::printf("  FAIL (expected a failed render: no output image)\n"); return 1; }
+        std::printf("  PASS\n");
+        return 0;
+    }
 
     if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
 
@@ -952,6 +973,10 @@ main(int argc, char** argv)
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/false);
     std::printf("==== WriteOIIO PNG, input image bounds outside of the render window (issue #79) ====\n");
     failures += testWriteOIIODisjointInputImage(outFile + ".i79.png", 72, 128);
+    std::printf("==== same, render aborted (no output image): nothing written ====\n");
+    failures += testWriteOIIODisjointInputImage(outFile + ".i79.png", 72, 128, /*aborted=*/true);
+    std::printf("==== same, no output image: the render fails, nothing written ====\n");
+    failures += testWriteOIIODisjointInputImage(outFile + ".i79.png", 72, 128, /*aborted=*/false, /*outputMissing=*/true);
     std::printf("==== WriteOIIO, no input image, output clip connected (#79) ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/true);
     std::printf("==== WriteOIIO, no input image although its RoD overlaps: black, per the spec ====\n");

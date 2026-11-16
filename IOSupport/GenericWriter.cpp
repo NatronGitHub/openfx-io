@@ -704,6 +704,9 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
                 if (abort()) {
+                    // no data: the callers write nothing when aborted (they check abort() before encoding)
+                    *tmpMemPtr = 0;
+
                     return;
                 }
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
@@ -1093,6 +1096,10 @@ GenericWriterPlugin::render(const RenderArguments& args)
             }
         }
 
+        // don't write over the file if the render was aborted meanwhile (e.g. while fetching the images)
+        if (abort()) {
+            return;
+        }
         encode(filename, time, viewNames.begin()->second, data.srcPixelData, args.renderWindow, pixelAspectRatio, data.pixelComponentsCount, dstNCompsStartIndex, dstNComps, data.rowBytes);
     } else {
         /*
@@ -1199,6 +1206,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 interleaveIndex += dstNComps;
             }
 
+            if (abort()) { // don't write over the file if the render was aborted
+                return;
+            }
             beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
             encodePart(encodeData.getData(), filename, tmpMemPtr, nChannels, 0, tmpRowBytes);
 
@@ -1295,6 +1305,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 }
 
                 if (view == viewNames.begin()) {
+                    if (abort()) { // don't write over the file if the render was aborted
+                        return;
+                    }
                     beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
                 }
 
@@ -1340,6 +1353,9 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 } // for each plane
 
                 if (view == viewNames.begin()) {
+                    if (abort()) { // don't write over the file if the render was aborted
+                        return;
+                    }
                     beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
                 }
                 for (vector<ImageData>::iterator it = datas.begin(); it != datas.end(); ++it) {
