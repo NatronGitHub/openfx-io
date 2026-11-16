@@ -23,6 +23,9 @@
  */
 
 #include <cfloat> // DBL_MAX
+#include <list>
+#include <set>
+#include <sstream>
 
 #include "ofxsMacros.h"
 
@@ -855,7 +858,8 @@ WriteOIIOPlugin::supportsAlpha(const std::string& filename) const
 {
     auto output = ImageOutput::create(filename);
 
-    return kSupportsRGBA && output->supports("alpha");
+    // output is NULL if OIIO cannot write this format (#80)
+    return kSupportsRGBA && output && output->supports("alpha");
 }
 
 void
@@ -1690,9 +1694,21 @@ WriteOIIOPluginFactory::load()
         _extensions.push_back(*ext);
     }
 #else
-    // get extensions from OIIO (but there is no distinctions between readers and writers)
+    // get extensions from OIIO: extension_list has the extensions of all formats, readers and writers, so
+    // keep only those of the formats in output_format_list (e.g. OIIO reads but can't write Cineon, #80),
+    // and among them those that a writer accepts (e.g. the BMP writer takes .bmp but not .dib), see below
     string extensions_list;
     getattribute("extension_list", extensions_list);
+    string output_format_list;
+    getattribute("output_format_list", output_format_list);
+    std::set<string> outputFormats;
+    {
+        stringstream outputss(output_format_list);
+        string outputFormat;
+        while (std::getline(outputss, outputFormat, ',')) {
+            outputFormats.insert(outputFormat);
+        }
+    }
     stringstream formatss(extensions_list);
     string format;
     std::list<string> extensionsl;
@@ -1700,6 +1716,9 @@ WriteOIIOPluginFactory::load()
         stringstream extensionss(format);
         string extension;
         std::getline(extensionss, extension, ':'); // extract the format
+        if (!outputFormats.empty() && (outputFormats.count(extension) == 0)) {
+            continue; // OIIO has no writer for this format
+        }
         while (std::getline(extensionss, extension, ',')) {
             extensionsl.push_back(extension);
         }
@@ -1719,10 +1738,26 @@ WriteOIIOPluginFactory::load()
         "m4v",
         "mpg", // FFmpeg extensions - better supported by WriteFFmpeg
         "gif", // animated GIFs are only supported by FFmpeg
+        "null", "nul", // OIIO's null output (discards the image)
+        "term", // OIIO's terminal output
         NULL
     };
     for (const char* const* e = extensions_blacklist; *e != NULL; ++e) {
         extensionsl.remove(*e);
+    }
+    // keep only the extensions that OIIO can actually write
+    for (std::list<string>::iterator it = extensionsl.begin(); it != extensionsl.end();) {
+#if OIIO_PLUGIN_VERSION >= 22
+        ImageOutputPtr output = ImageOutput::create("x." + *it);
+#else
+        auto_ptr<ImageOutput> output(ImageOutput::create("x." + *it));
+#endif
+        if (output.get()) {
+            ++it;
+        } else {
+            (void)OIIO::geterror(); // clear the error message of ImageOutput::create()
+            it = extensionsl.erase(it);
+        }
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());
 #endif
@@ -1736,33 +1771,15 @@ WriteOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
 
     // basic labels
     desc.setLabel(kPluginName);
-    desc.setPluginDescription("Write images using OpenImageIO.\n\n"
-                              "OpenImageIO supports writing the following file formats:\n"
-                              "BMP (*.bmp)\n"
-                              "Cineon (*.cin)\n"
-                              //"Direct Draw Surface (*.dds)\n"
-                              "DPX (*.dpx)\n"
-                              //"Field3D (*.f3d)\n"
-                              "FITS (*.fits)\n"
-                              "HDR/RGBE (*.hdr)\n"
-#if OIIO_VERSION >= 20100
-                              "HEIC/HEIF (*.heic *.heif)\n"
-#endif
-                              "Icon (*.ico)\n"
-                              "IFF (*.iff)\n"
-                              "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
-                              "JPEG-2000 (*.jp2 *.j2k)\n"
-                              "OpenEXR (*.exr)\n"
-                              "Portable Network Graphics (*.png)\n"
-                              "PNM / Netpbm (*.pbm *.pgm *.ppm)\n"
-                              "PSD (*.psd *.pdd *.psb)\n"
-                              //"Ptex (*.ptex)\n"
-                              "RLA (*.rla)\n"
-                              "SGI (*.sgi *.rgb *.rgba *.bw *.int *.inta)\n"
-                              "Softimage PIC (*.pic)\n"
-                              "Targa (*.tga *.tpic)\n"
-                              "TIFF (*.tif *.tiff *.tx *.env *.sm *.vsm)\n"
-                              "Zfile (*.zfile)");
+    // the list of extensions that OIIO can actually write (see load())
+    string description = "Write images using OpenImageIO.\n\n"
+                         "The OpenImageIO library used by this plug-in can write files with the following extensions:\n";
+    for (std::size_t i = 0; i < _extensions.size(); ++i) {
+        description += (i == 0 ? "" : ", ");
+        description += _extensions[i];
+    }
+    description += ".";
+    desc.setPluginDescription(description);
 
 #if defined(OFX_EXTENSIONS_NATRON) && defined(OFX_EXTENSIONS_NUKE)
     gIsMultiplanarV2 = (getImageEffectHostDescription()->supportsDynamicChoices && getImageEffectHostDescription()->isMultiPlanar && fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true));
