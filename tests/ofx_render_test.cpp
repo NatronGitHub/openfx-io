@@ -682,15 +682,6 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     return 0;
 }
 
-// Second regression test for issue #79: the host returns a valid source image, but its
-// bounds do not intersect the render window. GenericWriter returned early from
-// fetchPlaneConvertAndCopy(): the output image was not filled, and the channel packing was
-// skipped, so encode() got a buffer with fewer components than the channels to write.
-// Here the source is RGB and the four R/G/B/A checkboxes are visible and checked, so 4
-// channels are written from a 3-component buffer (a heap overflow, caught by ASan). PNG
-// is used because it writes all 4 channels (the JPEG writer only reads 3 of them).
-// Expected: a black W x H image (alpha is opaque, since the RGB source is opaque), and a
-// black output image over the render window.
 // Regression test for issue #90: the R/G/B/A checkboxes select a subset of the source channels.
 // After fetchPlaneConvertAndCopy() the buffer always starts at component 0, but render()
 // passed packingMapping[0] as the start index, and a contiguous selection with as many
@@ -765,6 +756,15 @@ int testWriteOIIOChannelSelection(const std::string& outFile, int W, int H, cons
     return 0;
 }
 
+// Second regression test for issue #79: the host returns a valid source image, but its
+// bounds do not intersect the render window. GenericWriter returned early from
+// fetchPlaneConvertAndCopy(): the output image was not filled, and the channel packing was
+// skipped, so encode() got a buffer with fewer components than the channels to write.
+// Here the source is RGB and the four R/G/B/A checkboxes are visible and checked, so 4
+// channels are written from a 3-component buffer (a heap overflow, caught by ASan). PNG
+// is used because it writes all 4 channels (the JPEG writer only reads 3 of them).
+// Expected: a black W x H image (alpha is opaque, since the RGB source is opaque), and a
+// black output image over the render window.
 int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");

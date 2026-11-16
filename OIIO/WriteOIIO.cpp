@@ -1379,9 +1379,17 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 if (!packingRequired) {
                     channels.insert(channels.end(), planeChannels.begin(), planeChannels.end());
                 } else {
-                    assert(planeChannels.size() >= packingMapping.size());
+                    // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
+                    // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
+                    const string prefix = ((viewsToRender.size() > 1) && (view != viewsToRender.begin())) ? view->second + "." : string();
+                    static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
-                        channels.push_back(planeChannels[packingMapping[i]]);
+                        const int c = packingMapping[i];
+                        if ((c >= 0) && (c < (int)planeChannels.size())) {
+                            channels.push_back(planeChannels[c]);
+                        } else {
+                            channels.push_back(prefix + rgbaNames[(c >= 0 && c < 4) ? c : (i < 4 ? i : 3)]);
+                        }
                     }
                 }
             }
@@ -1435,9 +1443,17 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 if (!packingRequired) {
                     channels.insert(channels.end(), planeChannels.begin(), planeChannels.end());
                 } else {
-                    assert(planeChannels.size() >= packingMapping.size());
+                    // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
+                    // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
+                    const string prefix = ((viewsToRender.size() > 1) && (view != viewsToRender.begin())) ? view->second + "." : string();
+                    static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
-                        channels.push_back(planeChannels[packingMapping[i]]);
+                        const int c = packingMapping[i];
+                        if ((c >= 0) && (c < (int)planeChannels.size())) {
+                            channels.push_back(planeChannels[c]);
+                        } else {
+                            channels.push_back(prefix + rgbaNames[(c >= 0 && c < 4) ? c : (i < 4 ? i : 3)]);
+                        }
                     }
                 }
             }
@@ -1489,9 +1505,17 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
                 if (!packingRequired) {
                     channels.insert(channels.end(), planeChannels.begin(), planeChannels.end());
                 } else {
-                    assert(planeChannels.size() >= packingMapping.size());
+                    // packingMapping holds the selected R/G/B/A checkboxes (and -1 for padding): a selected channel
+                    // may be missing from the plane (A of an RGB plane), so don't index past planeChannels (#90)
+                    const string prefix = ((viewsToRender.size() > 1) && (view != viewsToRender.begin())) ? view->second + "." : string();
+                    static const char* const rgbaNames[4] = { "R", "G", "B", "A" };
                     for (std::size_t i = 0; i < packingMapping.size(); ++i) {
-                        channels.push_back(planeChannels[packingMapping[i]]);
+                        const int c = packingMapping[i];
+                        if ((c >= 0) && (c < (int)planeChannels.size())) {
+                            channels.push_back(planeChannels[c]);
+                        } else {
+                            channels.push_back(prefix + rgbaNames[(c >= 0 && c < 4) ? c : (i < 4 ? i : 3)]);
+                        }
                     }
                 }
 

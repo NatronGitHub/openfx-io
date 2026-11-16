@@ -931,6 +931,15 @@ GenericWriterPlugin::render(const RenderArguments& args)
             prevChannel = packingMapping[i];
         }
     }
+    // Whether fetchPlaneConvertAndCopy() packs the selected channels (see packingIsIdentity there): the
+    // multi-part paths must then tell beginEncodeParts() that the data holds the selected channels only (#90).
+    bool packingRequired = false;
+    if (doAnyPacking) {
+        const string& plane = args.planes.front();
+        const int planeNComps = (plane == kFnOfxImagePlaneColour) ? _inputClip->getPixelComponentCount()
+                                                                    : MultiPlane::ImagePlaneDesc::mapOFXPlaneStringToPlane(plane).getNumComponents();
+        packingRequired = !(packingContiguous && ((int)packingMapping.size() == planeNComps) && ((packingMapping[0] == 0) || (planeNComps == 1)));
+    }
 
     // The following (commented out) code is not fully-safe, because the same instance may be have
     // two threads running on the same area of the same frame, and the apply()
@@ -1191,7 +1200,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 interleaveIndex += dstNComps;
             }
 
-            beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, doAnyPacking && !packingContiguous, packingMapping, args.renderWindow);
+            beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
             encodePart(encodeData.getData(), filename, tmpMemPtr, nChannels, 0, tmpRowBytes);
 
             break;
@@ -1287,7 +1296,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 }
 
                 if (view == viewNames.begin()) {
-                    beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, doAnyPacking && !packingContiguous, packingMapping, args.renderWindow);
+                    beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
                 }
 
                 encodePart(encodeData.getData(), filename, tmpMemPtr, nChannels, partIndex, tmpRowBytes);
@@ -1332,7 +1341,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
                 } // for each plane
 
                 if (view == viewNames.begin()) {
-                    beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, doAnyPacking && !packingContiguous, packingMapping, args.renderWindow);
+                    beginEncodeParts(encodeData.getData(), filename, time, pixelAspectRatio, partsSplit, viewNames, actualPlanes, packingRequired, packingMapping, args.renderWindow);
                 }
                 for (vector<ImageData>::iterator it = datas.begin(); it != datas.end(); ++it) {
                     encodePart(encodeData.getData(), filename, it->srcPixelData, it->pixelComponentsCount, partIndex, it->rowBytes);
