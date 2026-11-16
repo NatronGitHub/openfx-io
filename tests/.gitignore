@@ -15,3 +15,7 @@
 /.render_out.mov.i90a.png
 /.render_out.mov.i90b.png
 /.render_out.mov.i90c.mov
+/reader_hooks_test
+/reader_hooks_test.dSYM/
+/.reader_hooks.still.tst
+/.reader_hooks.video.tst
