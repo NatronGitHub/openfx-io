@@ -14,7 +14,10 @@ PKGCONF  ?= pkg-config
 
 FFMPEG_PKGS := libavcodec libavformat libavutil libswscale
 
-CXXFLAGS += -std=c++14 -O2 -g -Wall
+# C++17 by default (OpenImageIO 3.x); e.g. `make test CXXSTD=-std=c++20` to test C++20
+CXXSTD   ?= -std=c++17
+
+CXXFLAGS += $(CXXSTD) -O2 -g -Wall
 
 # ---- (1) FFmpeg reader-core harness --------------------------------------------
 READ_CXXFLAGS := $(CXXFLAGS) $(shell $(PKGCONF) --cflags $(FFMPEG_PKGS)) \
@@ -65,7 +68,7 @@ endif
 TBB_LIBDIR := $(shell $(PKGCONF) --variable=libdir tbb 2>/dev/null)
 TBBMALLOC_LIBS := $(if $(and $(TBB_LIBDIR),$(wildcard $(TBB_LIBDIR)/libtbbmalloc.*)),-L$(TBB_LIBDIR) -ltbbmalloc,)
 
-OFX_CXXFLAGS := -std=c++17 -O0 -g $(OFX_DEFS) $(OFX_INC) $(shell $(PKGCONF) --cflags $(OFX_PKGS)) $(FMT_INC) $(OMP_CFLAGS)
+OFX_CXXFLAGS := $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) $(shell $(PKGCONF) --cflags $(OFX_PKGS)) $(FMT_INC) $(OMP_CFLAGS)
 OFX_LIBS  := $(shell $(PKGCONF) --libs $(OFX_PKGS)) $(OMP_LDLIBS) $(TBBMALLOC_LIBS)
 
 # OFX C++ Support library (host-facing plugin runtime); ofxsHWNDInteract.cpp is Windows-only.
