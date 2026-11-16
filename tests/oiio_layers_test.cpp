@@ -86,6 +86,17 @@ main()
             "right.R", "right.G", "right.B", "right.diffuse.direct.R", "right.diffuse.direct.G", "right.diffuse.direct.B" },
           { "left", "right" },
           "left/Color:0,1,2 left/diffuse.direct:3,4,5 right/Color:6,7,8 right/diffuse.direct:9,10,11 ");
+    // view names are matched case-insensitively, and reported as declared in multiView
+    check("OpenEXR layer.view.channel, view name case differs",
+          { "R", "G", "B", "depth.Z", "Right.R", "Right.G", "Right.B", "depth.Right.Z" }, { "left", "right" },
+          "left/Color:0,1,2 left/depth:3 right/Color:4,5,6 right/depth:7 ");
+    check("Nuke view.layer.channel, view name case differs",
+          { "R", "G", "B", "depth.Z", "RIGHT.R", "RIGHT.G", "RIGHT.B", "RIGHT.depth.Z" }, { "left", "right" },
+          "left/Color:0,1,2 left/depth:3 right/Color:4,5,6 right/depth:7 ");
+    // ambiguous: both the first and the penultimate components are views: OpenEXR's layer.view.channel wins
+    check("ambiguous view.view.channel: OpenEXR reading",
+          { "R", "G", "B", "right.left.Z" }, { "left", "right" },
+          "left/Color:0,1,2 left/right:3 ");
     // no multiView attribute: everything before the last dot is the layer name
     check("single view, nested layer names",
           { "R", "G", "B", "right.depth.Z" }, {},

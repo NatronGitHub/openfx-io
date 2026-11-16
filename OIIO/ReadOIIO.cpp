@@ -981,6 +981,7 @@ extractLayerName(const string& encodedLayerName,
             for (std::size_t i = 0; i < viewsList.size(); ++i) {
                 if (caseInsensitiveCompare(viewsList[i], *viewName)) {
                     foundView = true;
+                    *viewName = viewsList[i]; // the declared view name: getLayers() compares view names exactly
                     break;
                 }
             }
@@ -1138,7 +1139,7 @@ ReadOIIOPlugin::getLayers(const vector<ImageSpec>& subimages,
                 // see issue https://github.com/NatronGitHub/Natron/issues/429
                 for (std::size_t v = 0; v < views.size(); ++v) {
                     if (caseInsensitiveCompare(views[v], layer)) {
-                        view = layer;
+                        view = views[v]; // the declared view name (layersMap is looked up exactly)
                         layer.clear();
                         break;
                     }
