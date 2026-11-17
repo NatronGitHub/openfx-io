@@ -67,7 +67,7 @@ endif()
 set(OPENFX_PATH "${PROJECT_SOURCE_DIR}/openfx")
 set(OFXS_EXT_PATH "${PROJECT_SOURCE_DIR}/SupportExt")
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" "${PROJECT_SOURCE_DIR}/IOSupport/cmake")
-# openfx's add_ofx_plugin() & co. (or a stand-in until the openfx submodule has them) and SupportExt's helper
+# openfx's add_ofx_plugin() & co. (add_subdirectory(openfx)) and the supportext_add_sources() stand-in
 include(OpenFXLocal)
 include(IOSupport)
 
