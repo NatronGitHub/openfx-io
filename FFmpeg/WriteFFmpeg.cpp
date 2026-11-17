@@ -167,7 +167,7 @@ codecPixelFormats(const AVCodec* codec)
     "The selected pixel coding, bit depth, and BPP are displayed in the Selected Pixel Coding, Bit Depth, and BPP parameters.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          \
     "\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
     "The recommended Codec/Container configurations for encoding digital intermediates are (see also https://trac.ffmpeg.org/wiki/Encode/VFX):\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         \
-    "- ProRes inside QuickTime: all ProRes profiles are 10-bit and are intra-frame (each frame is encoded separately). Prores 4444 can also encode the alpha channel.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
+    "- ProRes inside QuickTime: all ProRes profiles are 10-bit and are intra-frame (each frame is encoded separately). ProRes 4444 and 4444 XQ can also encode the alpha channel.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      \
     "- Avid DNxHR inside QuickTime: the codec is intra-frame. DNxHR profiles are resolution-independent and are available with 8-bit or 10-bit depth. The alpha channel cannot be encoded.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             \
     "- HEVC (hev1/libx265) inside Matroska, MP4, QuickTime or MPEG-TS and Output Quality set to Lossless or Perceptually Lossless. libx265 supports 8-bit, 10-bit and 12-bit depth (if libx265 was compiled with high bit depth support). Lossless may not be playable in real-time for high resolutions. Set the Encoding Speed to Ultra Fast for faster encoding but worse compression, or Very Slow for best compression.\n" /*"- Photo JPEG inside MP4 (or QuickTime) and Global Quality set to 1: intra-frame and 8-bit. qscale=1 ensure almost lossless encoding.\n"*/ /*"- H.264 (avc1/libx264/libx264rgb) inside MP4 or QuickTime and Output Quality set to Lossless or Perceptually Lossless: 10-bit(*), and can be made intra-frame by setting Keyframe Interval to 1 and Max B-Frames to 0. Lossless may not be playable in real-time for high resolutions. Set the Encoding Speed to Ultra Fast for faster encoding but worse compression, or Very Slow for best compression.\n"*/ /*"\n"*/ /*"(*) The H.264 output may be 8-bit if libx264 was not compiled with 10-bit support. Check the information displayed by clicking on the Show Avail. button.\n"*/ \
     "\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
@@ -517,8 +517,8 @@ enum X26xSpeedEnum {
 #define kParamDNxHDCodecProfile "DNxHDCodecProfile"
 #define kParamDNxHDCodecProfileLabel "DNxHD Codec Profile"
 #define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. The stream may be resized to 1920x1080 if resolution is not supported. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it."
-#define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (12 bit, RGB / 4:4:4, 4.5:1 compression)", "dnxhr444"
-#define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (12 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
+#define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (10 bit, RGB, 4.5:1 compression)", "dnxhr444"
+#define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (10 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
 #define kParamDNxHDCodecProfileOptionHRHQ "DNxHR HQ", "DNxHR High Quality (8 bit, 4:2:2 chroma sub-sampling, 4.5:1 compression)", "dnxhrhq"
 #define kParamDNxHDCodecProfileOptionHRSQ "DNxHR SQ", "DNxHR Standard Quality (8 bit, 4:2:2 chroma sub-sampling, 7:1 compression)", "dnxhrsq"
 #define kParamDNxHDCodecProfileOptionHRLB "DNxHR LB", "DNxHR Low Bandwidth (8 bit, 4:2:2 chroma sub-sampling, 22:1 compression)", "dnxhrlb"
@@ -543,10 +543,15 @@ enum DNxHDCodecProfileEnum {
 
 #define kParamDNxHDEncodeVideoRange "DNxHDEncodeVideoRange"
 #define kParamDNxHDEncodeVideoRangeLabel "DNxHD Output Range"
-#define kParamDNxHDEncodeVideoRangeHint                                                               \
-    "When encoding using DNxHD this is used to select between full scale data range "                 \
-    "and 'video/legal' data range.\nFull scale data range is 0-255 for 8-bit and 0-1023 for 10-bit. " \
-    "'Video/legal' data range is a reduced range, 16-240 for 8-bit and 64-960 for 10-bit."
+#define kParamDNxHDEncodeVideoRangeHint                                                                              \
+    "When encoding using DNxHD this is used to select between full scale data range "                                \
+    "and 'video/legal' data range.\nFull scale data range is 0-255 for 8-bit and 0-1023 for 10-bit. "                \
+    "'Video/legal' data range is a reduced range, 16-235 (luma) and 16-240 (chroma) for 8-bit, "                     \
+    "and 64-940 (luma) and 64-960 (chroma) for 10-bit.\n"                                                            \
+    "The pixel values are written in this range, and the stream is tagged with it (in the ACLR atom in QuickTime). " \
+    "Full Range writes full-range samples tagged as \"RGB\" in the ACLR atom, which is how FFmpeg reads them back, " \
+    "but FFmpeg's DNxHD encoder only declares the legal range, and Avid tools may expect legal-range samples.\n"     \
+    "DNxHR 444 is written as RGB, which is always full range."
 #define kParamDNxHDEncodeVideoRangeOptionFull "Full Range", "", "full"
 #define kParamDNxHDEncodeVideoRangeOptionVideo "Video Range", "", "video"
 
@@ -907,6 +912,9 @@ getProfileFromShortName(const string& name)
     string prefix(kProresCodec);
 
     if (!name.compare(0, prefix.size(), prefix)) {
+        if (!name.compare(prefix.size(), string::npos, kProresProfile4444XQFourCC)) {
+            return kProresProfile4444XQ;
+        }
         if (!name.compare(prefix.size(), string::npos, kProresProfile4444FourCC)) {
             return kProresProfile4444;
         }
@@ -934,6 +942,9 @@ getProfileStringFromShortName(const string& name)
     string prefix(kProresCodec);
 
     if (!name.compare(0, prefix.size(), prefix)) {
+        if (!name.compare(prefix.size(), string::npos, kProresProfile4444XQFourCC)) {
+            return "4444xq";
+        }
         if (!name.compare(prefix.size(), string::npos, kProresProfile4444FourCC)) {
             return "4444";
         }
@@ -1591,7 +1602,6 @@ private:
     bool isRec709Format(const int height) const;
     bool isPalFormat(const AVRational& displayRatio) const;
     static bool IsYUVFromShortName(const char* shortName, int codecProfile);
-    static bool IsRGBFromShortName(const char* shortName, int codecProfile);
     static AVPixelFormat GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
     static void GetCodecSupportedParams(const AVCodec* codec, CodecParams* p);
 
@@ -1774,6 +1784,14 @@ FFmpegSingleton::FFmpegSingleton()
     _codecsShortNames.push_back(kProresCodec kProresProfileProxyFourCC);
     _codecsLongNames.push_back(kProresProfileProxyName);
     _codecsKnobLabels.push_back(kProresProfileProxyFourCC "\t" kProresProfileProxyName);
+    _codecsIds.push_back(AV_CODEC_ID_PRORES);
+
+    // ProRes 4444 XQ comes after the other ProRes profiles, so that their indices, including the default codec
+    // (ProRes 4444), do not change. The index of every codec after it increases by one: the codec of a saved
+    // project is restored by its option ID (in Natron), or by checkCodec() from the codecShortName param.
+    _codecsShortNames.push_back(kProresCodec kProresProfile4444XQFourCC);
+    _codecsLongNames.push_back(kProresProfile4444XQName);
+    _codecsKnobLabels.push_back(kProresProfile4444XQFourCC "\t" kProresProfile4444XQName);
     _codecsIds.push_back(AV_CODEC_ID_PRORES);
 
     void* opaqueCodecIter = nullptr;
@@ -1994,24 +2012,22 @@ WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
 }
 
 // Figure out if a codec is definitely YUV based from its shortname.
+// This decides whether the Y'CbCr matrix, primaries and transfer function of the stream are set for the
+// usual video formats (BT.709 for HD, BT.601 for SD), which also gives the QuickTime 'colr' (nclc) atom.
+// The transfer function is then BT.709, whatever getColorInfo() gives (e.g. sRGB or linear): the ProRes frame
+// header only allows 0, 1 (BT.709), 2 (unspecified), 16 (PQ) and 18 (HLG) (SMPTE RDD 36).
+// All the ProRes profiles are Y'CbCr: 4:2:2, or 4:4:4 for ProRes 4444 and 4444 XQ (SMPTE RDD 36), and
+// FFmpeg's prores_ks encoder only accepts yuv422p10, yuv444p10 and yuva444p10.
 /*static*/
 bool
 WriteFFmpegPlugin::IsYUVFromShortName(const char* shortName,
                                       int codecProfile)
 {
-    return (!strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) || !strcmp(shortName, kProresCodec kProresProfileHQFourCC) || !strcmp(shortName, kProresCodec kProresProfileSQFourCC) || !strcmp(shortName, kProresCodec kProresProfileLTFourCC) || !strcmp(shortName, kProresCodec kProresProfileProxyFourCC) || ((codecProfile != (int)eDNxHDCodecProfileHR444) && // DNxHR 444 is RGB
-                                                                                                                                                                                                                                                                                                                           !strcmp(shortName, "dnxhd"))
+    return (!strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) || !strcmp(shortName, kProresCodec kProresProfile4444FourCC)
+            || !strcmp(shortName, kProresCodec kProresProfileHQFourCC) || !strcmp(shortName, kProresCodec kProresProfileSQFourCC)
+            || !strcmp(shortName, kProresCodec kProresProfileLTFourCC) || !strcmp(shortName, kProresCodec kProresProfileProxyFourCC)
+            || ((codecProfile != (int)eDNxHDCodecProfileHR444) && !strcmp(shortName, "dnxhd")) // DNxHR 444 is RGB
             || !strcmp(shortName, "mjpeg") || !strcmp(shortName, "mpeg1video") || !strcmp(shortName, "mpeg4") || !strcmp(shortName, "v210"));
-}
-
-// Figure out if a codec is definitely RGB based from its shortname.
-/*static*/
-bool
-WriteFFmpegPlugin::IsRGBFromShortName(const char* shortName,
-                                      int codecProfile)
-{
-    return (!strcmp(shortName, kProresCodec kProresProfile4444FourCC) || !strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) || ((!strcmp(shortName, "dnxhd") && codecProfile == (int)eDNxHDCodecProfileHR444) || // only DNxHR 444 is RGB
-                                                                                                                                         !strcmp(shortName, "png") || !strcmp(shortName, "qtrle")));
 }
 
 void
@@ -2327,8 +2343,8 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
         assert(index < (int)codecsShortNames.size());
         int profile = getProfileFromShortName(codecsShortNames[index]);
-        if (profile == kProresProfile4444 /*|| profile == kProresProfile4444XQ*/) {
-            // Prores 4444
+        if (profile == kProresProfile4444 || profile == kProresProfile4444XQ) {
+            // ProRes 4444 and 4444 XQ are Y'CbCr 4:4:4, with an optional alpha channel
             if (prefAlpha) {
                 outTargetPixelFormat = AV_PIX_FMT_YUVA444P10;
             } else {
@@ -3825,7 +3841,8 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
         if (FFmpeg::pixelFormatIsYUV(dstPixelFormat)) {
             // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
             const int colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
-            const int dstRange = (avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
+            // The range of the stream (e.g. the DNxHD Output Range), or full range for MJPEG
+            const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
 
             ret = sws_setColorspaceDetails(_convertCtx,
                                            sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
@@ -4012,6 +4029,16 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     outputFrame_->width = avCodecContext->width;
                     outputFrame_->height = avCodecContext->height;
                     outputFrame_->format = avCodecContext->pix_fmt;
+                    // Encoders that write the color properties in each frame (e.g. ProRes, in its frame header) take
+                    // them from the frame, not from the codec context. Only for the Y'CbCr codecs, which get the
+                    // matrix of the usual video formats (IsYUVFromShortName()): other encoders that read them, e.g.
+                    // png (sRGB, cICP, cHRM and gAMA chunks), keep writing what they wrote before.
+                    if (avCodecContext->colorspace != AVCOL_SPC_UNSPECIFIED) {
+                        outputFrame_->color_primaries = avCodecContext->color_primaries;
+                        outputFrame_->color_trc = avCodecContext->color_trc;
+                        outputFrame_->colorspace = avCodecContext->colorspace;
+                        outputFrame_->color_range = avCodecContext->color_range;
+                    }
 
                     int bufferSize = av_image_alloc(outputFrame_->data, outputFrame_->linesize, outputFrame_->width, outputFrame_->height, pixelFormatCodec, 32);
 
@@ -4461,10 +4488,18 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         // is known, for DNxHD, set the YUV range.
         if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
             int encodeVideoRange = _encodeVideoRange->getValue();
-            // Set the metadata for the YUV range. This modifies the appropriate
-            // field in the 'ACLR' atom in the video sample description.
-            // Set 'full range' = 1 or 'legal range' = 2.
-            avCodecContext->color_range = encodeVideoRange ? AVColorRange::AVCOL_RANGE_MPEG : AVColorRange::AVCOL_RANGE_JPEG;
+            // Set the metadata for the YUV range. The mov muxer writes it in the 'ACLR' atom of the
+            // video sample description: 1 for legal range, 2 for full range (libavformat/movenc.c says that they
+            // correspond to "709" and "RGB" in the official encoder), and colourSpaceConvert() converts to
+            // this range. FFmpeg's dnxhd encoder only declares the legal range (color_ranges), but it encodes
+            // the samples as they are.
+            // RGB (DNxHR 444, gbrp10) is tagged full range, since swscale writes RGB in full range (it does not
+            // scale RGB to video levels).
+            if (!FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
+                avCodecContext->color_range = AVColorRange::AVCOL_RANGE_JPEG;
+            } else {
+                avCodecContext->color_range = encodeVideoRange ? AVColorRange::AVCOL_RANGE_MPEG : AVColorRange::AVCOL_RANGE_JPEG;
+            }
         }
 
         // Bug 45010 The following flags must be set BEFORE calling

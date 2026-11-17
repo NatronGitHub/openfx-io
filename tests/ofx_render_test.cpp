@@ -40,6 +40,13 @@
  *       timecode (tmcd) track is written (3gp, write_tmcd=0); the persistent message shows all the
  *       errors in the settings (timecode and codec/container), whatever param is edited
  *
+ *   WriteFFmpeg color tags and levels (issue #135):
+ *     - encode a black and a white frame, and read the stream back with libavformat/libavcodec (the
+ *       properties that ffprobe -show_streams shows, and the decoded levels)
+ *     - ProRes 4444, 4444 XQ and 422 HQ are tagged with their Y'CbCr matrix (SMPTE 170M in SD)
+ *     - DNxHD/DNxHR with Output Range = Full/Video: the decoded levels match the range the stream is tagged
+ *       with; DNxHR 444 (RGB) is full range; HQX and 444 are 10-bit, and their hints do not say 12 bit
+ *
  *   WriteOIIO test (issue #79):
  *     - render a JPEG while the host has no source image for the render window
  *       (clipGetImage fails with kOfxStatFailed): a black image must be written
@@ -57,6 +64,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
 #include <libavutil/frame.h>
+#include <libavutil/pixdesc.h>
 }
 
 #include <algorithm>
@@ -77,6 +85,7 @@ struct WriterParams {
     std::vector<std::pair<std::string, int>> ints;
     bool expectBeginFailure = false; // beginSequenceRender must fail (and nothing is rendered)
     bool constantImage = false;      // render the same mid-gray image for every frame instead of a ramp
+    std::vector<float> frameValues;  // if not empty, the gray level of frame t is frameValues[t - 1] (instead of a ramp)
     bool expectNoFile = false;       // with expectBeginFailure: the output file must not be created
     double fps = 0.;                 // if > 0, the value of the "fps" param
     std::vector<int> views = { 0 };  // the views rendered for each frame, in this order: view 0 is the ramp, the
@@ -181,6 +190,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         }
         for (int view : wp.views) {
             float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
+            if (!wp.frameValues.empty()) v = wp.frameValues[(size_t)(t - 1) % wp.frameValues.size()];
             if (view != 0) v = 1.f - v;
             for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
             PropSet a = makeRenderInArgs((double)t, W, H);
@@ -1242,6 +1252,191 @@ int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H, bo
     return 0;
 }
 
+// Issue #135: the properties of the video stream of a movie, as ffprobe -show_streams shows them (after
+// avformat_find_stream_info, which fills bits_per_raw_sample and pix_fmt from the decoder), and the first
+// component (Y', or G for RGB formats) at the center of each decoded frame, in the decoded pixel format.
+struct StreamInfo {
+    std::string codec = "none", pixFmt = "none", tag;
+    int bitsPerRawSample = 0;
+    AVColorSpace space = AVCOL_SPC_UNSPECIFIED;
+    AVColorRange range = AVCOL_RANGE_UNSPECIFIED;
+    AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
+    AVColorTransferCharacteristic trc = AVCOL_TRC_UNSPECIFIED;
+    std::vector<int> center; // per decoded frame
+};
+
+int probeStream(const std::string& file, StreamInfo* info)
+{
+    *info = StreamInfo();
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, file.c_str(), nullptr, nullptr) < 0) { std::printf("  FAIL: cannot open %s\n", file.c_str()); return 1; }
+    int ret = 1;
+    AVCodecContext* dec = nullptr;
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    const AVCodec* codec = nullptr;
+    int si = -1;
+    if (avformat_find_stream_info(fmt, nullptr) >= 0) {
+        si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+    }
+    if (si >= 0) {
+        const AVCodecParameters* par = fmt->streams[si]->codecpar;
+        info->codec = avcodec_get_name(par->codec_id);
+        const char* name = av_get_pix_fmt_name((AVPixelFormat)par->format);
+        info->pixFmt = name ? name : "none";
+        char tag[AV_FOURCC_MAX_STRING_SIZE] = { 0 };
+        info->tag = av_fourcc_make_string(tag, par->codec_tag);
+        info->bitsPerRawSample = par->bits_per_raw_sample;
+        info->space = par->color_space;
+        info->range = par->color_range;
+        info->primaries = par->color_primaries;
+        info->trc = par->color_trc;
+    }
+    if (si >= 0 && codec && (dec = avcodec_alloc_context3(codec)) &&
+        avcodec_parameters_to_context(dec, fmt->streams[si]->codecpar) >= 0 &&
+        avcodec_open2(dec, codec, nullptr) >= 0) {
+        auto drain = [&]() {
+            while (avcodec_receive_frame(dec, frame) >= 0) {
+                const AVPixFmtDescriptor* d = av_pix_fmt_desc_get((AVPixelFormat)frame->format);
+                const int x = frame->width / 2, y = frame->height / 2;
+                const uint8_t* row = frame->data[0] + (ptrdiff_t)y * frame->linesize[0];
+                info->center.push_back(d && d->comp[0].depth > 8 ? (int)reinterpret_cast<const uint16_t*>(row)[x] : (int)row[x]);
+                av_frame_unref(frame);
+            }
+        };
+        while (av_read_frame(fmt, pkt) >= 0) {
+            if (pkt->stream_index == si && avcodec_send_packet(dec, pkt) >= 0) drain();
+            av_packet_unref(pkt);
+        }
+        avcodec_send_packet(dec, nullptr);
+        drain();
+        ret = 0;
+    } else {
+        std::printf("  FAIL: cannot decode the video stream of %s\n", file.c_str());
+    }
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    avformat_close_input(&fmt);
+    const char* sp = av_color_space_name(info->space);
+    const char* rg = av_color_range_name(info->range);
+    const char* pr = av_color_primaries_name(info->primaries);
+    const char* tr = av_color_transfer_name(info->trc);
+    std::printf("  %s: codec %s (%s), pix_fmt %s, bits_per_raw_sample %d, color_space %s, color_range %s, color_primaries %s, color_transfer %s, center",
+                file.c_str(), info->codec.c_str(), info->tag.c_str(), info->pixFmt.c_str(), info->bitsPerRawSample,
+                sp ? sp : "?", rg ? rg : "?", pr ? pr : "?", tr ? tr : "?");
+    for (int c : info->center) std::printf(" %d", c);
+    std::printf("\n");
+    return ret;
+}
+
+// Issue #135: the color codes of the first ProRes frame header (SMPTE RDD 36): the frame header follows the
+// 'icpf' frame identifier; its color_primaries, transfer_characteristic and matrix_coefficients bytes are at
+// offsets 14-16 (after the header size, version, creator, width, height, flags and a reserved byte).
+// Returns false if there is no ProRes frame.
+bool proResFrameHeaderColors(const std::string& file, int* primaries, int* trc, int* matrix)
+{
+    std::FILE* f = std::fopen(file.c_str(), "rb");
+    if (!f) return false;
+    std::vector<char> buf;
+    char chunk[65536];
+    size_t n;
+    while ((n = std::fread(chunk, 1, sizeof(chunk), f)) > 0) buf.insert(buf.end(), chunk, chunk + n);
+    std::fclose(f);
+    const char id[4] = { 'i', 'c', 'p', 'f' };
+    auto it = std::search(buf.begin(), buf.end(), id, id + 4);
+    if (it == buf.end() || buf.end() - it < 4 + 17) return false;
+    const unsigned char* h = reinterpret_cast<const unsigned char*>(&*(it + 4));
+    *primaries = h[14];
+    *trc = h[15];
+    *matrix = h[16];
+    return true;
+}
+
+// Expected stream properties for testWriteFFmpegColor(); an empty string or a negative value is not checked.
+struct ExpectedStream {
+    std::string tag, pixFmt;
+    int bitsPerRawSample = -1;
+    int space = -1, range = -1, primaries = -1, trc = -1;
+    bool rangeNotFull = false; // the range must not be full (it may be unspecified or limited)
+    bool proResHeader = false; // the ProRes frame header has the same primaries, transfer and matrix
+    std::vector<int> center;   // the first component at the center of each decoded frame, +-tolerance
+    int tolerance = 0;
+};
+
+// Issue #135: encode a black frame then a white frame, and check the stream properties and the decoded levels.
+int testWriteFFmpegColor(const std::string& outFile, int W, int H, WriterParams wp, const ExpectedStream& e)
+{
+    wp.frameValues = { 0.f, 1.f };
+    if (testWriteFFmpeg(outFile, W, H, 2, wp)) return 1;
+    StreamInfo s;
+    if (probeStream(outFile, &s)) return 1;
+    int failures = 0;
+    auto check = [&](bool cond, const std::string& what) {
+        if (!cond) { std::printf("  FAIL: %s\n", what.c_str()); ++failures; }
+    };
+    if (!e.tag.empty()) check(s.tag == e.tag, "the codec tag must be " + e.tag);
+    if (!e.pixFmt.empty()) check(s.pixFmt == e.pixFmt, "pix_fmt must be " + e.pixFmt);
+    if (e.bitsPerRawSample >= 0) check(s.bitsPerRawSample == e.bitsPerRawSample, "bits_per_raw_sample must be " + std::to_string(e.bitsPerRawSample));
+    if (e.space >= 0) check(s.space == e.space, std::string("color_space must be ") + av_color_space_name((AVColorSpace)e.space));
+    if (e.range >= 0) check(s.range == e.range, std::string("color_range must be ") + av_color_range_name((AVColorRange)e.range));
+    if (e.rangeNotFull) check(s.range != AVCOL_RANGE_JPEG, "color_range must not be pc (full range)");
+    if (e.proResHeader) {
+        int pr = -1, tr = -1, mx = -1;
+        const bool found = proResFrameHeaderColors(outFile, &pr, &tr, &mx);
+        std::printf("  ProRes frame header: color_primaries %d, transfer_characteristic %d, matrix_coefficients %d\n", pr, tr, mx);
+        check(found && pr == e.primaries && tr == e.trc && mx == e.space,
+              "the ProRes frame header must have color_primaries " + std::to_string(e.primaries) + ", transfer_characteristic "
+                  + std::to_string(e.trc) + " and matrix_coefficients " + std::to_string(e.space));
+    }
+    if (e.primaries >= 0) check(s.primaries == e.primaries, std::string("color_primaries must be ") + av_color_primaries_name((AVColorPrimaries)e.primaries));
+    if (e.trc >= 0) check(s.trc == e.trc, std::string("color_transfer must be ") + av_color_transfer_name((AVColorTransferCharacteristic)e.trc));
+    if (!e.center.empty()) {
+        bool levels = s.center.size() == e.center.size();
+        for (size_t i = 0; levels && i < e.center.size(); ++i) levels = std::abs(s.center[i] - e.center[i]) <= e.tolerance;
+        std::string what = "the decoded black and white levels must be";
+        for (int c : e.center) what += " " + std::to_string(c);
+        check(levels, what);
+    }
+    std::printf(failures ? "  FAIL (color)\n" : "  PASS (color)\n");
+    return failures;
+}
+
+// Issue #135: FFmpeg's dnxhd encoder writes the DNxHR HQX and 444 profiles in 10 bit (yuv422p10, and
+// yuv444p10 or gbrp10), so their option labels and hints must not say 12 bit.
+int testDNxHDProfileHints()
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    int failures = 0;
+    auto it = ctx.params.find("DNxHDCodecProfile");
+    if (it == ctx.params.end()) {
+        std::printf("  FAIL: no param DNxHDCodecProfile\n");
+        ++failures;
+    } else {
+        int found = 0;
+        for (const auto& prop : it->second.props->props) {
+            if (prop.first != kOfxParamPropChoiceOption && prop.first != kOfxParamPropChoiceLabelOption && prop.first != kOfxParamPropHint) continue;
+            for (const std::string& v : prop.second.s) {
+                if (v.find("DNxHR 4:4:4") != std::string::npos || v.find("DNxHR High Quality (1") != std::string::npos) {
+                    std::printf("  %s: %s\n", prop.first.c_str(), v.c_str());
+                    ++found;
+                }
+                if (v.find("12 bit") != std::string::npos || v.find("12-bit") != std::string::npos) {
+                    std::printf("  FAIL: %s says 12 bit: %s\n", prop.first.c_str(), v.c_str());
+                    ++failures;
+                }
+            }
+        }
+        if (found < 2) { std::printf("  FAIL: the hints of DNxHR 444 and HQX were not found\n"); ++failures; }
+    }
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    std::printf(failures ? "  FAIL (DNxHR hints)\n" : "  PASS (DNxHR hints)\n");
+    return failures;
+}
+
 } // namespace
 
 // #137: the file param at a frame may name the open file through another path (a symbolic link, as /tmp
@@ -1489,6 +1684,60 @@ main(int argc, char** argv)
     failures += testWriteFFmpegOptions(outFile + ".i71.mp4", 64, 48, N);
     std::printf("==== WriteFFmpeg, Alpha source, A checked (issue #90) ====\n");
     failures += testWriteFFmpegAlphaSource(outFile + ".i90c.mov", 64, 48, 3);
+    {
+        // #135: ProRes 4444 and 4444 XQ are Y'CbCr 4:4:4 (SMPTE RDD 36), like the 422 profiles: they must be
+        // tagged with the Y'CbCr matrix they were converted with (SD: SMPTE 170M), and are in limited range.
+        // FFmpeg's prores decoder decodes the 4444 profiles to 12 bit, and the 422 profiles to 10 bit.
+        const struct { const char* fourcc; const char* pixFmt; int bits; } cases[] = {
+            { "ap4h", "yuv444p12le", 12 }, { "ap4x", "yuv444p12le", 12 }, { "apch", "yuv422p10le", 10 },
+        };
+        for (const auto& c : cases) {
+            std::printf("==== WriteFFmpeg ProRes %s: Y'CbCr matrix and color tags (issue #135) ====\n", c.fourcc);
+            WriterParams wp;
+            wp.strings = { { "codecShortName", std::string("prores_ks") + c.fourcc } };
+            ExpectedStream e;
+            e.tag = c.fourcc;
+            e.pixFmt = c.pixFmt;
+            e.bitsPerRawSample = c.bits;
+            e.space = AVCOL_SPC_SMPTE170M;
+            e.primaries = AVCOL_PRI_SMPTE170M;
+            e.trc = AVCOL_TRC_BT709;
+            e.rangeNotFull = true;
+            e.proResHeader = true;
+            e.center = { 16 << (c.bits - 8), 235 << (c.bits - 8) };
+            e.tolerance = 1 << (c.bits - 8);
+            failures += testWriteFFmpegColor(outFile + ".i135.prores.mov", W, H, wp, e);
+        }
+    }
+    {
+        // #135: DNxHD/DNxHR Output Range: the levels written must be the ones the stream is tagged with
+        // (full: 0-255 or 0-1023, video: 16-235 or 64-940), and HQX/444 are 10-bit. DNxHR 444 is written as
+        // RGB (gbrp10), which is always full range.
+        const struct { const char* label; int profile; bool full; int w, h; const char* pixFmt; int bits; int range; int black, white; } cases[] = {
+            { "DNxHR HQ, full range", 2, true, 256, 144, "yuv422p", 8, AVCOL_RANGE_JPEG, 0, 255 },
+            { "DNxHR HQ, video range", 2, false, 256, 144, "yuv422p", 8, AVCOL_RANGE_MPEG, 16, 235 },
+            { "DNxHR HQX, full range", 1, true, 256, 144, "yuv422p10le", 10, AVCOL_RANGE_JPEG, 0, 1023 },
+            { "DNxHR HQX, video range", 1, false, 256, 144, "yuv422p10le", 10, AVCOL_RANGE_MPEG, 64, 940 },
+            { "DNxHR 444, full range", 0, true, 256, 144, "gbrp10le", 10, AVCOL_RANGE_JPEG, 0, 1023 },
+            { "DNxHR 444, video range (RGB is full range)", 0, false, 256, 144, "gbrp10le", 10, AVCOL_RANGE_JPEG, 0, 1023 },
+            { "DNxHD 220x 1080p, full range", 6, true, 1920, 1080, "yuv422p10le", 10, AVCOL_RANGE_JPEG, 0, 1023 },
+        };
+        for (const auto& c : cases) {
+            std::printf("==== WriteFFmpeg %s: levels, range and bit depth (issue #135) ====\n", c.label);
+            WriterParams wp;
+            wp.strings = { { "codecShortName", "dnxhd" } };
+            wp.ints = { { "DNxHDCodecProfile", c.profile }, { "DNxHDEncodeVideoRange", c.full ? 0 : 1 } };
+            ExpectedStream e;
+            e.pixFmt = c.pixFmt;
+            e.bitsPerRawSample = c.bits;
+            e.range = c.range;
+            e.center = { c.black, c.white };
+            e.tolerance = c.bits > 8 ? 4 : 1;
+            failures += testWriteFFmpegColor(outFile + ".i135.dnxhd.mov", c.w, c.h, wp, e);
+        }
+        std::printf("==== WriteFFmpeg DNxHR HQX and 444 hints: 10 bit (issue #135) ====\n");
+        failures += testDNxHDProfileHints();
+    }
 
     std::printf("==== WriteFFmpeg, the file param names the open file through another path (issue #137) ====\n");
     failures += testWriteFFmpegSameFile(outFile + ".i137.mov", W, H, N);
