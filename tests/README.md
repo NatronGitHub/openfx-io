@@ -14,6 +14,7 @@ make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-runscript # RunScript on MS Windows: quoting, program/batch/shebang launch (no-op elsewhere)
+make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 ```
 
 Requires: a C++14/17 compiler, `pkg-config`, and dev libs for FFmpeg, OpenColorIO,
@@ -172,6 +173,17 @@ The test itself needs OCIO >= 2 (it reads the file back with `Processor::createG
 
 With OCIO 2, Export used to fail (`GroupTransform::write()` with a nonexistent "CDL"
 format, on an empty group), leaving an empty file. It sets `OCIO=test.ocio`.
+
+### 1e. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118)
+
+`oiio_threadpool_test.cpp` loads ReadOIIO, WriteOIIO and OIIOResize in the in-process
+host of `ofx_test_host.h`, which share OpenImageIO's default thread pool, as in IO.ofx.
+Each OIIO plug-in stops the pool in its unload action (its threads must not be joined
+while the binary is unloaded, a deadlock on MS Windows), but only if it is the last OIIO
+plug-in loaded: after ReadOIIO's unload (and a reload and unload, as in a plug-in scan),
+the pool must keep its `hardware_concurrency() - 1` threads and OIIOResize must render
+(`ImageBufAlgo::resize()`, with the host's 4 CPUs); after the unload of the last one,
+the pool must have 0 threads. It sets `OCIO=test.ocio`.
 
 ### 2. `test-ffmpeg` — FFmpeg reader core (direct coverage of the reader fixes)
 

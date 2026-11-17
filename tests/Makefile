@@ -103,8 +103,8 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test oiio_threadpool_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -152,11 +152,15 @@ endif
 ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 
+# the OIIO plug-ins, with OIIOResize (which is not in PLUGIN_SRCS: it renders with ImageBufAlgo)
+oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
 runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -191,6 +195,10 @@ test-reader-hooks: reader_hooks_test
 test-ocio-cdl: ocio_cdl_test
 	OCIO=$(CURDIR)/test.ocio ./ocio_cdl_test
 
+# OpenImageIO's thread pool is stopped when the last OIIO plug-in is unloaded, not the first one (#118)
+test-oiio-threads: oiio_threadpool_test
+	OCIO=$(CURDIR)/test.ocio ./oiio_threadpool_test
+
 clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
@@ -199,4 +207,5 @@ clean:
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
+	       oiio_threadpool_test oiio_threadpool_test.dSYM \
 	       runscript_win32_test runscript_win32_test.dSYM

@@ -20,6 +20,8 @@
 
 #include "ofxsMacros.h"
 #include <iostream>
+#include <mutex>
+#include <set>
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <IlmThreadPool.h>
@@ -66,7 +68,9 @@ initOIIOThreads()
     }
 }
 
-void
+// Stop OpenImageIO's thread pool (and, on MS Windows, OpenEXR's): only called by OIIOPluginUnloaded(), once the
+// last OIIO plug-in is unloaded.
+static void
 shutdownOIIOThreads()
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
@@ -87,4 +91,45 @@ shutdownOIIOThreads()
 #if NATRON_OIIO_HAS_DEFAULT_THREAD_POOL_SHUTDOWN == 1 || OIIO_VERSION >= OIIO_MAKE_VERSION(2,5,3)
     default_thread_pool_shutdown();
 #endif
+}
+
+namespace {
+// The unique identifiers of the loaded OIIO plug-ins. Function-local statics: constructed on first use, so that a
+// plug-in loaded during static initialization finds them, and a set rather than a counter, so that the count can
+// neither go negative (an unload without load) nor leak (a plug-in loaded twice).
+std::mutex&
+loadedOIIOPluginsMutex()
+{
+    // never destroyed: a host may unload the plug-ins from its own static destructors or atexit handlers
+    static std::mutex* m = new std::mutex;
+    return *m;
+}
+
+std::set<std::string>&
+loadedOIIOPlugins()
+{
+    static std::set<std::string>* s = new std::set<std::string>;
+    return *s;
+}
+} // namespace
+
+void
+OIIOPluginLoaded(const std::string& pluginUID)
+{
+    std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
+    loadedOIIOPlugins().insert(pluginUID);
+}
+
+void
+OIIOPluginUnloaded(const std::string& pluginUID)
+{
+    std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
+    std::set<std::string>& loaded = loadedOIIOPlugins();
+    loaded.erase(pluginUID);
+    if (loaded.empty()) {
+        // the last OIIO plug-in of this binary is unloaded (kOfxActionUnload: "the last action passed to the plug-in
+        // before the binary containing the plug-in is unloaded", after "all instances of a plugin have been destroyed"):
+        // stop the pools now, their threads would deadlock if they were joined while the binary is unloaded (MS Windows)
+        shutdownOIIOThreads();
+    }
 }

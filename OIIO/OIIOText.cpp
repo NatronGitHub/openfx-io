@@ -514,9 +514,10 @@ OIIOTextPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
     return true;
 }
 
-// unload: stop OpenImageIO's thread pool, which ImageBufAlgo::render_text() may have started, as ReadOIIO and WriteOIIO do
-// (on MS Windows, its threads deadlock when they are joined while the DLL is unloaded)
-mDeclarePluginFactory(OIIOTextPluginFactory, { ofxsThreadSuiteCheck(); }, { shutdownOIIOThreads(); });
+// unload: stop OpenImageIO's thread pool, which ImageBufAlgo::render_text() may have started, if this was the last
+// OIIO plug-in loaded, as ReadOIIO and WriteOIIO do (on MS Windows, its threads deadlock when they are joined while
+// the DLL is unloaded)
+mDeclarePluginFactory(OIIOTextPluginFactory, { ofxsThreadSuiteCheck(); OIIOPluginLoaded(getUID()); }, { OIIOPluginUnloaded(getUID()); });
 
 namespace {
 struct PositionInteractParam {
