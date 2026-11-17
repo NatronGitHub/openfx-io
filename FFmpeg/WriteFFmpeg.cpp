@@ -4524,6 +4524,21 @@ WriteFFmpegPlugin::encode(const string& filename,
     {
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
 
+        // A frame before the next one was already encoded, or will never be: waiting for it would never end.
+        // The frame that was just encoded is rendered again for another view (the movie has a single view):
+        // nothing to do; any other one is an error.
+        if ((_nextFrameToEncode != INT_MIN) && (time < _nextFrameToEncode)) {
+            if (time == _nextFrameToEncode - _frameStep) {
+                return;
+            }
+            stringstream ss;
+            ss << "Frame " << time << " was rendered after frame " << (_nextFrameToEncode - _frameStep)
+               << ": the frames of a movie must be rendered in increasing order";
+            setPersistentMessage(Message::eMessageError, "", ss.str());
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
         while (_nextFrameToEncode != time && _nextFrameToEncode != INT_MIN) {
             _nextFrameToEncodeCond.wait(guard);
         }
