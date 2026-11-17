@@ -538,10 +538,7 @@ OIIOTextPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.addSupportedContext(eContextFilter);
     desc.addSupportedContext(eContextGenerator);
 
-    // add supported pixel depths
-    desc.addSupportedBitDepth(eBitDepthUByte);
-    desc.addSupportedBitDepth(eBitDepthUShort);
-    desc.addSupportedBitDepth(eBitDepthHalf);
+    // add supported pixel depths: render() only renders float images
     desc.addSupportedBitDepth(eBitDepthFloat);
 
     desc.setSupportsTiles(kSupportsTiles); // may be switched to true later?
