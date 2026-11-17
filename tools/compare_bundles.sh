@@ -18,12 +18,14 @@
 #   -k        keep going when a tool is missing (the checks that need it are SKIPPED, exit 2)
 #   -o DIR    where to write each check's raw output (default: a new temporary directory)
 # CXX: the C++ compiler for the load checker (default c++; may include flags, e.g. "clang++ -std=c++17").
-# The load checker needs the expat headers (openfx HostSupport), e.g. expat-devel or libexpat1-dev.
+# The load checker is built from the source tree containing this script (openfx submodule and
+# .github/workflows/verify_plugin_loads.cpp: a git checkout, not a release archive), and needs the
+# expat headers (openfx HostSupport), e.g. expat-devel or libexpat1-dev.
 
 # the check functions are called indirectly, by compare and problems
 # shellcheck disable=SC2329
 set -u
-usage() { sed -n '2,21p' "$0" | sed -e 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,23p' "$0" | sed -e 's/^# \{0,1\}//'; exit 2; }
 keep=0
 outdir=""
 while getopts "ko:" opt; do
@@ -59,7 +61,16 @@ need() {
 
 # the binary of a bundle: Contents/<archdir>/<name>.ofx
 binary_of() {
-    find "$1/Contents" -mindepth 2 -maxdepth 2 -type f -name '*.ofx' ! -path '*/Resources/*' | head -1
+    find "$1/Contents" -mindepth 2 -maxdepth 2 -type f -name '*.ofx' ! -path '*/Resources/*' | LC_ALL=C sort
+}
+
+# unbundle PATH FILE: print FILE with every occurrence of PATH (literal text, not a regex) replaced by <BUNDLE>
+unbundle() {
+    BUNDLE_PATH=$1 awk '{
+        p = ENVIRON["BUNDLE_PATH"]; out = ""
+        while ((i = index($0, p)) > 0) { out = out substr($0, 1, i - 1) "<BUNDLE>"; $0 = substr($0, i + length(p)) }
+        print out $0
+    }' "$2"
 }
 
 # compare NAME FUNCTION: run FUNCTION on each bundle (args: bundle, binary), with bash's pipefail so that
@@ -71,10 +82,10 @@ compare() {
         if [ $side = A ]; then bundle=$A bin=$binA; else bundle=$B bin=$binB; fi
         (set -o pipefail; "$fn" "$bundle" "$bin") > "$outdir/$name.$side.raw" 2>&1
         st=$?
-        sed -e "s#$bundle#<BUNDLE>#g" "$outdir/$name.$side.raw" > "$outdir/$name.$side.txt"
+        unbundle "$bundle" "$outdir/$name.$side.raw" > "$outdir/$name.$side.txt" || st="unbundle failed"
         if [ $side = A ]; then stA=$st; else stB=$st; fi
     done
-    if [ $stA != 0 ] || [ $stB != 0 ]; then
+    if [ "$stA" != 0 ] || [ "$stB" != 0 ]; then
         printf '  %-22s ERROR (exit A=%s B=%s; see %s/%s.[AB].txt)\n' "$name" "$stA" "$stB" "$outdir" "$name"
         sed -e 's/^/      /' "$outdir/$name.A.txt" "$outdir/$name.B.txt" | head -20
         broken=1
@@ -92,11 +103,12 @@ problems() {
     local name=$1 fn=$2 side bundle bin st
     for side in A B; do
         if [ $side = A ]; then bundle=$A bin=$binA; else bundle=$B bin=$binB; fi
-        (set -o pipefail; "$fn" "$bundle" "$bin") > "$outdir/$name.$side.txt" 2>&1
+        (set -o pipefail; "$fn" "$bundle" "$bin") > "$outdir/$name.$side.txt" 2> "$outdir/$name.$side.err"
         st=$?
-        if [ $st != 0 ]; then
+        if [ $st != 0 ] || [ -s "$outdir/$name.$side.err" ]; then
+            # a failure or an error message: the check didn't run correctly
             printf '  %-22s ERROR on %s (exit %s)\n' "$name" "$side" "$st"
-            sed -e 's/^/      /' "$outdir/$name.$side.txt" | head -10
+            sed -e 's/^/      /' "$outdir/$name.$side.err" "$outdir/$name.$side.txt" | head -10
             broken=1
         elif [ -s "$outdir/$name.$side.txt" ]; then
             printf '  %-22s %s: PROBLEM\n' "$name" "$side"
@@ -108,8 +120,17 @@ problems() {
     done
 }
 
+# the tools every check needs (the per-platform tools are checked below)
+for t in find sort awk sed diff grep; do command -v $t >/dev/null 2>&1 || { echo "error: missing tool: $t"; exit 2; }; done
 binA=$(binary_of "$A")
 binB=$(binary_of "$B")
+for bin in "$binA" "$binB"; do
+    case $bin in *$'\n'*)
+        echo "error: more than one Contents/<arch>/*.ofx binary (only single-binary bundles are supported):"
+        printf '  %s\n' "$bin"
+        exit 2 ;;
+    esac
+done
 echo "A: $A"
 echo "   binary: ${binA#"$A"/}"
 echo "B: $B"
@@ -126,14 +147,15 @@ if command -v sha256sum >/dev/null 2>&1; then sha256() { sha256sum "$@"; }; elif
 if stat --version >/dev/null 2>&1; then mode_of() { stat -c '%a' "$1"; }; else mode_of() { stat -f '%Lp' "$1"; }; fi
 
 files() { # relative path, type and link target of every file, including the macOS signature seal
-    (cd "$1" && find . -print | LC_ALL=C sort | while IFS= read -r f; do
-        if [ -L "$f" ]; then echo "link $f -> $(readlink "$f")"; elif [ -d "$f" ]; then echo "dir $f"; else echo "file $f"; fi
-    done)
+    # (the loops exit with the status of their first failure, which pipefail passes on)
+    (cd "$1" && find . -print | LC_ALL=C sort | { st=0; while IFS= read -r f; do
+        if [ -L "$f" ]; then l=$(readlink "$f") || st=1; echo "link $f -> $l"; elif [ -d "$f" ]; then echo "dir $f"; else echo "file $f"; fi
+    done; exit "$st"; })
 }
 plist() { cat "$1/Contents/Info.plist"; }
 resources() {
     [ -d "$1/Contents/Resources" ] || { echo "(no Resources)"; return 0; }
-    (cd "$1/Contents" && find Resources -type f | LC_ALL=C sort | while IFS= read -r f; do sha256 "$f"; done)
+    (cd "$1/Contents" && find Resources -type f | LC_ALL=C sort | { st=0; while IFS= read -r f; do sha256 "$f" || st=1; done; exit "$st"; })
 }
 mode() { mode_of "$2"; }
 
@@ -147,17 +169,23 @@ compare binary-mode mode
 echo
 echo "== binary"
 if [ "$os" = Darwin ]; then
-    if need nm otool; then
+    if need nm otool file; then
         exports() { nm -gU "$2" | awk '{print $NF}' | LC_ALL=C sort; }
-        libs() { otool -L "$2" | tail -n +2 | awk '{print $1}' | LC_ALL=C sort; }
+        # otool prints a header line ending in ':' per file, or per architecture in universal binaries
+        libs() { otool -L "$2" | sed -e '/:$/d' | awk '{print $1}' | LC_ALL=C sort -u; }
         rpaths() { otool -l "$2" | awk '/LC_RPATH/{getline; getline; print $2}'; }
-        # absolute library references outside the bundle and the system, in every Mach-O file of the bundle
+        # absolute library references and rpaths outside the bundle and the system, in every Mach-O file of the bundle
+        # (a library's own install name, otool -D, isn't a reference)
         outside() {
-            local f
-            find "$1/Contents" -type f -print | LC_ALL=C sort | while IFS= read -r f; do
-                file -b "$f" | grep -q Mach-O || continue
-                otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/' | grep -vE '^/(usr/lib|System)/' || true
-            done | LC_ALL=C sort -u
+            local f id deps rp
+            find "$1/Contents" -type f -print | LC_ALL=C sort | { st=0; while IFS= read -r f; do
+                file -b "$f" | grep Mach-O >/dev/null || continue
+                id=$(otool -D "$f" | sed -e '/:$/d' | sed -n 1p) || st=1
+                deps=$(otool -L "$f" | sed -e '/:$/d' | awk '{print $1}') || st=1
+                rp=$(otool -l "$f" | awk '/LC_RPATH/{getline; getline; print $2}') || st=1
+                printf '%s\n' "$deps" | grep -vxF -- "${id:-/}" | grep -E '^/' | grep -vE '^/(usr/lib|System)/' | sed -e 's/^/library /'
+                printf '%s\n' "$rp" | grep -E '^/' | grep -vE '^/(usr/lib|System)/' | sed -e 's/^/rpath /'
+            done; exit "$st"; } | LC_ALL=C sort -u
         }
         compare exported-symbols exports
         compare linked-libraries libs
@@ -171,12 +199,14 @@ if [ "$os" = Darwin ]; then
 else
     if need readelf ldd; then
         exports() {
-            if command -v nm >/dev/null 2>&1; then nm -D --defined-only "$2" | awk 'NF >= 3 {print $NF}'; else readelf --dyn-syms -W "$2" | awk '$7 != "UND" && $5 == "GLOBAL" {print $8}'; fi | LC_ALL=C sort -u
+            if command -v nm >/dev/null 2>&1; then nm -D --defined-only "$2" | awk 'NF >= 3 {print $NF}'; else readelf --dyn-syms -W "$2" | awk '$7 != "UND" && $5 != "LOCAL" && NF >= 8 {print $8}'; fi | LC_ALL=C sort -u
         }
-        needed() { readelf -d "$2" | awk '/\(NEEDED\)/{print $NF}' | tr -d '[]' | LC_ALL=C sort; }
-        rpaths() { readelf -d "$2" | awk '/\((RPATH|RUNPATH)\)/{print $2, $NF}' | tr -d '[]'; }
-        soname() { readelf -d "$2" | awk '/\(SONAME\)/{print $NF}' | tr -d '[]'; }
-        unresolved() { env -u LD_LIBRARY_PATH ldd "$2" | { grep -E 'not found' || true; } | awk '{print $1}' | LC_ALL=C sort; }
+        # the value is between brackets, and may contain spaces
+        needed() { readelf -d "$2" | sed -n -E 's/.*\(NEEDED\).*\[(.*)\]$/\1/p' | LC_ALL=C sort; }
+        rpaths() { readelf -d "$2" | sed -n -E 's/.*\((RPATH|RUNPATH)\).*\[(.*)\]$/\1 \2/p'; }
+        soname() { readelf -d "$2" | sed -n -E 's/.*\(SONAME\).*\[(.*)\]$/\1/p'; }
+        # ldd's warnings (e.g. no execute permission) aren't problems; its failures are (exit status, pipefail)
+        unresolved() { env -u LD_LIBRARY_PATH ldd "$2" 2>/dev/null | { grep -E 'not found' || true; } | awk '{print $1}' | LC_ALL=C sort; }
         compare exported-symbols exports
         compare needed-libraries needed
         compare rpath rpaths
@@ -192,6 +222,7 @@ fi
 echo
 echo "== plug-ins loaded (RTLD_NOW, no LD_LIBRARY_PATH/DYLD_*)"
 read -r -a cxx <<< "${CXX:-c++}"
+if [ ${#cxx[@]} = 0 ]; then echo "error: CXX is blank"; exit 2; fi
 if need "${cxx[0]}"; then
     verify="$outdir/verify_plugin_loads"
     ldl=""
@@ -206,7 +237,7 @@ if need "${cxx[0]}"; then
         # the checker's output and exit status are compared: a bundle that fails to load differs from one that loads
         load() { env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$verify" "$2" 2>&1 | grep -v '^$'; echo "exit status: ${PIPESTATUS[0]}"; }
         compare plug-ins load
-        grep -h -E "Num_plugins|exit status" "$outdir/plug-ins.A.txt" "$outdir/plug-ins.B.txt" | sed -e 's/^/      /'
+        for side in A B; do grep -E "Num_plugins|exit status" "$outdir/plug-ins.$side.txt" | sed -e "s/^/      $side: /"; done
         if ! grep -q "^exit status: 0$" "$outdir/plug-ins.A.txt" || ! grep -q "^exit status: 0$" "$outdir/plug-ins.B.txt"; then
             echo "  a bundle failed to load"
             differ=1
