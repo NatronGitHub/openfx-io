@@ -385,6 +385,34 @@ enum X26xSpeedEnum {
 #define kParamWriteNCLCHint \
     "Write nclc data in the colr atom of the video header. QuickTime only."
 
+#define kParamOptionsSyntaxHint                                                                                                              \
+    "Syntax: a list of key=value pairs, separated by colons or spaces, e.g. \"g=1:bf=0\" or \"g=1 bf=0\". "                                 \
+    "This is FFmpeg's own option string syntax (see av_dict_parse_string), not the ffmpeg command line: write \"g=1\", not \"-g 1\". "     \
+    "There must be no space after '=', and values cannot be empty (\"tune= preset=slow\" is an error). " \
+    "A value that contains a colon, a space or a quote must be enclosed in single quotes (inside which a backslash is literal), "          \
+    "or each such character escaped with a backslash, e.g. x264-params='keyint=1:bframes=0'. Double quotes are not supported.\n"          \
+    "These options are applied last, so they override the values that the plug-in sets from its own parameters. "                         \
+    "Options that the encoder or muxer does not apply (unknown keys, or generic options that it ignores) are reported in a warning "      \
+    "message when the render starts (which may show a dialog in interactive hosts), and the file is written without them. "              \
+    "An option that has an invalid value, or a syntax error, makes the render fail."
+
+#define kParamCodecOptions "codecOptions"
+#define kParamCodecOptionsLabel "Codec Options"
+#define kParamCodecOptionsHint                                                                                                                   \
+    "Extra options for the video encoder, passed to avcodec_open2(). Both generic options (e.g. g, bf, b, qmin, flags) and the private "       \
+    "options of the selected encoder (e.g. preset, tune, crf, x264-params for libx264; vendor for prores_ks) are accepted. "                    \
+    "See https://ffmpeg.org/ffmpeg-codecs.html for the list of options. They override the options set by the plug-in, "                        \
+    "e.g. g overrides Keyframe Interval, bf overrides Max B-Frames, b overrides Bitrate, and crf overrides Output Quality.\n" kParamOptionsSyntaxHint
+
+#define kParamFormatOptions "formatOptions"
+#define kParamFormatOptionsLabel "Format Options"
+#define kParamFormatOptionsHint                                                                                                                  \
+    "Extra options for the muxer (container format), passed to avformat_init_output()/avformat_write_header(), "                                \
+    "e.g. \"movflags=+frag_keyframe\" or \"write_tmcd=0\" for QuickTime/MP4. "                                                                   \
+    "See https://ffmpeg.org/ffmpeg-formats.html for the list of options. They override the options set by the plug-in. "                       \
+    "The plug-in sets movflags to write_colr (plus faststart if Fast Start is checked): a movflags value that starts with + or - is "          \
+    "appended to these flags (e.g. \"movflags=+frag_keyframe\" keeps write_colr), any other value replaces them.\n" kParamOptionsSyntaxHint
+
 #define kParamLibraryInfo "libraryInfo"
 #define kParamLibraryInfoLabel "FFmpeg Info...", "Display information about the underlying library."
 
@@ -1003,6 +1031,159 @@ MyAVFrame::deallocateAVFrameData()
     }
 }
 
+// Owns an AVDictionary, so that it is freed on every path, including exceptions.
+class AVDictionaryHolder
+{
+public:
+    AVDictionaryHolder() = default;
+    AVDictionaryHolder(const AVDictionaryHolder&) = delete;
+    AVDictionaryHolder& operator=(const AVDictionaryHolder&) = delete;
+    ~AVDictionaryHolder() { av_dict_free(&_dict); }
+
+    AVDictionary* get() const { return _dict; }
+    AVDictionary** ptr() { return &_dict; }
+
+private:
+    AVDictionary* _dict = nullptr;
+};
+
+static bool
+isOptionSeparator(char c)
+{
+    return c == ':' || c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// Normalize a user option string (see kParamOptionsSyntaxHint) to the strict syntax of
+// av_dict_parse_string(dict, str, "=", ":", 0), whose tokens are read by av_get_token():
+// - unquoted runs of separators (colons and whitespace) become a single colon, and leading and
+//   trailing separators are removed, so that "g=1 bf=0" and "g=1::bf=0:" both mean "g=1:bf=0";
+// - whitespace between a key and its '=' is removed ("g =1" is "g=1");
+// - a separator (or the end of the string) right after '=' is an error: av_dict_parse_string()
+//   rejects empty values, and dropping the separator would make "a= b=1" mean {a: "b=1"};
+// - quoting is kept verbatim for av_get_token(): outside single quotes, a backslash escapes the
+//   next character; inside single quotes, every character (including a backslash) is literal.
+// Double quotes are not a quoting character for av_get_token(), so they are rejected.
+// Returns false and sets *error on error.
+static bool
+normalizeOptionString(const string& str,
+                      string* out,
+                      string* error)
+{
+    out->clear();
+    bool quoted = false;
+    bool pendingSep = false; // unquoted separators were skipped since the last emitted character
+    bool pendingColon = false; // ... and one of them was a colon
+    size_t keyStart = 0; // position in *out of the current key
+    bool inValue = false; // the '=' of the current pair was emitted
+    bool afterEqual = false; // the last emitted character is the '=' of the current pair
+    auto missingValue = [&]() {
+        *error = "missing value after \"" + out->substr(keyStart) + "\" (there must be no space after '=', and values cannot be empty)";
+
+        return false;
+    };
+
+    for (size_t i = 0; i < str.size(); ++i) {
+        const char c = str[i];
+        if (quoted) {
+            *out += c;
+            if (c == '\'') {
+                quoted = false;
+            }
+            continue;
+        }
+        if (isOptionSeparator(c)) {
+            if (afterEqual) {
+                return missingValue();
+            }
+            pendingSep = true;
+            pendingColon = pendingColon || (c == ':');
+            continue;
+        }
+        if (c == '"') {
+            *error = "double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'";
+
+            return false;
+        }
+        // whitespace before '=' is dropped; any other separator is kept as a colon
+        if (pendingSep && !out->empty() && (c != '=' || pendingColon)) {
+            *out += ':';
+            keyStart = out->size();
+            inValue = false;
+        }
+        pendingSep = false;
+        pendingColon = false;
+        *out += c;
+        afterEqual = (c == '=' && !inValue);
+        inValue = inValue || afterEqual;
+        if (c == '\\') {
+            if (i + 1 < str.size()) {
+                *out += str[++i];
+            }
+        } else if (c == '\'') {
+            quoted = true;
+        }
+    }
+    if (afterEqual) {
+        return missingValue();
+    }
+
+    return true;
+}
+
+// Parse a user option string (see kParamOptionsSyntaxHint) into dict.
+// Returns false and sets *error on a syntax error.
+static bool
+parseOptionString(const string& str,
+                  AVDictionary** dict,
+                  string* error)
+{
+    string normalized;
+    if (!normalizeOptionString(str, &normalized, error)) {
+        return false;
+    }
+    if (normalized.empty()) {
+        return true;
+    }
+    int ret = av_dict_parse_string(dict, normalized.c_str(), "=", ":", 0);
+    if (ret < 0) {
+        char szError[1024] = { 0 };
+        av_strerror(ret, szError, sizeof(szError));
+        *error = string("expected key=value pairs separated by colons or spaces, with no space after '=' (") + szError + ")";
+
+        return false;
+    }
+
+    return true;
+}
+
+// "key=value, key=value" for the entries of dict.
+// If userOptions is not NULL, only the keys of dict that are also in userOptions are listed, with
+// the value from userOptions (the plug-in may have merged its own value, e.g. for movflags).
+static string
+dictToString(const AVDictionary* dict,
+             const AVDictionary* userOptions = nullptr)
+{
+    string ret;
+    for (const AVDictionaryEntry* e = av_dict_iterate(dict, nullptr); e; e = av_dict_iterate(dict, e)) {
+        const char* value = e->value;
+        if (userOptions) {
+            const AVDictionaryEntry* u = av_dict_get(userOptions, e->key, nullptr, 0);
+            if (!u) {
+                continue;
+            }
+            value = u->value;
+        }
+        if (!ret.empty()) {
+            ret += ", ";
+        }
+        ret += e->key;
+        ret += '=';
+        ret += value;
+    }
+
+    return ret;
+}
+
 class WriteFFmpegPlugin
     : public GenericWriterPlugin {
 private:
@@ -1100,7 +1281,7 @@ private:
     void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
     void configureTimecodeStream(AVCodec* avCodec, AVStream* avStream);
     void addStream(AVFormatContext* avFormatContext, enum AVCodecID avCodecId, const AVCodec** pavCodec, MyAVStream* myStreamOut);
-    int openCodec(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myAVStream);
+    int openCodec(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myAVStream, AVDictionary** options = nullptr);
     int writeAudio(AVFormatContext* avFormatContext, AVStream* avStream, bool flush);
     int writeVideo(AVFormatContext* avFormatContext, MyAVStream* myAVStream, bool flush, double time, const float* pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
     int writeToFile(AVFormatContext* avFormatContext, bool finalise, double time, const float* pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
@@ -1170,6 +1351,8 @@ private:
     BooleanParam* _writeTimecode;
 #endif
     BooleanParam* _fastStart;
+    StringParam* _codecOptions;
+    StringParam* _formatOptions;
 
     // we use shared_ptr here as both frames can point to the same AVFrame (ProRes, DNxHD case)
     std::shared_ptr<AVFrame> inputFrame_;
@@ -1431,6 +1614,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
 #if OFX_FFMPEG_MBDECISION
     , _mbDecision(nullptr)
 #endif
+    , _codecOptions(nullptr)
+    , _formatOptions(nullptr)
 {
     _rodPixel.x1 = _rodPixel.y1 = 0;
     _rodPixel.x2 = _rodPixel.y2 = -1;
@@ -1466,6 +1651,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     _writeTimecode = fetchBooleanParam(kParamWriteTimeCode);
 #endif
     _fastStart = fetchBooleanParam(kParamFastStart);
+    _codecOptions = fetchStringParam(kParamCodecOptions);
+    _formatOptions = fetchStringParam(kParamFormatOptions);
 
     // finally
     syncPrivateData();
@@ -3038,7 +3225,8 @@ WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
 int
 WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
                              const AVCodec* avCodec,
-                             MyAVStream* myAVStream)
+                             MyAVStream* myAVStream,
+                             AVDictionary** options)
 {
     assert(avFormatContext && avCodec && myAVStream && myAVStream->stream);
     if (!avFormatContext || !avCodec || !myAVStream || !myAVStream->stream) {
@@ -3061,12 +3249,20 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
             return -1;
         }
     } else if (AVMEDIA_TYPE_VIDEO == avCodecContext->codec_type) {
-        int error = avcodec_open2(avCodecContext, avCodec, nullptr);
+        // The user options (if any) are applied by avcodec_open2() after all the options that were set
+        // on avCodecContext and its priv_data, so they take precedence. Recognized options are removed
+        // from *options.
+        const bool hasOptions = options && av_dict_count(*options) > 0;
+        int error = avcodec_open2(avCodecContext, avCodec, options);
         if (error < 0) {
             // Report the error.
             char szError[1024] = { 0 };
             av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Could not open video codec: ") + szError);
+            string msg = string("Could not open video codec: ") + szError;
+            if (hasOptions) {
+                msg += string("\nCheck the values in ") + kParamCodecOptionsLabel + ".";
+            }
+            setPersistentMessage(Message::eMessageError, "", msg);
 
             return -4;
         }
@@ -3624,6 +3820,29 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // first, check that the codec setting is OK
     checkCodec();
 
+    // Parse the user codec and format options before allocating anything, so that a syntax error
+    // is reported immediately. The holders free the dictionaries on every path.
+    AVDictionaryHolder codecOptions;
+    AVDictionaryHolder formatOptions;
+    {
+        StringParam* params[2] = { _codecOptions, _formatOptions };
+        const char* labels[2] = { kParamCodecOptionsLabel, kParamFormatOptionsLabel };
+        AVDictionary** dicts[2] = { codecOptions.ptr(), formatOptions.ptr() };
+        for (int i = 0; i < 2; ++i) {
+            string str;
+            string error;
+            params[i]->getValue(str);
+            if (!parseOptionString(str, dicts[i], &error)) {
+                setPersistentMessage(Message::eMessageError, "", string("Syntax error in ") + labels[i] + " \"" + str + "\": " + error);
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+        }
+    }
+    // Options that were not applied by the encoder or the muxer, reported once the file is open.
+    string unrecognizedOptions;
+
     ////////////////////                        ////////////////////
     //////////////////// INITIALIZE FORMAT       ////////////////////
 
@@ -3872,11 +4091,17 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 #if OFX_FFMPEG_PRINT_CODECS
         std::cout << "Format: " << _formatContext->oformat->name << " Codec: " << videoCodec->name << " rgbBufferPixelFormat: " << av_get_pix_fmt_name(rgbBufferPixelFormat) << " targetPixelFormat: " << av_get_pix_fmt_name(targetPixelFormat) << " infoBitDepth: " << _infoBitDepth->getValue() << " Profile: " << _streamVideo->codec->profile << std::endl;
 #endif //  FFMPEG_PRINT_CODECS
-        if (openCodec(_formatContext, videoCodec, &_streamVideo) < 0) {
+        // avcodec_open2() removes the options that it recognizes from the dictionary.
+        AVDictionaryHolder codecOptionsLeft;
+        av_dict_copy(codecOptionsLeft.ptr(), codecOptions.get(), 0);
+        if (openCodec(_formatContext, videoCodec, &_streamVideo, codecOptionsLeft.ptr()) < 0) {
             freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
+        }
+        if (av_dict_count(codecOptionsLeft.get()) > 0) {
+            unrecognizedOptions += string(kParamCodecOptionsLabel) + " not applied by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
         }
 
         avcodec_parameters_from_context(_streamVideo.stream->codecpar, avCodecContext);
@@ -3902,36 +4127,59 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         // Muxer options (movflags: write_colr / faststart) must be passed to the muxer
         // initialization so they are actually applied; they are consumed during init.
-        AVDictionary* header_params = nullptr;
-        av_dict_set(&header_params, "movflags", movflags.c_str(), 0);
+        AVDictionaryHolder header_params;
+        av_dict_set(header_params.ptr(), "movflags", movflags.c_str(), 0);
+
+        // The user format options override the plug-in options, except that a relative movflags
+        // value ("+flag" or "-flag") is appended to the plug-in movflags.
+        for (const AVDictionaryEntry* e = av_dict_iterate(formatOptions.get(), nullptr); e; e = av_dict_iterate(formatOptions.get(), e)) {
+            if (!strcmp(e->key, "movflags") && (e->value[0] == '+' || e->value[0] == '-')) {
+                av_dict_set(header_params.ptr(), e->key, (movflags + e->value).c_str(), 0);
+            } else {
+                av_dict_set(header_params.ptr(), e->key, e->value, 0);
+            }
+        }
+        const bool hasFormatOptions = av_dict_count(formatOptions.get()) > 0;
 
         // avformat_init_output may set the "encoder" metadata (see libavformat/muc.c:init_muxer)
-        int error = avformat_init_output(_formatContext, &header_params);
+        // It applies the options and removes the recognized ones from header_params
+        // (avformat_write_header does not initialize the muxer again).
+        int error = avformat_init_output(_formatContext, header_params.ptr());
         if (error < 0) {
             // Report the error.
             char szError[1024] = { 0 };
             av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Unable to initialize output: ") + szError);
-            av_dict_free(&header_params);
+            setPersistentMessage(Message::eMessageError, "", string("Unable to initialize output: ") + szError + (hasFormatOptions ? string("\nCheck the values in ") + kParamFormatOptionsLabel + "." : string()));
             freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
         }
+        // Only report the user options: non-QuickTime muxers ignore the plug-in movflags.
+        if (hasFormatOptions) {
+            string left = dictToString(header_params.get(), formatOptions.get());
+            if (!left.empty()) {
+                unrecognizedOptions += string(kParamFormatOptionsLabel) + " not applied by the " + _formatContext->oformat->name + " muxer: " + left + "\n";
+            }
+        }
 
-        error = avformat_write_header(_formatContext, &header_params);
+        error = avformat_write_header(_formatContext, header_params.ptr());
         if (error < 0) {
             // Report the error.
             char szError[1024] = { 0 };
             av_strerror(error, szError, sizeof(szError));
             setPersistentMessage(Message::eMessageError, "", string("Unable to write file header: ") + szError);
-            av_dict_free(&header_params);
             freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
         }
-        av_dict_free(&header_params);
+
+        if (!unrecognizedOptions.empty()) {
+            // Not a persistent message: GenericWriterPlugin::render() clears it after each frame.
+            // This is sent during beginSequenceRender, and may pop up a dialog in interactive hosts.
+            sendMessage(Message::eMessageWarning, "", unrecognizedOptions + "These options were ignored.");
+        }
 
         // Special behaviour.
         // Valid on Aug 2014 for ffmpeg v2.1.4
@@ -5700,6 +5948,30 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             }
         }
 #endif
+        ///////////Codec Options
+        {
+            StringParamDescriptor* param = desc.defineStringParam(kParamCodecOptions);
+            param->setLabel(kParamCodecOptionsLabel);
+            param->setHint(kParamCodecOptionsHint);
+            param->setStringType(eStringTypeSingleLine);
+            param->setAnimates(false);
+            param->setParent(*group);
+            if (page) {
+                page->addChild(*param);
+            }
+        }
+        ///////////Format Options
+        {
+            StringParamDescriptor* param = desc.defineStringParam(kParamFormatOptions);
+            param->setLabel(kParamFormatOptionsLabel);
+            param->setHint(kParamFormatOptionsHint);
+            param->setStringType(eStringTypeSingleLine);
+            param->setAnimates(false);
+            param->setParent(*group);
+            if (page) {
+                page->addChild(*param);
+            }
+        }
     }
     {
         PushButtonParamDescriptor* param = desc.definePushButtonParam(kParamLibraryInfo);

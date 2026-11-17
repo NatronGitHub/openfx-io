@@ -103,8 +103,8 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-layers test-runscript clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test runscript_win32_test
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-runscript clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test runscript_win32_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -116,18 +116,28 @@ ofx_entrypoints_test: ofx_entrypoints_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 ofx_actions_test: ofx_actions_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
 
-ofx_render_test: ofx_render_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
-	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
+ofx_render_test: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
 # includes ../OIIO/ReadOIIO.cpp (to reach its file-static helpers), so it's left out of the sources
 oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGIN_SRCS)) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
 
+# GenericReader and its in-repo dependencies only: the test defines its own readers
+READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/GenericOCIO.cpp \
+    ../IOSupport/SequenceParsing/SequenceParsing.cpp \
+    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
+    ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp
+
+# -pthread: the test uses std::thread
+reader_hooks_test: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
 runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers test-runscript
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-runscript
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -154,10 +164,15 @@ test-runscript: runscript_win32_test
 test-layers: oiio_layers_test
 	./oiio_layers_test
 
+# GenericReader's isOutputFrameVarying() and getRenderTime() hooks (#96), on test readers
+test-reader-hooks: reader_hooks_test
+	OCIO=$(CURDIR)/test.ocio ./reader_hooks_test $(CURDIR)/.reader_hooks
+
 clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov ofxTestLog.txt \
+	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi ofxTestLog.txt \
 	       oiio_layers_test oiio_layers_test.dSYM \
+	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       runscript_win32_test runscript_win32_test.dSYM

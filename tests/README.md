@@ -11,6 +11,7 @@ make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
+make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
 make test-runscript # RunScript on MS Windows: quoting, program/batch/shebang launch (no-op elsewhere)
 ```
 
@@ -61,7 +62,7 @@ OpenMP dependency — it is not needed to exercise the entry points.
 
 ### 1b. `test-render` — full encode/decode round-trip through the plugins
 
-`ofx_render_test.cpp` extends the in-process host with param *values*, image
+`ofx_render_test.cpp` uses an extended in-process host (`ofx_test_host.h`) with param *values*, image
 clips with pixel buffers, and the `FnOfxImageEffectPlaneSuiteV2` so it can drive
 the real render pipeline, linked directly (no host binary):
 
@@ -74,6 +75,17 @@ the real render pipeline, linked directly (no host binary):
   (returns the encoded 128x128) -> `render` each frame into a host output image.
   The decoded gray levels ramp 0.091..0.909 (== N/11), i.e. the decode
   round-trips the encode.
+* **WriteFFmpeg Codec Options / Format Options** (issue #71), in an MP4: encode
+  MPEG-4 part 2 with Keyframe Interval = 5 (some P frames), then with the codec
+  option `g=1`, which must override it (every frame decoded by libavcodec in
+  the test is an I frame), and the format option `movflags=+faststart` (the
+  `moov` atom must precede `mdat`). With Fast Start checked,
+  `movflags=+use_metadata_tags` must be appended to the plug-in movflags
+  (faststart kept, `mdta` keys written), and `movflags=use_metadata_tags` must
+  replace them. Options the encoder or muxer does not apply must be reported
+  in a warning (with the user's value), and syntax errors (an empty value,
+  double quotes) and invalid values (`g=abc`, `write_tmcd=abc`) must make
+  `beginSequenceRender` fail.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
@@ -86,6 +98,31 @@ the real render pipeline, linked directly (no host binary):
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
 generates its own media (WriteFFmpeg), so it needs no external clip.
+
+### 1c. `test-reader-hooks` — GenericReader's hooks for animated reader params
+
+`reader_hooks_test.cpp` defines three minimal test readers (`GenericReaderPlugin`
+subclasses reading fake files that only need to exist: still images, or "video"
+files of 10 frames) and drives them through the OFX actions with the in-process
+host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies only:
+
+* **`isOutputFrameVarying()`**: after `getClipPreferences`, the output
+  `kOfxImageEffectFrameVarying` is 0 for a still image held before and after with
+  the default implementation, and 1 when the reader overrides it to return true.
+* **`getRenderTime()`**: `decode()` records it and its `time` argument, and fills
+  the image with a value computed from it (like a reader evaluating an animated
+  param at the render time). For renders at integer and non-integer times, of a
+  held still image and of a video with a time offset and a restricted frame
+  range, `getRenderTime()` is the render time while `time` is the sequence time,
+  and the output image depends on the render time.
+* The previous value is restored when `render()` returns or throws, including for
+  a render nested in another one's `decode()` on the same thread.
+* Two threads rendering different times concurrently (synchronized inside
+  `decode()`) each see their own render time.
+* The same through `decodePlane()`, with a multi-planar test reader (the host
+  then declares `kFnOfxImageEffectPropMultiPlanar`).
+
+Like `test-render`, it sets `OCIO=test.ocio`.
 
 ### 2. `test-ffmpeg` — FFmpeg reader core (direct coverage of the reader fixes)
 
@@ -116,7 +153,9 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 | File | Purpose |
 |------|---------|
 | `ofx_actions_test.cpp`      | In-process OFX host + action-dispatch integration test (all plugins). |
+| `ofx_test_host.h`           | Minimal in-process OFX host (suites, param values, image clips) shared by the render and reader-hook tests. |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
+| `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |
@@ -124,7 +163,7 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers`. |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks`. |
 
 ## Notes / limitations
 
