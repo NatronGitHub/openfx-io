@@ -2,7 +2,8 @@
 #
 # The shared OFX plug-in CMake API (NatronGitHub/Natron#1181) for openfx-io:
 #
-#   add_ofx_plugin(), ofx_plugin_resources(), ofx_target_openmp(), ofx_deploy_bundle(), ARCHDIR, the targets
+#   add_ofx_plugin() (with RPATH), ofx_plugin_resources(), ofx_target_openmp(), ofx_deploy_bundle(),
+#   ofx_target_filter_missing_includes(), OFX_PLUGIN_RPATH, ARCHDIR, the targets
 #   openfx::Api and openfx::Support, and the cache variables OFX_CXX_STANDARD, OFX_USE_OPENMP, OFX_DEPLOY_BUNDLES,
 #   PLUGIN_INSTALLDIR: from add_subdirectory(openfx) (openfx/cmake/OpenFX.cmake).
 #
@@ -20,7 +21,8 @@ if(NOT OFXS_EXT_PATH)
   set(OFXS_EXT_PATH "${CMAKE_SOURCE_DIR}/SupportExt")
 endif()
 
-# openfx's plug-in API (NatronGitHub/openfx#125): openfx::Api, openfx::Support and OpenFX.cmake; no HostSupport and no
+# openfx's plug-in API (NatronGitHub/openfx#125, and #127 for add_ofx_plugin(RPATH) and
+# ofx_target_filter_missing_includes(), which this checks): openfx::Api, openfx::Support and OpenFX.cmake; no HostSupport and no
 # install rules for a subproject
 file(STRINGS "${OPENFX_PATH}/cmake/OpenFX.cmake" _ofx_has_api REGEX "^function\\(ofx_target_filter_missing_includes")
 if(NOT _ofx_has_api)

@@ -260,11 +260,18 @@ ofx_target_filter_missing_includes(OpenColorIO::OpenColorIO OpenEXR::OpenEXR Ope
 # The IO.ofx bundle (IO/Makefile)
 
 # Install rpath (Linux, FreeBSD): add_ofx_plugin's $ORIGIN/../../Libraries, then the directories of the linked
-# libraries (INSTALL_RPATH_USE_LINK_PATH), which skips the libraries of the source and build trees, e.g. CI's
-# SeExprBuild: add SeExpr's directory explicitly
+# libraries (INSTALL_RPATH_USE_LINK_PATH), which skips system directories and the libraries of the source and build
+# trees, e.g. CI's SeExprBuild: add SeExpr's directory explicitly when it's in one of those trees. (Other
+# dependencies installed in the source or build tree need OFX_PLUGIN_RPATH.) Not on macOS, where the libraries have
+# absolute install names (and ofx_deploy_bundle rewrites them).
 set(_io_extra_rpath "")
-if(OFX_IO_WITH_SEEXPR AND TARGET SeExpr::SeExpr)
-  get_filename_component(_io_extra_rpath "${SEEXPR_LIBRARY}" DIRECTORY)
+if(UNIX AND NOT APPLE AND OFX_IO_WITH_SEEXPR AND TARGET SeExpr::SeExpr)
+  get_filename_component(_d "${SEEXPR_LIBRARY}" DIRECTORY)
+  string(FIND "${_d}/" "${CMAKE_SOURCE_DIR}/" _in_src)
+  string(FIND "${_d}/" "${CMAKE_BINARY_DIR}/" _in_bin)
+  if(_in_src EQUAL 0 OR _in_bin EQUAL 0)
+    set(_io_extra_rpath "${_d}")
+  endif()
 endif()
 add_ofx_plugin(IO INFO_PLIST IO/Info.plist RPATH ${_io_extra_rpath})
 # (add_ofx_plugin links openfx::Api only)
