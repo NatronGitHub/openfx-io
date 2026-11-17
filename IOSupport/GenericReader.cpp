@@ -2003,8 +2003,12 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
 
     if (filename.empty()) {
         // if the file name is set to an empty string,
-        // reset so that values are automatically set on next call to changedFilename()
-        _guessedParams->resetToDefault();
+        // reset so that values are automatically set on next call to changedFilename().
+        // (not resetToDefault(), which calls paramDeleteAllKeys: the param doesn't animate, and this is also called
+        // from createInstance, where a new instance has the default value already)
+        if (_guessedParams->getValue()) {
+            _guessedParams->setValue(false);
+        }
 
         return;
     }

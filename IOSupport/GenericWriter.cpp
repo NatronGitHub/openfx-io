@@ -2131,8 +2131,12 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
 
     if (filename.empty()) {
         // if the file name is set to an empty string,
-        // reset so that values are automatically set on next call to outputFileChanged()
-        _guessedParams->resetToDefault();
+        // reset so that values are automatically set on next call to outputFileChanged().
+        // (not resetToDefault(), which calls paramDeleteAllKeys: the param doesn't animate, and this is also called
+        // from createInstance, where a new instance has the default value already)
+        if (_guessedParams->getValue()) {
+            _guessedParams->setValue(false);
+        }
 
         return;
     }
