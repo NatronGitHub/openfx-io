@@ -1567,8 +1567,32 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
 
     // we found a color-space hint, use it to do the color-space conversion
     const char* colorSpaceStr = NULL;
+    float gamma = imagespec.get_float_attribute("oiio:Gamma");
     if (colorSpaceValue) {
         colorSpaceStr = *(const char**)colorSpaceValue->data();
+        // OpenImageIO 3 names the color spaces with the color interop IDs (e.g. srgb_rec709_scene), OpenImageIO 2
+        // with sRGB, Linear, GammaCorrected (and oiio:Gamma), AdobeRGB...: map the usual ones to the latter, which
+        // are mapped to the color spaces of the usual OCIO configs below, unless the config has them
+        bool hasIt = false;
+#ifdef OFX_IO_USING_OCIO
+        hasIt = colorSpaceStr && ocio->hasColorspace(colorSpaceStr);
+#endif
+        if (colorSpaceStr && !hasIt) {
+            const string cs = colorSpaceStr;
+            if (cs == "srgb_rec709_scene" || cs == "srgb_rec709_display" || cs == "srgb" || cs == "srgb_texture" || cs == "srgb_tx") {
+                colorSpaceStr = "sRGB";
+            } else if (cs == "lin_rec709_scene" || cs == "lin_rec709" || cs == "lin_srgb" || cs == "linear") {
+                colorSpaceStr = "Linear";
+            } else if (cs == "g22_rec709_scene" || cs == "g22_rec709_display" || cs == "g22_rec709") {
+                colorSpaceStr = "GammaCorrected";
+                gamma = 2.2f;
+            } else if (cs == "g18_rec709_scene" || cs == "g18_rec709") {
+                colorSpaceStr = "GammaCorrected";
+                gamma = 1.8f;
+            } else if (cs == "g22_adobergb_scene" || cs == "g22_adobergb_display") {
+                colorSpaceStr = "AdobeRGB";
+            }
+        }
     } else if (photoshopICCProfileValue) {
         const char* ICCProfileStr = *(const char**)photoshopICCProfileValue->data();
         if (!strcmp(ICCProfileStr, "HDTV (Rec. 709)") || !strcmp(ICCProfileStr, "SDTV NTSC") || !strcmp(ICCProfileStr, "SDTV PAL") || !strcmp(ICCProfileStr, "HDTV (Rec. 709) 16-235") || !strcmp(ICCProfileStr, "SDTV NTSC 16-235") || !strcmp(ICCProfileStr, "SDTV PAL 16-235") || !strcmp(ICCProfileStr, "SDTV NTSC 16-235")) {
@@ -1606,7 +1630,6 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
     }
     if (colorSpaceStr) {
         if (colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected")) {
-            float gamma = imagespec.get_float_attribute("oiio:Gamma");
             if (endsWith(filename, ".cin") || endsWith(filename, ".CIN")) {
                 // Cineon files (e.g. Kodak Digital LAD, see link below) get wrongly attributed
                 // a GammaCorrected colorspace <https://github.com/OpenImageIO/oiio/issues/1463>
@@ -1777,7 +1800,9 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
             colorSpaceStr = NULL;
         }
         if (colorSpaceStr) {
-            // unknown color-space or Linear, don't do anything
+            // unknown color-space: keep the default one (a color space that is not in the config would make
+            // rendering fail)
+            colorSpaceStr = NULL;
         }
 #endif // OFX_IO_USING_OCIO
     }
