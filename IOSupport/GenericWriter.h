@@ -224,6 +224,15 @@ namespace IO {
          **/
         virtual int getViewToRender() const { return -2; }
 
+        /**
+         * @brief Override to return true if the file holds a single view, e.g. a movie with a single video stream.
+         * Only view 0 is then encoded: view 0 is the default view of the Nuke multiview extension
+         * (kFnOfxImageEffectPropView), the left or only view in Vegas (kOfxImageEffectPropRenderView), and the
+         * main view in Natron. Rendering another view fills the output image, but does not call encode(), so the
+         * file doesn't depend on the order in which the host renders the views.
+         **/
+        virtual bool encodesMainViewOnly() const { return false; }
+
         virtual LayerViewsPartsEnum getPartsSplittingPreference() const { return eLayerViewsSinglePart; }
 
         /**
