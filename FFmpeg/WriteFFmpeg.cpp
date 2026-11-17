@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstring> // strncpy
 #include <filesystem> // std::filesystem::weakly_canonical
+#include <map>
 #include <sstream>
 #include <string>
 #ifdef DEBUG
@@ -162,12 +163,14 @@ codecPixelFormats(const AVCodec* codec)
     "The preferred pixel coding (Pref. Pixel Coding) and bit depth (Pref. Bit Depth) can be selected. This is especially useful for codecs that propose multiple pixel formats (e.g. ffv1, ffvhuff, huffyuv, jpeg2000, mjpeg, mpeg2video, vc2, libopenjpeg, png, qtrle, targa, tiff, libschroedinger, libtheora, libvpx, libvpx-vp9, libx264, libx265).\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                \
     "The pixel format is selected from the available choices for the chosen codec using the following rules:\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           \
     "- First, try to find the format with the smallest BPP (bits per pixel) that fits into the preferences.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            \
-    "- Second, If no format fits, get the format that has a BPP equal or a bit higher that the one computed from the preferences.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      \
+    "- Second, if the bit depth is not available (e.g. with a libx265 compiled for 8-bit only), get the format that fits the pixel coding and alpha preferences with the highest bit depth.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            \
+    "- Third, if no format fits, get the format that has a BPP equal or a bit higher that the one computed from the preferences.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       \
     "- Last, if no such format is found, get the format that has the highest BPP.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      \
+    "A format with alpha is only selected if Alpha is checked (or if the codec only has formats with alpha).\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           \
     "The selected pixel coding, bit depth, and BPP are displayed in the Selected Pixel Coding, Bit Depth, and BPP parameters.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          \
     "\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
     "The recommended Codec/Container configurations for encoding digital intermediates are (see also https://trac.ffmpeg.org/wiki/Encode/VFX):\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         \
-    "- ProRes inside QuickTime: all ProRes profiles are 10-bit and are intra-frame (each frame is encoded separately). Prores 4444 can also encode the alpha channel.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
+    "- ProRes inside QuickTime: all ProRes profiles are 10-bit and are intra-frame (each frame is encoded separately). ProRes 4444 and 4444 XQ can also encode the alpha channel.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      \
     "- Avid DNxHR inside QuickTime: the codec is intra-frame. DNxHR profiles are resolution-independent and are available with 8-bit or 10-bit depth. The alpha channel cannot be encoded.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             \
     "- HEVC (hev1/libx265) inside Matroska, MP4, QuickTime or MPEG-TS and Output Quality set to Lossless or Perceptually Lossless. libx265 supports 8-bit, 10-bit and 12-bit depth (if libx265 was compiled with high bit depth support). Lossless may not be playable in real-time for high resolutions. Set the Encoding Speed to Ultra Fast for faster encoding but worse compression, or Very Slow for best compression.\n" /*"- Photo JPEG inside MP4 (or QuickTime) and Global Quality set to 1: intra-frame and 8-bit. qscale=1 ensure almost lossless encoding.\n"*/ /*"- H.264 (avc1/libx264/libx264rgb) inside MP4 or QuickTime and Output Quality set to Lossless or Perceptually Lossless: 10-bit(*), and can be made intra-frame by setting Keyframe Interval to 1 and Max B-Frames to 0. Lossless may not be playable in real-time for high resolutions. Set the Encoding Speed to Ultra Fast for faster encoding but worse compression, or Very Slow for best compression.\n"*/ /*"\n"*/ /*"(*) The H.264 output may be 8-bit if libx264 was not compiled with 10-bit support. Check the information displayed by clicking on the Show Avail. button.\n"*/ \
     "\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
@@ -517,8 +520,8 @@ enum X26xSpeedEnum {
 #define kParamDNxHDCodecProfile "DNxHDCodecProfile"
 #define kParamDNxHDCodecProfileLabel "DNxHD Codec Profile"
 #define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. The stream may be resized to 1920x1080 if resolution is not supported. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it."
-#define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (12 bit, RGB / 4:4:4, 4.5:1 compression)", "dnxhr444"
-#define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (12 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
+#define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (10 bit, RGB, 4.5:1 compression)", "dnxhr444"
+#define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (10 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
 #define kParamDNxHDCodecProfileOptionHRHQ "DNxHR HQ", "DNxHR High Quality (8 bit, 4:2:2 chroma sub-sampling, 4.5:1 compression)", "dnxhrhq"
 #define kParamDNxHDCodecProfileOptionHRSQ "DNxHR SQ", "DNxHR Standard Quality (8 bit, 4:2:2 chroma sub-sampling, 7:1 compression)", "dnxhrsq"
 #define kParamDNxHDCodecProfileOptionHRLB "DNxHR LB", "DNxHR Low Bandwidth (8 bit, 4:2:2 chroma sub-sampling, 22:1 compression)", "dnxhrlb"
@@ -543,10 +546,15 @@ enum DNxHDCodecProfileEnum {
 
 #define kParamDNxHDEncodeVideoRange "DNxHDEncodeVideoRange"
 #define kParamDNxHDEncodeVideoRangeLabel "DNxHD Output Range"
-#define kParamDNxHDEncodeVideoRangeHint                                                               \
-    "When encoding using DNxHD this is used to select between full scale data range "                 \
-    "and 'video/legal' data range.\nFull scale data range is 0-255 for 8-bit and 0-1023 for 10-bit. " \
-    "'Video/legal' data range is a reduced range, 16-240 for 8-bit and 64-960 for 10-bit."
+#define kParamDNxHDEncodeVideoRangeHint                                                                              \
+    "When encoding using DNxHD this is used to select between full scale data range "                                \
+    "and 'video/legal' data range.\nFull scale data range is 0-255 for 8-bit and 0-1023 for 10-bit. "                \
+    "'Video/legal' data range is a reduced range, 16-235 (luma) and 16-240 (chroma) for 8-bit, "                     \
+    "and 64-940 (luma) and 64-960 (chroma) for 10-bit.\n"                                                            \
+    "The pixel values are written in this range, and the stream is tagged with it (in the ACLR atom in QuickTime). " \
+    "Full Range writes full-range samples tagged as \"RGB\" in the ACLR atom, which is how FFmpeg reads them back, " \
+    "but FFmpeg's DNxHD encoder only declares the legal range, and Avid tools may expect legal-range samples.\n"     \
+    "DNxHR 444 is written as RGB, which is always full range."
 #define kParamDNxHDEncodeVideoRangeOptionFull "Full Range", "", "full"
 #define kParamDNxHDEncodeVideoRangeOptionVideo "Video Range", "", "video"
 
@@ -907,6 +915,9 @@ getProfileFromShortName(const string& name)
     string prefix(kProresCodec);
 
     if (!name.compare(0, prefix.size(), prefix)) {
+        if (!name.compare(prefix.size(), string::npos, kProresProfile4444XQFourCC)) {
+            return kProresProfile4444XQ;
+        }
         if (!name.compare(prefix.size(), string::npos, kProresProfile4444FourCC)) {
             return kProresProfile4444;
         }
@@ -934,6 +945,9 @@ getProfileStringFromShortName(const string& name)
     string prefix(kProresCodec);
 
     if (!name.compare(0, prefix.size(), prefix)) {
+        if (!name.compare(prefix.size(), string::npos, kProresProfile4444XQFourCC)) {
+            return "4444xq";
+        }
         if (!name.compare(prefix.size(), string::npos, kProresProfile4444FourCC)) {
             return "4444";
         }
@@ -1577,21 +1591,29 @@ private:
     bool writesTimecodeTrack(const AVOutputFormat* fmt) const;
     bool getStartTimecode(const AVOutputFormat* fmt, string* canonical, string* error) const;
     string getSettingsErrors() const;
+    string getSettingsWarnings() const;
     void updatePersistentMessage();
     bool initCodec(const AVOutputFormat* fmt, AVCodecID& outCodecId, const AVCodec*& outCodec) const;
 
+    void getPixelPreferences(FFmpeg::PixelCodingEnum* pixelCoding, int* bitdepth) const;
     void getPixelFormats(const AVCodec* videoCodec,
                          FFmpeg::PixelCodingEnum pixelCoding,
                          int bitdepth,
                          bool alpha,
                          AVPixelFormat& outRgbBufferPixelFormat,
-                         AVPixelFormat& outTargetPixelFormat) const;
+                         AVPixelFormat& outTargetPixelFormat,
+                         bool* outAlphaDropped = nullptr) const;
+    void getPixelFormatsFromList(const AVCodec* videoCodec,
+                                 FFmpeg::PixelCodingEnum pixelCoding,
+                                 int bitdepth,
+                                 bool alpha,
+                                 AVPixelFormat& outRgbBufferPixelFormat,
+                                 AVPixelFormat& outTargetPixelFormat) const;
 
     void updateBitrateToleranceRange();
     bool isRec709Format(const int height) const;
     bool isPalFormat(const AVRational& displayRatio) const;
     static bool IsYUVFromShortName(const char* shortName, int codecProfile);
-    static bool IsRGBFromShortName(const char* shortName, int codecProfile);
     static AVPixelFormat GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
     static void GetCodecSupportedParams(const AVCodec* codec, CodecParams* p);
 
@@ -1774,6 +1796,14 @@ FFmpegSingleton::FFmpegSingleton()
     _codecsShortNames.push_back(kProresCodec kProresProfileProxyFourCC);
     _codecsLongNames.push_back(kProresProfileProxyName);
     _codecsKnobLabels.push_back(kProresProfileProxyFourCC "\t" kProresProfileProxyName);
+    _codecsIds.push_back(AV_CODEC_ID_PRORES);
+
+    // ProRes 4444 XQ comes after the other ProRes profiles, so that their indices, including the default codec
+    // (ProRes 4444), do not change. The index of every codec after it increases by one: the codec of a saved
+    // project is restored by its option ID (in Natron), or by checkCodec() from the codecShortName param.
+    _codecsShortNames.push_back(kProresCodec kProresProfile4444XQFourCC);
+    _codecsLongNames.push_back(kProresProfile4444XQName);
+    _codecsKnobLabels.push_back(kProresProfile4444XQFourCC "\t" kProresProfile4444XQName);
     _codecsIds.push_back(AV_CODEC_ID_PRORES);
 
     void* opaqueCodecIter = nullptr;
@@ -1994,24 +2024,22 @@ WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
 }
 
 // Figure out if a codec is definitely YUV based from its shortname.
+// This decides whether the Y'CbCr matrix, primaries and transfer function of the stream are set for the
+// usual video formats (BT.709 for HD, BT.601 for SD), which also gives the QuickTime 'colr' (nclc) atom.
+// The transfer function is then BT.709, whatever getColorInfo() gives (e.g. sRGB or linear): the ProRes frame
+// header only allows 0, 1 (BT.709), 2 (unspecified), 16 (PQ) and 18 (HLG) (SMPTE RDD 36).
+// All the ProRes profiles are Y'CbCr: 4:2:2, or 4:4:4 for ProRes 4444 and 4444 XQ (SMPTE RDD 36), and
+// FFmpeg's prores_ks encoder only accepts yuv422p10, yuv444p10 and yuva444p10.
 /*static*/
 bool
 WriteFFmpegPlugin::IsYUVFromShortName(const char* shortName,
                                       int codecProfile)
 {
-    return (!strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) || !strcmp(shortName, kProresCodec kProresProfileHQFourCC) || !strcmp(shortName, kProresCodec kProresProfileSQFourCC) || !strcmp(shortName, kProresCodec kProresProfileLTFourCC) || !strcmp(shortName, kProresCodec kProresProfileProxyFourCC) || ((codecProfile != (int)eDNxHDCodecProfileHR444) && // DNxHR 444 is RGB
-                                                                                                                                                                                                                                                                                                                           !strcmp(shortName, "dnxhd"))
+    return (!strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) || !strcmp(shortName, kProresCodec kProresProfile4444FourCC)
+            || !strcmp(shortName, kProresCodec kProresProfileHQFourCC) || !strcmp(shortName, kProresCodec kProresProfileSQFourCC)
+            || !strcmp(shortName, kProresCodec kProresProfileLTFourCC) || !strcmp(shortName, kProresCodec kProresProfileProxyFourCC)
+            || ((codecProfile != (int)eDNxHDCodecProfileHR444) && !strcmp(shortName, "dnxhd")) // DNxHR 444 is RGB
             || !strcmp(shortName, "mjpeg") || !strcmp(shortName, "mpeg1video") || !strcmp(shortName, "mpeg4") || !strcmp(shortName, "v210"));
-}
-
-// Figure out if a codec is definitely RGB based from its shortname.
-/*static*/
-bool
-WriteFFmpegPlugin::IsRGBFromShortName(const char* shortName,
-                                      int codecProfile)
-{
-    return (!strcmp(shortName, kProresCodec kProresProfile4444FourCC) || !strcmp(shortName, kProresCodec kProresProfile4444XQFourCC) || ((!strcmp(shortName, "dnxhd") && codecProfile == (int)eDNxHDCodecProfileHR444) || // only DNxHR 444 is RGB
-                                                                                                                                         !strcmp(shortName, "png") || !strcmp(shortName, "qtrle")));
 }
 
 void
@@ -2227,10 +2255,53 @@ WriteFFmpegPlugin::updatePersistentMessage()
 {
     const string errors = getSettingsErrors();
     if (errors.empty()) {
-        clearPersistentMessage();
+        const string warnings = getSettingsWarnings();
+        if (warnings.empty()) {
+            clearPersistentMessage();
+        } else {
+            setPersistentMessage(Message::eMessageWarning, "", warnings);
+        }
     } else {
         setPersistentMessage(Message::eMessageError, "", errors);
     }
+}
+
+// The message shown when the encoder can not write alpha (see getPixelFormats()).
+static string
+alphaDroppedMessage(const AVCodec* videoCodec,
+                    AVPixelFormat alphaFormat,
+                    AVPixelFormat targetFormat)
+{
+    const char* alphaName = av_get_pix_fmt_name(alphaFormat);
+    const char* targetName = av_get_pix_fmt_name(targetFormat);
+
+    return string("The ") + videoCodec->name + " encoder can not write alpha: it can not be opened with the pixel format "
+        + (alphaName ? alphaName : "?") + ", although it lists it. The alpha channel is dropped, and the pixel format "
+        + (targetName ? targetName : "?") + " is written.";
+}
+
+// The warnings about the current settings, shown in the persistent message if there is no error: the encoder
+// can not write alpha, although Alpha is checked.
+string
+WriteFFmpegPlugin::getSettingsWarnings() const
+{
+    const AVOutputFormat* fmt = initFormat(/* reportErrors = */ false);
+    AVCodecID codecId = AV_CODEC_ID_NONE;
+    const AVCodec* videoCodec = nullptr;
+    if (!fmt || !initCodec(fmt, codecId, videoCodec) || !videoCodec || !alphaEnabled()) {
+        return string();
+    }
+    FFmpeg::PixelCodingEnum pixelCoding;
+    int bitdepth;
+    getPixelPreferences(&pixelCoding, &bitdepth);
+    AVPixelFormat alphaFormat = AV_PIX_FMT_NONE;
+    AVPixelFormat targetPixelFormat = AV_PIX_FMT_NONE;
+    AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_NONE;
+    getPixelFormatsFromList(videoCodec, pixelCoding, bitdepth, true, rgbBufferPixelFormat, alphaFormat);
+    bool alphaDropped = false;
+    getPixelFormats(videoCodec, pixelCoding, bitdepth, true, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
+
+    return alphaDropped ? alphaDroppedMessage(videoCodec, alphaFormat, targetPixelFormat) : string();
 }
 
 // The output format. If the Format is "Default", it is guessed from filename, which is the file being
@@ -2307,13 +2378,122 @@ WriteFFmpegPlugin::initCodec(const AVOutputFormat* fmt,
     return true;
 }
 
+// The Pref. Pixel Coding and Bit Depth params.
+void
+WriteFFmpegPlugin::getPixelPreferences(FFmpeg::PixelCodingEnum* pixelCoding,
+                                       int* bitdepth) const
+{
+    switch ((PrefPixelCodingEnum)_prefPixelCoding->getValue()) {
+    case ePrefPixelCodingYUV420:
+        *pixelCoding = FFmpeg::ePixelCodingYUV420;
+        break;
+    case ePrefPixelCodingYUV422:
+    default:
+        *pixelCoding = FFmpeg::ePixelCodingYUV422;
+        break;
+    case ePrefPixelCodingYUV444:
+        *pixelCoding = FFmpeg::ePixelCodingYUV444;
+        break;
+    case ePrefPixelCodingRGB:
+        *pixelCoding = FFmpeg::ePixelCodingRGB;
+        break;
+    case ePrefPixelCodingXYZ:
+        *pixelCoding = FFmpeg::ePixelCodingXYZ;
+        break;
+    }
+    switch ((PrefBitDepthEnum)_prefBitDepth->getValue()) {
+    case ePrefBitDepth8:
+    default:
+        *bitdepth = 8;
+        break;
+    case ePrefBitDepth10:
+        *bitdepth = 10;
+        break;
+    case ePrefBitDepth12:
+        *bitdepth = 12;
+        break;
+    case ePrefBitDepth16:
+        *bitdepth = 16;
+        break;
+    }
+}
+
+// Whether the encoder can be opened with this pixel format (on a small image, with the default options).
+// Encoders may list pixel formats that they can not encode, e.g. libx265 lists yuva420p if FFmpeg was built
+// with a libx265 that has alpha support, but fails in avcodec_open2() with "Loaded libx265 does not support
+// alpha layer encoding" if the libx265 loaded at run time does not have it. The result is cached.
+static bool
+encoderOpensPixelFormat(const AVCodec* codec,
+                        AVPixelFormat pixelFormat)
+{
+    static Mutex mutex;
+    static std::map<std::pair<const AVCodec*, int>, bool> cache;
+    AutoMutex lock(mutex);
+    const std::pair<const AVCodec*, int> key(codec, (int)pixelFormat);
+    std::map<std::pair<const AVCodec*, int>, bool>::const_iterator it = cache.find(key);
+    if (it != cache.end()) {
+        return it->second;
+    }
+    bool opens = false;
+    AVCodecContext* ctx = avcodec_alloc_context3(codec);
+    if (ctx) {
+        ctx->width = 64;
+        ctx->height = 64;
+        ctx->pix_fmt = pixelFormat;
+        ctx->time_base = av_make_q(1, 25);
+        ctx->framerate = av_make_q(25, 1);
+        ctx->bits_per_raw_sample = FFmpeg::pixelFormatBitDepth(pixelFormat);
+        opens = avcodec_open2(ctx, codec, nullptr) >= 0;
+        avcodec_free_context(&ctx);
+    }
+    cache[key] = opens;
+
+    return opens;
+}
+
+// The pixel format to encode with, and the RGB pixel format to convert from.
+// If alpha is wanted, but the encoder can not be opened with the selected format with alpha, whereas it can
+// with the format selected without alpha, the latter is selected, and *outAlphaDropped is set.
 void
 WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
                                    FFmpeg::PixelCodingEnum prefPixelCoding,
                                    int prefBitDepth,
                                    bool prefAlpha,
                                    AVPixelFormat& outRgbBufferPixelFormat,
-                                   AVPixelFormat& outTargetPixelFormat) const
+                                   AVPixelFormat& outTargetPixelFormat,
+                                   bool* outAlphaDropped) const
+{
+    if (outAlphaDropped) {
+        *outAlphaDropped = false;
+    }
+    getPixelFormatsFromList(videoCodec, prefPixelCoding, prefBitDepth, prefAlpha, outRgbBufferPixelFormat, outTargetPixelFormat);
+    if (!videoCodec || !prefAlpha || !FFmpeg::pixelFormatAlpha(outTargetPixelFormat) || (videoCodec->id == AV_CODEC_ID_PRORES)) {
+        return;
+    }
+    AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_NONE;
+    AVPixelFormat targetPixelFormat = AV_PIX_FMT_NONE;
+    getPixelFormatsFromList(videoCodec, prefPixelCoding, prefBitDepth, false, rgbBufferPixelFormat, targetPixelFormat);
+    if (FFmpeg::pixelFormatAlpha(targetPixelFormat) || encoderOpensPixelFormat(videoCodec, outTargetPixelFormat)
+        || !encoderOpensPixelFormat(videoCodec, targetPixelFormat)) {
+        // keep the format with alpha if it opens, or if the one without alpha does not open either (the
+        // error is then reported when rendering)
+        return;
+    }
+    outRgbBufferPixelFormat = rgbBufferPixelFormat;
+    outTargetPixelFormat = targetPixelFormat;
+    if (outAlphaDropped) {
+        *outAlphaDropped = true;
+    }
+}
+
+// The pixel format selected from the formats that the encoder lists (or the ones it is known to use).
+void
+WriteFFmpegPlugin::getPixelFormatsFromList(const AVCodec* videoCodec,
+                                           FFmpeg::PixelCodingEnum prefPixelCoding,
+                                           int prefBitDepth,
+                                           bool prefAlpha,
+                                           AVPixelFormat& outRgbBufferPixelFormat,
+                                           AVPixelFormat& outTargetPixelFormat) const
 {
     assert(videoCodec);
     if (!videoCodec) {
@@ -2327,8 +2507,8 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
         assert(index < (int)codecsShortNames.size());
         int profile = getProfileFromShortName(codecsShortNames[index]);
-        if (profile == kProresProfile4444 /*|| profile == kProresProfile4444XQ*/) {
-            // Prores 4444
+        if (profile == kProresProfile4444 || profile == kProresProfile4444XQ) {
+            // ProRes 4444 and 4444 XQ are Y'CbCr 4:4:4, with an optional alpha channel
             if (prefAlpha) {
                 outTargetPixelFormat = AV_PIX_FMT_YUVA444P10;
             } else {
@@ -2362,11 +2542,30 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
 
         int prefBPP = FFmpeg::pixelFormatBPPFromSpec(prefPixelCoding, prefBitDepth, prefAlpha);
 
+        // A format with alpha is never selected if alpha is not wanted (unless the codec only has formats with
+        // alpha): the encoder may not support it (e.g. libx265 compiled without alpha support, whose only 10-bit
+        // or 4:2:2-compatible format with BPP >= 20 is yuva420p if it is 8-bit only), and it is useless.
+        bool hasFormatWithoutAlpha = false;
+        for (const AVPixelFormat* f = currPixFormat; *f != -1; ++f) {
+            if (!FFmpeg::pixelFormatAlpha(*f)) {
+                hasFormatWithoutAlpha = true;
+                break;
+            }
+        }
+        const bool excludeAlpha = !prefAlpha && hasFormatWithoutAlpha;
+
         // First, try to find the format with the smallest BPP that fits into the preferences
         bool prefFound = false;
         int prefFoundBPP = 1024; // large number
         int prefFoundBitDepth = 1024; // large number
         AVPixelFormat prefFoundFormat = AV_PIX_FMT_NONE;
+
+        // Then, if the bit depth is not available (e.g. a libx265 compiled for 8-bit only), get the format that fits
+        // the pixel coding and alpha preferences with the highest bit depth, and the smallest BPP.
+        bool depthFound = false;
+        int depthFoundBPP = 1024; // large number
+        int depthFoundBitDepth = 0;
+        AVPixelFormat depthFoundFormat = AV_PIX_FMT_NONE;
 
         // Second, If no format is found that fits the prefs, get the format that has a BPP equal or a bit higher.
         bool higherFound = false;
@@ -2384,6 +2583,10 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
             int currBitDepth = FFmpeg::pixelFormatBitDepth(*currPixFormat);
             int currBPP = FFmpeg::pixelFormatBPP(*currPixFormat);
             bool currAlpha = FFmpeg::pixelFormatAlpha(*currPixFormat);
+            if (excludeAlpha && currAlpha) {
+                currPixFormat++;
+                continue;
+            }
 
             // First, try to find the format with the smallest BPP that fits into the preferences
             if ((int)currCoding >= (int)prefPixelCoding && currBitDepth >= prefBitDepth && currAlpha == prefAlpha && currBPP < prefFoundBPP) {
@@ -2391,6 +2594,15 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
                 prefFoundBPP = currBPP;
                 prefFoundBitDepth = currBitDepth;
                 prefFoundFormat = *currPixFormat;
+            }
+
+            // Then, the format that fits the pixel coding and alpha preferences, with the highest bit depth
+            if ((int)currCoding >= (int)prefPixelCoding && currAlpha == prefAlpha
+                && (currBitDepth > depthFoundBitDepth || (currBitDepth == depthFoundBitDepth && currBPP < depthFoundBPP))) {
+                depthFound = true;
+                depthFoundBPP = currBPP;
+                depthFoundBitDepth = currBitDepth;
+                depthFoundFormat = *currPixFormat;
             }
 
             // Second, If no format is found that fits the prefs, get the format that has a BPP equal or a bit higher.
@@ -2419,6 +2631,10 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
             selectedBitDepth = prefFoundBitDepth;
             selectedBPP = prefFoundBPP;
             selectedFormat = prefFoundFormat;
+        } else if (depthFound) {
+            selectedBitDepth = depthFoundBitDepth;
+            selectedBPP = depthFoundBPP;
+            selectedFormat = depthFoundFormat;
         } else if (higherFound) {
             selectedBitDepth = higherFoundBitDepth;
             selectedBPP = higherFoundBPP;
@@ -2435,7 +2651,7 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
         // call best_pix_fmt using the full list.
         const int hasAlphaInt = prefAlpha ? 1 : 0;
 
-        if (prefFound) {
+        if (prefFound || depthFound) {
             outTargetPixelFormat = selectedFormat;
         } else {
             // gather the formats that have the target BPP (avcodec_find_best_pix_fmt_of_list doesn't do the best job: it prefers yuv422p over yuv422p10)
@@ -2443,7 +2659,7 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
             currPixFormat = codecPixelFormats(videoCodec);
             while (*currPixFormat != -1) {
                 int currBPP = FFmpeg::pixelFormatBPP(*currPixFormat);
-                if (currBPP == selectedBPP) {
+                if (currBPP == selectedBPP && !(excludeAlpha && FFmpeg::pixelFormatAlpha(*currPixFormat))) {
                     bestFormats.push_back(*currPixFormat);
                 }
                 currPixFormat++;
@@ -2524,7 +2740,7 @@ WriteFFmpegPlugin::getPixelFormats(const AVCodec* videoCodec,
     // update outRGBPixelFormat from the selected format (do not need alpha if format does not have it)
     outRgbBufferPixelFormat = GetRGBPixelFormatFromBitDepth(FFmpeg::pixelFormatBitDepth(outTargetPixelFormat),
                                                             FFmpeg::pixelFormatAlpha(outTargetPixelFormat));
-} // WriteFFmpegPlugin::getPixelFormats
+} // WriteFFmpegPlugin::getPixelFormatsFromList
 
 /*static*/
 AVPixelFormat
@@ -3825,7 +4041,8 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
         if (FFmpeg::pixelFormatIsYUV(dstPixelFormat)) {
             // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
             const int colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
-            const int dstRange = (avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
+            // The range of the stream (e.g. the DNxHD Output Range), or full range for MJPEG
+            const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
 
             ret = sws_setColorspaceDetails(_convertCtx,
                                            sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
@@ -4012,6 +4229,16 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     outputFrame_->width = avCodecContext->width;
                     outputFrame_->height = avCodecContext->height;
                     outputFrame_->format = avCodecContext->pix_fmt;
+                    // Encoders that write the color properties in each frame (e.g. ProRes, in its frame header) take
+                    // them from the frame, not from the codec context. Only for the Y'CbCr codecs, which get the
+                    // matrix of the usual video formats (IsYUVFromShortName()): other encoders that read them, e.g.
+                    // png (sRGB, cICP, cHRM and gAMA chunks), keep writing what they wrote before.
+                    if (avCodecContext->colorspace != AVCOL_SPC_UNSPECIFIED) {
+                        outputFrame_->color_primaries = avCodecContext->color_primaries;
+                        outputFrame_->color_trc = avCodecContext->color_trc;
+                        outputFrame_->colorspace = avCodecContext->colorspace;
+                        outputFrame_->color_range = avCodecContext->color_range;
+                    }
 
                     int bufferSize = av_image_alloc(outputFrame_->data, outputFrame_->linesize, outputFrame_->width, outputFrame_->height, pixelFormatCodec, 32);
 
@@ -4390,44 +4617,14 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     clearPersistentMessage();
 
     FFmpeg::PixelCodingEnum pixelCoding;
-    switch ((PrefPixelCodingEnum)_prefPixelCoding->getValue()) {
-    case ePrefPixelCodingYUV420:
-        pixelCoding = FFmpeg::ePixelCodingYUV420;
-        break;
-    case ePrefPixelCodingYUV422:
-        pixelCoding = FFmpeg::ePixelCodingYUV422;
-        break;
-    case ePrefPixelCodingYUV444:
-        pixelCoding = FFmpeg::ePixelCodingYUV444;
-        break;
-    case ePrefPixelCodingRGB:
-        pixelCoding = FFmpeg::ePixelCodingRGB;
-        break;
-    case ePrefPixelCodingXYZ:
-        pixelCoding = FFmpeg::ePixelCodingXYZ;
-        break;
-    }
     int bitdepth;
-    switch ((PrefBitDepthEnum)_prefBitDepth->getValue()) {
-    case ePrefBitDepth8:
-    default:
-        bitdepth = 8;
-        break;
-    case ePrefBitDepth10:
-        bitdepth = 10;
-        break;
-    case ePrefBitDepth12:
-        bitdepth = 12;
-        break;
-    case ePrefBitDepth16:
-        bitdepth = 16;
-        break;
-    }
+    getPixelPreferences(&pixelCoding, &bitdepth);
     bool alpha = alphaEnabled();
 
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_YUV422P;
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_RGB24;
-    getPixelFormats(videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat);
+    bool alphaDropped = false;
+    getPixelFormats(videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
     assert(!_streamVideo.stream);
     if (!_streamVideo.stream) {
         addStream(_formatContext, codecId, &videoCodec, &_streamVideo);
@@ -4461,10 +4658,18 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         // is known, for DNxHD, set the YUV range.
         if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
             int encodeVideoRange = _encodeVideoRange->getValue();
-            // Set the metadata for the YUV range. This modifies the appropriate
-            // field in the 'ACLR' atom in the video sample description.
-            // Set 'full range' = 1 or 'legal range' = 2.
-            avCodecContext->color_range = encodeVideoRange ? AVColorRange::AVCOL_RANGE_MPEG : AVColorRange::AVCOL_RANGE_JPEG;
+            // Set the metadata for the YUV range. The mov muxer writes it in the 'ACLR' atom of the
+            // video sample description: 1 for legal range, 2 for full range (libavformat/movenc.c says that they
+            // correspond to "709" and "RGB" in the official encoder), and colourSpaceConvert() converts to
+            // this range. FFmpeg's dnxhd encoder only declares the legal range (color_ranges), but it encodes
+            // the samples as they are.
+            // RGB (DNxHR 444, gbrp10) is tagged full range, since swscale writes RGB in full range (it does not
+            // scale RGB to video levels).
+            if (!FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
+                avCodecContext->color_range = AVColorRange::AVCOL_RANGE_JPEG;
+            } else {
+                avCodecContext->color_range = encodeVideoRange ? AVColorRange::AVCOL_RANGE_MPEG : AVColorRange::AVCOL_RANGE_JPEG;
+            }
         }
 
         // Bug 45010 The following flags must be set BEFORE calling
@@ -4528,6 +4733,12 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         }
         if (av_dict_count(codecOptionsLeft.get()) > 0) {
             unrecognizedOptions += string(kParamCodecOptionsLabel) + " not applied by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
+        }
+        if (alphaDropped) {
+            AVPixelFormat alphaFormat = AV_PIX_FMT_NONE;
+            AVPixelFormat rgbFormat = AV_PIX_FMT_NONE;
+            getPixelFormatsFromList(videoCodec, pixelCoding, bitdepth, true, rgbFormat, alphaFormat);
+            setPersistentMessage(Message::eMessageWarning, "", alphaDroppedMessage(videoCodec, alphaFormat, targetPixelFormat));
         }
 
         avcodec_parameters_from_context(_streamVideo.stream->codecpar, avCodecContext);
@@ -5302,39 +5513,8 @@ WriteFFmpegPlugin::updatePixelFormat()
     updatePersistentMessage(); // e.g. an invalid Start Timecode
 
     FFmpeg::PixelCodingEnum pixelCoding;
-    switch ((PrefPixelCodingEnum)_prefPixelCoding->getValue()) {
-    case ePrefPixelCodingYUV420:
-        pixelCoding = FFmpeg::ePixelCodingYUV420;
-        break;
-    case ePrefPixelCodingYUV422:
-        pixelCoding = FFmpeg::ePixelCodingYUV422;
-        break;
-    case ePrefPixelCodingYUV444:
-        pixelCoding = FFmpeg::ePixelCodingYUV444;
-        break;
-    case ePrefPixelCodingRGB:
-        pixelCoding = FFmpeg::ePixelCodingRGB;
-        break;
-    case ePrefPixelCodingXYZ:
-        pixelCoding = FFmpeg::ePixelCodingXYZ;
-        break;
-    }
     int bitdepth;
-    switch ((PrefBitDepthEnum)_prefBitDepth->getValue()) {
-    case ePrefBitDepth8:
-    default:
-        bitdepth = 8;
-        break;
-    case ePrefBitDepth10:
-        bitdepth = 10;
-        break;
-    case ePrefBitDepth12:
-        bitdepth = 12;
-        break;
-    case ePrefBitDepth16:
-        bitdepth = 16;
-        break;
-    }
+    getPixelPreferences(&pixelCoding, &bitdepth);
     bool alpha = alphaEnabled();
 
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_YUV422P;

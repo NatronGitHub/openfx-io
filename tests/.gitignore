@@ -30,6 +30,9 @@
 /.render_out.mov.i134.mov
 /.render_out.mov.i134trunc.mov
 /.render_out.mov.24fps.mkv
+/.render_out.mov.i135.prores.mov
+/.render_out.mov.i135.dnxhd.mov
+/.render_out.mov.i136.mp4
 /ocio_cdl_test
 /ocio_cdl_test.dSYM/
 /runscript_win32_test
