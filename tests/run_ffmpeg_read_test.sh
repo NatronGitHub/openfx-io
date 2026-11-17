@@ -26,6 +26,12 @@
 #     it (--positions). The gaps are after a B-frame (24 frames, 2 frames apart
 #     after frame 12), after the first GOP (frames 8-12 missing), and at the end
 #     (a longer audio track makes the movie last longer than the last frame).
+#   * VFR Matroska with a corrupted B-frame before a gap (noise bitstream filter):
+#     the frames in the gap must be identical to the corrupted frame, as decoded at
+#     its own frame (the frame displayed at that time), not an error or another frame.
+#   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
+#     that one frame time has two frames and another one none): every frame must
+#     decode, and give the same image sequentially and after a seek.
 # Clips whose encoder is not available in the ffmpeg CLI are skipped.
 #
 # Environment:
@@ -124,6 +130,69 @@ check_vfr() {
     "$bin" "$tmp/$name" --tol 3 --ramp 16,4 --positions "$positions" ${framesarg[@]+"${framesarg[@]}"} ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
+# The source for the clips with a corrupted frame: a textured ramp, so that the frames
+# are large enough to be corrupted without losing the frame.
+texramp() {
+    echo "color=c=gray:s=128x128:r=24,format=gray,geq=lum='16+4*N+12*sin(X*0.7+N)*sin(Y*0.5)':cb=128:cr=128,format=yuv420p"
+}
+
+# check_corrupt NAME DESCRIPTION
+# A 24-frame VFR textured ramp in Matroska with gaps (2 frames apart after frame 12, as
+# ramp_gaps.mkv) and fixed B-frames, where the B-frame at frame 12 (0-based), just before
+# the first gap, is corrupted.
+check_corrupt() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(texramp)" \
+        -vf "trim=end_frame=24,setpts=if(lte(N\,12)\,N\,12+2*(N-12))/(24*TB)" -fps_mode passthrough \
+        -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0 -pix_fmt yuv420p "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    # Matroska timestamps are in milliseconds: frame 12 is at 500 ms. The noise filter
+    # takes an expression since FFmpeg 5.
+    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy \
+        -bsf:v "noise=amount=if(eq(pts\,500)\,10\,0)" "$tmp/$name" 2>/dev/null; then
+        echo "SKIPPED: the noise bitstream filter does not take an expression"
+        return
+    fi
+    local positions="" i
+    for ((i = 0; i < 24; i++)); do
+        positions="${positions:+$positions,}$((i <= 12 ? i : 12 + 2 * (i - 12)))"
+    done
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --positions "$positions" ${FFMPEG_READ_TEST_ARGS:-} 2>/dev/null || rc=1
+}
+
+# check_swapped NAME DESCRIPTION
+# A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
+# the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
+check_swapped() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v 24 $X264 -video_track_timescale 24 "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -video_track_timescale 24 \
+        -bsf:v "setts=pts=if(eq(PTS\,10)\,11\,if(eq(PTS\,11)\,10\,PTS))" "$tmp/$name" 2>/dev/null; then
+        echo "SKIPPED: no setts bitstream filter"
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --frames 24 ${FFMPEG_READ_TEST_ARGS:-} 2>/dev/null || rc=1
+}
+
 echo "Generating test clips in $tmp and checking them..."
 check ramp.mp4 "MP4 (H.264, start_time 0)" libx264 25 $X264
 check ramp_offset.mp4 "MP4 (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
@@ -146,6 +215,8 @@ for ext in mkv mp4 mov; do
 done
 check_vfr ramp_end_gap.mkv "VFR MKV (H.264, 24 fps, gaps and a gap at the end)" 20 12 2 2 1.3333 32 -c:a pcm_s16le
 check_vfr ramp_end_gap.mov "VFR MOV (H.264, 24 fps, gaps and a gap at the end)" 20 12 2 2 1.3333 32 -c:a pcm_s16le
+check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a gap)"
+check_swapped ramp_swapped.mov "MOV (H.264, 24 fps, broken timestamps: two PTS swapped)"
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"

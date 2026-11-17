@@ -1291,11 +1291,11 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         isIntraOnly = true;
     }
 
-    // Old behaviour of expecting the next frame out of the decoder to be current frame + 1 is wrong.
-    // For some codecs i.e H.264 and HEVC the decoder can output frames in decode order.
-    // This is here to prevent any performace regression where we assume the decoder will always
-    // output the frames in presentation order (true for the SW H.264 and MPEG4 decoders in libavcodec).
-    // This may come back to haunt us one day.
+    // The decoder outputs frames in presentation order (libavcodec decoders reorder frames
+    // internally, e.g. B-frames in H.264, HEVC and MPEG-4), each with its timestamp: the frame
+    // displayed at the requested time is decided from the decoded frames (see demuxAndDecode()).
+    // The next frame out of the decoder is not always the next frame index: there may be a
+    // timestamp gap in a variable frame rate movie.
 
     // Only seek and reset for non-sequential frames as this can be very costly: the frame may be
     // the one held since the previous request (e.g. in a timestamp gap of a variable frame rate
@@ -1335,7 +1335,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
         retriedDecode = retriedSeek ? true : false;
 
-        hasPicture = demuxAndDecode(avFrameOut, frame);
+        // A frame decoded after a seek may be corrupt (e.g. a reference frame is missing): it is
+        // only used for a timestamp gap when decoding from the start, see demuxAndDecode().
+        hasPicture = demuxAndDecode(avFrameOut, frame, /*acceptCorruptHeldFrame=*/retriedSeek || isIntraOnly);
 
         // A last ditch effot to get a frame out for non-intra codecs.
         // This will perform a seek to the start of the file. which is
@@ -1379,7 +1381,7 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 
 bool
-FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
+FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame)
 {
     Stream* stream = _selectedStream;
     MyAVPacket avPacket;
@@ -1406,19 +1408,34 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
         av_frame_unref(held);
         av_frame_move_ref(held, next);
     }
+    // A held frame that is displayed for a later frame (in a timestamp gap) must not be corrupt,
+    // unless it cannot be better (when decoding from the start, or for intra-only codecs): a frame
+    // decoded after a seek may lack a reference frame, so decode() will then retry from the start.
+    auto canHoldFrame = [acceptCorruptHeldFrame](const AVFrame* f) -> bool {
+        return acceptCorruptHeldFrame || !((f->flags & AV_FRAME_FLAG_CORRUPT) || f->decode_error_flags);
+    };
+
     if (Stream::hasFrame(held)) {
         int64_t heldFrameIdx = stream->ptsToFrame(held->pts);
-        if ((heldFrameIdx == frame) || ((heldFrameIdx < frame) && (Stream::hasFrame(next) || stream->_heldFrameIsLast))) {
-            return imageConvert(held, avFrameOut);
-        }
+        // decode() seeks if the requested frame is before the held frame (Stream::isSequential()).
+        assert(heldFrameIdx <= frame);
         if (heldFrameIdx > frame) {
-            // Should not happen: decode() seeks in that case.
-            stream->resetHeldFrames();
+            // Should not happen, but the held frames would give a wrong frame: seek, which resets them.
+            seekToFrame(stream->frameToPts((int)frame), AVSEEK_FLAG_BACKWARD);
+        } else if (heldFrameIdx == frame) {
+            return imageConvert(held, avFrameOut);
+        } else if (Stream::hasFrame(next) || stream->_heldFrameIsLast) {
+            // The requested frame is in a gap after the held frame.
+            if (!canHoldFrame(held)) {
+                return false;
+            }
+            return imageConvert(held, avFrameOut);
         }
     }
 
     // Process a frame output by the decoder. Returns true if it gives the requested frame (which is
-    // then converted into avFrameOut).
+    // then converted into avFrameOut), or if decoding should stop without a picture (hasPicture is
+    // then false, and decode() retries from the start).
     auto processDecodedFrame = [&](AVFrame* decodedFrame) -> bool {
         // Fallback to using the DTS from the AVPacket that triggered returning this frame if no PTS is found
         // Original code, which doesn't work (AVI/m1v):
@@ -1436,17 +1453,22 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
 
         int64_t decodedFrameIdx = stream->ptsToFrame(decodedFrame->pts);
 
-        if (decodedFrameIdx <= frame) {
-            // This frame, or a later one, is displayed at the requested frame: keep it.
-            if (Stream::hasFrame(held) && (decodedFrameIdx < stream->ptsToFrame(held->pts))) {
-                // Not in presentation order (should not happen): ignore it.
-                return false;
-            }
+        if (decodedFrameIdx == frame) {
+            // The requested frame: return it, whatever the frames decoded before it (with broken
+            // timestamps, e.g. if best_effort_timestamp switches between the PTS and the DTS, they
+            // may not be in presentation order).
             av_frame_unref(held);
             av_frame_move_ref(held, decodedFrame);
-            if (decodedFrameIdx == frame) {
-                hasPicture = imageConvert(held, avFrameOut);
-                return true;
+            hasPicture = imageConvert(held, avFrameOut);
+            return true;
+        }
+
+        if (decodedFrameIdx < frame) {
+            // This frame, or a later one, is displayed at the requested frame: hold it, unless it is
+            // before the held frame, i.e. not in presentation order (broken timestamps).
+            if (!Stream::hasFrame(held) || (decodedFrameIdx >= stream->ptsToFrame(held->pts))) {
+                av_frame_unref(held);
+                av_frame_move_ref(held, decodedFrame);
             }
             return false;
         }
@@ -1457,12 +1479,17 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
             // kept for the next requests.
             av_frame_unref(next);
             av_frame_move_ref(next, decodedFrame);
+            if (!canHoldFrame(held)) {
+                return true; // stop without a picture
+            }
             hasPicture = imageConvert(held, avFrameOut);
             return true;
         }
 
-        // Decoding started after the requested frame (e.g. the seek went too far): ignore it.
-        return false;
+        // Decoding started after the requested frame (the seek went too far, or the requested
+        // frame is before the first frame): decoding further cannot give it, since frames come in
+        // presentation order. Stop without a picture: decode() retries from the start.
+        return true;
     };
 
     // Drain all frames currently available from the decoder, checking each against the
@@ -1557,6 +1584,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame)
         // stream (which may be later than that frame, e.g. if the stream duration is longer).
         if (Stream::hasFrame(held)) {
             stream->_heldFrameIsLast = true;
+            if (!canHoldFrame(held)) {
+                return false;
+            }
             return imageConvert(held, avFrameOut);
         }
     }

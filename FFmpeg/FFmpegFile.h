@@ -637,7 +637,7 @@ public:
 private:
     bool seekToFrame(int64_t frame, int seekFlags);
 
-    bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame);
+    bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame);
 
     bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
 };

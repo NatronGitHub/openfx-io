@@ -20,11 +20,12 @@
  *      OFFSET + STEP * (f - 1), within 0.4 * STEP. This catches a wrong frame as
  *      well as a missing one,
  *   6. optionally (--frames N) checks the number of frames reported by getInfo(),
- *   7. optionally (--positions P0,P1,..., with --ramp) checks a variable frame rate
- *      clip with timestamp gaps: ramp frame i (0-based) is at frame Pi (0-based,
- *      increasing), and a requested frame in a gap must give the frame displayed at
- *      that time, i.e. the last ramp frame at or before it (held until the next
- *      one, or until the end).
+ *   7. optionally (--positions P0,P1,...) checks a variable frame rate clip with
+ *      timestamp gaps: ramp frame i (0-based) is at frame Pi (0-based, increasing),
+ *      and a requested frame in a gap must give the frame displayed at that time,
+ *      i.e. the last ramp frame at or before it (held until the next one, or until
+ *      the end): with --ramp, its content is checked, and in any case a frame in a
+ *      gap must be identical to the held frame, decoded at its own frame.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
@@ -121,8 +122,8 @@ main(int argc, char** argv)
             return 2;
         }
     }
-    if (!positions.empty() && (rampStep <= 0 || positions[0] != 0)) {
-        std::fprintf(stderr, "--positions needs --ramp, and must start at 0\n");
+    if (!positions.empty() && (positions[0] != 0)) {
+        std::fprintf(stderr, "--positions must start at 0\n");
         return 2;
     }
 
@@ -203,6 +204,20 @@ main(int argc, char** argv)
         }
     }
 
+    // Optional: a frame in a timestamp gap must be identical to the held frame, decoded at its
+    // own frame (whatever its content, e.g. if it is corrupt).
+    int holdErrors = 0;
+    if (!positions.empty()) {
+        for (int f = 1; f <= frames; ++f) {
+            const int heldAt = positions[rampDisplayed(f) - 1] + 1; // 1-based frame of the held frame
+            if ((heldAt != f) && (heldAt <= frames) && (seqSig[f] != seqSig[heldAt])) {
+                std::printf("  HOLD frame %d: sig=%.3f, differs from the held frame %d: sig=%.3f\n",
+                            f, seqSig[f], heldAt, seqSig[heldAt]);
+                ++holdErrors;
+            }
+        }
+    }
+
     // Optional: sequential frames must be strictly increasing (generated ramp clips).
     int monotonicViolations = 0;
     if (checkMonotonic) {
@@ -264,10 +279,10 @@ main(int argc, char** argv)
     const auto seekEnd = std::chrono::steady_clock::now();
     const double seekMs = std::chrono::duration<double, std::milli>(seekEnd - seekStart).count();
 
-    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d seekPhaseMs=%.1f\n",
-                order.size(), mismatches, monotonicViolations, contentErrors, seekMs);
+    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekPhaseMs=%.1f\n",
+                order.size(), mismatches, monotonicViolations, contentErrors, holdErrors, seekMs);
 
-    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0) {
+    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0 || holdErrors != 0) {
         std::printf("FAIL\n");
         return 1;
     }
