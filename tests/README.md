@@ -263,6 +263,29 @@ With `-DIO_HOSTDEMO_TESTS=ON`, the CMake configuration fails if the test can't b
 Not tested: ReadOIIO's RAW support (LibRaw). No RAW file can be generated at test time (no writer makes camera RAW
 files), and real camera RAW or DNG files are much larger than the few KB a test file may take.
 
+### 5. FFmpeg version compile check (FFmpeg 4.x and 5.x)
+
+The FFmpeg plug-ins support FFmpeg 4.0 and later, but CI and the other tests use a recent FFmpeg. Some API
+changes only show when compiling against an old version, e.g. `avformat_alloc_output_context2()` takes a non-const
+`AVOutputFormat*` before libavformat 59 (FFmpeg 5.0, #141). `ffmpeg_syntax_check.sh` compiles `WriteFFmpeg.cpp`,
+`ReadFFmpeg.cpp`, `FFmpegFile.cpp` and `PixelFormat.cpp` with `-fsyntax-only` against the FFmpeg found by
+`pkg-config`. Run it in a container after changing the FFmpeg plug-ins, from the repository root (with the
+submodules), e.g. with podman (or docker):
+
+```sh
+# FFmpeg 4.4 (RPM Fusion) on Rocky Linux 8, with GCC 14 as for Natron
+podman run --rm -v "$PWD":/src:ro -w /src docker.io/rockylinux/rockylinux:8 sh -c '
+  dnf -y -q install epel-release dnf-plugins-core && dnf config-manager --set-enabled powertools &&
+  dnf -y -q install https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm &&
+  dnf -y -q install ffmpeg-devel gcc-toolset-14-gcc-c++ pkgconf-pkg-config &&
+  . /opt/rh/gcc-toolset-14/enable && sh tests/ffmpeg_syntax_check.sh g++'
+# FFmpeg 5.1 on Debian 12
+podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
+  apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends g++ pkg-config \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev &&
+  sh tests/ffmpeg_syntax_check.sh g++'
+```
+
 ## Files
 
 | File | Purpose |
@@ -279,6 +302,7 @@ files), and real camera RAW or DNG files are much larger than the few KB a test 
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
+| `ffmpeg_syntax_check.sh`    | Compile check of the FFmpeg plug-ins against the FFmpeg found by pkg-config (for FFmpeg 4.x/5.x containers). |
 | `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl`. |
