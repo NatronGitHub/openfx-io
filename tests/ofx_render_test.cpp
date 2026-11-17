@@ -47,6 +47,10 @@
  *     - DNxHD/DNxHR with Output Range = Full/Video: the decoded levels match the range the stream is tagged
  *       with; DNxHR 444 (RGB) is full range; HQX and 444 are 10-bit, and their hints do not say 12 bit
  *
+ *   WriteFFmpeg libx265 pixel format (issue #136):
+ *     - with Alpha unchecked and Bit Depth 10 or 12, the pixel format has no alpha, at least the requested
+ *       chroma, and the highest bit depth that libx265 supports up to the requested one
+ *
  *   WriteOIIO test (issue #79):
  *     - render a JPEG while the host has no source image for the render window
  *       (clipGetImage fails with kOfxStatFailed): a black image must be written
@@ -1437,6 +1441,77 @@ int testDNxHDProfileHints()
     return failures;
 }
 
+// Issue #136: libx265 with Alpha unchecked must never get a pixel format with alpha (yuva420p, which an 8-bit-only
+// libx265 offers, fails with "Loaded libx265 does not support alpha layer encoding"). If the encoder has no format
+// with the requested chroma and bit depth (e.g. MacPorts' x265 on arm64 is 8-bit only), the closest one is the
+// format with the requested chroma (or more) and the highest bit depth.
+// With Alpha checked, the encode must succeed: if libx265 lists yuva420p but can not open it (a libx265 without
+// alpha support), alpha is dropped, with a warning in the persistent message.
+int testWriteFFmpegX265(const std::string& outFile, int W, int H, int prefCoding, int prefDepthIndex, bool alpha = false)
+{
+    static const int depths[] = { 8, 10, 12, 16 };
+    static const int log2ChromaW[] = { 1, 1, 0 }; // YUV420, YUV422, YUV444
+    static const int log2ChromaH[] = { 1, 0, 0 };
+    const AVCodec* enc = avcodec_find_encoder_by_name("libx265");
+    if (!enc) { std::printf("  SKIP: no libx265 encoder\n"); return 0; }
+    // the expected bit depth: the highest one up to the requested one, among the Y'CbCr formats without alpha
+    // that have at least the requested chroma resolution
+    // (avcodec_get_supported_config() is in libavcodec 61.13 and later, AVCodec::pix_fmts is deprecated since then)
+    const AVPixelFormat* pixFmts = nullptr;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    const void* configs = nullptr;
+    int nConfigs = 0;
+    if (avcodec_get_supported_config(nullptr, enc, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &nConfigs) >= 0 && nConfigs > 0) {
+        pixFmts = static_cast<const AVPixelFormat*>(configs); // terminated by AV_PIX_FMT_NONE
+    }
+#else
+    pixFmts = enc->pix_fmts;
+#endif
+    if (!pixFmts) { std::printf("  FAIL: no pixel formats for libx265\n"); return 1; }
+    int expectedDepth = 0;
+    bool listsAlpha = false; // libx265 lists a format with alpha and at least the requested chroma
+    std::string formats;
+    for (const AVPixelFormat* p = pixFmts; *p != AV_PIX_FMT_NONE; ++p) {
+        const AVPixelFormat f = *p;
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(f);
+        formats += std::string(" ") + av_get_pix_fmt_name(f);
+        if (d && (d->flags & AV_PIX_FMT_FLAG_ALPHA) && d->log2_chroma_w <= log2ChromaW[prefCoding] && d->log2_chroma_h <= log2ChromaH[prefCoding]) listsAlpha = true;
+        if (!d || (d->flags & (AV_PIX_FMT_FLAG_ALPHA | AV_PIX_FMT_FLAG_RGB)) || d->nb_components < 3) continue;
+        if (d->log2_chroma_w <= log2ChromaW[prefCoding] && d->log2_chroma_h <= log2ChromaH[prefCoding]) {
+            expectedDepth = std::max(expectedDepth, std::min((int)d->comp[0].depth, depths[prefDepthIndex]));
+        }
+    }
+    std::printf("  libx265 pixel formats:%s; expected bit depth %d\n", formats.c_str(), expectedDepth);
+
+    WriterParams wp;
+    wp.strings = { { "codecShortName", "libx265" } };
+    wp.ints = { { "prefPixelCoding", prefCoding }, { "prefBitDepth", prefDepthIndex }, { "enableAlpha", alpha ? 1 : 0 } };
+    gMessages.clear();
+    if (testWriteFFmpeg(outFile, W, H, 3, wp)) {
+        std::printf("  messages:\n%s", gMessages.c_str());
+        return 1;
+    }
+    StreamInfo s;
+    if (probeStream(outFile, &s)) return 1;
+    int failures = 0;
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(av_get_pix_fmt(s.pixFmt.c_str()));
+    if (!d) { std::printf("  FAIL: unknown pix_fmt %s\n", s.pixFmt.c_str()); return 1; }
+    if (alpha) {
+        // the file was written; if alpha was dropped although libx265 lists a format with alpha, a warning says so
+        const bool warned = gMessages.find("can not write alpha") != std::string::npos;
+        std::printf("  alpha %s, warning: %s\n", (d->flags & AV_PIX_FMT_FLAG_ALPHA) ? "written" : "dropped", warned ? "yes" : "no");
+        if (!(d->flags & AV_PIX_FMT_FLAG_ALPHA) && listsAlpha && !warned) { std::printf("  FAIL: alpha was dropped without a warning:\n%s", gMessages.c_str()); ++failures; }
+        if ((d->flags & AV_PIX_FMT_FLAG_ALPHA) && warned) { std::printf("  FAIL: alpha was written, but a warning says that it was dropped\n"); ++failures; }
+        std::printf(failures ? "  FAIL (libx265 with alpha)\n" : "  PASS (libx265 with alpha)\n");
+        return failures;
+    }
+    if (d->flags & AV_PIX_FMT_FLAG_ALPHA) { std::printf("  FAIL: pix_fmt %s has alpha, Alpha is unchecked\n", s.pixFmt.c_str()); ++failures; }
+    if (d->log2_chroma_w > log2ChromaW[prefCoding] || d->log2_chroma_h > log2ChromaH[prefCoding]) { std::printf("  FAIL: pix_fmt %s has less chroma than requested\n", s.pixFmt.c_str()); ++failures; }
+    if ((int)d->comp[0].depth != expectedDepth) { std::printf("  FAIL: pix_fmt %s is not %d-bit\n", s.pixFmt.c_str(), expectedDepth); ++failures; }
+    std::printf(failures ? "  FAIL (libx265 pixel format)\n" : "  PASS (libx265 pixel format)\n");
+    return failures;
+}
+
 } // namespace
 
 // #137: the file param at a frame may name the open file through another path (a symbolic link, as /tmp
@@ -1737,6 +1812,22 @@ main(int argc, char** argv)
         }
         std::printf("==== WriteFFmpeg DNxHR HQX and 444 hints: 10 bit (issue #135) ====\n");
         failures += testDNxHDProfileHints();
+    }
+    {
+        // #136: libx265, Alpha unchecked, Bit Depth 10 or 12: never a format with alpha, even with an 8-bit-only libx265
+        const struct { const char* label; int coding; int depth; } cases[] = {
+            { "YUV422, 10 bit", 1, 1 }, { "YUV422, 12 bit", 1, 2 }, { "YUV420, 10 bit", 0, 1 }, { "YUV444, 10 bit", 2, 1 },
+        };
+        for (const auto& c : cases) {
+            std::printf("==== WriteFFmpeg libx265 %s, no alpha: closest pixel format without alpha (issue #136) ====\n", c.label);
+            failures += testWriteFFmpegX265(outFile + ".i136.mp4", W, H, c.coding, c.depth);
+        }
+        // #136: libx265, Alpha checked, YUV420: the encode must succeed, even if libx265 lists yuva420p but was
+        // built without alpha support (then alpha is dropped, with a warning)
+        for (int depth = 0; depth < 3; ++depth) {
+            std::printf("==== WriteFFmpeg libx265 YUV420, %d bit, alpha: encodes (issue #136) ====\n", depth == 0 ? 8 : (depth == 1 ? 10 : 12));
+            failures += testWriteFFmpegX265(outFile + ".i136.mp4", W, H, 0, depth, /*alpha=*/true);
+        }
     }
 
     std::printf("==== WriteFFmpeg, the file param names the open file through another path (issue #137) ====\n");
