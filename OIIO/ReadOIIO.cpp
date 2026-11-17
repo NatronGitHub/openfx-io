@@ -23,6 +23,7 @@
  */
 
 #include <algorithm>
+#include <cctype> // std::isdigit
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -1549,6 +1550,29 @@ ReadOIIOPlugin::restoreStateFromParams()
     _offsetNegativeDispWindow->setIsSecretAndDisabled(!supportsDisplayWindow);
 }
 
+// The color space of a file that has none (or an unknown one), from its bit depth:
+// sRGB for 8-bit images, Rec709 for 10-bits, 12-bits or 16-bits integer images (KodakLog for Cineon and DPX),
+// Linear for anything else
+static const char*
+colorSpaceFromBitDepth(const string& filename,
+                       const ImageSpec& imagespec)
+{
+    switch (imagespec.format.basetype) {
+    case TypeDesc::UCHAR:
+    case TypeDesc::CHAR:
+        return "sRGB";
+    case TypeDesc::USHORT:
+    case TypeDesc::SHORT:
+        if (endsWith(filename, ".cin") || endsWith(filename, ".dpx") || endsWith(filename, ".CIN") || endsWith(filename, ".DPX")) {
+            // Cineon or DPX file
+            return "KodakLog";
+        }
+        return "Rec709";
+    default:
+        return "Linear";
+    }
+}
+
 void
 ReadOIIOPlugin::guessColorspace(const string& filename,
                                 const ImageSpec& imagespec,
@@ -1583,14 +1607,18 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
                 colorSpaceStr = "sRGB";
             } else if (cs == "lin_rec709_scene" || cs == "lin_rec709" || cs == "lin_srgb" || cs == "linear") {
                 colorSpaceStr = "Linear";
-            } else if (cs == "g22_rec709_scene" || cs == "g22_rec709_display" || cs == "g22_rec709") {
-                colorSpaceStr = "GammaCorrected";
-                gamma = 2.2f;
-            } else if (cs == "g18_rec709_scene" || cs == "g18_rec709") {
-                colorSpaceStr = "GammaCorrected";
-                gamma = 1.8f;
             } else if (cs == "g22_adobergb_scene" || cs == "g22_adobergb_display") {
                 colorSpaceStr = "AdobeRGB";
+            } else if ((cs.size() >= 10) && (cs[0] == 'g') && std::isdigit((unsigned char)cs[1]) && std::isdigit((unsigned char)cs[2])
+                       && (cs.compare(3, 7, "_rec709") == 0) && ((cs.size() == 10) || (cs[10] == '_'))) {
+                // g<NN>_rec709[_scene|_display]: gamma NN/10 (g18, g22, g24...)
+                colorSpaceStr = "GammaCorrected";
+                gamma = ((cs[1] - '0') * 10 + (cs[2] - '0')) / 10.f;
+            } else if ((cs != "sRGB") && (cs != "Linear") && (cs != "GammaCorrected") && (cs != "AdobeRGB")
+                       && (cs != "Rec709") && (cs != "KodakLog")) {
+                // another name that is not in the config (e.g. lin_ap1_scene, lin_rec2020_scene, srgb_p3d65_display,
+                // pq_rec2020_display): guess from the bit depth below, as for a file without a color space
+                colorSpaceStr = NULL;
             }
         }
     } else if (photoshopICCProfileValue) {
@@ -1609,24 +1637,7 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
         // sRGB for 8-bit images
         // Rec709 for 10-bits, 12-bits or 16-bits integer images
         // Linear for anything else
-        switch (imagespec.format.basetype) {
-        case TypeDesc::UCHAR:
-        case TypeDesc::CHAR:
-            colorSpaceStr = "sRGB";
-            break;
-        case TypeDesc::USHORT:
-        case TypeDesc::SHORT:
-            if (endsWith(filename, ".cin") || endsWith(filename, ".dpx") || endsWith(filename, ".CIN") || endsWith(filename, ".DPX")) {
-                // Cineon or DPX file
-                colorSpaceStr = "KodakLog";
-            } else {
-                colorSpaceStr = "Rec709";
-            }
-            break;
-        default:
-            colorSpaceStr = "Linear";
-            break;
-        }
+        colorSpaceStr = colorSpaceFromBitDepth(filename, imagespec);
     }
     if (colorSpaceStr) {
         if (colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected")) {
@@ -1667,6 +1678,10 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
                 {
                     colorSpaceStr = "sRGB";
                 }
+            }
+            if (colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected")) {
+                // another gamma (e.g. 2.4), or no Gamma1.8 color space in the config: guess from the bit depth
+                colorSpaceStr = colorSpaceFromBitDepth(filename, imagespec);
             }
         }
 #ifdef OFX_IO_USING_OCIO
