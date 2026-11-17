@@ -24,7 +24,13 @@
 
 #ifdef OFX_IO_USING_OCIO
 
+#include <cerrno>
 #include <cstdio> // fopen...
+#ifdef _WIN32
+#include <fcntl.h> // _O_*
+#include <io.h> // _wopen
+#include <sys/stat.h> // _S_*
+#endif
 #include <locale>
 #include <sstream> // std::ostringstream
 
@@ -1036,6 +1042,28 @@ OCIOCDLTransformPlugin::beginEdit()
     }
 }
 
+// open a new file (UTF-8 path) for writing; fail with errno == EEXIST if it already exists
+static std::FILE*
+createNewFile(const string& path)
+{
+#ifdef _WIN32
+    // not fopen's "x" mode: it's C11, which msvcrt.dll (MinGW64 builds) doesn't support, only the UCRT
+    const int fd = ::_wopen(OFX::utf8_to_utf16(path).c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_TRUNC | _O_TEXT, _S_IREAD | _S_IWRITE);
+    if (fd < 0) {
+        return NULL;
+    }
+    std::FILE* file = ::_wfdopen(fd, L"w");
+    if (!file) {
+        ::_close(fd);
+    }
+
+    return file;
+#else
+    // "x": C11 exclusive create (glibc, macOS)
+    return OFX::fopen_utf8(path.c_str(), "wx");
+#endif
+}
+
 // write the grade at time to a new ColorCorrection XML file (.cc), or report why it can't be written
 void
 OCIOCDLTransformPlugin::exportCDL(double time,
@@ -1099,10 +1127,10 @@ OCIOCDLTransformPlugin::exportCDL(double time,
 
         return;
     }
-    // "x": create a new file, never overwrite an existing one (C11; glibc, macOS, MSVCRT/UCRT)
-    std::FILE* file = OFX::fopen_utf8(exportName.c_str(), "wx");
+    // create a new file, never overwrite an existing one (atomically, even if it can't be read)
+    std::FILE* file = createNewFile(exportName);
     if (!file) {
-        if (OFX::exists_utf8(exportName.c_str())) {
+        if (errno == EEXIST) {
             sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
         } else {
             sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
