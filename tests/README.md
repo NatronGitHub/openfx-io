@@ -196,13 +196,19 @@ tests/hostdemo/run.sh build/openfx/HostSupport/examples/hostDemo Bundle/IO.ofx.b
 ```
 
 `hostdemo/run.sh` lists the plug-ins of the bundle with `io_verify_plugin_loads`, and renders each one with
-`hostDemo` (frames 0 and 1, two views, default parameters, on hostDemo's PAL SD input: black at t=0, white at t=1;
-`OCIO=tests/test.ocio`):
+`hostDemo` (frames 0 and 1, two views, default parameters, `OCIO=tests/test.ocio`, on hostDemo's PAL SD input: at
+time t, the left view is red and the right view cyan, at grey level t, so both are black at t=0):
 
-* the writers, in the general context, write `image.png` (WritePNG), `image.exr` (WriteEXR), `image.pfm` (WritePFM),
-  `image.tif` and `image.jpg` (WriteOIIO) and `movie.mov` (WriteFFmpeg), which must exist and be non-empty;
+* the writers, in the general context, write `image.png` (WritePNG), `image.exr` and `half.exr` (WriteEXR, 32-bit
+  float and 16-bit half), `image.pfm` (WritePFM), `image.tif` and `image.jpg` (WriteOIIO) and `movie.mov`
+  (WriteFFmpeg), which must exist and be non-empty. A still image file holds the last render (t=1, right view: cyan),
+  the movie one frame per time (the left view, red);
 * the readers, in the general context, read them back: ReadPNG, ReadEXR, ReadPFM, ReadOIIO (TIFF, JPEG, PNG, EXR) and
-  ReadFFmpeg (MOV). No test file is committed;
+  ReadFFmpeg (MOV, its frames 1 and 2). No test file is committed. Their images are compared with those the writer
+  rendered (`hostdemo/compare.py`, on hostDemo's `--report` files): the mean of each component of each render of the
+  reader must be the writer's, within 0.001 for the lossless formats (PNG, TIFF, EXR, PFM) and 0.03 for JPEG and MOV,
+  and no pixel may be left unwritten (NaN). Since the two views and the two times differ, this catches swapped or
+  missing channels, black or flipped images, and the wrong movie frame;
 * the filters (filter context): the OCIO plug-ins, OIIOText, OIIOResize, SeExpr, SeExprSimple, SeGrain, SeNoise and
   RunScript, with default parameters, except where defaults can't render: OCIOFileTransform gets an identity 1D
   LUT (it has no default file), and SeExpr, SeExprSimple (in hosts other than Natron) and RunScript get
@@ -210,12 +216,19 @@ tests/hostdemo/run.sh build/openfx/HostSupport/examples/hostDemo Bundle/IO.ofx.b
   OIIOText needs one of OpenImageIO's default fonts (DroidSans, cour, Courier New or FreeMono; on Ubuntu:
   `fonts-freefont-ttf`).
 
-A plug-in fails on any load, describe, instance or render error (hostDemo's exit status), on a crash or a timeout
-(`HOSTDEMO_TIMEOUT`, 120 s per render), on an error message from the plug-in, if an output frame is missing, or if
-a writer's file is missing or empty (and then the reader of that file fails too). Every plug-in of the bundle must
-have a test, or an explicit skip with its reason in the script's `SKIPS` list (none at the moment): a new plug-in
-without either fails the test. Tests of plug-ins that are not in the bundle (their libraries were not found at build
-time) are reported, not failed.
+A plug-in fails on any load, describe, instance or render error (hostDemo's exit status), on a crash, on an error
+message from the plug-in (`OfxMessageError`, `OfxMessageFatal`), if an output frame is missing, if a writer's file is
+missing or empty (and then the reader of that file fails too), if a reader's images differ from its writer's, or on a
+timeout: `HOSTDEMO_TIMEOUT` (120 s) per hostDemo run, and `HOSTDEMO_TOTAL_TIMEOUT` (600 s, less than ctest's 900 s)
+for all of them. A timeout tells whether the render had finished (hostDemo writes its `--report` file before it
+unloads the plug-ins). Every plug-in of the bundle must have a test, or an explicit skip with its reason in the
+script's `SKIPS` list (none at the moment): a new plug-in without either fails the test. Tests of plug-ins that are not
+in the bundle (their libraries were not found at build time) are reported, and a bundle that is not installed skips
+the test, unless `IO_HOSTDEMO_STRICT=1` (as in CI), which makes both fail. The script needs Python 3 (`PYTHON`). In
+CI, the outputs (`build/hostdemo/out`) are uploaded as an artifact when the job fails.
+
+With `-DIO_HOSTDEMO_TESTS=ON`, the CMake configuration fails if the test can't be added (no bash, no hostDemo, or
+`BUILD_TESTING=OFF`).
 
 Not tested: ReadOIIO's RAW support (LibRaw). No RAW file can be generated at test time (no writer makes camera RAW
 files), and real camera RAW or DNG files are much larger than the few KB a test file may take.
@@ -237,6 +250,7 @@ files), and real camera RAW or DNG files are much larger than the few KB a test 
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
 | `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
+| `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl`. |
 
 ## Notes / limitations

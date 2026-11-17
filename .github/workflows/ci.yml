@@ -117,7 +117,17 @@ jobs:
         run: make -j4 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="g++ -std=c++20"
       - name: Tests
         # tests/Makefile and io-hostdemo (on the installed bundle), run by ctest
+        env:
+          # io-hostdemo fails if the bundle is not installed or lacks a plug-in
+          IO_HOSTDEMO_STRICT: 1
         run: ctest --test-dir build --output-on-failure
+      - name: Upload the hostDemo test outputs
+        if: failure()
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: openfx-io-hostdemo-ubuntu_24
+          path: build/hostdemo/out
+          if-no-files-found: ignore
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
         run: make -C tests clean test CXXSTD=-std=c++20
@@ -231,10 +241,17 @@ jobs:
           ln -sf /opt/local/bin/ffprobe8 "$RUNNER_TEMP/ffbin/ffprobe"
           export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           # tests/Makefile (CXX=clang++ WITH_LIBRAW=1) and io-hostdemo (on the installed, deployed bundle), run by ctest
-          ctest --test-dir build --output-on-failure
+          IO_HOSTDEMO_STRICT=1 ctest --test-dir build --output-on-failure
           if [ "$EXTRA_VARIANTS" = true ]; then
             make -C tests clean test CXX=clang++ WITH_LIBRAW=1 CXXSTD=-std=c++20
           fi
+      - name: Upload the hostDemo test outputs
+        if: failure()
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: openfx-io-hostdemo-macos_15
+          path: build/hostdemo/out
+          if-no-files-found: ignore
       - name: Verify the plugin loads
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
@@ -306,7 +323,17 @@ jobs:
         run: |
           set -eo pipefail
           make -C tests test
-          ctest --test-dir build -R '^io-(load|hostdemo)$' --output-on-failure
+          ctest --test-dir build -R '^io-load$' --output-on-failure
+          # (--no-tests=error: fails if there is no io-hostdemo test; IO_HOSTDEMO_STRICT: if the bundle is not
+          # installed or lacks a plug-in)
+          IO_HOSTDEMO_STRICT=1 ctest --test-dir build -R '^io-hostdemo$' --no-tests=error --output-on-failure
+      - name: Upload the hostDemo test outputs
+        if: failure()
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: openfx-io-hostdemo-windows_ucrt64
+          path: build/hostdemo/out
+          if-no-files-found: ignore
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
         run: |

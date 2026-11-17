@@ -490,6 +490,9 @@ ofx_deploy_bundle(IO)
 # - tests-make-*: the tests of tests/Makefile (which builds them in tests/, with its own flags), with this build's
 #   compiler and FFmpeg, when their libraries were found. IO_TESTS_MAKE_ARGS: extra make arguments, e.g. WITH_LIBRAW=1.
 option(BUILD_TESTING "Build and run the tests with ctest" ON)
+if(IO_HOSTDEMO_TESTS AND NOT BUILD_TESTING)
+  message(FATAL_ERROR "IO_HOSTDEMO_TESTS needs BUILD_TESTING")
+endif()
 if(BUILD_TESTING)
   enable_testing()
 
@@ -558,12 +561,13 @@ if(BUILD_TESTING)
 
   # io-hostdemo (IO_HOSTDEMO_TESTS): openfx's hostDemo loads the installed bundle and renders each of its plug-ins
   # (tests/hostdemo/run.sh, which lists what is tested and what is skipped); skipped if it was not installed yet
+  # (FATAL_ERROR if it can't be: a CI build with IO_HOSTDEMO_TESTS=ON must not pass without the test)
   if(IO_HOSTDEMO_TESTS)
     find_program(IO_BASH NAMES bash)
     if(NOT TARGET hostDemo)
-      message(WARNING "IO_HOSTDEMO_TESTS: openfx's hostDemo is not built (OFX_SUPPORTS_MULTITHREAD?): no io-hostdemo test")
+      message(FATAL_ERROR "IO_HOSTDEMO_TESTS: openfx's hostDemo is not built (OFX_SUPPORTS_MULTITHREAD?)")
     elseif(NOT IO_BASH)
-      message(WARNING "IO_HOSTDEMO_TESTS: bash not found: no io-hostdemo test")
+      message(FATAL_ERROR "IO_HOSTDEMO_TESTS: bash not found")
     else()
       # openfx is EXCLUDE_FROM_ALL: build hostDemo with the default target
       add_custom_target(io_hostdemo ALL)
@@ -584,6 +588,7 @@ if(BUILD_TESTING)
         # the installed bundle (deployed on macOS) loads by itself
         list(APPEND _io_env "DYLD_LIBRARY_PATH=" "DYLD_FALLBACK_LIBRARY_PATH=" "DYLD_FRAMEWORK_PATH=" "LD_LIBRARY_PATH=")
       endif()
+      # TIMEOUT: more than run.sh's HOSTDEMO_TOTAL_TIMEOUT (600 s), so that it reports what hung
       set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}")
     endif()
   endif()
