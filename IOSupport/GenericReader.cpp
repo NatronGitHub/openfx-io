@@ -992,8 +992,9 @@ buildMipMapLevelGeneric(ImageEffect* instance,
 {
     assert(level > 0);
 
-    auto_ptr<ImageMemory> tmpMem;
-    size_t tmpMemSize = 0;
+    // two temporary images, used alternately: level i is computed from level i-1, which must not be overwritten
+    auto_ptr<ImageMemory> tmpMem[2];
+    size_t tmpMemSize[2] = { 0, 0 };
     PIX* nextImg = NULL;
     const PIX* previousImg = srcPixels;
     OfxRectI previousBounds = srcBounds;
@@ -1015,17 +1016,20 @@ buildMipMapLevelGeneric(ImageEffect* instance,
             assert(nrw.x1 == nextRenderWindow.x1 && nrw.x2 == nextRenderWindow.x2 && nrw.y1 == nextRenderWindow.y1 && nrw.y2 == nextRenderWindow.y2);
         }
 #endif
-        /// Allocate a temporary image if necessary, or reuse the previously allocated buffer
+        /// Allocate a temporary image if necessary, or reuse the one allocated two levels before (which is larger)
         int nextRowBytes = (nextRenderWindow.x2 - nextRenderWindow.x1) * nComponents * sizeof(PIX);
         size_t newMemSize = (size_t)(nextRenderWindow.y2 - nextRenderWindow.y1) * (size_t)nextRowBytes;
-        if (!tmpMem.get()) {
-            // there should be enough memory: no need to reallocate
-            assert(tmpMemSize >= newMemSize);
-        } else {
-            tmpMem.reset(new ImageMemory(newMemSize, instance));
-            tmpMemSize = newMemSize;
+        auto_ptr<ImageMemory>& mem = tmpMem[i % 2];
+        if (!mem.get() || tmpMemSize[i % 2] < newMemSize) {
+            mem.reset(new ImageMemory(newMemSize, instance));
+            tmpMemSize[i % 2] = newMemSize;
         }
-        nextImg = (float*)tmpMem->lock();
+        nextImg = (PIX*)mem->lock();
+        if (!nextImg) {
+            throwSuiteStatusException(kOfxStatErrMemory);
+
+            return;
+        }
 
         halveWindow<PIX>(nextRenderWindow, previousImg, previousBounds, previousRowBytes, nextImg, nextRenderWindow, nextRowBytes, nComponents);
 
