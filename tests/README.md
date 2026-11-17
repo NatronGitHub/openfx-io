@@ -84,9 +84,13 @@ the real render pipeline, linked directly (no host binary):
   `movflags=+use_metadata_tags` must be appended to the plug-in movflags
   (faststart kept, `mdta` keys written), and `movflags=use_metadata_tags` must
   replace them. Options the encoder or muxer does not apply must be reported
-  in a warning (with the user's value), and syntax errors (an empty value,
-  double quotes) and invalid values (`g=abc`, `write_tmcd=abc`) must make
-  `beginSequenceRender` fail.
+  in a warning (with the user's value). Spaces around `=` are allowed
+  (`g = 1`, `bogus_sp= 'x=y:z'`), as in FFmpeg's `av_get_token`. Syntax errors
+  (issue #109: a key without `=` as in `tune preset=slow`, an unquoted `:` or
+  space in a key as in `g:=1` or `a :=1`, a `=` after a complete pair as in
+  `g=1 =2`, an empty value, an unterminated single quote, double quotes) must
+  make `beginSequenceRender` fail with an error that says what is wrong and at
+  which character, and so must invalid values (`g=abc`, `write_tmcd=abc`).
 * **WriteFFmpeg start timecode** (issue #78): write short `.mov` and `.mp4`
   files with the `startTimecode` param set (including a drop-frame timecode at
   29.97 fps), and read them back with libavformat: the timecode (tmcd) track
