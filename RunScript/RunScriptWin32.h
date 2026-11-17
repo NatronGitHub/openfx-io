@@ -59,6 +59,8 @@ bool isBatchFile(const std::wstring& program);
 //   directory, unlike CreateProcess), with ".exe" or ".com" appended if it has no executable extension.
 //   If fromUnixPath (it comes from "#!/bin/bash" or "#!/usr/bin/env python3"), the system directory is skipped,
 //   so that "bash" is not WSL's System32\bash.exe.
+// - cmd and powershell (with or without .exe, Unix-style or not) are always taken from the system directory, never
+//   from %PATH%: they have no Unix counterpart, and a program of the same name earlier in %PATH% cannot replace them.
 // Returns false and sets *error if it is not found.
 bool resolveProgram(const std::wstring& name, bool fromUnixPath, std::wstring* fullPath, std::string* error);
 
@@ -84,8 +86,10 @@ enum RunResult {
 
 // Run a command line built by buildCommandLine(), in a job object, without a console window, with stdin from NUL,
 // stdout to the host's stdout if it is a file or a pipe (else NUL), and stderr captured line by line into
-// *errLines (like the POSIX version, which reads the script's stderr with pstream; only the last lines are kept).
-// Waits for the process to exit, polling aborted(abortContext) if aborted is not NULL. Processes that it started
+// *errLines (like the POSIX version, which reads the script's stderr with pstream), split by
+// RunScriptOutput::LineCollector (a lone '\r' starts the line again; long lines are cut, and only the last lines are
+// kept). Waits for the process to exit, polling aborted(abortContext) if aborted is not NULL (at least every 64 KB
+// of stderr). Processes that it started
 // and which are still running are left running (e.g. a viewer started with "start"), unless it is aborted.
 RunResult runProcess(const std::wstring& applicationName,
                      const std::wstring& commandLine,
@@ -99,9 +103,16 @@ RunResult runProcess(const std::wstring& applicationName,
 // - if the script starts with a shebang line ("#!interpreter [options]"), it is saved with an extension
 //   matching the interpreter and run as "interpreter [options] script args...". A Unix path
 //   ("#!/usr/bin/python3", "#!/bin/sh") is reduced to its file name, and "#!/usr/bin/env name" to "name";
-//   the interpreter is found with resolveProgram().
+//   the interpreter is found with resolveProgram(). If it is cmd.exe ("#!cmd", "#!/usr/bin/env cmd"), the rest of
+//   the script is run as a batch file (see below), and the options are ignored. If it is powershell.exe or
+//   pwsh.exe, "-File" is appended to the options unless they already end with it (Windows PowerShell would
+//   otherwise run the script path and the arguments as a command), and -Command or -EncodedCommand is an error
+//   (with any dash that PowerShell accepts: '-', '/', "--", en dash, em dash, horizontal bar). With -File, Windows
+//   PowerShell 5.1 may bind an argument that begins with '-' to a parameter of the script.
+//   wsl.exe is rejected (it passes the command line to the Linux shell). The first line may end with LF, CRLF or CR.
 // - otherwise, it is a batch file, saved as a .bat file (with CRLF line endings) and run by cmd.exe.
-// The temporary file is removed afterwards.
+// The file is written in a new directory in the temporary directory, which only the current user (and SYSTEM) can
+// access, so that another user cannot replace it before it runs; both are removed afterwards.
 RunResult runScript(const std::string& script,
                     const std::vector<std::string>& args,
                     std::vector<std::string>* errLines,

@@ -35,10 +35,17 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+// sddl.h (ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, in advapi32) needs windows.h
+#include <sddl.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "advapi32.lib")
+#endif
 
 #include "RunScriptWin32.h"
+#include "RunScriptOutput.h"
 
 #include <cstdio> // snprintf, _snwprintf
+#include <cctype> // tolower
 #include <cwchar> // wcslen
 #include <cwctype>
 #include <string>
@@ -273,6 +280,29 @@ withoutTrailingBackslash(const wstring& dir)
     return d;
 }
 
+// The Windows system programs that are always taken from the system directory, never from the PATH, and their
+// path in it, or NULL: "cmd" and "powershell" (as "#!cmd", or as a Unix-style name, "#!/usr/bin/env cmd", for
+// which the system directory is otherwise skipped, see resolveProgram()). They have no Unix counterpart that a
+// Unix-style name could mean instead (unlike bash.exe, which is WSL's), and a program of the same name earlier in
+// the PATH cannot replace them.
+// wsl is not one of them: it is rejected as an interpreter (see runScript()).
+static const wchar_t*
+systemProgram(const wstring& name)
+{
+    wstring l = toLower(name);
+    if (endsWith(l, L".exe") || endsWith(l, L".com")) {
+        l.erase(l.size() - 4);
+    }
+    if (l == L"cmd") {
+        return L"cmd.exe";
+    }
+    if (l == L"powershell") {
+        return L"WindowsPowerShell\\v1.0\\powershell.exe";
+    }
+
+    return NULL;
+}
+
 bool
 resolveProgram(const wstring& programName,
                bool fromUnixPath,
@@ -318,12 +348,33 @@ resolveProgram(const wstring& programName,
 
     // search %PATH% only: CreateProcess and SearchPath (with the default search path) would look in the host's
     // directory and in the current directory (often the project directory) first
-    wstring systemDir;
+    wstring systemDir; // lowercase, for comparisons
+    wstring systemDirPath;
     {
         wchar_t sysdir[MAX_PATH + 1];
         UINT n = GetSystemDirectoryW(sysdir, MAX_PATH + 1);
         if (n > 0 && n <= MAX_PATH) {
-            systemDir = toLower(withoutTrailingBackslash(wstring(sysdir, n)));
+            systemDirPath = withoutTrailingBackslash(wstring(sysdir, n));
+            systemDir = toLower(systemDirPath);
+        }
+    }
+    {
+        const wchar_t* sysProgram = systemProgram(name);
+        if (sysProgram) {
+            if (systemDirPath.empty()) {
+                *error = "cannot find the system directory";
+
+                return false;
+            }
+            const wstring p = systemDirPath + L"\\" + sysProgram;
+            if (!isFile(p)) {
+                *error = "cannot find " + wideToUtf8(p);
+
+                return false;
+            }
+            *fullPath = p;
+
+            return true;
         }
     }
     wstring path;
@@ -444,51 +495,36 @@ closeHandle(HANDLE* h)
     *h = NULL;
 }
 
-// keep at most this many stderr lines (the last ones)
-#define kMaxErrLines 1000
+enum ReadStatus {
+    eReadEOF = 0, // end of file (or error)
+    eReadDrained, // the pipe is empty
+    eReadMore // the pipe may contain more: call again soon
+};
 
-static void
-addLines(string* pending,
-         const char* data,
-         size_t n,
-         vector<string>* lines)
-{
-    pending->append(data, n);
-    size_t pos;
-    while ((pos = pending->find('\n')) != string::npos) {
-        string line = pending->substr(0, pos);
-        if (!line.empty() && line[line.size() - 1] == '\r') {
-            line.erase(line.size() - 1);
-        }
-        lines->push_back(line);
-        pending->erase(0, pos + 1);
-    }
-    if (lines->size() > 2 * kMaxErrLines) {
-        lines->erase(lines->begin(), lines->begin() + (lines->size() - kMaxErrLines));
-    }
-}
-
-// read what is available in the pipe without blocking; returns false at the end of file (or on error)
-static bool
+// Read what is available in the pipe without blocking. At most kMaxReads reads of 4 KB are done, so that the caller
+// checks for abort regularly, even if the process writes faster than we read (e.g. "yes >&2").
+static ReadStatus
 readAvailable(HANDLE pipe,
-              string* pending,
-              vector<string>* lines)
+              RunScriptOutput::LineCollector* lines)
 {
-    for (;;) {
+    const int kMaxReads = 16;
+    for (int i = 0; i < kMaxReads; ++i) {
         DWORD avail = 0;
         if (!PeekNamedPipe(pipe, NULL, 0, NULL, &avail, NULL)) {
-            return false; // ERROR_BROKEN_PIPE: all the writers have closed it
+            return eReadEOF; // ERROR_BROKEN_PIPE: all the writers have closed it
         }
         if (avail == 0) {
-            return true;
+            return eReadDrained;
         }
         char buf[4096];
         DWORD n = 0;
         if (!ReadFile(pipe, buf, avail < sizeof(buf) ? avail : (DWORD)sizeof(buf), &n, NULL) || n == 0) {
-            return false;
+            return eReadEOF;
         }
-        addLines(pending, buf, n, lines);
+        lines->add(buf, n);
     }
+
+    return eReadMore;
 }
 
 // an inheritable copy of h
@@ -658,13 +694,16 @@ runProcess(const wstring& applicationName,
     // Read stderr while waiting for the process, and poll for abort. After the process exits, read what remains
     // for a short time only: a process that it started (e.g. "start viewer") may keep the pipe open.
     RunResult result = eRunOK;
-    string pending;
+    RunScriptOutput::LineCollector lines(errLines);
     bool eof = false;
     bool exited = false;
     DWORD exitTick = 0;
     for (;;) {
+        bool more = false; // the pipe was not drained: do not wait before reading again
         if (!eof) {
-            eof = !readAvailable(errRead, &pending, errLines);
+            const ReadStatus rs = readAvailable(errRead, &lines);
+            eof = rs == eReadEOF;
+            more = rs == eReadMore;
         }
         if (exited && (eof || (GetTickCount() - exitTick) > 200)) {
             break;
@@ -681,20 +720,15 @@ runProcess(const wstring& applicationName,
             break;
         }
         if (!exited) {
-            if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) {
+            if (WaitForSingleObject(pi.hProcess, more ? 0 : 20) == WAIT_OBJECT_0) {
                 exited = true;
                 exitTick = GetTickCount();
             }
-        } else {
+        } else if (!more) {
             Sleep(10);
         }
     }
-    if (!pending.empty()) {
-        if (pending[pending.size() - 1] == '\r') {
-            pending.erase(pending.size() - 1);
-        }
-        errLines->push_back(pending);
-    }
+    lines.finish();
     closeHandle(&errRead);
 
     DWORD code = 0;
@@ -763,6 +797,116 @@ splitFirstWord(const string& s,
     }
 }
 
+// true if program is name.exe or name.com (in any directory, case-insensitive)
+static bool
+isProgram(const wstring& program,
+          const wchar_t* name)
+{
+    wstring base = toLower(stripTrailingDotsAndSpaces(program));
+    size_t sep = base.find_last_of(L"\\/");
+    if (sep != wstring::npos) {
+        base.erase(0, sep + 1);
+    }
+
+    return base == wstring(name) + L".exe" || base == wstring(name) + L".com";
+}
+
+static bool
+isCmdExe(const wstring& program)
+{
+    return isProgram(program, L"cmd");
+}
+
+// true if the lowercase option name n (without its dashes) is a prefix of the PowerShell parameter name p, at least
+// minLength characters long, as PowerShell accepts it
+static bool
+isPowerShellParameter(const string& n,
+                      const char* p,
+                      size_t minLength)
+{
+    const string param(p);
+
+    return n.size() >= minLength && n.size() <= param.size() && param.compare(0, n.size(), n) == 0;
+}
+
+// If the UTF-8 word w is a PowerShell option, set *name to its lowercase name and return true. Both PowerShells take
+// '-', '/', and the en dash, em dash and horizontal bar (U+2013, U+2014, U+2015) as the dash, and pwsh also takes
+// "--name": strip one of these, then one optional '-'.
+static bool
+powerShellOptionName(const string& w,
+                     string* name)
+{
+    size_t start = 0;
+    if (!w.empty() && (w[0] == '-' || w[0] == '/')) {
+        start = 1;
+    } else if (w.size() >= 3 && (unsigned char)w[0] == 0xE2 && (unsigned char)w[1] == 0x80
+               && ((unsigned char)w[2] == 0x93 || (unsigned char)w[2] == 0x94 || (unsigned char)w[2] == 0x95)) {
+        start = 3;
+    } else {
+        return false;
+    }
+    if (start < w.size() && w[start] == '-') {
+        ++start;
+    }
+    *name = w.substr(start);
+    for (size_t j = 0; j < name->size(); ++j) {
+        (*name)[j] = (char)std::tolower((unsigned char)(*name)[j]);
+    }
+
+    return !name->empty();
+}
+
+// Make sure that the shebang options of powershell.exe or pwsh.exe end with -File, so that the script is run as a
+// file, with its arguments passed as literal strings: "-File" is appended unless the last option is already -File.
+// Options that would run the arguments as code (-Command, -EncodedCommand, ...) or -File elsewhere are an error.
+// -NoProfile and -ExecutionPolicy are left to the user (a script file may not run with the default policy).
+// Note that with -File, Windows PowerShell 5.1 may bind an argument that begins with '-' to a parameter of the script
+// (declared with param()), rather than pass it in $args.
+static bool
+powerShellFileOptions(string* options,
+                      string* error)
+{
+    vector<string> words;
+    {
+        string rest = *options;
+        for (;;) {
+            string w;
+            string r;
+            splitFirstWord(rest, &w, &r);
+            if (w.empty() && r.empty()) {
+                break;
+            }
+            words.push_back(w);
+            rest = r;
+        }
+    }
+    for (size_t i = 0; i < words.size(); ++i) {
+        string o;
+        if (!powerShellOptionName(words[i], &o)) {
+            continue;
+        }
+        if (isPowerShellParameter(o, "command", 1) || isPowerShellParameter(o, "commandwithargs", 1) || o == "cwa"
+            || o == "e" || o == "ec" || isPowerShellParameter(o, "encodedcommand", 2)
+            || o == "ea" || isPowerShellParameter(o, "encodedarguments", 2)) {
+            *error = "PowerShell option " + words[i] + " is not allowed: the script must be run with -File (its arguments would be run as code)";
+
+            return false;
+        }
+        if (isPowerShellParameter(o, "file", 1)) {
+            if (i + 1 != words.size()) {
+                *error = "PowerShell option " + words[i] + " must be the last option on the first line of the script";
+
+                return false;
+            }
+
+            return true; // already ends with -File
+        }
+    }
+    *options += options->empty() ? "-File" : " -File";
+
+    return true;
+}
+
 // an extension for the script file, which some interpreters require (e.g. PowerShell needs .ps1)
 static const wchar_t*
 scriptExtension(const wstring& interpreterPath)
@@ -797,13 +941,62 @@ scriptExtension(const wstring& interpreterPath)
     return L".txt";
 }
 
-// create a new file with a unique name in the temporary directory, and write data to it
+// a security descriptor that gives full access to the current user and SYSTEM only (not inherited from the
+// parent directory, and inherited by what is created in the directory); free it with LocalFree(). On failure, returns
+// NULL and sets *err.
+static PSECURITY_DESCRIPTOR
+privateSecurityDescriptor(DWORD* err)
+{
+    HANDLE token = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        *err = GetLastError();
+
+        return NULL;
+    }
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    *err = GetLastError(); // ERROR_INSUFFICIENT_BUFFER if size is set
+    vector<char> buf(size ? size : 1);
+    wchar_t* sid = NULL;
+    if (size) {
+        if (!GetTokenInformation(token, TokenUser, &buf[0], size, &size)) {
+            *err = GetLastError();
+        } else if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(&buf[0])->User.Sid, &sid)) {
+            *err = GetLastError();
+            sid = NULL;
+        }
+    }
+    CloseHandle(token);
+    if (!sid) {
+        return NULL;
+    }
+    // P: protected (the parent's ACEs are not inherited); OICI: inherited by files and directories; FA: all access
+    const wstring sddl = wstring(L"D:P(A;OICI;FA;;;") + sid + L")(A;OICI;FA;;;SY)";
+    LocalFree(sid);
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, NULL)) {
+        *err = GetLastError();
+
+        return NULL;
+    }
+
+    return sd;
+}
+
+// Create a new directory with a unique name in the temporary directory, which only the current user can access, and
+// a new file in it, and write data to it. In the temporary directory itself, which may be shared (TMP=C:\Temp),
+// another user could replace the file before the interpreter opens it.
+// *dirHandle is a handle to the directory, opened without FILE_SHARE_DELETE, so that the directory cannot be renamed
+// or deleted (and replaced) while it is open: close it before removing the directory.
 static bool
 writeTempFile(const wchar_t* extension,
               const string& data,
+              wstring* dirPath,
+              HANDLE* dirHandle,
               wstring* path,
               string* error)
 {
+    *dirHandle = INVALID_HANDLE_VALUE;
     DWORD n = GetTempPathW(0, NULL);
     if (n == 0) {
         *error = "cannot get the temporary directory: " + systemErrorMessage(GetLastError());
@@ -822,28 +1015,62 @@ writeTempFile(const wchar_t* extension,
         tmpdir.push_back(L'\\');
     }
 
+    DWORD sdError = 0;
+    PSECURITY_DESCRIPTOR sd = privateSecurityDescriptor(&sdError);
+    if (!sd) {
+        *error = "cannot create the security descriptor of a private directory: " + systemErrorMessage(sdError);
+
+        return false;
+    }
+    SECURITY_ATTRIBUTES sa;
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = sd;
+    sa.bInheritHandle = FALSE;
+
     static volatile LONG counter = 0;
-    HANDLE h = INVALID_HANDLE_VALUE;
+    bool created = false;
     for (int attempt = 0; attempt < 100; ++attempt) {
         wchar_t name[96];
         _snwprintf(name, sizeof(name) / sizeof(name[0]) - 1, L"runscript%lu_%ld_%lu",
                    (unsigned long)GetCurrentProcessId(), (long)InterlockedIncrement(&counter), (unsigned long)GetTickCount());
         name[sizeof(name) / sizeof(name[0]) - 1] = L'\0';
-        *path = tmpdir + name + extension;
-        // CREATE_NEW fails if the file exists, so we never write to a file created by someone else
-        h = CreateFileW(path->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h != INVALID_HANDLE_VALUE) {
+        *dirPath = tmpdir + name;
+        // fails if it exists, so we never use a directory created by someone else
+        if (CreateDirectoryW(dirPath->c_str(), &sa)) {
+            created = true;
             break;
         }
         DWORD err = GetLastError();
-        if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS) {
-            *error = "cannot create " + wideToUtf8(*path) + ": " + systemErrorMessage(err);
+        if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
+            *error = "cannot create " + wideToUtf8(*dirPath) + ": " + systemErrorMessage(err);
+            LocalFree(sd);
 
             return false;
         }
     }
+    LocalFree(sd);
+    if (!created) {
+        *error = "cannot create a temporary directory in " + wideToUtf8(tmpdir);
+
+        return false;
+    }
+    // FILE_FLAG_BACKUP_SEMANTICS: needed to open a directory
+    *dirHandle = CreateFileW(dirPath->c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (*dirHandle == INVALID_HANDLE_VALUE) {
+        *error = "cannot open " + wideToUtf8(*dirPath) + ": " + systemErrorMessage(GetLastError());
+        RemoveDirectoryW(dirPath->c_str());
+
+        return false;
+    }
+    *path = *dirPath + L"\\runscript" + extension;
+    // the file inherits the private access rights of the directory
+    HANDLE h = CreateFileW(path->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
-        *error = "cannot create a temporary file in " + wideToUtf8(tmpdir);
+        *error = "cannot create " + wideToUtf8(*path) + ": " + systemErrorMessage(GetLastError());
+        closeHandle(dirHandle);
+        RemoveDirectoryW(dirPath->c_str());
 
         return false;
     }
@@ -855,6 +1082,8 @@ writeTempFile(const wchar_t* extension,
             *error = "cannot write " + wideToUtf8(*path) + ": " + systemErrorMessage(GetLastError());
             CloseHandle(h);
             DeleteFileW(path->c_str());
+            closeHandle(dirHandle);
+            RemoveDirectoryW(dirPath->c_str());
 
             return false;
         }
@@ -886,7 +1115,9 @@ runScript(const string& scriptContents,
     const wchar_t* extension;
     if (script.compare(0, 2, "#!") == 0) {
         string name;
-        string line = trimRight(script.substr(2, script.find('\n') == string::npos ? string::npos : script.find('\n') - 2));
+        // the first line ends with "\n", "\r\n" or a lone "\r" (classic Mac OS line endings)
+        const size_t eol = script.find_first_of("\r\n");
+        string line = trimRight(script.substr(2, eol == string::npos ? string::npos : eol - 2));
         splitFirstWord(line, &name, &options);
         bool fromUnixPath = false;
         // "#!/usr/bin/env name [options]": search name in the PATH
@@ -914,10 +1145,38 @@ runScript(const string& scriptContents,
 
             return eRunFailed;
         }
+        if (isCmdExe(interpreter)) {
+            // "#!cmd" or "#!/usr/bin/env cmd": the rest of the script is a batch file, run as such (by the system's
+            // cmd.exe, with the quoting of the arguments for batch files): "cmd.exe script args" would not run it,
+            // and "cmd.exe /c script args" would quote the arguments for CommandLineToArgvW, which allows command
+            // injection. The options are ignored, and the shebang line is replaced with an empty line, so that the
+            // line numbers are unchanged.
+            interpreter.clear();
+            options.clear();
+            script = (eol == string::npos) ? string() : script.substr(eol);
+        } else if (isProgram(interpreter, L"wsl")) {
+            // wsl.exe passes its command line to the Linux shell, which would not find the script (a Windows path),
+            // and would parse the arguments again (expanding $(...), for example)
+            *error = "interpreter on the first line of the script: wsl cannot run a script (it passes the arguments to the "
+                     "Linux shell, which would interpret them): use a Windows interpreter";
+
+            return eRunFailed;
+        } else if (isProgram(interpreter, L"powershell") || isProgram(interpreter, L"pwsh")) {
+            // Windows PowerShell runs its first argument as a command (-Command), not as a script file: the script
+            // path and the arguments would be parsed as PowerShell code
+            if (!powerShellFileOptions(&options, error)) {
+                *error = "interpreter on the first line of the script: " + *error;
+
+                return eRunFailed;
+            }
+        }
+    }
+    if (!interpreter.empty()) {
         extension = scriptExtension(interpreter);
         data = script;
     } else {
-        // a batch file: convert the line endings to CRLF (cmd.exe misparses labels and GOTO with LF only)
+        // a batch file: convert the line endings (LF, or a lone CR) to CRLF (cmd.exe misparses labels and GOTO with
+        // LF only, and does not take a lone CR as a line break)
         extension = L".bat";
         data.reserve(script.size() + script.size() / 16);
         for (size_t i = 0; i < script.size(); ++i) {
@@ -925,11 +1184,16 @@ runScript(const string& scriptContents,
                 data.push_back('\r');
             }
             data.push_back(script[i]);
+            if (script[i] == '\r' && (i + 1 == script.size() || script[i + 1] != '\n')) {
+                data.push_back('\n');
+            }
         }
     }
 
+    wstring scriptDir;
+    HANDLE scriptDirHandle = INVALID_HANDLE_VALUE;
     wstring scriptPath;
-    if (!writeTempFile(extension, data, &scriptPath, error)) {
+    if (!writeTempFile(extension, data, &scriptDir, &scriptDirHandle, &scriptPath, error)) {
         return eRunFailed;
     }
 
@@ -954,6 +1218,8 @@ runScript(const string& scriptContents,
 
     // remove the script (this may fail if a process started by the script still has it open)
     DeleteFileW(scriptPath.c_str());
+    closeHandle(&scriptDirHandle);
+    RemoveDirectoryW(scriptDir.c_str());
 
     return result;
 } // runScript
