@@ -156,17 +156,19 @@ run() {
     (cd "$OUT" && exec env OFX_PLUGIN_PATH="$PLUGPATH" "$HD" --quiet --no-std-paths --no-cache -p "$id" -c "$ctx" \
         -o "$(native "$OUT/$name")" --report "$(native "$OUT/$name.json")" "$@") > "$log" 2>&1 &
     pid=$!
-    # the watchdog kills its sleep when it is killed itself: no orphaned sleep
-    (
-        sleep "$timeout" &
-        s=$!
-        trap 'kill $s 2> /dev/null; exit 0' TERM
-        wait $s
-        kill -9 $pid && echo "killed after ${timeout}s" >> "$log"
-    ) > /dev/null 2>&1 &
+    # the watchdog is a sleep, a child of this shell (no subshell whose own sleep could be orphaned): poll hostDemo,
+    # and kill it if the watchdog has ended first
+    sleep "$timeout" &
     watchdog=$!
+    while kill -0 $pid 2> /dev/null; do
+        if ! kill -0 $watchdog 2> /dev/null; then
+            kill -9 $pid 2> /dev/null && echo "killed after ${timeout}s" >> "$log"
+            break
+        fi
+        sleep 0.2
+    done
     wait $pid || status=$?
-    kill $watchdog > /dev/null 2>&1
+    kill $watchdog 2> /dev/null
     wait $watchdog 2> /dev/null
     local why=""
     if grep -q "^killed after" "$log"; then
@@ -188,7 +190,7 @@ run() {
         why="did not write $WRITTEN"
     elif [ -n "$COMPARE_WITH" ]; then
         local writer tol mode
-        read -r writer tol mode <<< "$COMPARE_WITH"
+        read -r writer tol mode <<< "$COMPARE_WITH" # (mode: the rest, e.g. --crc)
         # shellcheck disable=SC2086
         if ! "$PYTHON" "$COMPARE" "$(native "$OUT/$name.json")" "$(native "$OUT/$writer.json")" "$tol" $mode \
              > "$OUT/$name.compare" 2>&1; then
@@ -240,18 +242,19 @@ write WriteOIIO-tiff $P.WriteOIIO   image.tif
 write WriteOIIO-jpeg $P.WriteOIIO   image.jpg
 write WriteFFmpeg    $P.WriteFFmpeg movie.mov
 
-# readers, on the files written above, compared with their writer: each component mean within LOSSLESS (8-bit
-# quantization included) or LOSSY (JPEG, MOV)
-LOSSLESS=0.001
+# readers, on the files written above, compared with their writer (compare.py): the same bounds, and each component
+# mean within LOSSLESS (8-bit quantization included) and the same CRC-32 of the images (so that a flipped or shifted
+# image fails), or within LOSSY (JPEG, MOV)
+LOSSLESS="0.001 --crc"
 LOSSY=0.03
-read_ ReadPNG        $P.ReadPNG     image.png WritePNG       $LOSSLESS
-read_ ReadEXR        $P.ReadEXR     image.exr WriteEXR       $LOSSLESS
-read_ ReadEXR-half   $P.ReadEXR     half.exr  WriteEXR-half  $LOSSLESS
-read_ ReadPFM        $P.ReadPFM     image.pfm WritePFM       $LOSSLESS
-read_ ReadOIIO-tiff  $P.ReadOIIO    image.tif WriteOIIO-tiff $LOSSLESS
+read_ ReadPNG        $P.ReadPNG     image.png WritePNG       "$LOSSLESS"
+read_ ReadEXR        $P.ReadEXR     image.exr WriteEXR       "$LOSSLESS"
+read_ ReadEXR-half   $P.ReadEXR     half.exr  WriteEXR-half  "$LOSSLESS"
+read_ ReadPFM        $P.ReadPFM     image.pfm WritePFM       "$LOSSLESS"
+read_ ReadOIIO-tiff  $P.ReadOIIO    image.tif WriteOIIO-tiff "$LOSSLESS"
 read_ ReadOIIO-jpeg  $P.ReadOIIO    image.jpg WriteOIIO-jpeg $LOSSY
-read_ ReadOIIO-png   $P.ReadOIIO    image.png WritePNG       $LOSSLESS
-read_ ReadOIIO-exr   $P.ReadOIIO    image.exr WriteEXR       $LOSSLESS
+read_ ReadOIIO-png   $P.ReadOIIO    image.png WritePNG       "$LOSSLESS"
+read_ ReadOIIO-exr   $P.ReadOIIO    image.exr WriteEXR       "$LOSSLESS"
 # the movie's frames 1 and 2 (its time domain) are the writer's renders at t=0 and 1, left view (compare.py --movie)
 FRAMES="1 2" read_ ReadFFmpeg $P.ReadFFmpeg movie.mov WriteFFmpeg "$LOSSY --movie" --frames 1,2
 # Not tested: ReadOIIO's RAW support (LibRaw). No writer makes a camera RAW file that LibRaw reads, so none can be

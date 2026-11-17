@@ -205,10 +205,11 @@ time t, the left view is red and the right view cyan, at grey level t, so both a
   the movie one frame per time (the left view, red);
 * the readers, in the general context, read them back: ReadPNG, ReadEXR, ReadPFM, ReadOIIO (TIFF, JPEG, PNG, EXR) and
   ReadFFmpeg (MOV, its frames 1 and 2). No test file is committed. Their images are compared with those the writer
-  rendered (`hostdemo/compare.py`, on hostDemo's `--report` files): the mean of each component of each render of the
-  reader must be the writer's, within 0.001 for the lossless formats (PNG, TIFF, EXR, PFM) and 0.03 for JPEG and MOV,
-  and no pixel may be left unwritten (NaN). Since the two views and the two times differ, this catches swapped or
-  missing channels, black or flipped images, and the wrong movie frame;
+  rendered (`hostdemo/compare.py`, on hostDemo's `--report` files): each render of the reader must have the writer's
+  bounds and component means, within 0.001 for the lossless formats (PNG, TIFF, EXR, PFM) and 0.03 for JPEG and MOV,
+  the lossless ones also the same CRC-32 of the image (which catches flipped, mirrored or shifted images), and no
+  pixel may be left unwritten (NaN). Since the two views and the two times differ, this also catches swapped or
+  missing channels, black images, and the wrong movie frame;
 * the filters (filter context): the OCIO plug-ins, OIIOText, OIIOResize, SeExpr, SeExprSimple, SeGrain, SeNoise and
   RunScript, with default parameters, except where defaults can't render: OCIOFileTransform gets an identity 1D
   LUT (it has no default file), and SeExpr, SeExprSimple (in hosts other than Natron) and RunScript get
