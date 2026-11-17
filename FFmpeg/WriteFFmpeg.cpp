@@ -40,6 +40,7 @@
 #include <cctype> // ::tolower
 #include <cfloat> // DBL_MAX
 #include <climits> // INT_MAX
+#include <cmath> // std::ceil, std::fabs
 #include <cstdio>
 #include <cstring> // strncpy
 #include <sstream>
@@ -599,6 +600,24 @@ frameRateFromFps(double fps)
     return frame_rate;
 }
 
+// The frame rate of the video stream, as encoded with the given codec.
+// MPEG-4 part 2 can not have a time base denominator above 65535 (libavcodec/mpeg4videoenc.c:
+// "timebase %d/%d not supported by MPEG 4 standard, the maximum admitted value for the timebase
+// denominator is 65535"), e.g. 120000/1001 for 119.88 fps. The frame rate is then reduced as the
+// ffmpeg CLI does (fftools/ffmpeg_filter.c: "reduce frame rate for mpeg4 to be within the spec
+// limits", framerate_clip = 65535, then av_reduce(&fr.num, &fr.den, fr.num, fr.den, framerate_clip)),
+// e.g. to 40999/342 for 120000/1001.
+static AVRational
+clipFrameRate(AVRational rate,
+              AVCodecID codecId)
+{
+    if (codecId == AV_CODEC_ID_MPEG4) {
+        av_reduce(&rate.num, &rate.den, rate.num, rate.den, 65535);
+    }
+
+    return rate;
+}
+
 // Read 1 to maxDigits decimal digits at p (and nothing else: no sign or whitespace), and advance p.
 static bool
 parseDigits(const char*& p,
@@ -666,8 +685,9 @@ parseTimecode(const string& str,
     // the timecode frame rate, as computed by libavutil/timecode.c
     const int64_t fps = (rate.num > 0 && rate.den > 0) ? (rate.num + rate.den / 2LL) / rate.den : 0;
     // FFmpeg only checks that the rounded frame rate is a multiple of 30, but drop-frame timecode is
-    // only meaningful at the NTSC rates, 30000/1001 and its multiples
-    if (dropFrame && ((fps <= 0) || (fps % 30 != 0) || ((int64_t)rate.num * 1001 != fps * 1000 * rate.den))) {
+    // only meaningful at the NTSC rates, 30000/1001 and its multiples (or a close approximation, such
+    // as 40999/342 for 120000/1001, see clipFrameRate())
+    if (dropFrame && ((fps <= 0) || (fps % 30 != 0) || (std::fabs(av_q2d(rate) * 1001. / (fps * 1000.) - 1.) > 1e-6))) {
         *error = "\"" + str + "\" is not valid at " + rateStr + " fps (drop-frame timecodes require 29.97 fps or a multiple of it)";
 
         return false;
@@ -1495,6 +1515,21 @@ public:
 
     virtual ~WriteFFmpegPlugin();
 
+    // Called by createInstance(). GenericWriterPlugin::restoreStateFromParams() guesses the format and
+    // the codec from the filename (onOutputFileChanged()): the pixel format and the persistent message
+    // are only updated then, or e.g. a new writer for a .mp4 file would check the default codec (ProRes)
+    // in mp4, and fail. An error in the settings (e.g. a codec that the container guessed from a .m4v
+    // file does not support) is shown in the persistent message, and must not make the creation fail.
+    virtual void restoreStateFromParams() OVERRIDE FINAL
+    {
+        GenericWriterPlugin::restoreStateFromParams();
+        try {
+            syncPrivateData();
+        } catch (const OFX::Exception::Suite&) {
+            // reported by updatePixelFormat()
+        }
+    }
+
 private:
     virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
     virtual void changedClip(const InstanceChangedArgs& args, const string& clipName) OVERRIDE FINAL;
@@ -1536,7 +1571,7 @@ private:
     void checkCodec();
     int freeFormat();
     void getColorInfo(AVColorPrimaries* color_primaries, AVColorTransferCharacteristic* color_trc) const;
-    const AVOutputFormat* initFormat(bool reportErrors) const;
+    const AVOutputFormat* initFormat(bool reportErrors, const string* filename = nullptr) const;
     bool writesTimecodeTrack(const AVOutputFormat* fmt) const;
     bool getStartTimecode(const AVOutputFormat* fmt, string* canonical, string* error) const;
     string getSettingsErrors() const;
@@ -1581,7 +1616,6 @@ private:
     void availPixelFormats();
 
     /// These members are not protected and only read/written by/to by the same thread.
-    string _filename;
     OfxRectI _rodPixel;
     float _pixelAspectRatio;
     bool _isOpen; // Flag for the configuration state of the FFmpeg components.
@@ -1844,7 +1878,6 @@ FFmpegSingleton::~FFmpegSingleton()
 WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
                                      const vector<string>& extensions)
     : GenericWriterPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha)
-    , _filename()
     , _pixelAspectRatio(1.)
     , _isOpen(false)
     , _pts_counter(0)
@@ -1919,8 +1952,7 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     _formatOptions = fetchStringParam(kParamFormatOptions);
     _startTimecode = fetchStringParam(kParamStartTimecode);
 
-    // finally
-    syncPrivateData();
+    // syncPrivateData() is called by restoreStateFromParams()
 }
 
 WriteFFmpegPlugin::~WriteFFmpegPlugin()
@@ -2117,7 +2149,14 @@ WriteFFmpegPlugin::getStartTimecode(const AVOutputFormat* fmt,
         return true;
     }
     str = str.substr(first, str.find_last_not_of(whitespace) - first + 1);
-    if (!parseTimecode(str, frameRateFromFps(_fps->getValue()), writesTimecodeTrack(fmt) ? fmt->name : nullptr, canonical, error)) {
+    // the frame rate of the video stream (see configureVideoStream()), which the muxer uses for the timecode
+    AVCodecID codecId = AV_CODEC_ID_NONE;
+    const AVCodec* videoCodec = nullptr;
+    if (!fmt || !initCodec(fmt, codecId, videoCodec)) {
+        codecId = AV_CODEC_ID_NONE;
+    }
+    const AVRational rate = clipFrameRate(frameRateFromFps(_fps->getValue()), codecId);
+    if (!parseTimecode(str, rate, writesTimecodeTrack(fmt) ? fmt->name : nullptr, canonical, error)) {
         *error = string("Invalid ") + kParamStartTimecodeLabel + ": " + *error;
 
         return false;
@@ -2131,22 +2170,39 @@ string
 WriteFFmpegPlugin::getSettingsErrors() const
 {
     string errors;
+    auto addError = [&errors](const string& error) {
+        if (!errors.empty()) {
+            errors += '\n';
+        }
+        errors += error;
+    };
+    // the same message as in beginEncode()
+    {
+        StringParam* params[2] = { _codecOptions, _formatOptions };
+        const char* labels[2] = { kParamCodecOptionsLabel, kParamFormatOptionsLabel };
+        for (int i = 0; i < 2; ++i) {
+            string str;
+            string error;
+            AVDictionaryHolder options;
+            params[i]->getValue(str);
+            if (!parseOptionString(str, options.ptr(), &error)) {
+                addError(string("Syntax error in ") + labels[i] + " \"" + str + "\": " + error);
+            }
+        }
+    }
     const AVOutputFormat* fmt = initFormat(/* reportErrors = */ false);
     if (fmt) {
         AVCodecID codecId = AV_CODEC_ID_NONE;
         const AVCodec* videoCodec = nullptr;
         if (!initCodec(fmt, codecId, videoCodec)) {
-            errors = "Unable to find codec";
+            addError("Unable to find codec");
         } else if (!codecCompatible(fmt, codecId)) {
-            errors = string("The codec ") + videoCodec->name + " is not supported in container " + fmt->name;
+            addError(string("The codec ") + videoCodec->name + " is not supported in container " + fmt->name);
         }
     }
     string canonical, error;
     if (!getStartTimecode(fmt, &canonical, &error)) {
-        if (!errors.empty()) {
-            errors += '\n';
-        }
-        errors += error;
+        addError(error);
     }
 
     return errors;
@@ -2169,15 +2225,23 @@ WriteFFmpegPlugin::updatePersistentMessage()
     }
 }
 
+// The output format. If the Format is "Default", it is guessed from filename, which is the file being
+// rendered (beginEncode()), or by default the value of the filename param (e.g. when a param changes).
 const AVOutputFormat*
-WriteFFmpegPlugin::initFormat(bool reportErrors) const
+WriteFFmpegPlugin::initFormat(bool reportErrors,
+                              const string* filename) const
 {
     assert(_format);
     int format = _format->getValue();
     const AVOutputFormat* fmt = nullptr;
 
     if (!format) { // first item is "Default"
-        const char* file = _filename.c_str();
+        string fileParam;
+        if (!filename) {
+            _fileParam->getValue(fileParam);
+            filename = &fileParam;
+        }
+        const char* file = filename->c_str();
         const bool fileSpecified = file && strlen(file);
         // If a file name has not yet been set, assume mov format by default
         fmt = av_guess_format(fileSpecified ? nullptr : "mov", file, nullptr);
@@ -3119,7 +3183,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // avCodecContext->time_base.den = (int)(fps * CONVERSION_FACTOR);
 
     int frameRate = (0.0 < fps) ? (int)fps : 0;
-    AVRational frame_rate = frameRateFromFps(fps);
+    AVRational frame_rate = clipFrameRate(frameRateFromFps(fps), avCodec->id);
     AVRational time_base = av_inv_q(frame_rate);
     // copy timebase while removing common factors
     const AVRational zero = { 0, 1 };
@@ -4176,14 +4240,13 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     ////////////////////                        ////////////////////
     //////////////////// INITIALIZE FORMAT       ////////////////////
 
-    _filename = filename;
     _rodPixel = rodPixel;
     _pixelAspectRatio = pixelAspectRatio;
 
 #if (LIBAVFORMAT_VERSION_MAJOR > 58)
-    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
+    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true, &filename);
 #else
-    auto avOutputFormat = const_cast<AVOutputFormat*>(initFormat(true));
+    auto avOutputFormat = const_cast<AVOutputFormat*>(initFormat(true, &filename));
 #endif
     if (!avOutputFormat) {
         setPersistentMessage(Message::eMessageError, "", "Invalid file extension");
