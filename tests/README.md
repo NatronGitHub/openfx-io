@@ -226,8 +226,12 @@ Matroska clips have a corrupted frame (8 bytes of slice data overwritten, so tha
 decodes with errors) just before a gap: the gap must show the corrupted frame, as
 decoded at its own frame, rather than fail. With a 20-frame gap after it, and with a
 35-frame gap at the end, the sequential decode must seek only twice (for frame 1, and
-to decode from the start once), not once per frame in the gap. A MOV clip has broken timestamps (two PTS swapped with the
-`setts` bitstream filter): every frame must decode, identically after a seek.
+to decode from the start once), not once per frame in the gap. A MOV clip has broken
+timestamps (two PTS swapped with the `setts` bitstream filter): every frame must
+decode, identically after a seek except at the two swapped frame times
+(`--no-seek-check`): there, FFmpeg 8 gives timestamps after a seek that depend on the
+timestamps decoded before, since `avcodec_flush_buffers()` does not reset its
+best_effort_timestamp heuristic.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration
