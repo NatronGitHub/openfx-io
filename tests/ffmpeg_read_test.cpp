@@ -19,13 +19,18 @@
  *      number in the pixels, so frame f (1-based) must have a signature of
  *      OFFSET + STEP * (f - 1), within 0.4 * STEP. This catches a wrong frame as
  *      well as a missing one,
- *   6. optionally (--frames N) checks the number of frames reported by getInfo().
+ *   6. optionally (--frames N) checks the number of frames reported by getInfo(),
+ *   7. optionally (--positions P0,P1,..., with --ramp) checks a variable frame rate
+ *      clip with timestamp gaps: ramp frame i (0-based) is at frame Pi (0-based,
+ *      increasing), and a requested frame in a gap must give the frame displayed at
+ *      that time, i.e. the last ramp frame at or before it (held until the next
+ *      one, or until the end).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -38,6 +43,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -71,7 +77,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -80,6 +86,7 @@ main(int argc, char** argv)
     bool loadNearest = false;
     double rampOffset = 0.0, rampStep = 0.0; // if rampStep > 0, frame f must have signature rampOffset + rampStep * (f - 1)
     int expectedFrames = -1;
+    std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -96,12 +103,27 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--positions" && i + 1 < argc) {
+            std::istringstream is(argv[++i]);
+            std::string item;
+            while (std::getline(is, item, ',')) {
+                const int p = std::atoi(item.c_str());
+                if (item.empty() || p < 0 || (!positions.empty() && p <= positions.back())) {
+                    std::fprintf(stderr, "bad --positions value: %s\n", argv[i]);
+                    return 2;
+                }
+                positions.push_back(p);
+            }
         } else if (a == "--verbose") {
             verbose = true;
         } else {
             std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
             return 2;
         }
+    }
+    if (!positions.empty() && (rampStep <= 0 || positions[0] != 0)) {
+        std::fprintf(stderr, "--positions needs --ramp, and must start at 0\n");
+        return 2;
     }
 
     FFmpegFile file(filename);
@@ -134,8 +156,20 @@ main(int argc, char** argv)
         return 1;
     }
 
-    // the content check: the frame (1-based) whose content is closest to the signature s
-    auto rampExpected = [rampOffset, rampStep](int f) -> double { return rampOffset + rampStep * (f - 1); };
+    // the content check: the ramp frame displayed at frame f (1-based), and the ramp frame (1-based)
+    // whose content is closest to the signature s
+    auto rampDisplayed = [&positions](int f) -> int {
+        if (positions.empty()) {
+            return f;
+        }
+        // the last ramp frame at or before frame f
+        int i = 0;
+        while ((i + 1 < (int)positions.size()) && (positions[i + 1] <= f - 1)) {
+            ++i;
+        }
+        return i + 1;
+    };
+    auto rampExpected = [rampOffset, rampStep, &rampDisplayed](int f) -> double { return rampOffset + rampStep * (rampDisplayed(f) - 1); };
     auto rampFrame = [rampOffset, rampStep](double s) -> double { return 1.0 + (s - rampOffset) / rampStep; };
     const double rampTol = 0.4 * rampStep;
     int contentErrors = 0;
@@ -163,8 +197,8 @@ main(int argc, char** argv)
             std::printf("  frame %d sig=%.3f\n", f, seqSig[f]);
         }
         if (rampStep > 0 && std::fabs(seqSig[f] - rampExpected(f)) > rampTol) {
-            std::printf("  CONTENT sequential frame %d: sig=%.3f expected=%.3f (looks like frame %.2f)\n",
-                        f, seqSig[f], rampExpected(f), rampFrame(seqSig[f]));
+            std::printf("  CONTENT sequential frame %d: sig=%.3f expected=%.3f (ramp frame %d, looks like ramp frame %.2f)\n",
+                        f, seqSig[f], rampExpected(f), rampDisplayed(f), rampFrame(seqSig[f]));
             ++contentErrors;
         }
     }
@@ -181,7 +215,7 @@ main(int argc, char** argv)
         }
     }
 
-    // 2) Seek-forcing order: full reverse, then a set of jumps.
+    // 2) Seek-forcing order: full reverse, then a set of jumps, then forward jumps of 3 frames.
     std::vector<int> order;
     for (int f = frames; f >= 1; --f) {
         order.push_back(f);
@@ -191,6 +225,9 @@ main(int argc, char** argv)
         if (j >= 1 && j <= frames) {
             order.push_back(j);
         }
+    }
+    for (int f = 2; f <= frames; f += 3) {
+        order.push_back(f);
     }
 
     int mismatches = 0;
@@ -218,8 +255,8 @@ main(int argc, char** argv)
             ++mismatches;
         }
         if (rampStep > 0 && std::fabs(s - rampExpected(f)) > rampTol) {
-            std::printf("  CONTENT seeked frame %d: sig=%.3f expected=%.3f (looks like frame %.2f)\n",
-                        f, s, rampExpected(f), rampFrame(s));
+            std::printf("  CONTENT seeked frame %d: sig=%.3f expected=%.3f (ramp frame %d, looks like ramp frame %.2f)\n",
+                        f, s, rampExpected(f), rampDisplayed(f), rampFrame(s));
             ++contentErrors;
         }
     }

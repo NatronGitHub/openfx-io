@@ -20,6 +20,12 @@
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
 #     screen recordings).
+#   * VFR Matroska, MP4 and MOV (H.264 with B-frames, 24 fps) with timestamp gaps,
+#     as in screen recordings or phone videos with dropped frames: a frame in a gap
+#     must give the frame displayed at that time, i.e. the last frame at or before
+#     it (--positions). The gaps are after a B-frame (24 frames, 2 frames apart
+#     after frame 12), after the first GOP (frames 8-12 missing), and at the end
+#     (a longer audio track makes the movie last longer than the last frame).
 # Clips whose encoder is not available in the ffmpeg CLI are skipped.
 #
 # Environment:
@@ -77,6 +83,47 @@ check() {
     "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
+# check_vfr NAME DESCRIPTION FRAMES AFTER JUMP SPACING AUDIO_SECONDS EXPECTED_FRAMES FFMPEG_OUTPUT_ARGS...
+# A 24 fps gray ramp of FRAMES frames with timestamp gaps: frame N (0-based) is at frame N
+# up to AFTER, then at AFTER + JUMP + SPACING * (N - AFTER - 1). If AUDIO_SECONDS is not 0,
+# a silent audio track of that duration is added, to make the movie longer. If
+# EXPECTED_FRAMES is not 0, it is the number of frames the reader must report.
+check_vfr() {
+    local name="$1" desc="$2" n="$3" after="$4" jump="$5" spacing="$6" audio="$7" expected="$8"
+    shift 8
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    local positions="" i pos
+    for ((i = 0; i < n; i++)); do
+        if [ "$i" -le "$after" ]; then
+            pos=$i
+        else
+            pos=$((after + jump + spacing * (i - after - 1)))
+        fi
+        positions="${positions:+$positions,}$pos"
+    done
+    local audioin=()
+    if [ "$audio" != 0 ]; then
+        audioin=(-f lavfi -t "$audio" -i anullsrc=r=48000:cl=mono)
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" ${audioin[@]+"${audioin[@]}"} \
+        -vf "trim=end_frame=$n,setpts=if(lte(N\,$after)\,N\,$after+$jump+$spacing*(N-$after-1))/(24*TB)" \
+        -fps_mode passthrough $X264 "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    local framesarg=()
+    if [ "$expected" != 0 ]; then
+        framesarg=(--frames "$expected")
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --ramp 16,4 --positions "$positions" ${framesarg[@]+"${framesarg[@]}"} ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
 echo "Generating test clips in $tmp and checking them..."
 check ramp.mp4 "MP4 (H.264, start_time 0)" libx264 25 $X264
 check ramp_offset.mp4 "MP4 (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
@@ -92,6 +139,13 @@ check ramp_vp9_24.webm "WebM (VP9, 24 fps)" libvpx-vp9 24 -c:v libvpx-vp9 -g 8 -
 check ramp_vp8_24.webm "WebM (VP8, 24 fps)" libvpx 24 -c:v libvpx -g 8 -crf 4 -b:v 10M
 check ramp_vfr_30.mkv "VFR Matroska (H.264, 30 fps, jittered timestamps)" libx264 30 \
     -vf "settb=1/1000,setpts=(N/30+0.006*sin(N*1.7))/TB" -fps_mode passthrough -enc_time_base 1/1000 $X264
+for ext in mkv mp4 mov; do
+    EXT="$(echo "$ext" | tr '[:lower:]' '[:upper:]')"
+    check_vfr "ramp_gaps.$ext" "VFR $EXT (H.264, 24 fps, gaps after a B-frame)" 24 12 2 2 0 0
+    check_vfr "ramp_gop_gap.$ext" "VFR $EXT (H.264, 24 fps, gap after the first GOP)" 24 7 6 1 0 0
+done
+check_vfr ramp_end_gap.mkv "VFR MKV (H.264, 24 fps, gaps and a gap at the end)" 20 12 2 2 1.3333 32 -c:a pcm_s16le
+check_vfr ramp_end_gap.mov "VFR MOV (H.264, 24 fps, gaps and a gap at the end)" 20 12 2 2 1.3333 32 -c:a pcm_s16le
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"
