@@ -12,6 +12,7 @@ make test-ofx      # OFX entry-point + action tests (plugin code linked directly
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
+make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-runscript # RunScript on MS Windows: quoting, program/batch/shebang launch (no-op elsewhere)
 ```
 
@@ -132,6 +133,23 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
 
 Like `test-render`, it sets `OCIO=test.ocio`.
 
+### 1d. `test-ocio-cdl` — OCIOCDLTransform's Export to a .cc file (#105)
+
+`ocio_cdl_test.cpp` drives `OCIOCDLTransform` (linked with `OCIOPluginBase.cpp`,
+`GenericOCIO.cpp` and its OpenGL sources, as in the bundle) with the in-process host
+of `ofx_test_host.h`, in the Filter context:
+
+* with non-default slope, offset, power and saturation, the user sets the Export
+  param to a new file in a scratch directory of the temporary directory
+  (`kOfxActionInstanceChanged`, reason user edited): the file must be a
+  ColorCorrection XML that an OCIO `FileTransform` reads back as a CDL with the
+  same values, no error must be reported, and the param must be reset to its default;
+* exporting to an existing file must report an error, leave the file unchanged, and
+  reset the param.
+
+With OCIO 2, Export used to fail (`GroupTransform::write()` with a nonexistent "CDL"
+format, on an empty group), leaving an empty file. It sets `OCIO=test.ocio`.
+
 ### 2. `test-ffmpeg` — FFmpeg reader core (direct coverage of the reader fixes)
 
 `ffmpeg_read_test.cpp` links `FFmpeg/FFmpegFile.cpp` directly (plus `ofx_stubs.cpp`
@@ -164,6 +182,7 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 | `ofx_test_host.h`           | Minimal in-process OFX host (suites, param values, image clips) shared by the render and reader-hook tests. |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
+| `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |
@@ -171,7 +190,7 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks`. |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl`. |
 
 ## Notes / limitations
 
