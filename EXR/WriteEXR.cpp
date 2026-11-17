@@ -228,8 +228,8 @@ WriteEXRPlugin::encode(const string& filename,
         Imath::Box2i exrDispW;
         exrDispW.min.x = 0;
         exrDispW.min.y = 0;
-        exrDispW.max.x = (bounds.x2 - bounds.x1);
-        exrDispW.max.y = (bounds.y2 - bounds.y1);
+        exrDispW.max.x = (bounds.x2 - bounds.x1) - 1; // (an inclusive bound, like exrDataW)
+        exrDispW.max.y = (bounds.y2 - bounds.y1) - 1;
 
         Imf_::Header exrheader(exrDispW, exrDataW, pixelAspectRatio,
                                Imath::V2f(0, 0), 1, Imf_::INCREASING_Y, compression);
