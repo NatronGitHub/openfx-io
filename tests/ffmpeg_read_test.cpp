@@ -9,17 +9,23 @@
  * It links FFmpegFile.cpp directly and:
  *   1. opens a file, prints stream info,
  *   2. decodes every frame sequentially, recording a per-frame signature
- *      (mean of the first component) — the "ground truth",
+ *      (mean of the first component, on a 0-255 scale) — the "ground truth",
  *   3. re-decodes frames in a seek-forcing order (reverse + jumps) and checks
  *      each seeked frame's signature matches the sequential one,
  *   4. optionally checks the sequential signatures are strictly monotonic
- *      (for the generated gray-ramp clips), proving sequential frames are distinct.
+ *      (for the generated gray-ramp clips), proving sequential frames are distinct,
+ *   5. optionally (--ramp OFFSET,STEP) checks that every decoded frame, sequential
+ *      or seeked, holds the expected content: the generated clips put the frame
+ *      number in the pixels, so frame f (1-based) must have a signature of
+ *      OFFSET + STEP * (f - 1), within 0.4 * STEP. This catches a wrong frame as
+ *      well as a missing one,
+ *   6. optionally (--frames N) checks the number of frames reported by getInfo().
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -55,7 +61,8 @@ meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeO
             sum += buf[i * nComps];
         }
     }
-    return sum / static_cast<double>(n);
+    // on a 0-255 scale, whatever the bit depth, so that --tol and --ramp do not depend on it
+    return sum / static_cast<double>(n) / (sizeOfData == 2 ? 256.0 : 1.0);
 }
 
 } // namespace
@@ -64,13 +71,16 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
     double tol = 2.0;
     bool checkMonotonic = false;
     bool loadNearest = false;
+    double rampOffset = 0.0, rampStep = 0.0; // if rampStep > 0, frame f must have signature rampOffset + rampStep * (f - 1)
+    int expectedFrames = -1;
+    bool verbose = false;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--tol" && i + 1 < argc) {
@@ -79,6 +89,15 @@ main(int argc, char** argv)
             checkMonotonic = true;
         } else if (a == "--nearest") {
             loadNearest = true;
+        } else if (a == "--ramp" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%lf,%lf", &rampOffset, &rampStep) != 2 || rampStep <= 0) {
+                std::fprintf(stderr, "bad --ramp value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--frames" && i + 1 < argc) {
+            expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--verbose") {
+            verbose = true;
         } else {
             std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
             return 2;
@@ -110,6 +129,17 @@ main(int argc, char** argv)
         return 1;
     }
 
+    if (expectedFrames >= 0 && frames != expectedFrames) {
+        std::fprintf(stderr, "FAIL: getInfo reports %d frames, expected %d\n", frames, expectedFrames);
+        return 1;
+    }
+
+    // the content check: the frame (1-based) whose content is closest to the signature s
+    auto rampExpected = [rampOffset, rampStep](int f) -> double { return rampOffset + rampStep * (f - 1); };
+    auto rampFrame = [rampOffset, rampStep](double s) -> double { return 1.0 + (s - rampOffset) / rampStep; };
+    const double rampTol = 0.4 * rampStep;
+    int contentErrors = 0;
+
     const size_t bufBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
     std::vector<unsigned char> buf(bufBytes);
 
@@ -129,6 +159,14 @@ main(int argc, char** argv)
             return 1;
         }
         seqSig[f] = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
+        if (verbose) {
+            std::printf("  frame %d sig=%.3f\n", f, seqSig[f]);
+        }
+        if (rampStep > 0 && std::fabs(seqSig[f] - rampExpected(f)) > rampTol) {
+            std::printf("  CONTENT sequential frame %d: sig=%.3f expected=%.3f (looks like frame %.2f)\n",
+                        f, seqSig[f], rampExpected(f), rampFrame(seqSig[f]));
+            ++contentErrors;
+        }
     }
 
     // Optional: sequential frames must be strictly increasing (generated ramp clips).
@@ -179,15 +217,20 @@ main(int argc, char** argv)
                         f, seqSig[f], s, diff, tol);
             ++mismatches;
         }
+        if (rampStep > 0 && std::fabs(s - rampExpected(f)) > rampTol) {
+            std::printf("  CONTENT seeked frame %d: sig=%.3f expected=%.3f (looks like frame %.2f)\n",
+                        f, s, rampExpected(f), rampFrame(s));
+            ++contentErrors;
+        }
     }
 
     const auto seekEnd = std::chrono::steady_clock::now();
     const double seekMs = std::chrono::duration<double, std::milli>(seekEnd - seekStart).count();
 
-    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d seekPhaseMs=%.1f\n",
-                order.size(), mismatches, monotonicViolations, seekMs);
+    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d seekPhaseMs=%.1f\n",
+                order.size(), mismatches, monotonicViolations, contentErrors, seekMs);
 
-    if (mismatches != 0 || monotonicViolations != 0) {
+    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0) {
         std::printf("FAIL\n");
         return 1;
     }

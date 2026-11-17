@@ -191,11 +191,21 @@ the pool must have 0 threads. It sets `OCIO=test.ocio`.
 for the one Support symbol it references, `OFX::MultiThread::getNumCPUs`). It
 decodes sequentially for a ground-truth per-frame signature, then re-decodes in a
 seek-forcing order and asserts frame-accuracy; `--monotonic` also checks the
-sequential signatures strictly increase.
+sequential signatures strictly increase. `--ramp OFFSET,STEP` checks that every
+decoded frame f, sequential or seeked, holds the content of that frame
+(OFFSET + STEP * (f - 1)), which catches a wrong frame as well as a missing one, and
+`--frames N` checks the number of frames the reader reports.
 
-`run_ffmpeg_read_test.sh` generates two gray-ramp clips (frame N luma = 16 + 2*N):
-MP4 (H.264, `start_time 0`) and MPEG-TS (H.264, `start_time ~1.48 s`, GOP 8 +
-B-frames). The MPEG-TS clip stresses the non-zero stream start PTS.
+`run_ffmpeg_read_test.sh` generates 40-frame gray-ramp clips (frame N luma = 16 + 4*N,
+H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 with a
+non-zero start time, MOV, MPEG-TS (`start_time ~1.48 s`), Matroska at 23.976, 24, 25,
+30 and 60 fps, ProRes in Matroska, VP9 and VP8 in WebM, and a Matroska file with
+jittered (VFR) timestamps. The MPEG-TS clip stresses the non-zero stream start PTS.
+Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
+83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
+frame 1, so that every third frame could not be decoded), and the movie duration
+(1667 ms for 40 frames) must not count a 41st frame. Clips whose encoder is missing
+from the `ffmpeg` CLI are skipped. `FFMPEG_READ_TEST_KEEP=dir` keeps the clips.
 
 Note on the `frameToPts` fix: the harness shows the reader is frame-accurate
 with and without that fix (a mis-targeted seek is recovered by the forward scan in

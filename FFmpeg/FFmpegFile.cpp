@@ -619,8 +619,20 @@ FFmpegFile::getStreamFrames(Stream& stream)
         //   number of frames. This isn't a case that I've seen. Even if that were to be the case, the original
         //   duration would have to be <= 1 microsecond greater than an exact number of frames in order to
         //   result in the wrong number of frames, which is highly improbable.
+        // The same applies to the stream's time base: the duration is a number of ticks of the time base, and
+        // with a coarse time base it may have been rounded up by up to a tick. Matroska/WebM use 1 ms ticks,
+        // so a 40-frame 24 fps movie lasts 1667 ms, i.e. 40.008 frames, and would give 41 frames. Subtract one
+        // tick of the time base (at least 1 microsecond, at most half a frame) instead of 1 microsecond.
+        int64_t tick = av_rescale_q_rnd(1, stream._avstream->time_base, AV_TIME_BASE_Q, AV_ROUND_UP);
+        const int64_t halfFrame = (int64_t(AV_TIME_BASE) * stream._fpsDen) / (2 * int64_t(stream._fpsNum));
+        if (tick > halfFrame) {
+            tick = halfFrame;
+        }
+        if (tick < 1) {
+            tick = 1;
+        }
         int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
-        frames = ((_context->duration - 1) * stream._fpsNum + divisor - 1) / divisor;
+        frames = ((_context->duration - tick) * stream._fpsNum + divisor - 1) / divisor;
 
         // The above calculation is not reliable, because it seems in some situations (such as rendering out a mov
         // with 5 frames at 24 fps from Nuke) the duration has been rounded up to the nearest millisecond, which
