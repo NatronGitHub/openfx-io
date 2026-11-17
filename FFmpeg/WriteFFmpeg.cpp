@@ -40,6 +40,7 @@
 #include <cctype> // ::tolower
 #include <cfloat> // DBL_MAX
 #include <climits> // INT_MAX
+#include <cmath> // std::fabs
 #include <cstdio>
 #include <cstring> // strncpy
 #include <sstream>
@@ -4150,6 +4151,16 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         avCodecContext->bits_per_raw_sample = FFmpeg::pixelFormatBitDepth(targetPixelFormat);
         avCodecContext->sample_aspect_ratio = av_d2q(pixelAspectRatio, 255);
+        // The stream's sample aspect ratio was set by configureVideoStream(), to QuickTime's value for the usual pixel
+        // aspect ratios, or else 1:1. avformat_write_header() fails ("Aspect ratio mismatch between muxer and encoder
+        // layer") if the stream's and the codec's differ by more than 0.4%, e.g. for a PAR of 16/15 (PAL SD, 768/720):
+        // then the stream gets the codec's.
+        {
+            const AVRational streamSar = _streamVideo.stream->sample_aspect_ratio;
+            if (streamSar.num <= 0 || streamSar.den <= 0 || std::fabs(av_q2d(streamSar) - pixelAspectRatio) > 0.004 * pixelAspectRatio) {
+                _streamVideo.stream->sample_aspect_ratio = avCodecContext->sample_aspect_ratio;
+            }
+        }
 
         // Now that the stream has been created, and the pixel format
         // is known, for DNxHD, set the YUV range.
