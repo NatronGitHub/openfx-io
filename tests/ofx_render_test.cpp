@@ -28,6 +28,12 @@
  *     - an unknown key must produce a warning naming it, and the file must still be written
  *     - a syntax error must make beginSequenceRender fail with an error message
  *
+ *   WriteFFmpeg start timecode test (issue #78):
+ *     - write a short .mov/.mp4 with the "startTimecode" param set, and read the
+ *       timecode back with libavformat (the timecode track and the video stream
+ *       metadata, as ffprobe shows them)
+ *     - an invalid timecode must make beginSequenceRender fail, and write nothing
+ *
  *   WriteOIIO test (issue #79):
  *     - render a JPEG while the host has no source image for the render window
  *       (clipGetImage fails with kOfxStatFailed): a black image must be written
@@ -43,6 +49,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 #include <libavutil/frame.h>
 }
 
@@ -62,6 +69,8 @@ struct WriterParams {
     std::vector<std::pair<std::string, int>> ints;
     bool expectBeginFailure = false; // beginSequenceRender must fail (and nothing is rendered)
     bool constantImage = false;      // render the same mid-gray image for every frame instead of a ramp
+    bool expectNoFile = false;       // with expectBeginFailure: the output file must not be created
+    double fps = 0.;                 // if > 0, the value of the "fps" param
 };
 
 int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp = WriterParams())
@@ -81,6 +90,11 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     for (const auto& ip : wp.ints) {
         if (!ctx.params.count(ip.first)) { std::printf("  FAIL: no param %s\n", ip.first.c_str()); return 1; }
         setOverrideInt(&ctx, ip.first.c_str(), ip.second);
+    }
+    if (wp.fps > 0.) {
+        if (!ctx.params.count("fps")) { std::printf("  FAIL: no param fps\n"); return 1; }
+        ctx.params["fps"].hasOv = true;
+        ctx.params["fps"].ov.d = { wp.fps };
     }
 
     Effect inst;
@@ -115,6 +129,10 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
             p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
             if (began) { std::printf("  FAIL: beginSequenceRender succeeded, a failure was expected\n"); return 1; }
+            if (wp.expectNoFile) {
+                std::FILE* f = std::fopen(outFile.c_str(), "rb");
+                if (f) { std::fclose(f); std::printf("  FAIL: the output file was created\n"); return 1; }
+            }
             std::printf("  PASS (beginSequenceRender failed as expected)\n");
             return 0;
         }
@@ -232,6 +250,83 @@ bool moovContains(const std::string& file, const char* fourcc)
     const bool read = std::fseek(f, moov, SEEK_SET) == 0 && std::fread(buf.data(), 1, buf.size(), f) == buf.size();
     std::fclose(f);
     return read && std::search(buf.begin(), buf.end(), fourcc, fourcc + 4) != buf.end();
+}
+
+// Issue #78: read the start timecode of a movie back with libavformat, as ffprobe shows it.
+// The mov demuxer exposes the timecode (tmcd) track as a data stream with a "timecode" tag, and
+// copies that tag to the video stream it refers to.
+int checkTimecode(const std::string& file, const char* expected)
+{
+    AVFormatContext* fc = nullptr;
+    if (avformat_open_input(&fc, file.c_str(), nullptr, nullptr) < 0) { std::printf("  FAIL: cannot open %s\n", file.c_str()); return 1; }
+    std::string videoTc = "(none)", tmcdTc = "(none)";
+    for (unsigned i = 0; i < fc->nb_streams; ++i) {
+        const AVStream* st = fc->streams[i];
+        const AVDictionaryEntry* e = av_dict_get(st->metadata, "timecode", nullptr, 0);
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && e) videoTc = e->value;
+        if (st->codecpar->codec_tag == MKTAG('t', 'm', 'c', 'd') && e) tmcdTc = e->value;
+    }
+    avformat_close_input(&fc);
+    std::printf("  %s: tmcd track timecode %s, video stream timecode %s (expected %s)\n", file.c_str(), tmcdTc.c_str(), videoTc.c_str(), expected);
+    if (tmcdTc != expected || videoTc != expected) { std::printf("  FAIL (timecode)\n"); return 1; }
+    std::printf("  PASS (timecode)\n");
+    return 0;
+}
+
+// Issue #78: write a movie with the given Start Timecode, at the given frame rate (0: the default).
+// If expected is null, the timecode is invalid: beginSequenceRender must fail and write nothing.
+// Otherwise, the timecode read back from the file must be expected ("(none)" for no timecode).
+int testStartTimecode(const std::string& outFile, const char* timecode, double fps, const char* expected)
+{
+    WriterParams wp;
+    wp.strings = { { "startTimecode", timecode } };
+    wp.fps = fps;
+    if (!expected) {
+        wp.expectBeginFailure = true;
+        wp.expectNoFile = true;
+        gMessages.clear();
+        if (testWriteFFmpeg(outFile, 64, 48, 3, wp)) return 1;
+        if (gMessages.find("Start Timecode") == std::string::npos) { std::printf("  FAIL: expected an error about the Start Timecode, got:\n%s", gMessages.c_str()); return 1; }
+        return 0;
+    }
+    if (testWriteFFmpeg(outFile, 64, 48, 3, wp)) return 1;
+    return checkTimecode(outFile, expected);
+}
+
+// Issue #78: an invalid Start Timecode is reported as soon as it is edited (changedParam), and
+// the error is cleared when it is fixed.
+int testStartTimecodeChangedParam(const std::string& outFile)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    if (!ctx.params.count("startTimecode")) { std::printf("  FAIL: WriteFFmpeg has no \"startTimecode\" param\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    int fail = 0;
+    const struct { const char* tc; bool valid; } cases[] = { { "01:02:03:99", false }, { "01:02:03:04", true }, { "+1:02:03:04", false }, { "", true } };
+    for (const auto& c : cases) {
+        setOverrideString(&ctx, "startTimecode", c.tc);
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, "startTimecode");
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        const bool reported = gPersistentError.find("Start Timecode") != std::string::npos;
+        std::printf("  \"%s\": %s\n", c.tc, reported ? "error reported" : "no error");
+        if (reported == c.valid) { std::printf("  FAIL (expected %s)\n", c.valid ? "no error" : "an error"); ++fail; }
+    }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    if (fail) return 1;
+    std::printf("  PASS\n");
+    return 0;
 }
 
 // Issue #71: the Codec Options and Format Options params of WriteFFmpeg.
@@ -806,6 +901,46 @@ main(int argc, char** argv)
     failures += testWriteFFmpeg(outFile, W, H, N);
     std::printf("==== ReadFFmpeg render integration ====\n");
     failures += testReadFFmpeg(outFile, W, H, N);
+    std::printf("==== WriteFFmpeg mov, start timecode (issue #78) ====\n");
+    failures += testStartTimecode(outFile + ".i78.mov", "1:02:03:04", 0., "01:02:03:04");
+    std::printf("==== WriteFFmpeg mp4, start timecode (issue #78) ====\n");
+    failures += testStartTimecode(outFile + ".i78.mp4", " 10:00:00:00 ", 0., "10:00:00:00");
+    std::printf("==== WriteFFmpeg, invalid start timecode: error, nothing written (issue #78) ====\n");
+    failures += testStartTimecode(outFile + ".i78.mov", "01:02:03:99", 0., nullptr);
+    failures += testStartTimecode(outFile + ".i78.mov", "01:02:03", 0., nullptr);
+    std::printf("==== WriteFFmpeg mov, drop-frame start timecode at 29.97 fps (issue #78) ====\n");
+    failures += testStartTimecode(outFile + ".i78.mov", "01:00:00;02", 29.97, "01:00:00;02");
+    std::printf("==== WriteFFmpeg, invalid drop-frame start timecodes: error, nothing written (issue #78) ====\n");
+    failures += testStartTimecode(outFile + ".i78.mov", "01:01:00;00", 29.97, nullptr); // dropped frame number
+    failures += testStartTimecode(outFile + ".i78.mov", "01:00:00;02", 25., nullptr); // not at 29.97 fps
+    {
+        // start timecode validation at various frame rates: valid ones are written and read back
+        const struct { const char* tc; double fps; const char* expected; } cases[] = {
+            { "01:00:00;00", 30., nullptr },         // drop-frame needs 30000/1001, not 30/1
+            { "01:00:00;04", 60., nullptr },         // nor 60/1
+            { "01:01:00;01", 29.97, nullptr },       // frames 0-1 are skipped at minute 1
+            { "01:10:00;00", 29.97, "01:10:00;00" }, // but not at minute 10
+            { "01:01:00;03", 59.94, nullptr },       // frames 0-3 are skipped at 59.94 fps
+            { "01:01:00;04", 59.94, "01:01:00;04" },
+            { "01:00:00:24", 23.976, nullptr },      // frames 0-23 at 23.976 fps
+            { "01:00:00:23", 23.976, "01:00:00:23" },
+            { "01:00:00:00", 300., nullptr },        // mov can not write a timecode above 255 fps
+            { "+1:02:03:04", 24., nullptr },         // digits only
+            { "1: 2: 3: 4", 24., nullptr },
+            { "01:02:03:04x", 24., nullptr },
+            { "99999999999:00:00:00", 24., nullptr },
+            { "100:00:00:00", 24., nullptr },
+            { "24:00:00:00", 24., nullptr },
+        };
+        for (const auto& c : cases) {
+            std::printf("==== WriteFFmpeg mov, start timecode \"%s\" at %g fps: %s (issue #78) ====\n", c.tc, c.fps, c.expected ? "valid" : "invalid");
+            failures += testStartTimecode(outFile + ".i78.mov", c.tc, c.fps, c.expected);
+        }
+    }
+    std::printf("==== WriteFFmpeg, invalid start timecode reported when edited (issue #78) ====\n");
+    failures += testStartTimecodeChangedParam(outFile + ".i78.mov");
+    std::printf("==== WriteFFmpeg, empty start timecode: no timecode track (issue #78) ====\n");
+    failures += testStartTimecode(outFile + ".i78.mov", "", 0., "(none)");
     std::printf("==== WriteOIIO JPEG, input image outside of the render window (issue #79) ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true);
     std::printf("==== same, with hidden R/G/B/A checkboxes ====\n");
