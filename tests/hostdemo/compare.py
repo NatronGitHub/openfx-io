@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Compare the images a reader rendered with those its writer rendered, from hostDemo's --report files.
 #
-# Usage: compare.py <reader.json> <writer.json> <tolerance> [--movie] [--crc]
+# Usage: compare.py <reader.json> <writer.json> <tolerance> [--movie] [--crc] [--bounds=x1,y1,x2,y2]
 #
 # hostDemo reports, for each render, the per-component mean of the output image (output.mean, RGBA order). A writer
 # copies its input to its output, so its renders are what it wrote; and it writes each render to the same file:
@@ -11,7 +11,7 @@
 # The output bounds must be the same, and no component mean may differ by more than <tolerance> (absolute, the images
 # are in [0,1]). With --crc (lossless formats), the CRC-32 of the images (output.crc32) must also be the same, which
 # catches flipped, mirrored or shifted images that have the same means. The reader's output must have no NaN
-# (unwritten) pixel. Exit status: 0 if all match, 1 otherwise.
+# (unwritten) pixel. With --bounds, the reader's output bounds must also be x1,y1,x2,y2. Exit status: 0 if all match, 1 otherwise.
 import json
 import sys
 
@@ -23,13 +23,17 @@ def load(path):
 
 def main():
     if len(sys.argv) < 4:
-        print("Usage: compare.py <reader.json> <writer.json> <tolerance> [--movie]")
+        print("Usage: compare.py <reader.json> <writer.json> <tolerance> [--movie] [--crc] [--bounds=x1,y1,x2,y2]")
         return 1
     reader = load(sys.argv[1])
     writer = load(sys.argv[2])
     tol = float(sys.argv[3])
     movie = "--movie" in sys.argv[4:]
     crc = "--crc" in sys.argv[4:]
+    bounds = None
+    for a in sys.argv[4:]:
+        if a.startswith("--bounds="):
+            bounds = [int(v) for v in a[len("--bounds="):].split(",")]
 
     wrenders = [r for r in writer.get("renders", []) if r.get("output")]
     rrenders = [r for r in reader.get("renders", []) if r.get("output")]
@@ -74,6 +78,8 @@ def main():
         bad = []
         if out.get("bounds") != expected["output"].get("bounds"):
             bad.append("bounds %s, the writer's %s" % (out.get("bounds"), expected["output"].get("bounds")))
+        if bounds is not None and out.get("bounds") != bounds:
+            bad.append("bounds %s, expected %s" % (out.get("bounds"), bounds))
         if n == 0 or diff > tol:
             bad.append("means differ by %.4g > %g" % (diff, tol))
         if crc and (not out.get("crc32") or out.get("crc32") != expected["output"].get("crc32")):

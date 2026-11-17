@@ -11,6 +11,8 @@
 # and the images each reader renders are compared with those its writer rendered (compare.py, on hostDemo's --report
 # files): the mean of each component must match, within a small tolerance for the lossless formats (PNG, TIFF, EXR,
 # PFM), and a loose one for JPEG and MOV.
+# ReadEXR and ReadOIIO also read EXR files that oiiotool writes with various data and display windows: ReadEXR's images
+# must be the same as ReadOIIO's, with the expected bounds (see below).
 # A test fails on any load, describe, instance or render error (hostDemo's exit status), on a crash, on an error
 # message of the plug-in (OfxMessageError, OfxMessageFatal), on a timeout, if an output frame of hostDemo is missing,
 # if a writer's file is missing or empty, or if a reader's images differ from its writer's. A reader whose input file
@@ -25,6 +27,8 @@
 #                           after that fail without running
 #   IO_HOSTDEMO_STRICT      1 (as in CI): a bundle that is not installed, or a plug-in that is not in it, fails
 #   PYTHON                  Python 3 (default: python3, or python), for compare.py
+#   OIIOTOOL                OpenImageIO's oiiotool (default: oiiotool, on PATH), which writes the EXR window files:
+#                           without it, those tests are skipped (they fail with IO_HOSTDEMO_STRICT=1)
 # Runs on macOS, Linux and MSYS2. Exit status: 0 on success, 1 on failure, 77 if the bundle is not installed (1 with
 # IO_HOSTDEMO_STRICT=1).
 set -o pipefail
@@ -255,6 +259,49 @@ read_ ReadOIIO-tiff  $P.ReadOIIO    image.tif WriteOIIO-tiff "$LOSSLESS"
 read_ ReadOIIO-jpeg  $P.ReadOIIO    image.jpg WriteOIIO-jpeg $LOSSY
 read_ ReadOIIO-png   $P.ReadOIIO    image.png WritePNG       "$LOSSLESS"
 read_ ReadOIIO-exr   $P.ReadOIIO    image.exr WriteEXR       "$LOSSLESS"
+
+# EXR data and display windows (#115). WriteEXR writes both windows at (0,0) and equal: oiiotool writes the files
+# instead, a gradient (so that a shifted or flipped image fails) with these windows (OpenEXR, inclusive, y down):
+#   name        display window    data window          RoD (OFX pixels, y up)
+#   default     (0,0)-(99,59)     the same             0,0,100,60
+#   offset      (5,7)-(104,66)    the same             0,0,100,60
+#   crop        (0,0)-(719,575)   (10,20)-(109,69)     9,505,111,557
+#   overscan    (0,0)-(99,59)     (-10,-10)-(109,69)   -11,-11,111,71
+#   offsetcrop  (5,7)-(104,66)    (20,17)-(59,46)      14,19,56,51
+# The display window is the format, moved to (0,0); the RoD is the data window in that frame, y flipped, grown by
+# 1 pixel when the windows differ, as in ReadOIIO (Edge Pixels: Auto): that border, outside the data window, must be
+# black, and not NaN (unwritten). ReadEXR must render the same images (bounds and CRC-32) as ReadOIIO, which must
+# have the expected RoD, and neither may have NaN pixels. The render window is the whole RoD (--window), which
+# hostDemo would otherwise clip to its project frame (the plug-ins don't support tiles).
+EXRWIN="default:100x60::0,0,100,60
+offset:100x60:--origin +5+7 --fullsize 100x60+5+7:0,0,100,60
+crop:720x576:--crop 100x50+10+20:9,505,111,557
+overscan:120x80:--origin -10-10 --fullsize 100x60+0+0:-11,-11,111,71
+offsetcrop:100x60:--origin +5+7 --fullsize 100x60+5+7 --crop 40x30+20+17:14,19,56,51"
+GRADIENT="fill:topleft=1,0,0,1:topright=0,1,0,1:bottomleft=0,0,1,0.5:bottomright=1,1,1,0.25"
+OIIOTOOL=${OIIOTOOL:-$(command -v oiiotool)}
+WINDOW="--window -1000,-1000,1000,1000"
+while IFS=: read -r w size windows rod; do
+    if [ -z "$OIIOTOOL" ]; then
+        if [ "$STRICT" = 1 ]; then
+            echo "FAIL ReadEXR-$w: oiiotool not found (set OIIOTOOL; IO_HOSTDEMO_STRICT=1)"
+            NFAIL=$((NFAIL + 1)); fail=1
+        else
+            echo "skip ReadEXR-$w, ReadOIIO-$w: oiiotool not found (set OIIOTOOL)"
+        fi
+        continue
+    fi
+    f=window-$w.exr
+    rm -f "$FILES/$f"
+    # (windows: oiiotool options, split into words)
+    # shellcheck disable=SC2086
+    if ! "$OIIOTOOL" --pattern "$GRADIENT" "$size" 4 $windows -d float -o "$(native "$FILES/$f")" < /dev/null > "$OUT/oiiotool-$w.log" 2>&1; then
+        sed 's/^/     | /' "$OUT/oiiotool-$w.log"
+    fi
+    # ReadOIIO: the reference, compared with itself for its NaN pixels and its RoD
+    read_ ReadOIIO-$w $P.ReadOIIO "$f" ReadOIIO-$w "$LOSSLESS --bounds=$rod" $WINDOW
+    read_ ReadEXR-$w  $P.ReadEXR  "$f" ReadOIIO-$w "$LOSSLESS --bounds=$rod" $WINDOW
+done <<< "$EXRWIN"
 # the movie's frames 1 and 2 (its time domain) are the writer's renders at t=0 and 1, left view (compare.py --movie)
 FRAMES="1 2" read_ ReadFFmpeg $P.ReadFFmpeg movie.mov WriteFFmpeg "$LOSSY --movie" --frames 1,2
 # Not tested: ReadOIIO's RAW support (LibRaw). No writer makes a camera RAW file that LibRaw reads, so none can be
