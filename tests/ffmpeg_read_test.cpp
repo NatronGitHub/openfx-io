@@ -25,13 +25,16 @@
  *      and a requested frame in a gap must give the frame displayed at that time,
  *      i.e. the last ramp frame at or before it (held until the next one, or until
  *      the end): with --ramp, its content is checked, and in any case a frame in a
- *      gap must be identical to the held frame, decoded at its own frame.
+ *      gap must be identical to the held frame, decoded at its own frame,
+ *   8. optionally (--max-seeks N) checks that decoding every frame sequentially seeks at
+ *      most N times (FFmpegFile::getSeekCount()): e.g. a frame held in a long gap must
+ *      not make every frame of the gap decode from the start again.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -78,7 +81,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -87,6 +90,7 @@ main(int argc, char** argv)
     bool loadNearest = false;
     double rampOffset = 0.0, rampStep = 0.0; // if rampStep > 0, frame f must have signature rampOffset + rampStep * (f - 1)
     int expectedFrames = -1;
+    long maxSeeks = -1;
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -104,6 +108,8 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--max-seeks" && i + 1 < argc) {
+            maxSeeks = std::atol(argv[++i]);
         } else if (a == "--positions" && i + 1 < argc) {
             std::istringstream is(argv[++i]);
             std::string item;
@@ -204,6 +210,17 @@ main(int argc, char** argv)
         }
     }
 
+    // Optional: bounded number of seeks for the sequential decode.
+    int seekErrors = 0;
+    const unsigned long seqSeeks = file.getSeekCount();
+    if (verbose || maxSeeks >= 0) {
+        std::printf("  sequential decode: %lu seeks\n", seqSeeks);
+    }
+    if ((maxSeeks >= 0) && (seqSeeks > (unsigned long)maxSeeks)) {
+        std::printf("  SEEKS sequential decode: %lu seeks, expected at most %ld\n", seqSeeks, maxSeeks);
+        ++seekErrors;
+    }
+
     // Optional: a frame in a timestamp gap must be identical to the held frame, decoded at its
     // own frame (whatever its content, e.g. if it is corrupt).
     int holdErrors = 0;
@@ -279,10 +296,10 @@ main(int argc, char** argv)
     const auto seekEnd = std::chrono::steady_clock::now();
     const double seekMs = std::chrono::duration<double, std::milli>(seekEnd - seekStart).count();
 
-    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekPhaseMs=%.1f\n",
-                order.size(), mismatches, monotonicViolations, contentErrors, holdErrors, seekMs);
+    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekErrors=%d seekPhaseMs=%.1f\n",
+                order.size(), mismatches, monotonicViolations, contentErrors, holdErrors, seekErrors, seekMs);
 
-    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0 || holdErrors != 0) {
+    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0 || holdErrors != 0 || seekErrors != 0) {
         std::printf("FAIL\n");
         return 1;
     }

@@ -768,6 +768,7 @@ FFmpegFile::FFmpegFile(const string& filename)
     , _selectedStream(nullptr)
     , _errorMsg()
     , _invalidState(false)
+    , _seekCount(0)
 #ifdef OFX_IO_MT_FFMPEG
     , _lock()
     , _invalidStateLock()
@@ -1336,8 +1337,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         retriedDecode = retriedSeek ? true : false;
 
         // A frame decoded after a seek may be corrupt (e.g. a reference frame is missing): it is
-        // only used for a timestamp gap when decoding from the start, see demuxAndDecode().
-        hasPicture = demuxAndDecode(avFrameOut, frame, /*acceptCorruptHeldFrame=*/retriedSeek || isIntraOnly);
+        // only used for a timestamp gap when decoding from the start (Stream::_decodingFromStart),
+        // or for intra-only codecs, see demuxAndDecode().
+        hasPicture = demuxAndDecode(avFrameOut, frame, /*acceptCorruptHeldFrame=*/isIntraOnly);
 
         // A last ditch effot to get a frame out for non-intra codecs.
         // This will perform a seek to the start of the file. which is
@@ -1345,7 +1347,12 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         // stream with B-frames.
         if (!hasPicture && !isIntraOnly && !retriedSeek) {
             retriedSeek = true;
-            seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD);
+            if (seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)) {
+                // Until the next seek (which resets it), including the next sequential requests:
+                // otherwise each of them would refuse the same corrupt frame and decode from the
+                // start again.
+                stream->_decodingFromStart = true;
+            }
         } else {
             break;
         }
@@ -1364,8 +1371,9 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
 {
     Stream* stream = _selectedStream;
 
-    stream->resetHeldFrames();
+    stream->resetHeldFrames(); // also resets _decodingFromStart
     avcodec_flush_buffers(stream->_codecContext);
+    ++_seekCount;
     int res = 0;
 
     if ((res = av_seek_frame(_context, stream->_idx, frame, seekFlags)) < 0) {
@@ -1411,8 +1419,8 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
     // A held frame that is displayed for a later frame (in a timestamp gap) must not be corrupt,
     // unless it cannot be better (when decoding from the start, or for intra-only codecs): a frame
     // decoded after a seek may lack a reference frame, so decode() will then retry from the start.
-    auto canHoldFrame = [acceptCorruptHeldFrame](const AVFrame* f) -> bool {
-        return acceptCorruptHeldFrame || !((f->flags & AV_FRAME_FLAG_CORRUPT) || f->decode_error_flags);
+    auto canHoldFrame = [acceptCorruptHeldFrame, stream](const AVFrame* f) -> bool {
+        return acceptCorruptHeldFrame || stream->_decodingFromStart || !((f->flags & AV_FRAME_FLAG_CORRUPT) || f->decode_error_flags);
     };
 
     if (Stream::hasFrame(held)) {

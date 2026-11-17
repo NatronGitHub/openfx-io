@@ -165,6 +165,8 @@ private:
         AVFrame* _avHeldFrame; // the last decoded frame at or before the last requested frame (empty if none)
         AVFrame* _avNextFrame; // the decoded frame that follows _avHeldFrame, if already decoded (empty if not)
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
+        bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
+        // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
         // Source/destination parameters the cached _convertCtx was created for,
@@ -219,6 +221,7 @@ private:
             , _avHeldFrame(nullptr)
             , _avNextFrame(nullptr)
             , _heldFrameIsLast(false)
+            , _decodingFromStart(false)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
             , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
@@ -310,6 +313,7 @@ private:
                 av_frame_unref(_avNextFrame);
             }
             _heldFrameIsLast = false;
+            _decodingFromStart = false;
         }
 
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
@@ -431,6 +435,7 @@ private:
     // reader error state
     std::string _errorMsg; // internal decoding error string
     bool _invalidState; // true if the reader is in an invalid state
+    unsigned long _seekCount; // number of seeks by decode(), for tests
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
@@ -623,6 +628,12 @@ public:
     const char* getColorspace() const;
 
     std::size_t getBufferBytesCount() const;
+
+    // Number of seeks done by decode() so far (a debugging and test counter: seeking is costly).
+    unsigned long getSeekCount() const
+    {
+        return _seekCount;
+    }
 
     static bool isImageFile(const std::string& filename);
 
