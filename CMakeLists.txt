@@ -79,6 +79,9 @@ message(STATUS "Platform: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}, bundle
 foreach(_g OCIO EXR FFMPEG OIIO LIBRAW PNG SEEXPR RUNSCRIPT)
   option(OFX_IO_WITH_${_g} "Build the ${_g} plug-ins (LIBRAW: RAW support in ReadOIIO) if the libraries are found" ON)
 endforeach()
+# Packagers (e.g. Natron's build-plugins.sh): fail if a group that is not disabled can't be built, rather than
+# silently building a bundle without it
+option(OFX_IO_REQUIRE_ALL "Fail if the libraries of a plug-in group that is not disabled (OFX_IO_WITH_<group>) are not found" OFF)
 
 # Makefile.master links -lGL (Linux, FreeBSD), -framework OpenGL, -lopengl32: the legacy libGL, not GLVND's
 # libOpenGL + libGLX
@@ -444,6 +447,10 @@ if(_io_missing)
 endif()
 if(_io_disabled)
   message(STATUS "IO.ofx: disabled (OFX_IO_WITH_<group>=OFF):${_io_disabled}")
+endif()
+if(OFX_IO_REQUIRE_ALL AND _io_missing)
+  message(FATAL_ERROR "IO.ofx: OFX_IO_REQUIRE_ALL is ON, but the libraries of these plug-in groups were not found:"
+                      "${_io_missing}. Install them (or point CMake to them), or disable the groups (OFX_IO_WITH_<group>=OFF).")
 endif()
 
 # stale resources in the build tree's bundle

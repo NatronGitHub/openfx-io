@@ -104,7 +104,7 @@ jobs:
           make install -C build
       - name: Build (release, CMake)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME=$PWD/SeExprBuild -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build
@@ -206,7 +206,7 @@ jobs:
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           # MacPorts' cmake; OFX_DEPLOY_BUNDLES: osxDeploy.sh at install, as the Makefiles do for release builds
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DOFX_CXX_STANDARD=17 \
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DOFX_CXX_STANDARD=17 \
             -DSEEXPR_HOME=$SEEXPR_HOME -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DOFX_DEPLOY_BUNDLES=ON \
             -DIO_TESTS_CXX=clang++ -DIO_TESTS_MAKE_ARGS=WITH_LIBRAW=1 -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
           cmake --build build -j3
@@ -284,7 +284,7 @@ jobs:
         run: |
           set -eo pipefail
           # cmake.exe is a native program: pass Windows paths
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")" \
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")" \
             -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
