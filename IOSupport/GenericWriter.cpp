@@ -1100,6 +1100,10 @@ GenericWriterPlugin::render(const RenderArguments& args)
         if (abort()) {
             return;
         }
+        // a file that holds a single view (a movie) only encodes view 0, whatever the order of the renders (#116)
+        if (encodesMainViewOnly() && (viewIndex != 0)) {
+            return;
+        }
         encode(filename, time, viewNames.begin()->second, data.srcPixelData, args.renderWindow, pixelAspectRatio, data.pixelComponentsCount, dstNCompsStartIndex, dstNComps, data.rowBytes);
     } else {
         /*

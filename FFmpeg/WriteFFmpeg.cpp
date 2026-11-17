@@ -1375,6 +1375,8 @@ private:
                         const int dstNComps,
                         const int rowBytes) OVERRIDE FINAL;
     virtual bool isImageFile(const string& fileExtension) const OVERRIDE FINAL;
+    // a movie has a single video stream: only view 0 is encoded (#116)
+    virtual bool encodesMainViewOnly() const OVERRIDE FINAL { return true; }
     virtual void setOutputFrameRate(double fps) OVERRIDE FINAL;
     virtual PreMultiplicationEnum getExpectedInputPremultiplication() const OVERRIDE FINAL { return eImageUnPreMultiplied; }
 
@@ -4519,8 +4521,9 @@ WriteFFmpegPlugin::encode(const string& filename,
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
 
         // A frame before the next one was already encoded, or will never be: waiting for it would never end.
-        // The frame that was just encoded is rendered again for another view (the movie has a single view):
-        // nothing to do; any other one is an error.
+        // The frame that was just encoded is rendered again (only view 0 gets here, see encodesMainViewOnly()):
+        // nothing to do; any other one is an error. A host doesn't do that: Natron calls beginSequenceRender
+        // before, and endSequenceRender after, each render of a Write node, which renders its frames in order.
         if ((_nextFrameToEncode != INT_MIN) && (time < _nextFrameToEncode)) {
             if (time == _nextFrameToEncode - _frameStep) {
                 return;

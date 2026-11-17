@@ -76,6 +76,10 @@ the real render pipeline, linked directly (no host binary):
   (returns the encoded 128x128) -> `render` each frame into a host output image.
   The decoded gray levels ramp 0.091..0.909 (== N/11), i.e. the decode
   round-trips the encode.
+* **WriteFFmpeg views** (issue #116): render views 1 and 0 of each frame (view
+  1 is the negative of the ramp), view 1 first, then view 0 first. The movie
+  holds a single view, view 0, whatever the order: ReadFFmpeg must decode the
+  ramp.
 * **WriteFFmpeg Codec Options / Format Options** (issue #71), in an MP4: encode
   MPEG-4 part 2 with Keyframe Interval = 5 (some P frames), then with the codec
   option `g=1`, which must override it (every frame decoded by libavcodec in

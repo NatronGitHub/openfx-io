@@ -28,6 +28,9 @@
  *     - an unknown key must produce a warning naming it, and the file must still be written
  *     - a syntax error must make beginSequenceRender fail with an error message
  *
+ *   WriteFFmpeg views (issue #116):
+ *     - render views 1 and 0 of each frame (view 1 first, then view 0 first): the movie must be view 0
+ *
  *   WriteFFmpeg start timecode test (issue #78):
  *     - write a short .mov/.mp4 with the "startTimecode" param set, and read the
  *       timecode back with libavformat (the timecode track and the video stream
@@ -71,6 +74,8 @@ struct WriterParams {
     bool constantImage = false;      // render the same mid-gray image for every frame instead of a ramp
     bool expectNoFile = false;       // with expectBeginFailure: the output file must not be created
     double fps = 0.;                 // if > 0, the value of the "fps" param
+    std::vector<int> views = { 0 };  // the views rendered for each frame, in this order: view 0 is the ramp, the
+                                     // others its negative (1 - v)
 };
 
 int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp = WriterParams())
@@ -143,11 +148,15 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     const size_t npix = (size_t)W * H;
     int rfail = 0;
     for (int t = 1; t <= nFrames; ++t) {
-        const float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
-        for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
-        PropSet a = makeRenderInArgs((double)t, W, H);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-        if (!ok(st)) { std::printf("  FAIL: render frame %d = %d\n", t, st); ++rfail; }
+        for (int view : wp.views) {
+            float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
+            if (view != 0) v = 1.f - v;
+            for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
+            PropSet a = makeRenderInArgs((double)t, W, H);
+            pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+            if (!ok(st)) { std::printf("  FAIL: render frame %d view %d = %d\n", t, view, st); ++rfail; }
+        }
     }
 
     {
@@ -901,6 +910,16 @@ main(int argc, char** argv)
     failures += testWriteFFmpeg(outFile, W, H, N);
     std::printf("==== ReadFFmpeg render integration ====\n");
     failures += testReadFFmpeg(outFile, W, H, N);
+    {
+        // #116: a movie has a single view, view 0, whatever the order in which the host renders the views
+        WriterParams wp;
+        wp.views = { 1, 0 };
+        std::printf("==== WriteFFmpeg, views rendered in reverse order: view 0 is encoded (issue #116) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i116.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i116.mov", W, H, N);
+        wp.views = { 0, 1 };
+        std::printf("==== WriteFFmpeg, views rendered in order: view 0 is encoded (issue #116) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i116.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i116.mov", W, H, N);
+    }
     std::printf("==== WriteFFmpeg mov, start timecode (issue #78) ====\n");
     failures += testStartTimecode(outFile + ".i78.mov", "1:02:03:04", 0., "01:02:03:04");
     std::printf("==== WriteFFmpeg mp4, start timecode (issue #78) ====\n");
