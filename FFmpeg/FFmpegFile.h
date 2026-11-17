@@ -48,6 +48,7 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 }
@@ -261,37 +262,43 @@ private:
             delete (s);
         }
 
+        // Conversions between 0-based frame indices and timestamps round to the nearest value,
+        // not towards zero: a container's time base is often not a multiple of the frame
+        // duration, so timestamps are rounded when muxed. Matroska/WebM store milliseconds, so at
+        // 24 fps the third frame (index 2) is at 83 ms, and 83 * 24 / 1000 = 1.992 must give
+        // frame 2, not 1 (truncation made every third frame impossible to find).
+        // Timestamps that are an exact number of frames (most MOV/MP4) give the same result.
         int64_t frameToDts(int frame) const
         {
-            int64_t numerator = int64_t(frame) * _fpsDen * _avstream->time_base.den;
+            int64_t numerator = int64_t(_fpsDen) * _avstream->time_base.den;
             int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
 
             // guard against division by zero
             assert(denominator);
 
-            return _startDTS + (numerator / denominator);
+            return _startDTS + (denominator ? av_rescale_rnd(frame, numerator, denominator, AV_ROUND_NEAR_INF) : int64_t(frame) * numerator);
         }
 
         int64_t frameToPts(int frame) const
         {
-            int64_t numerator = int64_t(frame) * _fpsDen * _avstream->time_base.den;
+            int64_t numerator = int64_t(_fpsDen) * _avstream->time_base.den;
             int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
 
             // guard against division by zero
             assert(denominator);
 
-            return _startPTS + (denominator ? (numerator / denominator) : numerator);
+            return _startPTS + (denominator ? av_rescale_rnd(frame, numerator, denominator, AV_ROUND_NEAR_INF) : int64_t(frame) * numerator);
         }
 
         int ptsToFrame(int64_t pts) const
         {
-            int64_t numerator = int64_t(pts - _startPTS) * _avstream->time_base.num * _fpsNum;
+            int64_t numerator = int64_t(_avstream->time_base.num) * _fpsNum;
             int64_t denominator = int64_t(_avstream->time_base.den) * _fpsDen;
 
             // guard against division by zero
             assert(denominator);
 
-            return static_cast<int>(denominator ? (numerator / denominator) : numerator);
+            return static_cast<int>(denominator ? av_rescale_rnd(pts - _startPTS, numerator, denominator, AV_ROUND_NEAR_INF) : (pts - _startPTS) * numerator);
         }
 
         bool isRec709Format()
