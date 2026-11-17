@@ -538,12 +538,6 @@ ReadEXRPlugin::changedParam(const InstanceChangedArgs& args,
     GenericReaderPlugin::changedParam(args, paramName);
 }
 
-struct DecodingChannelsMap {
-    float* buf;
-    bool subsampled;
-    string channelName;
-};
-
 void
 ReadEXRPlugin::decode(const string& filename,
                       OfxTime /*time*/,
@@ -567,44 +561,57 @@ ReadEXRPlugin::decode(const string& filename,
     }
 
     Exr::File* file = Exr::FileManager::s_readerManager.get(filename);
-    OfxRectI roi = bounds; // used to be dstImg->getRegionOfDefinition(); why?
+    // pixelData holds the image of the given bounds: write the render window (the whole RoD: tiles are not
+    // supported), clipped to these bounds.
     assert(kSupportsTiles || (renderWindow.x1 == file->dataWindow.x1 && renderWindow.x2 == file->dataWindow.x2 && renderWindow.y1 == file->dataWindow.y1 && renderWindow.y2 == file->dataWindow.y2));
+    const int x1 = (std::max)(renderWindow.x1, bounds.x1);
+    const int x2 = (std::min)(renderWindow.x2, bounds.x2);
+    const int y1 = (std::max)(renderWindow.y1, bounds.y1);
+    const int y2 = (std::min)(renderWindow.y2, bounds.y2);
+    if ((x1 >= x2) || (y1 >= y2)) {
+        return;
+    }
 
-    for (int y = roi.y1; y < roi.y2; ++y) {
-        map<Exr::Channel, DecodingChannelsMap> channels;
-        for (Exr::File::ChannelsMap::const_iterator it = file->channel_map.begin(); it != file->channel_map.end(); ++it) {
-            DecodingChannelsMap d;
+    // OpenEXR windows are inclusive, with y down. EXR pixel (x, y) is OFX pixel (x + dataOffset, dispwin.max.y - y)
+    // (see Exr::File::File): the display window is moved to (0,0), and y is flipped.
+    const Imath::Box2i& dispwin = file->inputfile->header().displayWindow();
+    const Imath::Box2i& datawin = file->inputfile->header().dataWindow();
+    // the data window, in OFX pixel coordinates (x2 and y2 exclusive)
+    const int dataX1 = datawin.min.x + file->dataOffset;
+    const int dataX2 = datawin.max.x + file->dataOffset + 1;
+    const int dataY1 = dispwin.max.y - datawin.max.y;
+    const int dataY2 = dispwin.max.y - datawin.min.y + 1;
+    // the part of each line that comes from the file; the rest (the 1-pixel border that getFrameBounds adds when the
+    // data and display windows differ, or anything else out of the data window) is black
+    const int readX1 = (std::max)(x1, dataX1);
+    const int readX2 = (std::min)(x2, dataX2);
 
-            /// This line means we only support FLOAT dst images with the RGBA format.
-            d.buf = (float*)((char*)pixelData + (ptrdiff_t)(y - roi.y1) * (ptrdiff_t)rowBytes) + (int)it->first;
+    const ptrdiff_t pixelBytes = 4 * sizeof(float);
+    // OpenEXR decodes a line of the data window, RGBA, in line. A Slice's base is the address of EXR pixel (0,0):
+    // pixel (x, y) is at base + x * xStride + y * yStride (yStride = 0 here: one line at a time). The channels that
+    // are not in the file stay 0.
+    const int dataWidth = datawin.max.x - datawin.min.x + 1;
+    vector<float> line((readX1 < readX2) ? (size_t)dataWidth * 4 : 0);
 
-            d.subsampled = it->second == "BY" || it->second == "RY";
-            d.channelName = it->second;
-            channels.insert(make_pair(it->first, d));
-        }
-
-        const Imath::Box2i& dispwin = file->inputfile->header().displayWindow();
-        const Imath::Box2i& datawin = file->inputfile->header().dataWindow();
-        int exrY = dispwin.max.y - y;
-        // int r = roi.x2;
-        // int x = roi.x1;
-
-        // const int X = (std::max)(x, datawin.min.x + file->dataOffset);
-        // const int R = (std::min)(r, datawin.max.x + file->dataOffset + 1);
-
-        // if we're below or above the data window
-        if ((exrY < datawin.min.y) || (exrY > datawin.max.y) /* || R <= X*/) {
+    for (int y = y1; y < y2; ++y) {
+        float* dst = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(x1 - bounds.x1) * pixelBytes);
+        if ((y < dataY1) || (y >= dataY2) || (readX1 >= readX2)) {
+            // out of the data window
+            std::fill(dst, dst + (size_t)(x2 - x1) * 4, 0.f);
             continue;
         }
+        const int exrY = dispwin.max.y - y;
+        std::fill(line.begin(), line.end(), 0.f);
 
         Imf_::FrameBuffer fbuf;
-        for (map<Exr::Channel, DecodingChannelsMap>::const_iterator z = channels.begin(); z != channels.end(); ++z) {
-            if (!z->second.subsampled) {
-                fbuf.insert(z->second.channelName.c_str(),
-                            Imf_::Slice(Imf_::FLOAT, (char*)(z->second.buf /*+ file->dataOffset*/), sizeof(float) * 4, 0));
+        for (Exr::File::ChannelsMap::const_iterator it = file->channel_map.begin(); it != file->channel_map.end(); ++it) {
+            const bool subsampled = it->second == "BY" || it->second == "RY";
+            // (sampled channels: the address of pixel (x, y) is base + (x / 2) * xStride)
+            char* base = (char*)&line[(int)it->first] - (ptrdiff_t)(subsampled ? datawin.min.x / 2 : datawin.min.x) * pixelBytes;
+            if (!subsampled) {
+                fbuf.insert(it->second.c_str(), Imf_::Slice(Imf_::FLOAT, base, pixelBytes, 0));
             } else {
-                fbuf.insert(z->second.channelName.c_str(),
-                            Imf_::Slice(Imf_::FLOAT, (char*)(z->second.buf /*+ file->dataOffset*/), sizeof(float) * 4, 0, 2, 2));
+                fbuf.insert(it->second.c_str(), Imf_::Slice(Imf_::FLOAT, base, pixelBytes, 0, 2, 2));
             }
         }
         {
@@ -620,6 +627,10 @@ ReadEXRPlugin::decode(const string& filename,
                 return;
             }
         }
+        // black left of the data window, the data, black right of the data window
+        std::fill(dst, dst + (size_t)(readX1 - x1) * 4, 0.f);
+        std::copy(line.begin() + (size_t)(readX1 - dataX1) * 4, line.begin() + (size_t)(readX2 - dataX1) * 4, dst + (size_t)(readX1 - x1) * 4);
+        std::fill(dst + (size_t)(readX2 - x1) * 4, dst + (size_t)(x2 - x1) * 4, 0.f);
     }
 } // ReadEXRPlugin::decode
 
