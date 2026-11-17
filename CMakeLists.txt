@@ -47,11 +47,6 @@ foreach(_sub openfx/include SupportExt/ofxsMacros.h IOSupport/SequenceParsing/Se
   endif()
 endforeach()
 
-# Makefile.master: -O2 for release builds (CMake's default is -O3)
-if(NOT MSVC)
-  string(REPLACE "-O3" "-O2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-endif()
-
 # OFX_CXX_STANDARD follows CMAKE_CXX_STANDARD (default 17), also in an existing build directory, unless it was
 # set explicitly
 if(DEFINED CMAKE_CXX_STANDARD)
