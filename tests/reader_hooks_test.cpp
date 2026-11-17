@@ -9,11 +9,20 @@
  *    (not the sequence/file time passed to decode()), restored when render() returns
  *    or throws, and per thread.
  *
- * Two minimal test readers are defined below (a GenericReaderPlugin subclass with the
+ * It also checks the downscaling done by GenericReader for render scales below 1 (issue #104):
+ *
+ *  - render scale 1/2, 1/4 and 1/8 (mipmap levels 1 to 3) with a reader that doesn't
+ *    support render scale (decode() always reads full-resolution pixels), so that
+ *    GenericReader halves the image once per level (scalePixelData, buildMipMapLevel).
+ *    Before the fix, level 2 or more dereferenced a null temporary buffer.
+ *
+ * Minimal test readers are defined below (a GenericReaderPlugin subclass with the
  * default isOutputFrameVarying(), and a subclass returning true), and are driven
  * through the OFX actions by the in-process host of ofx_test_host.h. decode() records
  * getRenderTime() and its time argument, and fills the image with a value computed
- * from getRenderTime(), as a reader with an animated param would.
+ * from getRenderTime(), as a reader with an animated param would. The mipmap test
+ * reader instead fills the image with known content (a function of x, y and the channel)
+ * over frame bounds that have an odd size and an odd offset.
  *
  * Usage: reader_hooks_test <scratch file prefix>   (needs $OCIO, see tests/Makefile)
  * Exit status: 0 = all checks passed.
@@ -24,6 +33,7 @@
 #include "GenericReader.h"
 #include "ofxsMacros.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -40,6 +50,7 @@ using namespace OFX::IO;
 #define kPluginIdentifierDefault "fr.inria.openfx.tests.ReaderHooks"
 #define kPluginIdentifierFrameVarying "fr.inria.openfx.tests.ReaderHooksFrameVarying"
 #define kPluginIdentifierMultiPlanar "fr.inria.openfx.tests.ReaderHooksMultiPlanar"
+#define kPluginIdentifierMipmap "fr.inria.openfx.tests.ReaderHooksMipmap"
 #define kSupportsRGBA true
 #define kSupportsRGB false
 #define kSupportsXY false
@@ -63,15 +74,27 @@ struct DecodeRecord {
     double renderTime; // getRenderTime() in decode()
     double time; // decode()'s time argument (the sequence time)
     bool plane; // recorded by decodePlane() rather than decode()
+    OfxRectI renderWindow; // decode()'s render window
+    OfxPointD renderScale; // decode()'s render scale
 };
+
+// The image read by the mipmap test reader: its frame bounds (in full-resolution pixel
+// coordinates) and its pixel values, as a function of the full-resolution pixel position
+// and the channel.
+struct MipmapContent {
+    OfxRectI bounds;
+    std::function<float(int x, int y, int c)> value;
+};
+MipmapContent gMipmapContent; // read by the mipmap test reader instances
 
 // A reader of fake files: "video" files (whose name contains "video") have kVideoRange frames,
 // others are still images. The file only needs to exist.
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
-    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false)
+    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false, const MipmapContent* content = nullptr)
         : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, multiPlanar)
+        , _content(content)
     {
     }
 
@@ -101,23 +124,37 @@ private:
         return true;
     }
 
-    virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& /*renderScale*/, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
+    virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
     {
-        decodeImpl(time, false, renderWindow, pixelData, bounds, pixelComponentCount, rowBytes);
+        decodeImpl(time, false, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
     }
 
     // called instead of decode() by multi-planar readers
-    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& /*renderScale*/, float* pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              PixelComponentEnum /*pixelComponents*/, PixelComponentEnum /*remappedComponents*/,
                              int pixelComponentCount, const std::string& /*rawComponents*/, int rowBytes) OVERRIDE FINAL
     {
-        decodeImpl(time, true, renderWindow, pixelData, bounds, pixelComponentCount, rowBytes);
+        decodeImpl(time, true, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
     }
 
-    void decodeImpl(OfxTime time, bool plane, const OfxRectI& renderWindow, float* pixelData, const OfxRectI& bounds, int pixelComponentCount, int rowBytes)
+    void decodeImpl(OfxTime time, bool plane, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, int pixelComponentCount, int rowBytes)
     {
         const double t = getRenderTime();
-        records.push_back({ t, time, plane });
+        records.push_back({ t, time, plane, renderWindow, renderScale });
+        if (_content) {
+            // a reader that doesn't support render scale: whatever the render scale, the render
+            // window and the pixels are at full resolution, and GenericReader downscales them
+            for (int y = renderWindow.y1; y < renderWindow.y2; ++y) {
+                float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes) + (ptrdiff_t)(renderWindow.x1 - bounds.x1) * pixelComponentCount;
+                for (int x = renderWindow.x1; x < renderWindow.x2; ++x, pix += pixelComponentCount) {
+                    for (int c = 0; c < pixelComponentCount; ++c) {
+                        pix[c] = _content->value(x, y, c);
+                    }
+                }
+            }
+
+            return;
+        }
         if (onDecode) {
             onDecode();
         }
@@ -138,9 +175,13 @@ private:
 
     virtual bool getFrameBounds(const std::string& /*filename*/, OfxTime /*time*/, int /*view*/, OfxRectI* bounds, OfxRectI* format, double* par, std::string* /*error*/, int* tile_width, int* tile_height) OVERRIDE FINAL
     {
-        bounds->x1 = bounds->y1 = 0;
-        bounds->x2 = kWidth;
-        bounds->y2 = kHeight;
+        if (_content) {
+            *bounds = _content->bounds;
+        } else {
+            bounds->x1 = bounds->y1 = 0;
+            bounds->x2 = kWidth;
+            bounds->y2 = kHeight;
+        }
         *format = *bounds;
         *par = 1.;
         *tile_width = *tile_height = 0;
@@ -157,6 +198,8 @@ private:
 
         return true;
     }
+
+    const MipmapContent* _content; // if not null: the mipmap test reader's image
 };
 
 // Same, but the output may change over time even for a still image (e.g. an animated param)
@@ -239,12 +282,28 @@ MultiPlanarTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, 
     return ret;
 }
 
+// Reads gMipmapContent (set before creating the instance) at full resolution
+mDeclareReaderPluginFactory(MipmapTestReaderPluginFactory, {}, false);
+void MipmapTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
+void MipmapTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksMipmapTest"); }
+void MipmapTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
+ImageEffect*
+MipmapTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
+{
+    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent);
+    ret->restoreStateFromParams();
+
+    return ret;
+}
+
 TestReaderPluginFactory gDefaultFactory(kPluginIdentifierDefault, 1, 0);
 mRegisterPluginFactoryInstance(gDefaultFactory)
 FrameVaryingTestReaderPluginFactory gFrameVaryingFactory(kPluginIdentifierFrameVarying, 1, 0);
 mRegisterPluginFactoryInstance(gFrameVaryingFactory)
 MultiPlanarTestReaderPluginFactory gMultiPlanarFactory(kPluginIdentifierMultiPlanar, 1, 0);
 mRegisterPluginFactoryInstance(gMultiPlanarFactory)
+MipmapTestReaderPluginFactory gMipmapFactory(kPluginIdentifierMipmap, 1, 0);
+mRegisterPluginFactoryInstance(gMipmapFactory)
 
 // ------------------------------------------------------------------ host side
 
@@ -388,6 +447,63 @@ struct Reader {
 
     // R of the first output pixel
     float outputValue() const { return reinterpret_cast<const float*>(out->buffer.data())[0]; }
+
+    // Render at render scale 1/2^level, with the given render window (in pixel coordinates at that
+    // scale), into an output image covering the whole RoD at that scale (the readers don't support
+    // tiles), filled with `fill` beforehand. The RoD returned by getRegionOfDefinition is stored in rod.
+    OfxStatus renderAtScale(double t, unsigned int level, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds)
+    {
+        const double s = 1. / (1 << level);
+        double rs[2] = { s, s };
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, t);
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        if (!ok(st)) {
+            return st;
+        }
+        // the RoD is in canonical coordinates (independent of the render scale)
+        double r[4] = { 0., 0., 0., 0. };
+        pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, r);
+        *rod = { r[0], r[1], r[2], r[3] };
+        // The output image: its bounds and RoD are in pixel coordinates, X = X' * SX / PAR (PAR = 1),
+        // and cover the RoD (the smallest enclosing rectangle).
+        *bounds = { (int)std::floor(r[0] * s), (int)std::floor(r[1] * s), (int)std::ceil(r[2] * s), (int)std::ceil(r[3] * s) };
+        const int w = bounds->x2 - bounds->x1;
+        const int h = bounds->y2 - bounds->y1;
+        const int rowBytes = w * 4 * (int)sizeof(float);
+        out->buffer.assign((size_t)rowBytes * h, 0);
+        float* data = reinterpret_cast<float*>(out->buffer.data());
+        for (size_t k = 0; k < (size_t)w * h * 4; ++k) {
+            data[k] = fill;
+        }
+        OfxPropertySetHandle ip = PH(&out->image);
+        pSetPointer(ip, kOfxImagePropData, 0, data);
+        int b[4] = { bounds->x1, bounds->y1, bounds->x2, bounds->y2 };
+        pSetIntN(ip, kOfxImagePropBounds, 4, b);
+        pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, b);
+        pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
+        pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
+        // the clip's RoD, in canonical coordinates
+        pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, r);
+
+        PropSet ra = makeRenderInArgs(t, 0, 0);
+        pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
+        int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
+        pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+
+        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+    }
+
+    // output pixel (x, y), channel c, after renderAtScale()
+    float outputPixel(const OfxRectI& bounds, int x, int y, int c) const
+    {
+        const float* data = reinterpret_cast<const float*>(out->buffer.data());
+
+        return data[((size_t)(y - bounds.y1) * (bounds.x2 - bounds.x1) + (x - bounds.x1)) * 4 + c];
+    }
 
     void destroy()
     {
@@ -666,6 +782,215 @@ testThreads(OfxPlugin* pFrameVarying, const std::string& still)
     check(afterA == 0. && afterB == 0., "after render() returned in each thread: getRenderTime() = %g, %g (0)", afterA, afterB);
 }
 
+// 3. downscaling by GenericReader for a reader that doesn't support render scale (issue #104)
+
+// floor(a / 2^l) and ceil(a / 2^l)
+int
+floorDivPot(int a, unsigned int l)
+{
+    return (int)std::floor((double)a / (1 << l));
+}
+
+int
+ceilDivPot(int a, unsigned int l)
+{
+    return (int)std::ceil((double)a / (1 << l));
+}
+
+// An RGBA image in double precision over the given bounds
+struct RefImage {
+    OfxRectI b;
+    std::vector<double> v;
+
+    size_t index(int x, int y, int c) const { return ((size_t)(y - b.y1) * (b.x2 - b.x1) + (x - b.x1)) * 4 + c; }
+    bool contains(int x, int y) const { return b.x1 <= x && x < b.x2 && b.y1 <= y && y < b.y2; }
+};
+
+// The expected mipmap pyramid of the whole frame, computed independently of GenericReader:
+// each pixel of level l is the average of those of its 2x2 children at level l-1 that exist
+// (a 2x2 box filter whose box is cut by the image edges, which matters for odd sizes and odd offsets).
+std::vector<RefImage>
+referencePyramid(const MipmapContent& content, unsigned int levels)
+{
+    std::vector<RefImage> pyr(levels + 1);
+    RefImage& l0 = pyr[0];
+    l0.b = content.bounds;
+    l0.v.assign((size_t)(l0.b.x2 - l0.b.x1) * (l0.b.y2 - l0.b.y1) * 4, 0.);
+    for (int y = l0.b.y1; y < l0.b.y2; ++y) {
+        for (int x = l0.b.x1; x < l0.b.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                l0.v[l0.index(x, y, c)] = content.value(x, y, c);
+            }
+        }
+    }
+    for (unsigned int l = 1; l <= levels; ++l) {
+        const RefImage& prev = pyr[l - 1];
+        RefImage& cur = pyr[l];
+        cur.b = { floorDivPot(prev.b.x1, 1), floorDivPot(prev.b.y1, 1), ceilDivPot(prev.b.x2, 1), ceilDivPot(prev.b.y2, 1) };
+        cur.v.assign((size_t)(cur.b.x2 - cur.b.x1) * (cur.b.y2 - cur.b.y1) * 4, 0.);
+        for (int y = cur.b.y1; y < cur.b.y2; ++y) {
+            for (int x = cur.b.x1; x < cur.b.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    double sum = 0.;
+                    int n = 0;
+                    for (int j = 0; j < 2; ++j) {
+                        for (int i = 0; i < 2; ++i) {
+                            if (prev.contains(2 * x + i, 2 * y + j)) {
+                                sum += prev.v[prev.index(2 * x + i, 2 * y + j, c)];
+                                ++n;
+                            }
+                        }
+                    }
+                    cur.v[cur.index(x, y, c)] = sum / n;
+                }
+            }
+        }
+    }
+
+    return pyr;
+}
+
+bool
+near(double a, double b)
+{
+    return std::fabs(a - b) <= 1e-5 * (std::max)(1., std::fabs(b));
+}
+
+// Renders at render scale 1/2, 1/4 and 1/8 (mipmap levels 1 to 3) with a reader that doesn't
+// support render scale: GenericReader decodes the full-resolution render window, and halves it
+// level times (scalePixelData). Levels >= 2 crashed before the fix of #104.
+void
+testMipmap(OfxPlugin* pMipmap, const std::string& still)
+{
+    std::printf("==== render scale 1/2, 1/4, 1/8 with a reader that doesn't support render scale (#104) ====\n");
+    const unsigned int kMaxLevel = 3;
+    // A gradient (R and G are linear, so that the average over a full box is the value at the
+    // center of the box), a non-linear pattern (B), and constant alpha
+    auto gradient = [](int x, int y, int c) -> float {
+        switch (c) {
+        case 0:
+            return (float)x + 0.25f;
+        case 1:
+            return 2.f * y;
+        case 2:
+            return (float)(x % 3) + 0.5f * (y % 5);
+        default:
+            return 1.f;
+        }
+    };
+    // constant per 8x8 block (aligned on multiples of 8), different for each channel: at levels 1 to 3,
+    // every output pixel only comes from a single block, whatever the weights at the edges
+    auto blocks = [](int x, int y, int c) -> float {
+        return (float)(((x / 8) * 7 + (y / 8) * 13 + c * 3) % 17) + 0.5f;
+    };
+    struct {
+        const char* name;
+        std::function<float(int, int, int)> value;
+        bool linearRG;
+    } const contents[] = { { "gradient", gradient, true }, { "8x8 blocks", blocks, false } };
+    // frame bounds in full-resolution pixels (non-negative): odd size with an odd offset,
+    // odd size at the origin, and a 3x1 image (smaller than the box at the upper levels)
+    const OfxRectI frames[] = { { 3, 1, 32, 18 }, { 0, 0, 13, 7 }, { 5, 3, 8, 4 } };
+    const float kFill = -7.f; // the output outside the render window must not be written
+
+    for (unsigned int level = 1; level <= kMaxLevel; ++level) {
+        const int pot = 1 << level;
+        for (const auto& content : contents) {
+            for (const OfxRectI& frame : frames) {
+                gMipmapContent.bounds = frame;
+                gMipmapContent.value = content.value;
+                const std::vector<RefImage> pyr = referencePyramid(gMipmapContent, kMaxLevel);
+                const RefImage& ref = pyr[level];
+                Reader r;
+                if (!r.create(pMipmap, still)) {
+                    ++gFailures;
+                    continue;
+                }
+                // the output bounds at this scale: the RoD (the frame bounds, PAR = 1) times 1/2^level, enclosing
+                const OfxRectI ob = { floorDivPot(frame.x1, level), floorDivPot(frame.y1, level), ceilDivPot(frame.x2, level), ceilDivPot(frame.y2, level) };
+                // render windows: the whole image, inset by one pixel (odd offsets), and the bottom right pixel
+                std::vector<OfxRectI> windows = { ob };
+                if ((ob.x2 - ob.x1 > 2) && (ob.y2 - ob.y1 > 2)) {
+                    windows.push_back({ ob.x1 + 1, ob.y1 + 1, ob.x2 - 1, ob.y2 - 1 });
+                }
+                windows.push_back({ ob.x2 - 1, ob.y1, ob.x2, ob.y1 + 1 });
+                for (const OfxRectI& rw : windows) {
+                    char what[256];
+                    std::snprintf(what, sizeof(what), "scale 1/%d, %s, frame (%d,%d)-(%d,%d), render window (%d,%d)-(%d,%d)",
+                                  pot, content.name, frame.x1, frame.y1, frame.x2, frame.y2, rw.x1, rw.y1, rw.x2, rw.y2);
+                    r.plugin->records.clear();
+                    OfxRectD rod = { 0., 0., 0., 0. };
+                    OfxRectI bounds = { 0, 0, 0, 0 };
+                    std::fflush(stdout); // in case it crashes
+                    OfxStatus st = r.renderAtScale(1., level, rw, kFill, &rod, &bounds);
+                    check(ok(st), "%s: render = %d", what, st);
+                    if (!ok(st)) {
+                        continue;
+                    }
+                    check(rod.x1 == frame.x1 && rod.y1 == frame.y1 && rod.x2 == frame.x2 && rod.y2 == frame.y2 && bounds.x1 == ob.x1 && bounds.y1 == ob.y1 && bounds.x2 == ob.x2 && bounds.y2 == ob.y2,
+                          "%s: RoD (%g,%g)-(%g,%g) (canonical coordinates), output bounds (%d,%d)-(%d,%d)",
+                          what, rod.x1, rod.y1, rod.x2, rod.y2, bounds.x1, bounds.y1, bounds.x2, bounds.y2);
+                    // decode() was asked for the full-resolution pixels of the render window
+                    const OfxRectI fullRes = { (std::max)(rw.x1 * pot, frame.x1), (std::max)(rw.y1 * pot, frame.y1),
+                                               (std::min)(rw.x2 * pot, frame.x2), (std::min)(rw.y2 * pot, frame.y2) };
+                    const bool decodeOk = r.plugin->records.size() == 1 && r.plugin->records[0].renderScale.x == 1. / pot && r.plugin->records[0].renderScale.y == 1. / pot
+                        && r.plugin->records[0].renderWindow.x1 == fullRes.x1 && r.plugin->records[0].renderWindow.y1 == fullRes.y1
+                        && r.plugin->records[0].renderWindow.x2 == fullRes.x2 && r.plugin->records[0].renderWindow.y2 == fullRes.y2;
+                    check(decodeOk, "%s: decode() called once, for the full-resolution window (%d,%d)-(%d,%d)", what, fullRes.x1, fullRes.y1, fullRes.x2, fullRes.y2);
+
+                    int badRef = 0, badBox = 0, badOutside = 0, nBoxes = 0;
+                    for (int y = ob.y1; y < ob.y2; ++y) {
+                        for (int x = ob.x1; x < ob.x2; ++x) {
+                            const bool inside = rw.x1 <= x && x < rw.x2 && rw.y1 <= y && y < rw.y2;
+                            // the box of full-resolution pixels averaged into this pixel is entirely inside the frame
+                            const bool fullBox = frame.x1 <= x * pot && (x + 1) * pot <= frame.x2 && frame.y1 <= y * pot && (y + 1) * pot <= frame.y2;
+                            if (inside && fullBox) {
+                                ++nBoxes;
+                            }
+                            for (int c = 0; c < 4; ++c) {
+                                const float v = r.outputPixel(bounds, x, y, c);
+                                if (!inside) {
+                                    if ((v != kFill) && (++badOutside <= 3)) {
+                                        std::printf("    (%d,%d) channel %d outside the render window: %g, expected untouched %g\n", x, y, c, v, kFill);
+                                    }
+                                    continue;
+                                }
+                                // the reference pyramid
+                                const double expected = ref.v[ref.index(x, y, c)];
+                                if (!near(v, expected) && (++badRef <= 3)) {
+                                    std::printf("    (%d,%d) channel %d: %g, expected %g\n", x, y, c, v, expected);
+                                }
+                                // independently of the reference pyramid: for linear R and G, a full box is the value
+                                // at its center; for 8x8 blocks, every pixel is the value of its block
+                                double box;
+                                if (content.linearRG) {
+                                    if (!fullBox || (c >= 2)) {
+                                        continue;
+                                    }
+                                    const double center = (c == 0 ? x : y) * pot + (pot - 1) / 2.;
+                                    box = (c == 0) ? center + 0.25 : 2. * center;
+                                } else {
+                                    box = content.value((std::max)(x * pot, frame.x1), (std::max)(y * pot, frame.y1), c);
+                                }
+                                if (!near(v, box) && (++badBox <= 3)) {
+                                    std::printf("    (%d,%d) channel %d: %g, expected %s %g\n", x, y, c, v, content.linearRG ? "box average" : "block value", box);
+                                }
+                            }
+                        }
+                    }
+                    check(badRef == 0, "%s: output = 2x2 box filter applied %u time(s) (%d mismatches)", what, level, badRef);
+                    if (content.linearRG) {
+                        check(badBox == 0, "%s: full boxes = average of the %dx%d box (%d boxes, %d mismatches)", what, pot, pot, nBoxes, badBox);
+                    } else {
+                        check(badBox == 0, "%s: output = value of the 8x8 block (%d mismatches)", what, badBox);
+                    }
+                    check(badOutside == 0, "%s: output outside the render window untouched (%d mismatches)", what, badOutside);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 int
@@ -692,7 +1017,9 @@ main(int argc, char** argv)
     OfxPlugin* pDefault = loadPlugin(kPluginIdentifierDefault, descDefault);
     OfxPlugin* pFrameVarying = loadPlugin(kPluginIdentifierFrameVarying, descFrameVarying);
     OfxPlugin* pMultiPlanar = loadPlugin(kPluginIdentifierMultiPlanar, descMultiPlanar);
-    if (!pDefault || !pFrameVarying || !pMultiPlanar) {
+    Effect descMipmap;
+    OfxPlugin* pMipmap = loadPlugin(kPluginIdentifierMipmap, descMipmap);
+    if (!pDefault || !pFrameVarying || !pMultiPlanar || !pMipmap) {
         std::printf("FAIL: cannot load the test readers\n");
 
         return 1;
@@ -702,10 +1029,12 @@ main(int argc, char** argv)
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);
+    testMipmap(pMipmap, still);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pFrameVarying->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pMultiPlanar->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    pMipmap->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::remove(still.c_str());
     std::remove(video.c_str());
 
