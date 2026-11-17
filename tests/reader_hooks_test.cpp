@@ -851,7 +851,7 @@ referencePyramid(const MipmapContent& content, unsigned int levels)
 }
 
 bool
-near(double a, double b)
+closeEnough(double a, double b)
 {
     return std::fabs(a - b) <= 1e-5 * (std::max)(1., std::fabs(b));
 }
@@ -957,7 +957,7 @@ testMipmap(OfxPlugin* pMipmap, const std::string& still)
                                 }
                                 // the reference pyramid
                                 const double expected = ref.v[ref.index(x, y, c)];
-                                if (!near(v, expected) && (++badRef <= 3)) {
+                                if (!closeEnough(v, expected) && (++badRef <= 3)) {
                                     std::printf("    (%d,%d) channel %d: %g, expected %g\n", x, y, c, v, expected);
                                 }
                                 // independently of the reference pyramid: for linear R and G, a full box is the value
@@ -972,7 +972,7 @@ testMipmap(OfxPlugin* pMipmap, const std::string& still)
                                 } else {
                                     box = content.value((std::max)(x * pot, frame.x1), (std::max)(y * pot, frame.y1), c);
                                 }
-                                if (!near(v, box) && (++badBox <= 3)) {
+                                if (!closeEnough(v, box) && (++badBox <= 3)) {
                                     std::printf("    (%d,%d) channel %d: %g, expected %s %g\n", x, y, c, v, content.linearRG ? "box average" : "block value", box);
                                 }
                             }

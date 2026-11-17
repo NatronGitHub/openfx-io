@@ -131,10 +131,13 @@ upscalePowerOfTwo(const OfxRectI& r,
         return r;
     }
     OfxRectI ret;
-    ret.x1 = r.x1 << thisLevel;
-    ret.x2 = r.x2 << thisLevel;
-    ret.y1 = r.y1 << thisLevel;
-    ret.y2 = r.y2 << thisLevel;
+    // multiply rather than shift: left-shifting a negative value (e.g. an EXR data window with a negative
+    // origin) is undefined behaviour before C++20
+    const int scale = 1 << thisLevel;
+    ret.x1 = r.x1 * scale;
+    ret.x2 = r.x2 * scale;
+    ret.y1 = r.y1 * scale;
+    ret.y2 = r.y2 * scale;
 
     return ret;
 }

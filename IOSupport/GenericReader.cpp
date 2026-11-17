@@ -992,7 +992,8 @@ buildMipMapLevelGeneric(ImageEffect* instance,
 {
     assert(level > 0);
 
-    // two temporary images, used alternately: level i is computed from level i-1, which must not be overwritten
+    // two temporary images, used alternately, so that each halving reads one buffer and writes the other (halving
+    // in place would only work because of halveWindow's access order)
     auto_ptr<ImageMemory> tmpMem[2];
     size_t tmpMemSize[2] = { 0, 0 };
     PIX* nextImg = NULL;
