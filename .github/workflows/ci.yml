@@ -30,8 +30,10 @@ permissions:
   contents: read
 
 concurrency:
-  # nightly and manual runs have their own groups, so that they don't cancel (or get cancelled by) master's push CI
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event_name || 'ci' }}
+  # nightly and manual runs have their own groups, so that they don't cancel (or get cancelled by) master's push CI.
+  # Runs of draft pull requests (which skip every job) have their own group too: otherwise a late run of a push made
+  # while the PR was a draft cancels the ready_for_review run, then skips itself, and no CI runs at all.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event_name || 'ci' }}${{ github.event.pull_request.draft && '-draft' || '' }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
@@ -294,10 +296,12 @@ jobs:
           set -eo pipefail
           make -j4 CONFIG=debug SEEXPR_HOME=/ucrt64 CXX="g++ -std=c++20"
       - name: Tests
-        # tests/Makefile, run directly: ctest would run MSYS2's make outside of the MSYS2 shell
+        # tests/Makefile, run directly: ctest would run MSYS2's make outside of the MSYS2 shell; ctest only loads
+        # the CMake-built IO.ofx (io-load)
         run: |
           set -eo pipefail
           make -C tests test
+          ctest --test-dir build -R '^io-load$' --output-on-failure
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
