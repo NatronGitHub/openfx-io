@@ -103,6 +103,15 @@ the real render pipeline, linked directly (no host binary):
   and frame rates, more than 255 fps in mov) must make `beginSequenceRender`
   fail without writing a file, and must be reported as soon as the param is
   edited; an empty one must write no timecode track.
+  Issue #110: 47.952, 95.904 and 119.88 fps (drop-frame) movies must be written
+  at 48000/1001, 96000/1001 and 120000/1001 fps (video stream and tmcd track);
+  the 255 fps limit must only apply when a tmcd track is written (not in 3gp,
+  nor with `write_tmcd=0`, but in 3gp with `write_tmcd=1`); and the persistent
+  message must show all the current errors (timecode, and codec not supported
+  by the container) after editing any param. MPEG-4 part 2 at 119.88 fps must be
+  written at a rate close to 120000/1001 (40999/342, as the ffmpeg CLI does), and
+  with the Format "Default", the format must be guessed from the filename param
+  before the first render (a .m4v file has no 255 fps limit).
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
