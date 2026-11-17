@@ -22,8 +22,6 @@
  * Run a shell script.
  */
 
-#if !(defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) // Sorry, MS Windows users, this plugin won't work for you
-
 #include "RunScript.h"
 #include "ofxsMacros.h"
 
@@ -39,19 +37,25 @@
 #include <sstream>
 #include <stdio.h> // for snprintf & _snprintf
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-#include <windows.h>
+#define RUNSCRIPT_WIN32
 #if defined(_MSC_VER) && _MSC_VER < 1900
 #define snprintf _snprintf
 #endif
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h> // WIFEXITED, WEXITSTATUS
+#include <unistd.h>
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
 #include "ofxsCopier.h"
 
+#ifdef RUNSCRIPT_WIN32
+#include "RunScriptWin32.h"
+#else
 #include "pstream.h"
+#endif
 
 using namespace OFX;
 
@@ -61,6 +65,36 @@ using std::vector;
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginName "RunScriptOFX"
+
+#define kPluginDescriptionWindows \
+    "Under Windows, the script is a batch file, which is run by cmd.exe (`cmd.exe /c script.bat arguments...`). " \
+    "Each argument is passed within double quotes: `%~1` is argument 1 without the quotes, and it must always be used within double quotes, as `\"%~1\"`. " \
+    "An unquoted `%~1`, passing it to `call`, or delayed expansion (`!var!`, `setlocal enabledelayedexpansion`) lets a file name or string containing `&`, `|`, `>` or `%` run commands, not only split words. " \
+    "In a batch file, a double quote in an argument arrives doubled (`\"\"`), and a trailing backslash too (`C:\\dir\\` arrives as `C:\\dir\\\\`), so that `\"%~1\"` or `%*` passed to a program gives it back the original argument. " \
+    "An argument passed to a batch file cannot contain a line break. " \
+    "Start the script with `@echo off` to avoid echoing each command, and with `chcp 65001 >NUL` if it contains non-ASCII characters (cmd.exe reads batch files in the console code page). " \
+    "The example above would be:\n" \
+    "\n" \
+    "```\n" \
+    "@echo off\n" \
+    "del \"%~1\" \"%~2\"\n" \
+    "```\n" \
+    "\n" \
+    "Under Windows, a script that begins with a shebang line is instead run by the given interpreter, as `interpreter [options] scriptfile arguments...`, " \
+    "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass -File`, but not `cmd /c` or `powershell -Command`). " \
+    "A path that contains spaces must be quoted: `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. " \
+    "A program name without a directory is searched for in the directories of the PATH only (not in the current directory), with `.exe` or `.com` appended if needed; a relative path such as `bin\\prog.exe` is not allowed. " \
+    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH, not the WSL `bash.exe`. " \
+    "Git for Windows does not put its `sh` and `bash` in the PATH by default: add `C:\\Program Files\\Git\\bin` (or `Git\\usr\\bin`) to the PATH, or give the full path on the shebang line. " \
+    "A `bash.exe` alias in `%LOCALAPPDATA%\\Microsoft\\WindowsApps` (WSL) may also be found in the PATH. " \
+    "`python3` or `python` in the PATH may be the Microsoft Store installer stub: prefer `#!py -3` (the Python launcher) or a full path. " \
+    "Arguments are always quoted, so that MSYS2/Cygwin programs do not expand wildcards in them, but some programs read an argument that begins with `@` as a file of arguments.\n" \
+    "The script runs without a console window, with no standard input. Rendering waits for the script to exit (not for the programs it started with `start`), and aborting the render kills the script and the programs it started.\n"
+#ifdef RUNSCRIPT_WIN32
+#define kPluginDescriptionPstream ""
+#else
+#define kPluginDescriptionPstream "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
+#endif
 #define kPluginGrouping "Image"
 #define kPluginDescription                                                                                                                                                                                                         \
     "Run a script with the given arguments.\n"                                                                                                                                                                                     \
@@ -106,7 +140,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "rm \"$1\" \"$2\"\n"                                                                                                                                                                                                           \
     "```\n"                                                                                                                                                                                                                        \
     "\n"                                                                                                                                                                                                                           \
-    "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
+    kPluginDescriptionWindows                                                                                                                                                                                                      \
+    "\n"                                                                                                                                                                                                                           \
+    kPluginDescriptionPstream
 
 #define kPluginIdentifier "fr.inria.openfx.RunScript"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
@@ -149,7 +185,15 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamScriptLabel "Script"
 #define kParamScriptHint                                                                                                                         \
     "Contents of the script. Under Unix, the script should begin with a traditional shebang line, e.g. '#!/bin/sh' or '#!/usr/bin/env python'\n" \
-    "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces)."
+    "The arguments can be accessed as usual from the script (in a Unix shell-script, argument 1 would be accessed as \"$1\" - use double quotes to avoid problems with spaces).\n" \
+    "Under Windows, the script is a batch file run by cmd.exe (argument 1 is \"%~1\", always within double quotes: unquoted, it allows command injection), unless it begins with a shebang line (see the plug-in description).\n" \
+    "If the script exits with a non-zero code, a warning shows the code and the last lines of its standard error."
+
+#ifdef RUNSCRIPT_WIN32
+#define kParamScriptDefault "@echo off\n"
+#else
+#define kParamScriptDefault "#!/bin/sh\n"
+#endif
 
 #define kParamValidate "validate"
 #define kParamValidateLabel "Validate"
@@ -161,6 +205,15 @@ enum ERunScriptPluginParamType {
     eRunScriptPluginParamTypeDouble,
     eRunScriptPluginParamTypeInteger
 };
+
+#ifdef RUNSCRIPT_WIN32
+// polled while the script runs
+static bool
+runScriptAborted(void* effect)
+{
+    return static_cast<const ImageEffect*>(effect)->abort();
+}
+#endif
 
 static string
 unsignedToString(unsigned i)
@@ -313,6 +366,10 @@ RunScriptPlugin::render(const RenderArguments& args)
     }
     checkBadRenderScaleOrField(dstImg, args);
 
+#ifdef RUNSCRIPT_WIN32
+    // the script file is created by RunScriptWin32::runScript()
+    vector<string> argv; // the script arguments
+#else
     // create the script
     char scriptname[] = "/tmp/runscriptXXXXXX";
     // Coverity suggests to call umask here for compatibility with POSIX<2008 systems,
@@ -345,6 +402,7 @@ RunScriptPlugin::render(const RenderArguments& args)
     // build the command-line
     vector<string> argv;
     argv.push_back(scriptname);
+#endif // RUNSCRIPT_WIN32
 
     int param_count;
     _param_count->getValue(param_count);
@@ -401,15 +459,66 @@ RunScriptPlugin::render(const RenderArguments& args)
 
     // execute the script
     vector<string> errors;
+    // a non-empty failure is reported as a warning (the render still succeeds): "exited with code 2"
+    string failure;
+#ifdef RUNSCRIPT_WIN32
+    {
+        string script;
+        _script->getValue(script);
+        unsigned long exitCode = 0;
+        string error;
+        RunScriptWin32::RunResult r = RunScriptWin32::runScript(script, argv, &errors, &exitCode, &error, &runScriptAborted, this);
+        if (r == RunScriptWin32::eRunAborted) {
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+        if (r != RunScriptWin32::eRunOK) {
+            setPersistentMessage(Message::eMessageError, "", "RunScript: " + error);
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+        DBG(for (size_t i = 0; i < errors.size(); ++i) std::cout << "output: " << errors[i] << std::endl);
+        DBG(std::cout << "exit code: " << exitCode << std::endl);
+        if (exitCode != 0) {
+            failure = "exited with code " + std::to_string(exitCode);
+        }
+    }
+#else
     redi::ipstream in(scriptname, argv, redi::pstreambuf::pstderr | redi::pstreambuf::pstderr);
     string errmsg;
     while (std::getline(in, errmsg)) {
         errors.push_back(errmsg);
         DBG(std::cout << "output: " << errmsg << std::endl);
     }
+    // wait for the script, and get its exit status
+    in.close();
+    const int status = in.rdbuf()->status();
+    if (status != -1) {
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            failure = "exited with code " + std::to_string(WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+            failure = "was killed by signal " + std::to_string(WTERMSIG(status));
+        }
+    }
 
     // remove the script
     (void)unlink(scriptname);
+#endif // RUNSCRIPT_WIN32
+    if (failure.empty()) {
+        clearPersistentMessage(); // a warning from a previous run
+    } else {
+        string msg = "The script " + failure + ".";
+        if (!errors.empty()) {
+            const size_t kLastLines = 5;
+            msg += " Last lines of its standard error:";
+            for (size_t i = errors.size() > kLastLines ? errors.size() - kLastLines : 0; i < errors.size(); ++i) {
+                msg += "\n" + errors[i];
+            }
+        }
+        setPersistentMessage(Message::eMessageWarning, "", msg);
+    }
 
     // now copy the first input to output
 
@@ -810,7 +919,7 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         }
         param->setStringType(eStringTypeMultiLine);
         param->setAnimates(true);
-        param->setDefault("#!/bin/sh\n");
+        param->setDefault(kParamScriptDefault);
         if (page) {
             page->addChild(*param);
         }
@@ -838,5 +947,3 @@ static RunScriptPluginFactory p(kPluginIdentifier, kPluginVersionMajor, kPluginV
 mRegisterPluginFactoryInstance(p)
 
     OFXS_NAMESPACE_ANONYMOUS_EXIT
-
-#endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)

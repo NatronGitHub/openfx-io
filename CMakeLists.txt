@@ -166,6 +166,8 @@ file(GLOB IO_SOURCES
 #  "SupportExt/ofxsGenerator.cpp"
   "SupportExt/ofxsMultiPlane.cpp"
   "SupportExt/ofxsOGLUtilities.cpp"
+  "RunScript/*.cpp"
+  "RunScript/*.h"
 #  "SupportExt/ofxsTracking.cpp"
   "SupportExt/*.h"
   "SupportExt/glad/*.cpp"
