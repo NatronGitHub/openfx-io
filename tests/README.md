@@ -180,6 +180,46 @@ divide-by-zero guard. No performance claim is made.
 per-format tolerances. It exercises the OpenImageIO library the OIIO plugins wrap,
 not the plugin code itself (the OFX-level coverage is `test-ofx`).
 
+### 4. `io-hostdemo` — every plug-in of the installed bundle, rendered by openfx's hostDemo
+
+Not a `tests/Makefile` target: a ctest test of the CMake build, with `-DIO_HOSTDEMO_TESTS=ON` (CI turns it on),
+which builds openfx's example host `hostDemo` (`openfx/HostSupport/examples`, with HostSupport and its bundled
+expat) from the `openfx` submodule. It runs after `cmake --install`, on the installed bundle (it is skipped if the
+bundle is not installed):
+
+```sh
+cmake -S . -B build -DIO_HOSTDEMO_TESTS=ON -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle ...
+cmake --build build && cmake --install build
+ctest --test-dir build -R io-hostdemo --output-on-failure
+# or directly:
+tests/hostdemo/run.sh build/openfx/HostSupport/examples/hostDemo Bundle/IO.ofx.bundle build/io_verify_plugin_loads /tmp/hostdemo
+```
+
+`hostdemo/run.sh` lists the plug-ins of the bundle with `io_verify_plugin_loads`, and renders each one with
+`hostDemo` (frames 0 and 1, two views, default parameters, on hostDemo's PAL SD input: black at t=0, white at t=1;
+`OCIO=tests/test.ocio`):
+
+* the writers, in the general context, write `image.png` (WritePNG), `image.exr` (WriteEXR), `image.pfm` (WritePFM),
+  `image.tif` and `image.jpg` (WriteOIIO) and `movie.mov` (WriteFFmpeg), which must exist and be non-empty;
+* the readers, in the general context, read them back: ReadPNG, ReadEXR, ReadPFM, ReadOIIO (TIFF, JPEG, PNG, EXR) and
+  ReadFFmpeg (MOV). No test file is committed;
+* the filters (filter context): the OCIO plug-ins, OIIOText, OIIOResize, SeExpr, SeExprSimple, SeGrain, SeNoise and
+  RunScript, with default parameters, except where defaults can't render: OCIOFileTransform gets an identity 1D
+  LUT (it has no default file), and SeExpr, SeExprSimple (in hosts other than Natron) and RunScript get
+  `validate=1` (they don't render a script that was not validated; RunScript's default script does nothing).
+  OIIOText needs one of OpenImageIO's default fonts (DroidSans, cour, Courier New or FreeMono; on Ubuntu:
+  `fonts-freefont-ttf`).
+
+A plug-in fails on any load, describe, instance or render error (hostDemo's exit status), on a crash or a timeout
+(`HOSTDEMO_TIMEOUT`, 120 s per render), on an error message from the plug-in, if an output frame is missing, or if
+a writer's file is missing or empty (and then the reader of that file fails too). Every plug-in of the bundle must
+have a test, or an explicit skip with its reason in the script's `SKIPS` list (none at the moment): a new plug-in
+without either fails the test. Tests of plug-ins that are not in the bundle (their libraries were not found at build
+time) are reported, not failed.
+
+Not tested: ReadOIIO's RAW support (LibRaw). No RAW file can be generated at test time (no writer makes camera RAW
+files), and real camera RAW or DNG files are much larger than the few KB a test file may take.
+
 ## Files
 
 | File | Purpose |
@@ -196,6 +236,7 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
+| `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
 | `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl`. |
 
 ## Notes / limitations

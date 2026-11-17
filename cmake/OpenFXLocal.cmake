@@ -23,13 +23,15 @@ endif()
 
 # openfx's plug-in API (NatronGitHub/openfx#125, and #127 for add_ofx_plugin(RPATH) and
 # ofx_target_filter_missing_includes(), which this checks): openfx::Api, openfx::Support and OpenFX.cmake; no HostSupport and no
-# install rules for a subproject
+# install rules for a subproject. EXCLUDE_FROM_ALL: openfx's targets are built when something needs them, and none of
+# its install rules run, also those it has without OFX_INSTALL (the example hosts, the bundled expat's headers), which
+# BUILD_EXAMPLE_HOSTS (IO_HOSTDEMO_TESTS) enables.
 file(STRINGS "${OPENFX_PATH}/cmake/OpenFX.cmake" _ofx_has_api REGEX "^function\\(ofx_target_filter_missing_includes")
 if(NOT _ofx_has_api)
   message(FATAL_ERROR "${OPENFX_PATH}/cmake/OpenFX.cmake has no ofx_target_filter_missing_includes(): update the openfx submodule "
                       "(git submodule update --init --recursive)")
 endif()
-add_subdirectory("${OPENFX_PATH}" "${CMAKE_BINARY_DIR}/openfx")
+add_subdirectory("${OPENFX_PATH}" "${CMAKE_BINARY_DIR}/openfx" EXCLUDE_FROM_ALL)
 
 # supportext_add_sources() (after add_subdirectory(openfx), so that it links openfx::Support)
 include("${OFXS_EXT_PATH}/cmake/SupportExt.cmake")

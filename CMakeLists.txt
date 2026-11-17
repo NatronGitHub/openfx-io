@@ -34,6 +34,8 @@
 #   OFX_IO_WITH_<group>     build the group if its libraries are found (default ON): OCIO EXR FFMPEG OIIO LIBRAW
 #                           PNG SEEXPR RUNSCRIPT
 #   OFX_IO_REQUIRE_ALL      fail if a group that is not disabled can't be built (default OFF; for packagers)
+#   IO_HOSTDEMO_TESTS       build openfx's hostDemo; ctest renders every plug-in of the installed bundle with it
+#                           (io-hostdemo, tests/hostdemo/run.sh)
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
 cmake_minimum_required(VERSION 3.16...3.31)
@@ -61,6 +63,13 @@ endif()
 if(NOT DEFINED CACHE{OFX_CXX_STANDARD} OR "${OFX_CXX_STANDARD}" STREQUAL "${_OFX_IO_CXX_STANDARD_AUTO}")
   set(OFX_CXX_STANDARD ${_io_std} CACHE STRING "C++ standard of the plug-ins and of openfx::Support" FORCE)
   set(_OFX_IO_CXX_STANDARD_AUTO ${_io_std} CACHE INTERNAL "")
+endif()
+
+# IO_HOSTDEMO_TESTS: build openfx's hostDemo (HostSupport/examples, which needs HostSupport and its bundled expat) for
+# the io-hostdemo test (below)
+option(IO_HOSTDEMO_TESTS "Build openfx's hostDemo and test rendering every plug-in of the installed bundle with it" OFF)
+if(IO_HOSTDEMO_TESTS)
+  set(BUILD_EXAMPLE_HOSTS ON CACHE BOOL "Build the example hosts (HostSupport/examples: hostDemo, cacheDemo, propsetDump)" FORCE)
 endif()
 
 set(OPENFX_PATH "${PROJECT_SOURCE_DIR}/openfx")
@@ -545,6 +554,38 @@ if(BUILD_TESTING)
     set_tests_properties(io-load-installed PROPERTIES PASS_REGULAR_EXPRESSION "Num_plugins: ${_io_nplugins}\n"
       FAIL_REGULAR_EXPRESSION "error|Failed" SKIP_RETURN_CODE 77
       ENVIRONMENT "DYLD_LIBRARY_PATH=;DYLD_FALLBACK_LIBRARY_PATH=;DYLD_FRAMEWORK_PATH=;LD_LIBRARY_PATH=")
+  endif()
+
+  # io-hostdemo (IO_HOSTDEMO_TESTS): openfx's hostDemo loads the installed bundle and renders each of its plug-ins
+  # (tests/hostdemo/run.sh, which lists what is tested and what is skipped); skipped if it was not installed yet
+  if(IO_HOSTDEMO_TESTS)
+    find_program(IO_BASH NAMES bash)
+    if(NOT TARGET hostDemo)
+      message(WARNING "IO_HOSTDEMO_TESTS: openfx's hostDemo is not built (OFX_SUPPORTS_MULTITHREAD?): no io-hostdemo test")
+    elseif(NOT IO_BASH)
+      message(WARNING "IO_HOSTDEMO_TESTS: bash not found: no io-hostdemo test")
+    else()
+      # openfx is EXCLUDE_FROM_ALL: build hostDemo with the default target
+      add_custom_target(io_hostdemo ALL)
+      add_dependencies(io_hostdemo hostDemo)
+      if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
+        set(_io_installed_bundle "${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
+      else()
+        set(_io_installed_bundle "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
+      endif()
+      add_test(NAME io-hostdemo
+               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "$<TARGET_FILE:hostDemo>"
+                       "${_io_installed_bundle}" "$<TARGET_FILE:io_verify_plugin_loads>"
+                       "${CMAKE_CURRENT_BINARY_DIR}/hostdemo")
+      set(_io_env "OCIO=${PROJECT_SOURCE_DIR}/tests/test.ocio")
+      if(APPLE AND NOT OFX_DEPLOY_BUNDLES)
+        list(APPEND _io_env "DYLD_FALLBACK_LIBRARY_PATH=${_io_dirs}")
+      elseif(UNIX)
+        # the installed bundle (deployed on macOS) loads by itself
+        list(APPEND _io_env "DYLD_LIBRARY_PATH=" "DYLD_FALLBACK_LIBRARY_PATH=" "DYLD_FRAMEWORK_PATH=" "LD_LIBRARY_PATH=")
+      endif()
+      set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}")
+    endif()
   endif()
 
   find_program(IO_MAKE_PROGRAM NAMES gmake make mingw32-make)

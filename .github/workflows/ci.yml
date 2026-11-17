@@ -84,9 +84,11 @@ jobs:
       - name: Install Ubuntu system packages
         run: |
           sudo apt-get update
+          # fonts-freefont-ttf: FreeMono, one of the default fonts of OpenImageIO (DroidSans, cour, Courier New, FreeMono),
+          # for OIIOText (io-hostdemo)
           sudo apt-get install -y cmake bison flex libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
             libgl-dev libegl-dev liblcms2-dev libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf libexpat1-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf libexpat1-dev fonts-freefont-ttf
       - name: Cache SeExpr
         id: cache-seexpr
         uses: actions/cache@v4
@@ -104,7 +106,9 @@ jobs:
           make install -C build
       - name: Build (release, CMake)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
+          # IO_HOSTDEMO_TESTS: ctest renders every plug-in of the installed bundle with openfx's hostDemo (io-hostdemo)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle \
+            -DIO_HOSTDEMO_TESTS=ON
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build
@@ -112,7 +116,7 @@ jobs:
         if: env.EXTRA_VARIANTS == 'true'
         run: make -j4 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="g++ -std=c++20"
       - name: Tests
-        # tests/Makefile, run by ctest
+        # tests/Makefile and io-hostdemo (on the installed bundle), run by ctest
         run: ctest --test-dir build --output-on-failure
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
@@ -208,7 +212,8 @@ jobs:
           # MacPorts' cmake; OFX_DEPLOY_BUNDLES: osxDeploy.sh at install, as the Makefiles do for release builds
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DOFX_CXX_STANDARD=17 \
             -DSEEXPR_HOME=$SEEXPR_HOME -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DOFX_DEPLOY_BUNDLES=ON \
-            -DIO_TESTS_CXX=clang++ -DIO_TESTS_MAKE_ARGS=WITH_LIBRAW=1 -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle
+            -DIO_TESTS_CXX=clang++ -DIO_TESTS_MAKE_ARGS=WITH_LIBRAW=1 -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle \
+            -DIO_HOSTDEMO_TESTS=ON
           cmake --build build -j3
           # installs Bundle/IO.ofx.bundle
           cmake --install build
@@ -225,7 +230,7 @@ jobs:
           ln -sf /opt/local/bin/ffmpeg8 "$RUNNER_TEMP/ffbin/ffmpeg"
           ln -sf /opt/local/bin/ffprobe8 "$RUNNER_TEMP/ffbin/ffprobe"
           export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          # tests/Makefile (CXX=clang++ WITH_LIBRAW=1), run by ctest
+          # tests/Makefile (CXX=clang++ WITH_LIBRAW=1) and io-hostdemo (on the installed, deployed bundle), run by ctest
           ctest --test-dir build --output-on-failure
           if [ "$EXTRA_VARIANTS" = true ]; then
             make -C tests clean test CXX=clang++ WITH_LIBRAW=1 CXXSTD=-std=c++20
@@ -285,7 +290,7 @@ jobs:
           set -eo pipefail
           # cmake.exe is a native program: pass Windows paths
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")" \
-            -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle
+            -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build
@@ -296,11 +301,12 @@ jobs:
           make -j4 CONFIG=debug SEEXPR_HOME="$MINGW_PREFIX" CXX="g++ -std=c++20"
       - name: Tests
         # tests/Makefile, run directly: ctest would run MSYS2's make outside of the MSYS2 shell; ctest only loads
-        # the CMake-built IO.ofx (io-load)
+        # the CMake-built IO.ofx (io-load) and renders every plug-in of the installed bundle with hostDemo
+        # (io-hostdemo, a bash script: the bundle's DLLs are found in $MINGW_PREFIX/bin, on PATH)
         run: |
           set -eo pipefail
           make -C tests test
-          ctest --test-dir build -R '^io-load$' --output-on-failure
+          ctest --test-dir build -R '^io-(load|hostdemo)$' --output-on-failure
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
