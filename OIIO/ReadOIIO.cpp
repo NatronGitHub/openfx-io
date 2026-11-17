@@ -2356,33 +2356,47 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     int subImageIndex = 0;
     if (pixelComponents != ePixelComponentCustom) {
         if (!_outputLayer) { // host is not multilayer nor anything, just use basic indexes
+            // The indexes in channels are those of the file's channels + kXChannelFirst, or 0 and 1 for the
+            // constants 0 and 1: the first channels of the first subimage are R, G, B (or one grey channel), and
+            // alpha is the file's alpha channel, if any.
+            const ImageSpec& spec = subimages[0];
+            const int nc = spec.nchannels;
+            const int alpha = (spec.alpha_channel >= 0 && spec.alpha_channel < nc) ? spec.alpha_channel : -1;
+            const int nColor = (alpha >= 0 && alpha < 3) ? alpha : (std::min)(nc, 3); // the color channels before alpha
+            int rgb[3];
+            for (int c = 0; c < 3; ++c) {
+                // grey: R = G = B
+                rgb[c] = (nColor == 1) ? kXChannelFirst : ((c < nColor) ? c + kXChannelFirst : 0);
+            }
+            const int a = (alpha >= 0) ? alpha + kXChannelFirst : 1;
             switch (pixelComponents) {
             case ePixelComponentRGBA:
                 numChannels = 4;
                 channels.resize(numChannels);
-                channels[0] = 0;
-                channels[1] = 1;
-                channels[2] = 2;
-                channels[3] = 3;
+                channels[0] = rgb[0];
+                channels[1] = rgb[1];
+                channels[2] = rgb[2];
+                channels[3] = a;
                 break;
             case ePixelComponentRGB:
                 numChannels = 3;
                 channels.resize(numChannels);
-                channels[0] = 0;
-                channels[1] = 1;
-                channels[2] = 2;
+                channels[0] = rgb[0];
+                channels[1] = rgb[1];
+                channels[2] = rgb[2];
                 break;
             case ePixelComponentXY:
                 numChannels = 2;
                 channels.resize(numChannels);
-                channels[0] = 0;
-                channels[1] = 1;
+                channels[0] = (nc > 0) ? kXChannelFirst : 0;
+                channels[1] = (nc > 1) ? kXChannelFirst + 1 : 0;
                 break;
 
             case ePixelComponentAlpha:
                 numChannels = 1;
                 channels.resize(numChannels);
-                channels[0] = 0;
+                // a single-channel file is an alpha image
+                channels[0] = (alpha >= 0) ? a : ((nc == 1) ? kXChannelFirst : 1);
                 break;
             default:
                 assert(false);
