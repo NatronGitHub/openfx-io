@@ -23,6 +23,7 @@
  */
 
 #include <algorithm>
+#include <cctype> // std::isdigit
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -1521,7 +1522,10 @@ ReadOIIOPlugin::restoreStateFromParams()
         return;
     }
 
-    buildOutputLayerMenu(subimages);
+    // (the layer params only exist if the host supports dynamic choices and multi-plane effects)
+    if (gHostSupportsDynamicChoices && gHostSupportsMultiPlane) {
+        buildOutputLayerMenu(subimages);
+    }
 
     // Only support tiles if tile size is set
     const ImageSpec& spec = subimages[0];
@@ -1546,6 +1550,29 @@ ReadOIIOPlugin::restoreStateFromParams()
     _offsetNegativeDispWindow->setIsSecretAndDisabled(!supportsDisplayWindow);
 }
 
+// The color space of a file that has none (or an unknown one), from its bit depth:
+// sRGB for 8-bit images, Rec709 for 10-bits, 12-bits or 16-bits integer images (KodakLog for Cineon and DPX),
+// Linear for anything else
+static const char*
+colorSpaceFromBitDepth(const string& filename,
+                       const ImageSpec& imagespec)
+{
+    switch (imagespec.format.basetype) {
+    case TypeDesc::UCHAR:
+    case TypeDesc::CHAR:
+        return "sRGB";
+    case TypeDesc::USHORT:
+    case TypeDesc::SHORT:
+        if (endsWith(filename, ".cin") || endsWith(filename, ".dpx") || endsWith(filename, ".CIN") || endsWith(filename, ".DPX")) {
+            // Cineon or DPX file
+            return "KodakLog";
+        }
+        return "Rec709";
+    default:
+        return "Linear";
+    }
+}
+
 void
 ReadOIIOPlugin::guessColorspace(const string& filename,
                                 const ImageSpec& imagespec,
@@ -1564,8 +1591,36 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
 
     // we found a color-space hint, use it to do the color-space conversion
     const char* colorSpaceStr = NULL;
+    float gamma = imagespec.get_float_attribute("oiio:Gamma");
     if (colorSpaceValue) {
         colorSpaceStr = *(const char**)colorSpaceValue->data();
+        // OpenImageIO 3 names the color spaces with the color interop IDs (e.g. srgb_rec709_scene), OpenImageIO 2
+        // with sRGB, Linear, GammaCorrected (and oiio:Gamma), AdobeRGB...: map the usual ones to the latter, which
+        // are mapped to the color spaces of the usual OCIO configs below, unless the config has them
+        bool hasIt = false;
+#ifdef OFX_IO_USING_OCIO
+        hasIt = colorSpaceStr && ocio->hasColorspace(colorSpaceStr);
+#endif
+        if (colorSpaceStr && !hasIt) {
+            const string cs = colorSpaceStr;
+            if (cs == "srgb_rec709_scene" || cs == "srgb_rec709_display" || cs == "srgb" || cs == "srgb_texture" || cs == "srgb_tx") {
+                colorSpaceStr = "sRGB";
+            } else if (cs == "lin_rec709_scene" || cs == "lin_rec709" || cs == "lin_srgb" || cs == "linear") {
+                colorSpaceStr = "Linear";
+            } else if (cs == "g22_adobergb_scene" || cs == "g22_adobergb_display") {
+                colorSpaceStr = "AdobeRGB";
+            } else if ((cs.size() >= 10) && (cs[0] == 'g') && std::isdigit((unsigned char)cs[1]) && std::isdigit((unsigned char)cs[2])
+                       && (cs.compare(3, 7, "_rec709") == 0) && ((cs.size() == 10) || (cs[10] == '_'))) {
+                // g<NN>_rec709[_scene|_display]: gamma NN/10 (g18, g22, g24...)
+                colorSpaceStr = "GammaCorrected";
+                gamma = ((cs[1] - '0') * 10 + (cs[2] - '0')) / 10.f;
+            } else if ((cs != "sRGB") && (cs != "Linear") && (cs != "GammaCorrected") && (cs != "AdobeRGB")
+                       && (cs != "Rec709") && (cs != "KodakLog")) {
+                // another name that is not in the config (e.g. lin_ap1_scene, lin_rec2020_scene, srgb_p3d65_display,
+                // pq_rec2020_display): guess from the bit depth below, as for a file without a color space
+                colorSpaceStr = NULL;
+            }
+        }
     } else if (photoshopICCProfileValue) {
         const char* ICCProfileStr = *(const char**)photoshopICCProfileValue->data();
         if (!strcmp(ICCProfileStr, "HDTV (Rec. 709)") || !strcmp(ICCProfileStr, "SDTV NTSC") || !strcmp(ICCProfileStr, "SDTV PAL") || !strcmp(ICCProfileStr, "HDTV (Rec. 709) 16-235") || !strcmp(ICCProfileStr, "SDTV NTSC 16-235") || !strcmp(ICCProfileStr, "SDTV PAL 16-235") || !strcmp(ICCProfileStr, "SDTV NTSC 16-235")) {
@@ -1582,28 +1637,10 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
         // sRGB for 8-bit images
         // Rec709 for 10-bits, 12-bits or 16-bits integer images
         // Linear for anything else
-        switch (imagespec.format.basetype) {
-        case TypeDesc::UCHAR:
-        case TypeDesc::CHAR:
-            colorSpaceStr = "sRGB";
-            break;
-        case TypeDesc::USHORT:
-        case TypeDesc::SHORT:
-            if (endsWith(filename, ".cin") || endsWith(filename, ".dpx") || endsWith(filename, ".CIN") || endsWith(filename, ".DPX")) {
-                // Cineon or DPX file
-                colorSpaceStr = "KodakLog";
-            } else {
-                colorSpaceStr = "Rec709";
-            }
-            break;
-        default:
-            colorSpaceStr = "Linear";
-            break;
-        }
+        colorSpaceStr = colorSpaceFromBitDepth(filename, imagespec);
     }
     if (colorSpaceStr) {
         if (colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected")) {
-            float gamma = imagespec.get_float_attribute("oiio:Gamma");
             if (endsWith(filename, ".cin") || endsWith(filename, ".CIN")) {
                 // Cineon files (e.g. Kodak Digital LAD, see link below) get wrongly attributed
                 // a GammaCorrected colorspace <https://github.com/OpenImageIO/oiio/issues/1463>
@@ -1641,6 +1678,10 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
                 {
                     colorSpaceStr = "sRGB";
                 }
+            }
+            if (colorSpaceStr && !strcmp(colorSpaceStr, "GammaCorrected")) {
+                // another gamma (e.g. 2.4), or no Gamma1.8 color space in the config: guess from the bit depth
+                colorSpaceStr = colorSpaceFromBitDepth(filename, imagespec);
             }
         }
 #ifdef OFX_IO_USING_OCIO
@@ -1774,7 +1815,9 @@ ReadOIIOPlugin::guessColorspace(const string& filename,
             colorSpaceStr = NULL;
         }
         if (colorSpaceStr) {
-            // unknown color-space or Linear, don't do anything
+            // unknown color-space: keep the default one (a color space that is not in the config would make
+            // rendering fail)
+            colorSpaceStr = NULL;
         }
 #endif // OFX_IO_USING_OCIO
     }
@@ -2328,33 +2371,47 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     int subImageIndex = 0;
     if (pixelComponents != ePixelComponentCustom) {
         if (!_outputLayer) { // host is not multilayer nor anything, just use basic indexes
+            // The indexes in channels are those of the file's channels + kXChannelFirst, or 0 and 1 for the
+            // constants 0 and 1: the first channels of the first subimage are R, G, B (or one grey channel), and
+            // alpha is the file's alpha channel, if any.
+            const ImageSpec& spec = subimages[0];
+            const int nc = spec.nchannels;
+            const int alpha = (spec.alpha_channel >= 0 && spec.alpha_channel < nc) ? spec.alpha_channel : -1;
+            const int nColor = (alpha >= 0 && alpha < 3) ? alpha : (std::min)(nc, 3); // the color channels before alpha
+            int rgb[3];
+            for (int c = 0; c < 3; ++c) {
+                // grey: R = G = B
+                rgb[c] = (nColor == 1) ? kXChannelFirst : ((c < nColor) ? c + kXChannelFirst : 0);
+            }
+            const int a = (alpha >= 0) ? alpha + kXChannelFirst : 1;
             switch (pixelComponents) {
             case ePixelComponentRGBA:
                 numChannels = 4;
                 channels.resize(numChannels);
-                channels[0] = 0;
-                channels[1] = 1;
-                channels[2] = 2;
-                channels[3] = 3;
+                channels[0] = rgb[0];
+                channels[1] = rgb[1];
+                channels[2] = rgb[2];
+                channels[3] = a;
                 break;
             case ePixelComponentRGB:
                 numChannels = 3;
                 channels.resize(numChannels);
-                channels[0] = 0;
-                channels[1] = 1;
-                channels[2] = 2;
+                channels[0] = rgb[0];
+                channels[1] = rgb[1];
+                channels[2] = rgb[2];
                 break;
             case ePixelComponentXY:
                 numChannels = 2;
                 channels.resize(numChannels);
-                channels[0] = 0;
-                channels[1] = 1;
+                channels[0] = (nc > 0) ? kXChannelFirst : 0;
+                channels[1] = (nc > 1) ? kXChannelFirst + 1 : 0;
                 break;
 
             case ePixelComponentAlpha:
                 numChannels = 1;
                 channels.resize(numChannels);
-                channels[0] = 0;
+                // a single-channel file is an alpha image
+                channels[0] = (alpha >= 0) ? a : ((nc == 1) ? kXChannelFirst : 1);
                 break;
             default:
                 assert(false);
@@ -3054,7 +3111,7 @@ ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments& args, OFX::Clip*& ide
     }
     // If the plane in argument is the color-plane and the user selected another plane in the output plane selector, be identity on that plane.
     // is the one selected in output of the plug-in as color plane
-    if (args.plane == kOfxMultiplaneColorPlaneID) {
+    if (_outputLayer && (args.plane == kOfxMultiplaneColorPlaneID)) {
         int layer_i;
         _outputLayer->getValue(layer_i);
         if (layer_i >= 0 && layer_i < (int)_outputLayerMenu.size()) {

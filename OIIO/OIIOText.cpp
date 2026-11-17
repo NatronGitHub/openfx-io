@@ -514,7 +514,9 @@ OIIOTextPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
     return true;
 }
 
-mDeclarePluginFactory(OIIOTextPluginFactory, { ofxsThreadSuiteCheck(); }, {});
+// unload: stop OpenImageIO's thread pool, which ImageBufAlgo::render_text() may have started, as ReadOIIO and WriteOIIO do
+// (on MS Windows, its threads deadlock when they are joined while the DLL is unloaded)
+mDeclarePluginFactory(OIIOTextPluginFactory, { ofxsThreadSuiteCheck(); }, { shutdownOIIOThreads(); });
 
 namespace {
 struct PositionInteractParam {
@@ -538,10 +540,7 @@ OIIOTextPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.addSupportedContext(eContextFilter);
     desc.addSupportedContext(eContextGenerator);
 
-    // add supported pixel depths
-    desc.addSupportedBitDepth(eBitDepthUByte);
-    desc.addSupportedBitDepth(eBitDepthUShort);
-    desc.addSupportedBitDepth(eBitDepthHalf);
+    // add supported pixel depths: render() only renders float images
     desc.addSupportedBitDepth(eBitDepthFloat);
 
     desc.setSupportsTiles(kSupportsTiles); // may be switched to true later?

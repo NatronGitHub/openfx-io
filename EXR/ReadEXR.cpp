@@ -401,7 +401,7 @@ File::File(const string& filename)
         displayWindow.x1 = 0;
         displayWindow.y1 = 0;
         displayWindow.x2 = formatwin.max.x + 1;
-        displayWindow.y2 = formatwin.max.y;
+        displayWindow.y2 = formatwin.max.y + 1;
 
         int left = datawin.min.x + dataOffset;
         int bottom = dispwin.max.y - datawin.max.y;

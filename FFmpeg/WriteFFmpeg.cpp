@@ -4150,6 +4150,11 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         avCodecContext->bits_per_raw_sample = FFmpeg::pixelFormatBitDepth(targetPixelFormat);
         avCodecContext->sample_aspect_ratio = av_d2q(pixelAspectRatio, 255);
+        // configureVideoStream() set the stream's sample aspect ratio to QuickTime's value for the usual pixel aspect
+        // ratios, or else to 1:1. avformat_write_header() fails ("Aspect ratio mismatch between muxer and encoder
+        // layer") if the stream's and the codec's differ (by more than 0.4%), e.g. for a PAR of 16/15 (PAL SD,
+        // 768/720): the stream gets the codec's, so that they always match.
+        _streamVideo.stream->sample_aspect_ratio = avCodecContext->sample_aspect_ratio;
 
         // Now that the stream has been created, and the pixel format
         // is known, for DNxHD, set the YUV range.
@@ -4513,6 +4518,21 @@ WriteFFmpegPlugin::encode(const string& filename,
     {
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
 
+        // A frame before the next one was already encoded, or will never be: waiting for it would never end.
+        // The frame that was just encoded is rendered again for another view (the movie has a single view):
+        // nothing to do; any other one is an error.
+        if ((_nextFrameToEncode != INT_MIN) && (time < _nextFrameToEncode)) {
+            if (time == _nextFrameToEncode - _frameStep) {
+                return;
+            }
+            stringstream ss;
+            ss << "Frame " << time << " was rendered after frame " << (_nextFrameToEncode - _frameStep)
+               << ": the frames of a movie must be rendered in increasing order";
+            setPersistentMessage(Message::eMessageError, "", ss.str());
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
         while (_nextFrameToEncode != time && _nextFrameToEncode != INT_MIN) {
             _nextFrameToEncodeCond.wait(guard);
         }
