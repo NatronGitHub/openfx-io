@@ -103,8 +103,8 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-runscript clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test runscript_win32_test
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -133,11 +133,30 @@ READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/GenericOCIO.cpp
 reader_hooks_test: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# OCIOCDLTransform and its in-repo dependencies only, with OpenGL render support, as in
+# ../Makefile.master (OCIOPluginBase.cpp needs it) and its OCIO_OPENGL_OBJS
+OCIO_CDL_SRCS := ../OCIO/OCIOCDLTransform.cpp ../OCIO/OCIOPluginBase.cpp \
+    ../IOSupport/GenericOCIO.cpp ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp \
+    ../SupportExt/glad/glad.cpp ../SupportExt/glad/gladegl.cpp ../SupportExt/ofxsOGLUtilities.cpp \
+    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp ../SupportExt/ofxsFileOpen.cpp
+OCIO_CDL_CXXFLAGS := -DOFX_SUPPORTS_OPENGLRENDER -I../OCIO -I../SupportExt/glad -I../openfx/Support/Plugins/include
+ifeq ($(OS),Windows_NT)
+  OCIO_CDL_LIBS := -lopengl32
+else ifeq ($(shell uname -s),Darwin)
+  OCIO_CDL_LIBS := -framework OpenGL
+else
+  # glad's loaders use dlopen(), in libdl before glibc 2.34
+  OCIO_CDL_LIBS := -lGL -ldl
+endif
+
+ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+
 runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-runscript
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -168,6 +187,10 @@ test-layers: oiio_layers_test
 test-reader-hooks: reader_hooks_test
 	OCIO=$(CURDIR)/test.ocio ./reader_hooks_test $(CURDIR)/.reader_hooks
 
+# OCIOCDLTransform's Export param writes a .cc file that OCIO reads back (#105)
+test-ocio-cdl: ocio_cdl_test
+	OCIO=$(CURDIR)/test.ocio ./ocio_cdl_test
+
 clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
@@ -175,4 +198,5 @@ clean:
 	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 ofxTestLog.txt \
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
+	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       runscript_win32_test runscript_win32_test.dSYM
