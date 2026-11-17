@@ -3,7 +3,8 @@
  *
  * Setting the Export string param (a user edit) must write the grade as a ColorCorrection
  * XML file (.cc) that OCIO reads back with the same slope, offset, power and saturation,
- * must not overwrite an existing file, and must reset the param to its default.
+ * must not overwrite an existing file, must refuse an inverse grade (which a .cc file can't
+ * express), and must reset the param to its default.
  * (With OCIO >= 2, Export used to fail: GroupTransform::write() was called with a
  * nonexistent "CDL" format on an empty group, leaving an empty file, and the error path
  * called fclose(NULL).)
@@ -204,6 +205,22 @@ testExistingFile(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir
     std::remove(filename.c_str());
 }
 
+void
+testInverse(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
+{
+    std::printf("==== Export an inverse grade (the .cc format has no direction) ====\n");
+    const std::string filename = dir + "/inverse.cc";
+    setOverrideInt(&ctx, "direction", 1);
+    gMessages.clear();
+    OfxStatus st = exportTo(p, ctx, inst, filename);
+    check(ok(st), "instanceChanged(export) returns OK (status %d)", st);
+    check(gMessages.find("inverse") != std::string::npos, "error message: inverse grade (got \"%s\")", gMessages.c_str());
+    check(!std::ifstream(filename.c_str()).good(), "no file is written");
+    check(exportValue(ctx) == kParamExportDefault, "Export param reset to its default (\"%s\")", exportValue(ctx).c_str());
+    setOverrideInt(&ctx, "direction", 0);
+    std::remove(filename.c_str());
+}
+
 } // namespace
 
 int
@@ -255,6 +272,7 @@ main(int, char**)
 
     testExport(p, ctx, inst, dir);
     testExistingFile(p, ctx, inst, dir);
+    testInverse(p, ctx, inst, dir);
 
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);

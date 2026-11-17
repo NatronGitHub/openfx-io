@@ -1067,6 +1067,9 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
             if (file) {
                 std::fclose(file);
                 sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
+            } else if (_direction->getValueAtTime(args.time) != 0) {
+                // the .cc format has no direction: the file would apply the forward grade
+                sendMessage(Message::eMessageError, "", "The ColorCorrection (.cc) format cannot express an inverse grade: set Direction to Forward to export this grade.");
             } else {
                 const double time = args.time;
                 double slope_r, slope_g, slope_b;
