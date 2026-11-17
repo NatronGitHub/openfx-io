@@ -166,6 +166,11 @@ int main()
     }
     const int expected = expectedPoolSize();
     std::printf("hardware_concurrency() - 1 = %d, default_thread_pool_shutdown(): %s\n", expected, kHasPoolShutdown ? "yes" : "no");
+    if (expected <= 0) {
+        // a 1-core machine has no pool threads: "the pool keeps its threads" would pass trivially
+        std::printf("SKIP: hardware_concurrency() is 1, the pool has no threads to keep\n");
+        return 0;
+    }
 
     std::printf("== load ReadOIIO, WriteOIIO, OIIOResize; create an OIIOResize instance\n");
     Effect readCtx, writeCtx;
@@ -177,7 +182,7 @@ int main()
         check(r.create(), "OIIOResize CreateInstance");
         std::printf("  pool size: %d\n", poolSize());
         check(poolSize() == expected, "the pool has hardware_concurrency() - 1 threads");
-        check(r.render(), "OIIOResize renders");
+        check(r.render(), "OIIOResize renders"); // (OIIO runs the work inline if the pool is stopped: only poolSize() detects #118)
 
         std::printf("== unload ReadOIIO (OIIOResize and WriteOIIO are still loaded)\n");
         check(unload(read), "ReadOIIO unload");

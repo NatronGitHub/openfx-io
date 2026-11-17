@@ -100,15 +100,16 @@ namespace {
 std::mutex&
 loadedOIIOPluginsMutex()
 {
-    static std::mutex m;
-    return m;
+    // never destroyed: a host may unload the plug-ins from its own static destructors or atexit handlers
+    static std::mutex* m = new std::mutex;
+    return *m;
 }
 
 std::set<std::string>&
 loadedOIIOPlugins()
 {
-    static std::set<std::string> s;
-    return s;
+    static std::set<std::string>* s = new std::set<std::string>;
+    return *s;
 }
 } // namespace
 
