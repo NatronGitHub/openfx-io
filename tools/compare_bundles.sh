@@ -153,9 +153,12 @@ files() { # relative path, type and link target of every file, including the mac
     done; exit "$st"; })
 }
 plist() { cat "$1/Contents/Info.plist"; }
-resources() {
+resources() { # sha256 of every file, following links (to files and to directories)
     [ -d "$1/Contents/Resources" ] || { echo "(no Resources)"; return 0; }
-    (cd "$1/Contents" && find Resources ! -type d | LC_ALL=C sort | { st=0; while IFS= read -r f; do sha256 "$f" || st=1; done; exit "$st"; })
+    (cd "$1/Contents" && find -L Resources ! -type d | LC_ALL=C sort | { st=0; while IFS= read -r f; do
+        # (find -L lists dangling links: report them, they're part of the bundle's contents)
+        if [ -L "$f" ] && [ ! -e "$f" ]; then echo "dangling link $f"; else sha256 "$f" || st=1; fi
+    done; exit "$st"; })
 }
 mode() { mode_of "$2"; }
 
