@@ -60,10 +60,12 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -82,6 +84,8 @@ struct WriterParams {
     // choice params set after the instance is created (which sets e.g. the format from the file
     // extension), as the param and the text of the label of the option
     std::vector<std::pair<std::string, std::string>> choicesAfterCreate;
+    std::string renderFile;          // if not empty, the "filename" param from the second frame on (#137)
+    bool expectRenderFailure = false; // with renderFile: frames 2..N must fail to render
 };
 
 // The index of the first option of a choice param whose label contains the given text, or -1.
@@ -172,6 +176,9 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     const size_t npix = (size_t)W * H;
     int rfail = 0;
     for (int t = 1; t <= nFrames; ++t) {
+        if ((t == 2) && !wp.renderFile.empty()) {
+            setOverrideString(&ctx, kOfxImageEffectFileParamName, wp.renderFile);
+        }
         for (int view : wp.views) {
             float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
             if (view != 0) v = 1.f - v;
@@ -202,6 +209,15 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     long sz = 0;
     if (f) { std::fseek(f, 0, SEEK_END); sz = std::ftell(f); std::fclose(f); }
     std::printf("  encoded %s (%ld bytes), render failures=%d\n", outFile.c_str(), sz, rfail);
+    if (wp.expectRenderFailure) {
+        const int expected = (nFrames - 1) * (int)wp.views.size();
+        if ((rfail != expected) || (gPersistentError.find("another active render") == std::string::npos)) {
+            std::printf("  FAIL: expected %d render failures, \"another active render\" (error: \"%s\")\n", expected, gPersistentError.c_str());
+            return 1;
+        }
+        std::printf("  PASS (render failed as expected: %s)\n", gPersistentError.c_str());
+        return 0;
+    }
     if (rfail || sz <= 0) { std::printf("  FAIL (encode)\n"); return 1; }
     std::printf("  PASS (encode)\n");
     return 0;
@@ -1073,6 +1089,68 @@ int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H, bo
 
 } // namespace
 
+// #137: the file param at a frame may name the open file through another path (a symbolic link, as /tmp
+// and /private/tmp on macOS, "." components, a "file:" url, or another case on Windows): it is encoded.
+// Another file is still an error.
+int testWriteFFmpegSameFile(const std::string& outFile, int W, int H, int nFrames)
+{
+    namespace fs = std::filesystem;
+    const fs::path out = fs::absolute(fs::path(outFile));
+    const std::string dir = out.parent_path().string();
+    const std::string base = out.filename().string();
+    int failures = 0;
+    std::vector<std::pair<std::string, std::string>> aliases; // (description, path of outFile)
+    aliases.push_back({ "\".\" component", dir + "/./" + base });
+    aliases.push_back({ "\"..\" component", dir + "/../" + out.parent_path().filename().string() + "/" + base });
+    aliases.push_back({ "\"file:\" url", "file:" + out.string() });
+#ifdef _WIN32
+    {
+        std::string upper = out.string();
+        for (char& c : upper) c = (char)std::toupper((unsigned char)c);
+        aliases.push_back({ "other case", upper });
+    }
+#else
+    // a symbolic link to the directory, as /tmp -> /private/tmp on macOS
+    const std::string link = out.string() + ".lnk";
+    std::error_code ec;
+    fs::remove(link, ec);
+    fs::create_directory_symlink(".", link, ec);
+    if (ec) { std::printf("  FAIL: symlink %s: %s\n", link.c_str(), ec.message().c_str()); return 1; }
+    aliases.push_back({ "symbolic link to the directory", link + "/" + base });
+    if (fs::is_symlink("/tmp", ec) && (fs::canonical("/tmp", ec) == fs::path("/private/tmp"))) {
+        // macOS: the file is written through /tmp, and rendered through /private/tmp, and vice versa
+        const std::string tmp = "/tmp/ofx_render_test_i137.mov";
+        WriterParams wp;
+        wp.renderFile = "/private" + tmp;
+        std::printf("  -- %s, then %s\n", tmp.c_str(), wp.renderFile.c_str());
+        failures += testWriteFFmpeg(tmp, W, H, nFrames, wp) || testReadFFmpeg(tmp, W, H, nFrames);
+        wp.renderFile = tmp;
+        std::printf("  -- %s, then %s\n", ("/private" + tmp).c_str(), tmp.c_str());
+        failures += testWriteFFmpeg("/private" + tmp, W, H, nFrames, wp) || testReadFFmpeg(tmp, W, H, nFrames);
+        std::remove(tmp.c_str());
+    }
+#endif
+    for (const auto& a : aliases) {
+        WriterParams wp;
+        wp.renderFile = a.second;
+        std::printf("  -- %s: %s\n", a.first.c_str(), a.second.c_str());
+        failures += testWriteFFmpeg(outFile, W, H, nFrames, wp) || testReadFFmpeg(outFile, W, H, nFrames);
+    }
+    {
+        WriterParams wp;
+        wp.renderFile = out.string() + ".other.mov";
+        wp.expectRenderFailure = true;
+        std::printf("  -- another file: %s\n", wp.renderFile.c_str());
+        failures += testWriteFFmpeg(outFile, W, H, nFrames, wp);
+        std::remove(wp.renderFile.c_str());
+    }
+#ifndef _WIN32
+    fs::remove(link, ec);
+#endif
+    std::remove(outFile.c_str());
+    return failures ? 1 : 0;
+}
+
 int
 main(int argc, char** argv)
 {
@@ -1238,6 +1316,9 @@ main(int argc, char** argv)
     failures += testWriteFFmpegOptions(outFile + ".i71.mp4", 64, 48, N);
     std::printf("==== WriteFFmpeg, Alpha source, A checked (issue #90) ====\n");
     failures += testWriteFFmpegAlphaSource(outFile + ".i90c.mov", 64, 48, 3);
+
+    std::printf("==== WriteFFmpeg, the file param names the open file through another path (issue #137) ====\n");
+    failures += testWriteFFmpegSameFile(outFile + ".i137.mov", W, H, N);
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");

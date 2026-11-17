@@ -43,6 +43,7 @@
 #include <cmath> // std::ceil, std::fabs
 #include <cstdio>
 #include <cstring> // strncpy
+#include <filesystem> // std::filesystem::weakly_canonical
 #include <sstream>
 #include <string>
 #ifdef DEBUG
@@ -4752,6 +4753,88 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     _error = CLEANUP;
 } // WriteFFmpegPlugin::beginEncode
 
+// If url is a local file for libavformat, set *path to it and return true, else return false
+// (e.g. "pipe:1" or "udp://..."). As url_find_protocol() in libavformat/avio.c: the protocol is the
+// leading URL_SCHEME_CHARS before a ':', "file" if there is none (or, on Windows, for "C:..."), and
+// the file protocol strips the "file:" prefix (file_open() in libavformat/file.c).
+static bool
+urlToLocalPath(const string& url,
+               string* path)
+{
+    const size_t n = url.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-.");
+    if ((n == string::npos) || (url[n] != ':')
+#ifdef _WIN32
+        || (n == 1) // DOS path
+#endif
+    ) {
+        *path = url;
+
+        return true;
+    }
+    if (url.compare(0, n, "file") == 0) {
+        *path = url.substr(n + 1);
+
+        return true;
+    }
+
+    return false;
+}
+
+// The canonical form of a path given in UTF-8 (as are OFX strings): absolute, with the symbolic links,
+// "." and ".." resolved, even if the file (or its directory) does not exist yet.
+static std::filesystem::path
+canonicalPathUtf8(const string& utf8)
+{
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    const fs::path p(OFX::utf8_to_utf16(utf8));
+#else
+    const fs::path p(utf8);
+#endif
+    std::error_code ec;
+    fs::path c = fs::weakly_canonical(p, ec);
+    if (!ec) {
+        return c;
+    }
+    // e.g. a directory that can not be read: at least an absolute, lexically normal path
+    c = fs::absolute(p, ec);
+
+    return (ec ? p : c).lexically_normal();
+}
+
+// Whether the urls a and b (as given to avio_open()) are the same output: a file may be reached through
+// different paths, e.g. /tmp/x.mov and /private/tmp/x.mov on macOS, where /tmp is a symbolic link.
+static bool
+isSameOutputUrl(const string& a,
+                const string& b)
+{
+    if (a == b) {
+        return true;
+    }
+    string pa, pb;
+    if (!urlToLocalPath(a, &pa) || !urlToLocalPath(b, &pb)) {
+        return false; // other protocols: only the same url
+    }
+    const std::filesystem::path ca = canonicalPathUtf8(pa);
+    const std::filesystem::path cb = canonicalPathUtf8(pb);
+#ifdef _WIN32
+    // Windows file systems are case-insensitive
+    const std::wstring& wa = ca.native();
+    const std::wstring& wb = cb.native();
+
+    return CompareStringOrdinal(wa.c_str(), (int)wa.size(), wb.c_str(), (int)wb.size(), TRUE) == CSTR_EQUAL;
+#else
+    if (ca.native() == cb.native()) {
+        return true;
+    }
+    // the same existing file, e.g. through a hard link or on a case-insensitive file system (macOS)
+    std::error_code ec;
+    const bool same = std::filesystem::equivalent(ca, cb, ec);
+
+    return !ec && same;
+#endif
+}
+
 #define checkAvError()                                              \
     if (error < 0) {                                                \
         char errorBuf[1024];                                        \
@@ -4792,9 +4875,13 @@ WriteFFmpegPlugin::encode(const string& filename,
 
         return;
     }
-    if (filename != string(_formatContext->url)) {
+    // beginEncode() opened the file param at beginSequenceRender, and the frames of a movie can only go
+    // to that file: the param at this frame (if it is animated, or was changed during the render) must
+    // name the same file, maybe through another path (#137).
+    const string openUrl = _formatContext->url ? _formatContext->url : "";
+    if (!isSameOutputUrl(filename, openUrl)) {
         stringstream ss;
-        ss << "Trying to render " << filename << " but another active render is rendering " << string(_formatContext->url);
+        ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
         setPersistentMessage(Message::eMessageError, "", ss.str());
         throwSuiteStatusException(kOfxStatFailed);
 
