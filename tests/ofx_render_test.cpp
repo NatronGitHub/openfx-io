@@ -416,6 +416,16 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
         ++failures;
     }
 
+    // issue #109: as in av_get_token(), whitespace around '=' is ignored, where it is not ambiguous
+    std::printf("  -- spaces around '=', a quoted value with '=' after a space\n");
+    if (!encode("g = 1 bogus_sp= 'x=y:z'", "bogus_fmt =3")) return 1;
+    check(n == nFrames && nI == n, "expected all I frames (g = 1)");
+    if (gMessages.find("not applied by the mpeg4 encoder: bogus_sp=x=y:z\n") == std::string::npos ||
+        gMessages.find("not applied by the mp4 muxer: bogus_fmt=3\n") == std::string::npos) {
+        std::printf("  FAIL: expected a warning about bogus_sp=x=y:z and bogus_fmt=3, got:\n%s", gMessages.c_str());
+        ++failures;
+    }
+
     std::printf("  -- a leftover relative movflags is reported with the user value\n");
     {
         WriterParams wp = base;
@@ -437,6 +447,17 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
     expectFailure("bogus_empty= g=1", nullptr, "missing value after \"bogus_empty=\"");
     expectFailure("g=1 bogus_empty=", nullptr, "missing value after \"bogus_empty=\"");
     expectFailure(nullptr, "x264-params=\"keyint=1:bframes=0\"", "double quotes");
+    // issue #109: a key without '=' must not be glued to the next pair ("tune:preset" = "slow")
+    expectFailure("tune preset=slow", nullptr, "missing '=' after the key \"tune\" at character 1, found \"preset=slow\" at character 6");
+    expectFailure(nullptr, "movflags +faststart", "Syntax error in Format Options");
+    // no unquoted ':' or whitespace in a key (the key would be "g:" or "bogus_a:")
+    expectFailure("g:=1", nullptr, "missing '=' after the key \"g\" at character 1, found ':' at character 2");
+    expectFailure("bogus_a :=1", nullptr, "missing '=' after the key \"bogus_a\" at character 1, found ':' at character 9");
+    // a '=' after a complete pair is not part of its value ({g: "1=2"} or {bogus_a: "1=2"})
+    expectFailure("g=1 =2", nullptr, "missing key before '=' at character 5");
+    expectFailure("bogus_a=1 =2", nullptr, "missing key before '=' at character 11");
+    // an unterminated single quote must not take the rest of the string
+    expectFailure("bogus_q='x g=1", nullptr, "unterminated single quote at character 9");
     std::printf("  -- invalid values: avcodec_open2 and avformat_init_output fail\n");
     expectFailure("g=abc", nullptr, "Could not open video codec");
     expectFailure(nullptr, "write_tmcd=abc", "Unable to initialize output");

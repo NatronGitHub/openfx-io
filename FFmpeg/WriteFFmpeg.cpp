@@ -387,7 +387,8 @@ enum X26xSpeedEnum {
 #define kParamOptionsSyntaxHint                                                                                                              \
     "Syntax: a list of key=value pairs, separated by colons or spaces, e.g. \"g=1:bf=0\" or \"g=1 bf=0\". "                                 \
     "This is FFmpeg's own option string syntax (see av_dict_parse_string), not the ffmpeg command line: write \"g=1\", not \"-g 1\". "     \
-    "There must be no space after '=', and values cannot be empty (\"tune= preset=slow\" is an error). " \
+    "Every key must be followed by '=' and a value, and values cannot be empty (\"tune preset=slow\" and \"tune= preset=slow\" are errors). " \
+    "Spaces around '=' are allowed (\"g = 1\" is \"g=1\"), but a value after a space cannot contain an unquoted '='. "                    \
     "A value that contains a colon, a space or a quote must be enclosed in single quotes (inside which a backslash is literal), "          \
     "or each such character escaped with a backslash, e.g. x264-params='keyint=1:bframes=0'. Double quotes are not supported.\n"          \
     "These options are applied last, so they override the values that the plug-in sets from its own parameters. "                         \
@@ -1155,6 +1156,20 @@ MyAVFrame::deallocateAVFrameData()
     }
 }
 
+// The entry of dict after prev (the first one if prev is NULL), or NULL.
+// av_dict_iterate() was added in libavutil 57.42.100 (FFmpeg 6.0); before that, iterate with
+// av_dict_get() and an empty key with AV_DICT_IGNORE_SUFFIX, which matches every key.
+static const AVDictionaryEntry*
+dictIterate(const AVDictionary* dict,
+            const AVDictionaryEntry* prev)
+{
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 42, 100)
+    return av_dict_iterate(dict, prev);
+#else
+    return av_dict_get(dict, "", prev, AV_DICT_IGNORE_SUFFIX);
+#endif
+}
+
 // Owns an AVDictionary, so that it is freed on every path, including exceptions.
 class AVDictionaryHolder
 {
@@ -1177,77 +1192,207 @@ isOptionSeparator(char c)
     return c == ':' || c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
+// " at character N", for the 0-based position pos in a user option string
+static string
+optionCharPos(size_t pos)
+{
+    return " at character " + std::to_string(pos + 1);
+}
+
 // Normalize a user option string (see kParamOptionsSyntaxHint) to the strict syntax of
-// av_dict_parse_string(dict, str, "=", ":", 0), whose tokens are read by av_get_token():
-// - unquoted runs of separators (colons and whitespace) become a single colon, and leading and
-//   trailing separators are removed, so that "g=1 bf=0" and "g=1::bf=0:" both mean "g=1:bf=0";
-// - whitespace between a key and its '=' is removed ("g =1" is "g=1");
-// - a separator (or the end of the string) right after '=' is an error: av_dict_parse_string()
-//   rejects empty values, and dropping the separator would make "a= b=1" mean {a: "b=1"};
-// - quoting is kept verbatim for av_get_token(): outside single quotes, a backslash escapes the
-//   next character; inside single quotes, every character (including a backslash) is literal.
-// Double quotes are not a quoting character for av_get_token(), so they are rejected.
-// Returns false and sets *error on error.
+// av_dict_parse_string(dict, str, "=", ":", 0), whose keys and values are read by av_get_token(),
+// and check its syntax: av_dict_parse_string() gives an unexpected meaning to some strings once
+// whitespace also separates pairs (e.g. "tune preset=slow" would be {"tune:preset": "slow"}).
+// The tokens are copied verbatim, so that av_get_token() unquotes them: outside single quotes, a
+// backslash escapes the next character; inside single quotes, every character (including a
+// backslash) is literal.
+// - Pairs are separated by unquoted runs of separators (colons and whitespace), which become a
+//   single colon. Leading and trailing separators are ignored: "g=1 bf=0" and "g=1::bf=0:" both
+//   mean "g=1:bf=0".
+// - As in av_get_token(), whitespace around '=' is ignored ("g = 1" is "g=1"), except where it
+//   would be ambiguous, since whitespace also separates pairs: a token after "key= " that contains
+//   an unquoted '=' is an error ("tune= preset=slow" is not {tune: "preset=slow"}, as it would be
+//   for av_dict_parse_string with a ':' separator), and so is a '=' after a complete pair ("g=1 =2"
+//   is not {g: "1=2"}).
+// - Errors: a key without '=' ("tune preset=slow", "g:=1", "a :=1"), a '=' without a key, an empty
+//   value (rejected by av_dict_parse_string), an unterminated single quote (av_get_token() would
+//   take the rest of the string), and double quotes (not a quoting character for av_get_token()).
+// Returns false and sets *error (which says what is wrong and where) on error.
 static bool
 normalizeOptionString(const string& str,
                       string* out,
                       string* error)
 {
     out->clear();
-    bool quoted = false;
-    bool pendingSep = false; // unquoted separators were skipped since the last emitted character
-    bool pendingColon = false; // ... and one of them was a colon
-    size_t keyStart = 0; // position in *out of the current key
-    bool inValue = false; // the '=' of the current pair was emitted
-    bool afterEqual = false; // the last emitted character is the '=' of the current pair
-    auto missingValue = [&]() {
-        *error = "missing value after \"" + out->substr(keyStart) + "\" (there must be no space after '=', and values cannot be empty)";
+    const size_t n = str.size();
+    enum State {
+        eBetweenPairs, // expecting a key
+        eKey, // in a key
+        eAfterKey, // whitespace after a key, expecting '='
+        eAfterEqual, // after '=' (and maybe whitespace), expecting a value
+        eValue, // in a value
+    };
+    State state = eBetweenPairs;
+    size_t keyPos = 0; // position in str of the current key
+    size_t keyOut = 0; // position in *out of the current key
+    bool spaceAfterEqual = false; // whitespace was skipped after the '=' of the current pair
+    size_t i = 0; // position in str
+
+    auto fail = [&](const string& msg) {
+        *error = msg;
 
         return false;
     };
-
-    for (size_t i = 0; i < str.size(); ++i) {
-        const char c = str[i];
-        if (quoted) {
-            *out += c;
-            if (c == '\'') {
-                quoted = false;
+    // the token (up to the next unquoted separator) that starts at pos, for error messages
+    auto tokenAt = [&](size_t pos) {
+        size_t j = pos;
+        while (j < n && !isOptionSeparator(str[j])) {
+            if (str[j] == '\\' && j + 1 < n) {
+                ++j;
+            } else if (str[j] == '\'') {
+                const size_t end = str.find('\'', j + 1);
+                if (end == string::npos) {
+                    return str.substr(pos);
+                }
+                j = end;
             }
-            continue;
+            ++j;
         }
-        if (isOptionSeparator(c)) {
-            if (afterEqual) {
+
+        return str.substr(pos, j - pos);
+    };
+    // does the token that starts at pos contain an unquoted, unescaped '='?
+    auto tokenHasEqual = [&](size_t pos) {
+        const string tok = tokenAt(pos);
+        for (size_t j = 0; j < tok.size(); ++j) {
+            if (tok[j] == '\\') {
+                ++j;
+            } else if (tok[j] == '\'') {
+                const size_t end = tok.find('\'', j + 1);
+                if (end == string::npos) {
+                    return false;
+                }
+                j = end;
+            } else if (tok[j] == '=') {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    auto missingEqual = [&]() {
+        const string found = (i >= n) ? string("the end of the string")
+            : (str[i] == ':')         ? "':'" + optionCharPos(i)
+                                      : "\"" + tokenAt(i) + "\"" + optionCharPos(i);
+
+        return fail("missing '=' after the key \"" + out->substr(keyOut) + "\"" + optionCharPos(keyPos) + ", found " + found
+                    + (i < n ? " (a key cannot contain a colon or a space, unless it is quoted or escaped)" : ""));
+    };
+    auto missingValue = [&]() {
+        string msg = "missing value after \"" + out->substr(keyOut) + "\"" + optionCharPos(keyPos);
+        if (i < n && str[i] != ':') {
+            msg += ", found the pair \"" + tokenAt(i) + "\"" + optionCharPos(i) + " (values cannot be empty, and a value after a space cannot contain an unquoted '=')";
+        } else {
+            msg += " (values cannot be empty)";
+        }
+
+        return fail(msg);
+    };
+    // copy the token character (or escape sequence, or single-quoted string) at i to *out
+    auto copyTokenChar = [&]() {
+        const char c = str[i];
+        if (c == '"') {
+            return fail("double quote" + optionCharPos(i) + ": double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'");
+        }
+        if (c == '\'') {
+            const size_t end = str.find('\'', i + 1);
+            if (end == string::npos) {
+                return fail("unterminated single quote" + optionCharPos(i));
+            }
+            *out += str.substr(i, end + 1 - i);
+            i = end + 1;
+
+            return true;
+        }
+        *out += c;
+        ++i;
+        if (c == '\\' && i < n) {
+            *out += str[i];
+            ++i;
+        }
+
+        return true;
+    };
+
+    while (i < n) {
+        const char c = str[i];
+        const bool sep = isOptionSeparator(c);
+        switch (state) {
+        case eBetweenPairs:
+            if (sep) {
+                ++i;
+                break;
+            }
+            if (c == '=') {
+                return fail("missing key before '='" + optionCharPos(i));
+            }
+            if (!out->empty()) {
+                *out += ':';
+            }
+            keyPos = i;
+            keyOut = out->size();
+            state = eKey;
+            if (!copyTokenChar()) {
+                return false;
+            }
+            break;
+        case eKey:
+        case eAfterKey:
+            if (c == '=') {
+                *out += '=';
+                ++i;
+                state = eAfterEqual;
+                spaceAfterEqual = false;
+            } else if (c == ':' || (state == eAfterKey && !sep)) {
+                return missingEqual();
+            } else if (sep) { // whitespace
+                ++i;
+                state = eAfterKey;
+            } else if (!copyTokenChar()) {
+                return false;
+            }
+            break;
+        case eAfterEqual:
+            if (c == ':') {
                 return missingValue();
             }
-            pendingSep = true;
-            pendingColon = pendingColon || (c == ':');
-            continue;
-        }
-        if (c == '"') {
-            *error = "double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'";
-
-            return false;
-        }
-        // whitespace before '=' is dropped; any other separator is kept as a colon
-        if (pendingSep && !out->empty() && (c != '=' || pendingColon)) {
-            *out += ':';
-            keyStart = out->size();
-            inValue = false;
-        }
-        pendingSep = false;
-        pendingColon = false;
-        *out += c;
-        afterEqual = (c == '=' && !inValue);
-        inValue = inValue || afterEqual;
-        if (c == '\\') {
-            if (i + 1 < str.size()) {
-                *out += str[++i];
+            if (sep) { // whitespace
+                ++i;
+                spaceAfterEqual = true;
+                break;
             }
-        } else if (c == '\'') {
-            quoted = true;
+            if (spaceAfterEqual && tokenHasEqual(i)) {
+                return missingValue();
+            }
+            state = eValue;
+            if (!copyTokenChar()) {
+                return false;
+            }
+            break;
+        case eValue:
+            if (sep) {
+                ++i;
+                state = eBetweenPairs;
+            } else if (!copyTokenChar()) {
+                return false;
+            }
+            break;
         }
     }
-    if (afterEqual) {
+    if (state == eKey || state == eAfterKey) {
+        return missingEqual();
+    }
+    if (state == eAfterEqual) {
         return missingValue();
     }
 
@@ -1272,7 +1417,7 @@ parseOptionString(const string& str,
     if (ret < 0) {
         char szError[1024] = { 0 };
         av_strerror(ret, szError, sizeof(szError));
-        *error = string("expected key=value pairs separated by colons or spaces, with no space after '=' (") + szError + ")";
+        *error = string("expected key=value pairs separated by colons or spaces (") + szError + ")";
 
         return false;
     }
@@ -1288,7 +1433,7 @@ dictToString(const AVDictionary* dict,
              const AVDictionary* userOptions = nullptr)
 {
     string ret;
-    for (const AVDictionaryEntry* e = av_dict_iterate(dict, nullptr); e; e = av_dict_iterate(dict, e)) {
+    for (const AVDictionaryEntry* e = dictIterate(dict, nullptr); e; e = dictIterate(dict, e)) {
         const char* value = e->value;
         if (userOptions) {
             const AVDictionaryEntry* u = av_dict_get(userOptions, e->key, nullptr, 0);
@@ -4257,7 +4402,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         // The user format options override the plug-in options, except that a relative movflags
         // value ("+flag" or "-flag") is appended to the plug-in movflags.
-        for (const AVDictionaryEntry* e = av_dict_iterate(formatOptions.get(), nullptr); e; e = av_dict_iterate(formatOptions.get(), e)) {
+        for (const AVDictionaryEntry* e = dictIterate(formatOptions.get(), nullptr); e; e = dictIterate(formatOptions.get(), e)) {
             if (!strcmp(e->key, "movflags") && (e->value[0] == '+' || e->value[0] == '-')) {
                 av_dict_set(header_params.ptr(), e->key, (movflags + e->value).c_str(), 0);
             } else {
