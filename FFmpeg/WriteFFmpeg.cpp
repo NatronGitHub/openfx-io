@@ -2123,7 +2123,13 @@ WriteFFmpegPlugin::writesTimecodeTrack(const AVOutputFormat* fmt) const
     if (parseOptionString(str, options.ptr(), &error) && (e = av_dict_get(options.get(), "write_tmcd", nullptr, 0))) {
         // let the muxer parse the value, as avformat_init_output() does (an invalid value makes it fail)
         AVFormatContext* ctx = nullptr;
-        if ((avformat_alloc_output_context2(&ctx, fmt, nullptr, nullptr) >= 0) && ctx) {
+#if (LIBAVFORMAT_VERSION_MAJOR > 58)
+        const AVOutputFormat* ofmt = fmt;
+#else
+        // before libavformat 59 (FFmpeg 5.0), avformat_alloc_output_context2() takes a non-const AVOutputFormat*
+        AVOutputFormat* ofmt = const_cast<AVOutputFormat*>(fmt);
+#endif
+        if ((avformat_alloc_output_context2(&ctx, ofmt, nullptr, nullptr) >= 0) && ctx) {
             if (ctx->priv_data && (av_opt_set(ctx->priv_data, "write_tmcd", e->value, 0) >= 0)) {
                 av_opt_get_int(ctx->priv_data, "write_tmcd", 0, &writeTmcd);
             }
