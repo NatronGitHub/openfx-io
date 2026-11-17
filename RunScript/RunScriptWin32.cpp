@@ -35,11 +35,17 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+// sddl.h (ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, in advapi32) needs windows.h
+#include <sddl.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "advapi32.lib")
+#endif
 
 #include "RunScriptWin32.h"
 #include "RunScriptOutput.h"
 
 #include <cstdio> // snprintf, _snwprintf
+#include <cctype> // tolower
 #include <cwchar> // wcslen
 #include <cwctype>
 #include <string>
@@ -274,12 +280,14 @@ withoutTrailingBackslash(const wstring& dir)
     return d;
 }
 
-// The Windows system programs that a Unix-style name ("#!/usr/bin/env cmd") may designate, and their path in the
-// system directory, or NULL. Only these are taken from the system directory, which is otherwise skipped for Unix
-// names (see resolveProgram()): they have no Unix counterpart that the name could mean instead (unlike bash.exe,
-// which is WSL's), and they are only taken from the system directory, never from the PATH.
+// The Windows system programs that are always taken from the system directory, never from the PATH, and their
+// path in it, or NULL: "cmd" and "powershell" (as "#!cmd", or as a Unix-style name, "#!/usr/bin/env cmd", for
+// which the system directory is otherwise skipped, see resolveProgram()). They have no Unix counterpart that a
+// Unix-style name could mean instead (unlike bash.exe, which is WSL's), and a program of the same name earlier in
+// the PATH cannot replace them.
+// wsl is not one of them: it is rejected as an interpreter (see runScript()).
 static const wchar_t*
-unixNameSystemProgram(const wstring& name)
+systemProgram(const wstring& name)
 {
     wstring l = toLower(name);
     if (endsWith(l, L".exe")) {
@@ -290,9 +298,6 @@ unixNameSystemProgram(const wstring& name)
     }
     if (l == L"powershell") {
         return L"WindowsPowerShell\\v1.0\\powershell.exe";
-    }
-    if (l == L"wsl") {
-        return L"wsl.exe";
     }
 
     return NULL;
@@ -353,8 +358,8 @@ resolveProgram(const wstring& programName,
             systemDir = toLower(systemDirPath);
         }
     }
-    if (fromUnixPath) {
-        const wchar_t* sysProgram = unixNameSystemProgram(name);
+    {
+        const wchar_t* sysProgram = systemProgram(name);
         if (sysProgram) {
             if (systemDirPath.empty()) {
                 *error = "cannot find the system directory";
@@ -792,17 +797,88 @@ splitFirstWord(const string& s,
     }
 }
 
-// true if program is cmd.exe (in any directory)
+// true if program is name.exe or name.com (in any directory, case-insensitive)
+static bool
+isProgram(const wstring& program,
+          const wchar_t* name)
+{
+    wstring base = toLower(stripTrailingDotsAndSpaces(program));
+    size_t sep = base.find_last_of(L"\\/");
+    if (sep != wstring::npos) {
+        base.erase(0, sep + 1);
+    }
+
+    return base == wstring(name) + L".exe" || base == wstring(name) + L".com";
+}
+
 static bool
 isCmdExe(const wstring& program)
 {
-    wstring name = toLower(stripTrailingDotsAndSpaces(program));
-    size_t sep = name.find_last_of(L"\\/");
-    if (sep != wstring::npos) {
-        name.erase(0, sep + 1);
-    }
+    return isProgram(program, L"cmd");
+}
 
-    return name == L"cmd.exe" || name == L"cmd.com";
+// true if the lowercase option o (with a leading '-' or '/') is a prefix of the PowerShell parameter p (with a
+// leading '-'), at least minLength characters long, as PowerShell accepts it
+static bool
+isPowerShellParameter(const string& o,
+                      const char* p,
+                      size_t minLength)
+{
+    const string param(p);
+
+    return o.size() >= minLength && o.size() <= param.size() && o.compare(1, string::npos, param, 1, o.size() - 1) == 0;
+}
+
+// Make sure that the shebang options of powershell.exe or pwsh.exe end with -File, so that the script is run as a
+// file, with its arguments passed as literal strings: "-File" is appended unless the last option is already -File.
+// Options that would run the arguments as code (-Command, -EncodedCommand, ...) or -File elsewhere are an error.
+// -NoProfile and -ExecutionPolicy are left to the user (a script file may not run with the default policy).
+static bool
+powerShellFileOptions(string* options,
+                      string* error)
+{
+    vector<string> words;
+    {
+        string rest = *options;
+        for (;;) {
+            string w;
+            string r;
+            splitFirstWord(rest, &w, &r);
+            if (w.empty() && r.empty()) {
+                break;
+            }
+            words.push_back(w);
+            rest = r;
+        }
+    }
+    for (size_t i = 0; i < words.size(); ++i) {
+        string o = words[i];
+        for (size_t j = 0; j < o.size(); ++j) {
+            o[j] = (char)std::tolower((unsigned char)o[j]);
+        }
+        if (o.size() < 2 || (o[0] != '-' && o[0] != '/')) {
+            continue;
+        }
+        if (isPowerShellParameter(o, "-command", 2) || isPowerShellParameter(o, "-commandwithargs", 2) || o.substr(1) == "cwa"
+            || o.substr(1) == "e" || o.substr(1) == "ec" || isPowerShellParameter(o, "-encodedcommand", 3)
+            || o.substr(1) == "ea" || isPowerShellParameter(o, "-encodedarguments", 3)) {
+            *error = "PowerShell option " + words[i] + " is not allowed: the script must be run with -File (its arguments would be run as code)";
+
+            return false;
+        }
+        if (isPowerShellParameter(o, "-file", 2)) {
+            if (i + 1 != words.size()) {
+                *error = "PowerShell option " + words[i] + " must be the last option on the first line of the script";
+
+                return false;
+            }
+
+            return true; // already ends with -File
+        }
+    }
+    *options += options->empty() ? "-File" : " -File";
+
+    return true;
 }
 
 // an extension for the script file, which some interpreters require (e.g. PowerShell needs .ps1)
@@ -839,10 +915,44 @@ scriptExtension(const wstring& interpreterPath)
     return L".txt";
 }
 
-// create a new file with a unique name in the temporary directory, and write data to it
+// a security descriptor that gives full access to the current user and SYSTEM only (not inherited from the
+// parent directory, and inherited by what is created in the directory); free it with LocalFree()
+static PSECURITY_DESCRIPTOR
+privateSecurityDescriptor()
+{
+    HANDLE token = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return NULL;
+    }
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    vector<char> buf(size ? size : 1);
+    wchar_t* sid = NULL;
+    if (size && GetTokenInformation(token, TokenUser, &buf[0], size, &size)) {
+        ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(&buf[0])->User.Sid, &sid);
+    }
+    CloseHandle(token);
+    if (!sid) {
+        return NULL;
+    }
+    // P: protected (the parent's ACEs are not inherited); OICI: inherited by files and directories; FA: all access
+    const wstring sddl = wstring(L"D:P(A;OICI;FA;;;") + sid + L")(A;OICI;FA;;;SY)";
+    LocalFree(sid);
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, NULL)) {
+        return NULL;
+    }
+
+    return sd;
+}
+
+// Create a new directory with a unique name in the temporary directory, which only the current user can access, and
+// a new file in it, and write data to it. In the temporary directory itself, which may be shared (TMP=C:\Temp),
+// another user could replace the file before the interpreter opens it.
 static bool
 writeTempFile(const wchar_t* extension,
               const string& data,
+              wstring* dirPath,
               wstring* path,
               string* error)
 {
@@ -864,28 +974,51 @@ writeTempFile(const wchar_t* extension,
         tmpdir.push_back(L'\\');
     }
 
+    PSECURITY_DESCRIPTOR sd = privateSecurityDescriptor();
+    if (!sd) {
+        *error = "cannot create the security descriptor of a private directory: " + systemErrorMessage(GetLastError());
+
+        return false;
+    }
+    SECURITY_ATTRIBUTES sa;
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = sd;
+    sa.bInheritHandle = FALSE;
+
     static volatile LONG counter = 0;
-    HANDLE h = INVALID_HANDLE_VALUE;
+    bool created = false;
     for (int attempt = 0; attempt < 100; ++attempt) {
         wchar_t name[96];
         _snwprintf(name, sizeof(name) / sizeof(name[0]) - 1, L"runscript%lu_%ld_%lu",
                    (unsigned long)GetCurrentProcessId(), (long)InterlockedIncrement(&counter), (unsigned long)GetTickCount());
         name[sizeof(name) / sizeof(name[0]) - 1] = L'\0';
-        *path = tmpdir + name + extension;
-        // CREATE_NEW fails if the file exists, so we never write to a file created by someone else
-        h = CreateFileW(path->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h != INVALID_HANDLE_VALUE) {
+        *dirPath = tmpdir + name;
+        // fails if it exists, so we never use a directory created by someone else
+        if (CreateDirectoryW(dirPath->c_str(), &sa)) {
+            created = true;
             break;
         }
         DWORD err = GetLastError();
-        if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS) {
-            *error = "cannot create " + wideToUtf8(*path) + ": " + systemErrorMessage(err);
+        if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
+            *error = "cannot create " + wideToUtf8(*dirPath) + ": " + systemErrorMessage(err);
+            LocalFree(sd);
 
             return false;
         }
     }
+    LocalFree(sd);
+    if (!created) {
+        *error = "cannot create a temporary directory in " + wideToUtf8(tmpdir);
+
+        return false;
+    }
+    *path = *dirPath + L"\\runscript" + extension;
+    // the file inherits the private access rights of the directory
+    HANDLE h = CreateFileW(path->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
-        *error = "cannot create a temporary file in " + wideToUtf8(tmpdir);
+        *error = "cannot create " + wideToUtf8(*path) + ": " + systemErrorMessage(GetLastError());
+        RemoveDirectoryW(dirPath->c_str());
 
         return false;
     }
@@ -897,6 +1030,7 @@ writeTempFile(const wchar_t* extension,
             *error = "cannot write " + wideToUtf8(*path) + ": " + systemErrorMessage(GetLastError());
             CloseHandle(h);
             DeleteFileW(path->c_str());
+            RemoveDirectoryW(dirPath->c_str());
 
             return false;
         }
@@ -928,7 +1062,9 @@ runScript(const string& scriptContents,
     const wchar_t* extension;
     if (script.compare(0, 2, "#!") == 0) {
         string name;
-        string line = trimRight(script.substr(2, script.find('\n') == string::npos ? string::npos : script.find('\n') - 2));
+        // the first line ends with "\n", "\r\n" or a lone "\r" (classic Mac OS line endings)
+        const size_t eol = script.find_first_of("\r\n");
+        string line = trimRight(script.substr(2, eol == string::npos ? string::npos : eol - 2));
         splitFirstWord(line, &name, &options);
         bool fromUnixPath = false;
         // "#!/usr/bin/env name [options]": search name in the PATH
@@ -964,15 +1100,30 @@ runScript(const string& scriptContents,
             // line numbers are unchanged.
             interpreter.clear();
             options.clear();
-            const size_t eol = script.find('\n');
             script = (eol == string::npos) ? string() : script.substr(eol);
+        } else if (isProgram(interpreter, L"wsl")) {
+            // wsl.exe passes its command line to the Linux shell, which would not find the script (a Windows path),
+            // and would parse the arguments again (expanding $(...), for example)
+            *error = "interpreter on the first line of the script: wsl cannot run a script (it passes the arguments to the "
+                     "Linux shell, which would interpret them): use a Windows interpreter";
+
+            return eRunFailed;
+        } else if (isProgram(interpreter, L"powershell") || isProgram(interpreter, L"pwsh")) {
+            // Windows PowerShell runs its first argument as a command (-Command), not as a script file: the script
+            // path and the arguments would be parsed as PowerShell code
+            if (!powerShellFileOptions(&options, error)) {
+                *error = "interpreter on the first line of the script: " + *error;
+
+                return eRunFailed;
+            }
         }
     }
     if (!interpreter.empty()) {
         extension = scriptExtension(interpreter);
         data = script;
     } else {
-        // a batch file: convert the line endings to CRLF (cmd.exe misparses labels and GOTO with LF only)
+        // a batch file: convert the line endings (LF, or a lone CR) to CRLF (cmd.exe misparses labels and GOTO with
+        // LF only, and does not take a lone CR as a line break)
         extension = L".bat";
         data.reserve(script.size() + script.size() / 16);
         for (size_t i = 0; i < script.size(); ++i) {
@@ -980,11 +1131,15 @@ runScript(const string& scriptContents,
                 data.push_back('\r');
             }
             data.push_back(script[i]);
+            if (script[i] == '\r' && (i + 1 == script.size() || script[i + 1] != '\n')) {
+                data.push_back('\n');
+            }
         }
     }
 
+    wstring scriptDir;
     wstring scriptPath;
-    if (!writeTempFile(extension, data, &scriptPath, error)) {
+    if (!writeTempFile(extension, data, &scriptDir, &scriptPath, error)) {
         return eRunFailed;
     }
 
@@ -1009,6 +1164,7 @@ runScript(const string& scriptContents,
 
     // remove the script (this may fail if a process started by the script still has it open)
     DeleteFileW(scriptPath.c_str());
+    RemoveDirectoryW(scriptDir.c_str());
 
     return result;
 } // runScript

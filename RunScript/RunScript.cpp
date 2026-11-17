@@ -85,11 +85,14 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "```\n" \
     "\n" \
     "Under Windows, a script that begins with a shebang line is instead run by the given interpreter, as `interpreter [options] scriptfile arguments...`, " \
-    "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass -File`, but not `cmd /c` or `powershell -Command`). " \
+    "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass`, but not `powershell -Command`). " \
+    "For `powershell` and `pwsh`, `-File` is added after the options if they do not end with it (Windows PowerShell would otherwise run the arguments as code), and `-Command` is not allowed; " \
+    "`-NoProfile` and `-ExecutionPolicy Bypass` are not added (the default execution policy may not allow running a script file). " \
+    "`wsl` cannot be the interpreter (it passes the arguments to the Linux shell, which would interpret them). " \
     "A path that contains spaces must be quoted: `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. " \
     "A program name without a directory is searched for in the directories of the PATH only (not in the current directory), with `.exe` or `.com` appended if needed; a relative path such as `bin\\prog.exe` is not allowed. " \
-    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH, not the WSL `bash.exe`, " \
-    "except for `cmd`, `powershell` and `wsl`, which are then always taken from the system directory. " \
+    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH, not the WSL `bash.exe`. " \
+    "`cmd` and `powershell` are always taken from the system directory, whether the name is Unix-style or not, and even if it is not in the PATH. " \
     "With `#!cmd` or `#!/usr/bin/env cmd`, the rest of the script is run as a batch file (see above), and the options are ignored. " \
     "Git for Windows does not put its `sh` and `bash` in the PATH by default: add `C:\\Program Files\\Git\\bin` (or `Git\\usr\\bin`) to the PATH, or give the full path on the shebang line. " \
     "A `bash.exe` alias in `%LOCALAPPDATA%\\Microsoft\\WindowsApps` (WSL) may also be found in the PATH. " \

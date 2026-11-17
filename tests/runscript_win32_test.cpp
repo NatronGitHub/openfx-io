@@ -8,7 +8,8 @@
  * prints two lines to stderr, and exits with code 3. It also checks command-injection canaries in batch files,
  * the interpreter search (PATH only, not the current directory), "x.bat." (CVE-2024-43402), a process started
  * with "start" that keeps stderr open, and abort. When RUNSCRIPT_TEST_MODE is set, the child instead floods stderr
- * ("flood"), or prints "\r"-only progress output ("cr"), to test abort and the line splitting (#111).
+ * ("flood"), or prints "\r"-only progress output ("cr"), to test abort and the line splitting (#111), or prints the
+ * DACL of a directory ("acl"). PowerShell scripts, wsl, CR line endings and the private temporary directory (#126).
  *
  * On other systems, it does nothing (RunScript uses pstream there).
  */
@@ -186,6 +187,31 @@ childModeMain(const wstring& mode)
         std::fflush(stderr);
 
         return 1;
+    }
+    if (mode == L"acl") {
+        // print the number of ACEs of the DACL of the directory given as argument 1, and whether it is protected
+        vector<wstring> args = parseCommandLineCRT(GetCommandLineW());
+        if (args.size() < 2) {
+            return 2;
+        }
+        DWORD size = 0;
+        GetFileSecurityW(args[1].c_str(), DACL_SECURITY_INFORMATION, NULL, 0, &size);
+        vector<char> sd(size ? size : 1);
+        BOOL present = FALSE;
+        BOOL defaulted = FALSE;
+        PACL dacl = NULL;
+        SECURITY_DESCRIPTOR_CONTROL control = 0;
+        DWORD revision = 0;
+        if (!size || !GetFileSecurityW(args[1].c_str(), DACL_SECURITY_INFORMATION, &sd[0], size, &size)
+            || !GetSecurityDescriptorDacl(&sd[0], &present, &dacl, &defaulted)
+            || !GetSecurityDescriptorControl(&sd[0], &control, &revision)) {
+            std::fprintf(stderr, "cannot get the DACL\n");
+
+            return 2;
+        }
+        std::fprintf(stderr, "aces=%d protected=%d\n", (present && dacl) ? (int)dacl->AceCount : -1, (control & SE_DACL_PROTECTED) ? 1 : 0);
+
+        return 0;
     }
 
     return 2;
@@ -586,6 +612,110 @@ main()
         SetEnvironmentVariableW(L"PATH", oldPath.c_str());
         DeleteFileW((dirPath + L"\\cmd.exe").c_str());
         RemoveDirectoryW(dirPath.c_str());
+    }
+
+    // 10. review of #126: PowerShell runs the script with -File, wsl is rejected, CR-only line endings, cmd and
+    // powershell from the system directory even if it is not in the PATH, private temporary directory
+    std::printf("powershell, wsl, CR line endings, system programs, private directory:\n");
+    {
+        wchar_t sysdir[MAX_PATH + 1];
+        UINT sn = GetSystemDirectoryW(sysdir, MAX_PATH + 1);
+        const wstring sys(sysdir, sn);
+        n = GetEnvironmentVariableW(L"PATH", buf, 32768);
+        const wstring oldPath(buf, n);
+        string error;
+        wstring path;
+
+        // the arguments are literal strings, even with $(...), ';' or spaces, and the script path has a space
+        const string marker = wideToUtf8(gMarker);
+        vector<string> args;
+        args.push_back("plain");
+        args.push_back("with space");
+        args.push_back("x; Set-Content -LiteralPath '" + marker + "' -Value PWNED");
+        args.push_back("$(Set-Content -LiteralPath '" + marker + "' -Value PWNED)");
+        args.push_back("a'b");
+        args.push_back("100% $env:PATH");
+        n = GetEnvironmentVariableW(L"TMP", buf, 32768);
+        const wstring oldTmp(buf, n);
+        n = GetEnvironmentVariableW(L"TEMP", buf, 32768);
+        const wstring oldTemp(buf, n);
+        const wstring spaceTmp = tmp + L"rs test tmp";
+        CreateDirectoryW(spaceTmp.c_str(), NULL);
+        SetEnvironmentVariableW(L"TMP", spaceTmp.c_str());
+        SetEnvironmentVariableW(L"TEMP", spaceTmp.c_str());
+        const string psScript = "[IO.File]::WriteAllText($env:RUNSCRIPT_TEST_OUT, ($args -join \"`0\") + \"`0\")\nexit 3\n";
+        for (int unixStyle = 0; unixStyle < 2; ++unixStyle) {
+            vector<string> errLines;
+            unsigned long code = 0;
+            const string shebang = unixStyle ? "#!/usr/bin/env powershell -NoProfile -ExecutionPolicy Bypass\n" : "#!powershell -NoProfile -ExecutionPolicy Bypass\n";
+            RunResult r = runScript(shebang + psScript, args, &errLines, &code, &cleared(error));
+            vector<string> got = readChildArgs(outFile);
+            CHECK(r == eRunOK && code == 3, (shebang.substr(0, shebang.size() - 1) + ": started, exit code 3 (got " + std::to_string(code) + "): " + error + show(errLines)).c_str());
+            CHECK(got == args, ("arguments passed as literal strings (-File): " + show(got)).c_str());
+            CHECK(!markerExists(), "no code run from the arguments (marker file absent)");
+            DeleteFileW(gMarker.c_str());
+        }
+        SetEnvironmentVariableW(L"TMP", oldTmp.c_str());
+        SetEnvironmentVariableW(L"TEMP", oldTemp.c_str());
+        RemoveDirectoryW(spaceTmp.c_str());
+        {
+            vector<string> errLines;
+            unsigned long code = 0;
+            CHECK(runScript("#!powershell -Command\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("powershell -Command is an error: " + error).c_str());
+            CHECK(runScript("#!/usr/bin/env powershell -EncodedCommand\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("powershell -EncodedCommand is an error: " + error).c_str());
+            CHECK(runScript("#!powershell -File -NoProfile\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("-File not last is an error: " + error).c_str());
+            CHECK(runScript("#!wsl\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("#!wsl is an error: " + error).c_str());
+            CHECK(runScript("#!/usr/bin/env wsl\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("#!/usr/bin/env wsl is an error: " + error).c_str());
+        }
+
+        // CR-only line endings (classic Mac OS)
+        {
+            vector<string> cargs = commonArgs(true);
+            vector<string> errLines;
+            unsigned long code = 0;
+            RunResult r = runScript("#!/usr/bin/env cmd\r@echo off\r\"%RUNSCRIPT_TEST_EXE%\" %*\rexit /b %ERRORLEVEL%\r", cargs, &errLines, &code, &cleared(error));
+            vector<string> got = readChildArgs(outFile);
+            CHECK(r == eRunOK && code == 3 && got == cargs, ("#!/usr/bin/env cmd with CR line endings: " + std::to_string(code) + " " + show(got) + error).c_str());
+            r = runScript("@echo off\r\"%RUNSCRIPT_TEST_EXE%\" %*\rexit /b %ERRORLEVEL%\r", cargs, &errLines, &code, &cleared(error));
+            got = readChildArgs(outFile);
+            CHECK(r == eRunOK && code == 3 && got == cargs, ("batch file with CR line endings: " + std::to_string(code) + " " + show(got) + error).c_str());
+            CHECK(!markerExists(), "no command injection (marker file absent)");
+        }
+
+        // cmd and powershell from the system directory, even if it is not in the PATH, and not a cmd.exe in the PATH
+        {
+            const wstring dirPath = tmp + L"rs_test_cmd2";
+            CreateDirectoryW(dirPath.c_str(), NULL);
+            CopyFileW(self.c_str(), (dirPath + L"\\cmd.exe").c_str(), FALSE);
+            CopyFileW(self.c_str(), (dirPath + L"\\powershell.exe").c_str(), FALSE);
+            SetEnvironmentVariableW(L"PATH", dirPath.c_str());
+            bool ok = resolveProgram(L"cmd", false, &path, &cleared(error));
+            CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\cmd.exe").c_str()) == 0, ("#!cmd is the system's cmd.exe: " + wideToUtf8(path) + error).c_str());
+            ok = resolveProgram(L"powershell.exe", false, &path, &cleared(error));
+            CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\WindowsPowerShell\\v1.0\\powershell.exe").c_str()) == 0,
+                  ("#!powershell.exe is the system's powershell.exe: " + wideToUtf8(path) + error).c_str());
+            SetEnvironmentVariableW(L"PATH", oldPath.c_str());
+            DeleteFileW((dirPath + L"\\cmd.exe").c_str());
+            DeleteFileW((dirPath + L"\\powershell.exe").c_str());
+            RemoveDirectoryW(dirPath.c_str());
+        }
+
+        // the script is in a private directory, removed afterwards
+        {
+            SetEnvironmentVariableW(L"RUNSCRIPT_TEST_MODE", L"acl");
+            vector<string> errLines;
+            unsigned long code = 0;
+            RunResult r = runScript("@echo off\n>&2 echo %~dp0\n\"%RUNSCRIPT_TEST_EXE%\" \"%~dp0.\"\n", vector<string>(), &errLines, &code, &cleared(error));
+            SetEnvironmentVariableW(L"RUNSCRIPT_TEST_MODE", NULL);
+            CHECK(r == eRunOK && code == 0 && errLines.size() == 2, ("started: " + error + show(errLines)).c_str());
+            if (errLines.size() == 2) {
+                const wstring dir = utf8ToWide(errLines[0]);
+                CHECK(lstrcmpiW(dir.substr(0, tmp.size()).c_str(), tmp.c_str()) == 0 && dir.size() > tmp.size() + 1,
+                      ("in a subdirectory of the temporary directory: " + errLines[0]).c_str());
+                CHECK(errLines[1] == "aces=2 protected=1", ("private DACL (the user and SYSTEM, not inherited): " + errLines[1]).c_str());
+                CHECK(GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES, "the directory is removed afterwards");
+            }
+        }
     }
 
     DeleteFileW(gMarker.c_str());
