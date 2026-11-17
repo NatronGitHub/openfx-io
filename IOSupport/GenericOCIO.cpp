@@ -1303,12 +1303,17 @@ GenericOCIO::getProcessingColorspacesAtTime(double time,
                                             string& inputSpace,
                                             string& outputSpace) const
 {
+#ifdef OFX_IO_USING_OCIO
     getInputColorspaceAtTime(time, inputSpace);
     getOutputColorspaceAtTime(time, outputSpace);
-#ifdef OFX_IO_USING_OCIO
     if (_inverse && _inverse->getValueAtTime(time)) {
         std::swap(inputSpace, outputSpace);
     }
+#else
+    // without OpenColorIO, there are no colorspaces (getInputColorspaceAtTime() is not defined)
+    (void)time;
+    inputSpace.clear();
+    outputSpace.clear();
 #endif
 }
 
