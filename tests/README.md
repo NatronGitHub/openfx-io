@@ -77,6 +77,18 @@ the real render pipeline, linked directly (no host binary):
   (returns the encoded 128x128) -> `render` each frame into a host output image.
   The decoded gray levels ramp 0.091..0.909 (== N/11), i.e. the decode
   round-trips the encode.
+* **ReadFFmpeg missing frames** (issue #134): extend the frame range to
+  0..N+3 and render frames 0 and N+3, which the movie doesn't have, with each
+  "On Missing Frame" option, into an image filled with NaN. Hold previous, Load
+  next and Load nearest render the first or last frame of the movie, Error fails
+  with a persistent message, Black renders transparent black (also with RGBA
+  output: alpha 0, not the opaque alpha 1 of the movie); no NaN may remain on
+  success. Then a movie written with Fast Start is truncated in the middle of its
+  `mdat` atom: frame 1 is decoded, and frame N, which is in the movie but can't be
+  decoded, fails with a persistent message whatever the option (Black only applies
+  to frames outside of the movie).
+* **Matroska at 24 fps**: WriteFFmpeg writes a 24 fps MKV (millisecond
+  timestamps) and ReadFFmpeg must decode every frame with the right content.
 * **WriteFFmpeg views** (issue #116): render views 1 and 0 of each frame (view
   1 is the negative of the ramp), view 1 first, then view 0 first. The movie
   holds a single view, view 0, whatever the order: ReadFFmpeg must decode the

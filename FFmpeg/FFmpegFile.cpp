@@ -1262,13 +1262,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         if (loadNearest) {
             frame = stream->ptsToFrame(stream->_avstream->start_time);
         } else {
-            throw std::runtime_error("Missing frame");
+            throw MissingFrameException();
         }
     } else if (frame >= stream->_frames) {
         if (loadNearest) {
             frame = (int)stream->_frames - 1;
         } else {
-            throw std::runtime_error("Missing frame");
+            throw MissingFrameException();
         }
     }
 

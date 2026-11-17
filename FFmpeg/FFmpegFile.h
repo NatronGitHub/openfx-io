@@ -38,6 +38,7 @@
 #include <locale>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 extern "C" {
@@ -128,6 +129,17 @@ private:
 
 class FFmpegFile {
 public:
+    // Thrown by decode() when the frame is outside of the stream and !loadNearest
+    class MissingFrameException
+        : public std::runtime_error
+    {
+    public:
+        MissingFrameException()
+            : std::runtime_error("Missing frame")
+        {
+        }
+    };
+
 #ifdef OFX_USE_MULTITHREAD_MUTEX
     typedef OFX::MultiThread::Mutex Mutex;
     typedef OFX::MultiThread::AutoMutex AutoMutex;

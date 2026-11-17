@@ -811,6 +811,161 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
     return 0;
 }
 
+// Regression test for https://github.com/NatronGitHub/openfx-io/issues/134:
+// ReadFFmpeg read GenericReader's "onMissingFrame" choice with an old numbering, so with the
+// default (Error) a frame that is not in the movie returned kOfxStatOK and left the image
+// unwritten, and Black did the same. The frame range is extended to [0, nFrames+3], and
+// frames 0 (before the first frame of the movie) and nFrames+3 (after the last one) are
+// rendered with each option:
+// - Hold previous, Load next, Load nearest: the nearest frame of the movie (FFmpegFile can
+//   only clamp to the first or last frame) is rendered,
+// - Error: the render fails with a persistent error message,
+// - Black: the render succeeds and the image is transparent black (0,0,0,0), as for a missing
+//   file in an image sequence (with RGBA output, the alpha of the opaque movie is not set to 1).
+// With truncated (the movie file is truncated, so that its last frame can not be decoded),
+// frame 1 and frame nFrames, which are inside of the movie, are rendered instead: frame 1 must
+// be decoded, and frame nFrames must fail with a persistent error message whatever the option
+// (a frame that is in the movie but fails to decode is not a missing frame).
+// The output image is filled with NaN before each render, and no NaN may remain on success.
+int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFrames, bool rgba, bool truncated = false)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    const int optPrevious = choiceIndex(ctx, "onMissingFrame", "previous");
+    const int optNext = choiceIndex(ctx, "onMissingFrame", "next");
+    const int optNearest = choiceIndex(ctx, "onMissingFrame", "nearest");
+    const int optError = choiceIndex(ctx, "onMissingFrame", "Error");
+    const int optBlack = choiceIndex(ctx, "onMissingFrame", "Black");
+    const int optRGBA = choiceIndex(ctx, "outputComponents", "RGBA");
+    if (optPrevious < 0 || optNext < 0 || optNearest < 0 || optError < 0 || optBlack < 0 || optRGBA < 0) {
+        std::printf("  FAIL: onMissingFrame or outputComponents options not found (%d %d %d %d %d %d)\n", optPrevious, optNext, optNearest, optError, optBlack, optRGBA);
+        return 1;
+    }
+
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, inFile);
+
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextReader);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    {
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    }
+    // read frames outside of the movie (the first frame of a movie is 1), at the same time
+    setOverrideInt(&ctx, "firstFrame", 0);
+    setOverrideInt(&ctx, "lastFrame", nFrames + 3);
+    setOverrideInt(&ctx, "timeOffset", 0);
+    if (rgba) {
+        setOverrideInt(&ctx, "outputComponents", optRGBA);
+    }
+
+    Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+    if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
+    out->connected = true;
+    const int outComps = rgba ? 4 : 3;
+    setupClipImage(out, W, H, rgba ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    float* fp = reinterpret_cast<float*>(out->buffer.data());
+    const size_t npix = (size_t)W * H;
+    const size_t nval = npix * outComps;
+
+    const struct { const char* name; int option; } options[] = {
+        { "Hold previous", optPrevious }, { "Load next", optNext }, { "Load nearest", optNearest },
+        { "Error", optError }, { "Black", optBlack },
+    };
+    const std::vector<int> frames = truncated ? std::vector<int>{ 1, nFrames } : std::vector<int>{ 0, nFrames + 3 };
+    int fails = 0;
+    for (const auto& o : options) {
+        setOverrideInt(&ctx, "onMissingFrame", o.option);
+        for (int t : frames) {
+            for (size_t i = 0; i < nval; ++i) fp[i] = std::nanf("");
+            gPersistentError.clear();
+            PropSet a = makeRenderInArgs((double)t, W, H);
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+            size_t nNaN = 0;
+            double sum = 0, alphaMin = 1e30, alphaMax = -1e30;
+            for (size_t i = 0; i < npix; ++i) {
+                for (int c = 0; c < outComps; ++c) {
+                    const float v = fp[i * outComps + c];
+                    if (std::isnan(v)) {
+                        ++nNaN;
+                    } else if (c < 3) {
+                        sum += v;
+                    } else {
+                        alphaMin = (std::min)(alphaMin, (double)v);
+                        alphaMax = (std::max)(alphaMax, (double)v);
+                    }
+                }
+            }
+            const double mean = (nNaN == nval) ? 0. : sum / (double)(npix * 3);
+            std::printf("  %s, frame %d: status=%d NaN=%zu mean(RGB)=%.4f", o.name, t, st, nNaN, mean);
+            if (rgba) std::printf(" alpha=[%g, %g]", alphaMin, alphaMax);
+            std::printf(" error=\"%s\"\n", gPersistentError.c_str());
+            // the frame that is rendered: -1 if the render must fail, 0 if black, else the frame of the movie
+            int expectedFrame;
+            if (truncated) {
+                expectedFrame = (t == 1) ? 1 : -1;
+            } else if (o.option == optError) {
+                expectedFrame = -1;
+            } else if (o.option == optBlack) {
+                expectedFrame = 0;
+            } else {
+                expectedFrame = (t <= 0) ? 1 : nFrames; // the nearest frame
+            }
+            if (expectedFrame < 0) {
+                if (st != kOfxStatFailed || gPersistentError.empty()) { std::printf("  FAIL: expected kOfxStatFailed and an error message\n"); ++fails; }
+                continue;
+            }
+            if (st != kOfxStatOK) { std::printf("  FAIL: expected kOfxStatOK\n"); ++fails; continue; }
+            if (nNaN) { std::printf("  FAIL: %zu of %zu values were not written\n", nNaN, nval); ++fails; continue; }
+            // frame f is gray f/(N+1)
+            const double expected = (double)expectedFrame / (double)(nFrames + 1);
+            if (std::fabs(mean - expected) > 0.02) { std::printf("  FAIL: mean %.4f, expected ~%.4f\n", mean, expected); ++fails; }
+            // black is transparent, a frame of the (opaque) movie has alpha 1
+            const double expectedAlpha = (expectedFrame == 0) ? 0. : 1.;
+            if (rgba && (alphaMin != expectedAlpha || alphaMax != expectedAlpha)) { std::printf("  FAIL: alpha must be %g\n", expectedAlpha); ++fails; }
+        }
+    }
+
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    gPersistentError.clear();
+
+    if (fails) { std::printf("  FAIL (%d)\n", fails); return 1; }
+    std::printf("  PASS\n");
+    return 0;
+}
+
+// Writes a copy of the movie inFile (with the moov atom before the mdat atom) to outFile, truncated in the middle
+// of its mdat atom: its last frames are listed in the moov atom, but can not be decoded.
+int truncateMovie(const std::string& inFile, const std::string& outFile)
+{
+    const long moov = findTopLevelAtom(inFile, "moov"), mdat = findTopLevelAtom(inFile, "mdat");
+    if (moov < 0 || mdat < 0 || moov > mdat) { std::printf("  FAIL: %s: expected a moov atom before the mdat atom (moov at %ld, mdat at %ld)\n", inFile.c_str(), moov, mdat); return 1; }
+    FILE* f = std::fopen(inFile.c_str(), "rb");
+    if (!f) { std::printf("  FAIL: cannot open %s\n", inFile.c_str()); return 1; }
+    std::vector<char> data;
+    char buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) data.insert(data.end(), buf, buf + n);
+    std::fclose(f);
+    const size_t size = (size_t)mdat + ((data.size() - (size_t)mdat) / 2); // keep half of the mdat atom
+    FILE* g = std::fopen(outFile.c_str(), "wb");
+    if (!g || std::fwrite(data.data(), 1, size, g) != size) { std::printf("  FAIL: cannot write %s\n", outFile.c_str()); if (g) std::fclose(g); return 1; }
+    std::fclose(g);
+    std::printf("  truncated %s (%zu bytes, mdat at %ld) to %zu bytes: %s\n", inFile.c_str(), data.size(), mdat, size, outFile.c_str());
+    return 0;
+}
+
 // Regression test for https://github.com/NatronGitHub/openfx-io/issues/79:
 // WriteOIIO segfaulted in OIIO's contiguize() when writing a JPEG whose render window
 // (the output format) does not intersect the input RoD (e.g. Crop outside of the format).
@@ -1163,6 +1318,24 @@ main(int argc, char** argv)
     failures += testWriteFFmpeg(outFile, W, H, N);
     std::printf("==== ReadFFmpeg render integration ====\n");
     failures += testReadFFmpeg(outFile, W, H, N);
+    std::printf("==== ReadFFmpeg, frames outside of the movie, with each onMissingFrame option (issue #134) ====\n");
+    failures += testReadFFmpegMissingFrame(outFile, W, H, N, false);
+    std::printf("==== same, RGBA output: Black is transparent black (issue #134) ====\n");
+    failures += testReadFFmpegMissingFrame(outFile, W, H, N, true);
+    {
+        // a frame inside of the movie that can not be decoded is an error, whatever onMissingFrame
+        WriterParams wp;
+        wp.ints = { { "fastStart", 1 } };
+        std::printf("==== ReadFFmpeg, truncated movie: a frame that fails to decode is an error with each onMissingFrame option (issue #134) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i134.mov", W, H, N, wp) || truncateMovie(outFile + ".i134.mov", outFile + ".i134trunc.mov") || testReadFFmpegMissingFrame(outFile + ".i134trunc.mov", W, H, N, true, true);
+    }
+    {
+        // Matroska stores timestamps in milliseconds: at 24 fps, every frame of the movie must be decoded
+        WriterParams wp;
+        wp.fps = 24.;
+        std::printf("==== WriteFFmpeg + ReadFFmpeg, Matroska at 24 fps: every frame is decoded ====\n");
+        failures += testWriteFFmpeg(outFile + ".24fps.mkv", W, H, N, wp) || testReadFFmpeg(outFile + ".24fps.mkv", W, H, N);
+    }
     {
         // #116: a movie has a single view, view 0, whatever the order in which the host renders the views
         WriterParams wp;

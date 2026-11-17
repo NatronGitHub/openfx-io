@@ -27,6 +27,9 @@
 /.render_out.mov.i110.mov
 /.render_out.mov.i110.mp4v.mov
 /.render_out.mov.i110.3gp
+/.render_out.mov.i134.mov
+/.render_out.mov.i134trunc.mov
+/.render_out.mov.24fps.mkv
 /ocio_cdl_test
 /ocio_cdl_test.dSYM/
 /runscript_win32_test
