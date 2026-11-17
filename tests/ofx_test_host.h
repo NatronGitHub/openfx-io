@@ -255,12 +255,23 @@ OfxStatus mxU(const OfxMutexHandle m) { reinterpret_cast<std::mutex*>(m)->unlock
 OfxStatus mxT(const OfxMutexHandle m) { return reinterpret_cast<std::mutex*>(m)->try_lock() ? kOfxStatOK : kOfxStatFailed; }
 OfxMultiThreadSuiteV1 gMTSuite = { mtRun, mtNum, mtIdx, mtSpawned, mxC, mxD, mxL, mxU, mxT };
 
+// All the messages sent by the plug-ins, as "type: text\n" lines (cleared by the tests that check them).
+std::string gMessages;
+void recordMessage(const char* type, const char* fmt, va_list a)
+{
+    char buf[4096];
+    std::vsnprintf(buf, sizeof(buf), fmt, a);
+    gMessages += std::string(type ? type : "?") + ": " + buf + "\n";
+}
+
 OfxStatus msg(void*, const char* type, const char*, const char* fmt, ...)
-{ va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx msg/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a); return kOfxStatOK; }
+{ va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx msg/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
+  va_start(a, fmt); recordMessage(type, fmt, a); va_end(a); return kOfxStatOK; }
 OfxMessageSuiteV1 gMsgSuite = { msg };
 
 OfxStatus msgPersist(void*, const char* type, const char*, const char* fmt, ...)
-{ va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a); return kOfxStatOK; }
+{ va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
+  va_start(a, fmt); recordMessage(type, fmt, a); va_end(a); return kOfxStatOK; }
 OfxStatus msgClear(void*) { return kOfxStatOK; }
 OfxMessageSuiteV2 gMsgSuiteV2 = { msg, msgPersist, msgClear };
 
@@ -338,6 +349,9 @@ OfxPlugin* findPlugin(const char* id)
 // Set default value (int) on a param definition prop set so instance getValue works.
 void setOverrideString(Effect* ctx, const char* name, const std::string& val)
 { auto it = ctx->params.find(name); if (it != ctx->params.end()) { it->second.hasOv = true; it->second.ov.s = { val }; } }
+
+void setOverrideInt(Effect* ctx, const char* name, int val)
+{ auto it = ctx->params.find(name); if (it != ctx->params.end()) { it->second.hasOv = true; it->second.ov.i = { val }; } }
 
 // Build an image property set for a clip: dims WxH, RGBA float, buffer allocated & pattern-filled optional.
 void setupClipImage(Clip* c, int w, int h, const char* comps, const char* depth, bool premultOpaque)
