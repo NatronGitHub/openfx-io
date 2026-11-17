@@ -1880,9 +1880,10 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxRectI* format,
         OfxPointD offset = getProjectOffset();
         double projectPar = getProjectPixelAspectRatio();
         *par = projectPar;
-        format->x1 = std::floor(offset.x * projectPar + 0.5);
+        // the project size and offset are in canonical coordinates (a PAL SD project is 768x576, 720x576 pixels)
+        format->x1 = std::floor(offset.x / projectPar + 0.5);
         format->y1 = offset.y;
-        format->x2 = std::floor((offset.x + size.x) * projectPar + 0.5);
+        format->x2 = std::floor((offset.x + size.x) / projectPar + 0.5);
         format->y2 = offset.y + size.y;
         break;
     }
