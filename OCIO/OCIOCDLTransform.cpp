@@ -25,7 +25,7 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdio> // fopen...
-#include <fstream> // std::ofstream
+#include <sstream> // std::ostringstream
 
 #include "IOUtility.h"
 #include "ofxNatron.h"
@@ -1080,6 +1080,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
                 int _directioni;
                 _direction->getValueAtTime(time, _directioni);
 
+                string xml; // the grade, as a ColorCorrection XML file
                 try {
                     AutoSetAndRestoreThreadLocale locale;
                     OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
@@ -1122,34 +1123,35 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
                     }
 
 #if OCIO_VERSION_HEX >= 0x02000000
+                    // the same ColorCorrection XML (.cc) as OCIO 1's CDLTransform::getXML()
                     OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
-                    std::ofstream ofs;
-                    ofs.open(exportName.c_str(), std::ofstream::out);
-                    if (!ofs.is_open()) {
-                        sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
-                        throwSuiteStatusException(kOfxStatFailed);
-
-                        return;
-                    }
-                    g->write(config, "CDL", ofs);
+                    g->appendTransform(cc);
+                    std::ostringstream os;
+                    g->write(config, "ColorCorrection", os);
+                    xml = os.str();
 #else
-                    file = std::fopen(exportName.c_str(), "w");
-                    if (!file) {
-                        sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
-                        throwSuiteStatusException(kOfxStatFailed);
-
-                        return;
-                    }
-                    std::fputs(cc->getXML(), file);
+                    xml = cc->getXML();
 #endif
                 } catch (const std::exception& e) {
                     setPersistentMessage(Message::eMessageError, "", e.what());
-                    std::fclose(file);
                     throwSuiteStatusException(kOfxStatFailed);
 
                     return;
                 }
-                std::fclose(file);
+                file = std::fopen(exportName.c_str(), "w");
+                if (!file) {
+                    sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
+                }
+                const bool written = std::fputs(xml.c_str(), file) >= 0;
+                if ((std::fclose(file) != 0) || !written) {
+                    sendMessage(Message::eMessageError, "", string("Error while writing file ") + exportName);
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
+                }
             }
         }
 
