@@ -22,9 +22,9 @@ endif()
 
 # openfx's plug-in API (NatronGitHub/openfx#125): openfx::Api, openfx::Support and OpenFX.cmake; no HostSupport and no
 # install rules for a subproject
-file(STRINGS "${OPENFX_PATH}/cmake/OpenFX.cmake" _ofx_has_api REGEX "^function\\(ofx_plugin_resources")
+file(STRINGS "${OPENFX_PATH}/cmake/OpenFX.cmake" _ofx_has_api REGEX "^function\\(ofx_target_filter_missing_includes")
 if(NOT _ofx_has_api)
-  message(FATAL_ERROR "${OPENFX_PATH}/cmake/OpenFX.cmake has no ofx_plugin_resources(): update the openfx submodule "
+  message(FATAL_ERROR "${OPENFX_PATH}/cmake/OpenFX.cmake has no ofx_target_filter_missing_includes(): update the openfx submodule "
                       "(git submodule update --init --recursive)")
 endif()
 add_subdirectory("${OPENFX_PATH}" "${CMAKE_BINARY_DIR}/openfx")
