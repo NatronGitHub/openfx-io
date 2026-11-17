@@ -276,16 +276,15 @@ jobs:
           cache: true
           install: >-
             git base-devel unzip
-            mingw-w64-ucrt-x86_64-cc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-python
-            mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-openimageio mingw-w64-ucrt-x86_64-opencolorio mingw-w64-ucrt-x86_64-openexr
-            mingw-w64-ucrt-x86_64-libraw mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-seexpr
-            mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-fmt
+          # pacboy's "name:p" is ${MINGW_PACKAGE_PREFIX}-name for the msystem above: no hard-coded environment
+          pacboy: >-
+            cc:p pkgconf:p python:p cmake:p ninja:p
+            openimageio:p opencolorio:p openexr:p libraw:p ffmpeg:p seexpr:p libpng:p fmt:p
       - name: Build (release, CMake)
         run: |
           set -eo pipefail
           # cmake.exe is a native program: pass Windows paths
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m /ucrt64)" \
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")" \
             -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
@@ -294,7 +293,7 @@ jobs:
         if: env.EXTRA_VARIANTS == 'true'
         run: |
           set -eo pipefail
-          make -j4 CONFIG=debug SEEXPR_HOME=/ucrt64 CXX="g++ -std=c++20"
+          make -j4 CONFIG=debug SEEXPR_HOME="$MINGW_PREFIX" CXX="g++ -std=c++20"
       - name: Tests
         # tests/Makefile, run directly: ctest would run MSYS2's make outside of the MSYS2 shell; ctest only loads
         # the CMake-built IO.ofx (io-load)
@@ -313,7 +312,7 @@ jobs:
           # Self-contained bundle used for Natron's automated testing.
           cp -r Bundle TestingBundle
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Win64
-          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} /ucrt64/bin
+          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} "$MINGW_PREFIX/bin"
           # Use the newest installed Windows SDK's mt.exe (the SDK version on the runner changes over time).
           MT_EXE=`ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"10.*/x64/mt.exe | sort -V | tail -1`
           "${MT_EXE}" -manifest IO.manifest -outputresource:"${BINARY_PATH}/IO.ofx;2"
