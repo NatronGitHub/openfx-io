@@ -307,15 +307,13 @@ endforeach()
 # ---------------------------------------------------------------------------------------------------------------
 # The IO.ofx bundle (IO/Makefile)
 
+# install IO.ofx executable (0755) like the Makefiles: CMake's Debian/Ubuntu default installs modules 0644
+set(CMAKE_INSTALL_SO_NO_EXE OFF)
 add_ofx_plugin(IO INFO_PLIST IO/Info.plist)
 # (add_ofx_plugin links openfx::Api only)
 target_link_libraries(IO PRIVATE openfx::Support)
 # no IO_EXPORTS define, which CMake adds to modules (the Makefiles have none; OfxExport does the exporting)
 set_target_properties(IO PROPERTIES DEFINE_SYMBOL "")
-if(UNIX AND NOT APPLE)
-  # as Makefile.master, which adds -rpath for the libdirs of OpenColorIO, OpenImageIO, LibRaw, SeExpr and libpng
-  set_target_properties(IO PROPERTIES INSTALL_RPATH_USE_LINK_PATH ON)
-endif()
 
 # Include paths of IO/Makefile and Makefile.master (which also has openfx/Support/Plugins/include, for
 # ofxsProcessing.H)
@@ -494,6 +492,38 @@ foreach(_f IN LISTS _io_existing)
   endif()
 endforeach()
 
+# Linux, FreeBSD: the install rpath of Makefile.master, $ORIGIN/../../Libraries then the libdirs of OpenColorIO,
+# SeExpr, OpenImageIO (its prefix's lib), LibRaw and libpng, for the groups built (not
+# INSTALL_RPATH_USE_LINK_PATH, which skips the libraries of the build tree, e.g. CI's SeExprBuild)
+if(UNIX AND NOT APPLE)
+  set(_io_rpath "\$ORIGIN/../../Libraries")
+  if(" ${_io_groups} " MATCHES " OCIO " AND PKG_CONFIG_FOUND)
+    pkg_get_variable(_d OpenColorIO libdir)
+    list(APPEND _io_rpath ${_d})
+  endif()
+  if(" ${_io_groups} " MATCHES " SeExpr ")
+    get_filename_component(_d "${SEEXPR_LIBRARY}" DIRECTORY)
+    list(APPEND _io_rpath "${_d}")
+  endif()
+  if(" ${_io_groups} " MATCHES " OIIO ")
+    get_target_property(_type OpenImageIO::OpenImageIO TYPE)
+    if(NOT _type STREQUAL "INTERFACE_LIBRARY")
+      get_target_property(_loc OpenImageIO::OpenImageIO LOCATION)
+      get_filename_component(_d "${_loc}" DIRECTORY)
+      list(APPEND _io_rpath "${_d}")
+    elseif(PKG_CONFIG_FOUND)
+      pkg_get_variable(_d OpenImageIO libdir)
+      list(APPEND _io_rpath ${_d})
+    endif()
+    list(APPEND _io_rpath ${LIBRAW_LIBRARY_DIRS})
+  endif()
+  if(" ${_io_groups} " MATCHES " PNG ")
+    list(APPEND _io_rpath ${LIBPNG_LIBRARY_DIRS})
+  endif()
+  list(REMOVE_DUPLICATES _io_rpath)
+  set_target_properties(IO PROPERTIES INSTALL_RPATH "${_io_rpath}")
+endif()
+
 ofx_deploy_bundle(IO)
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -553,18 +583,22 @@ if(BUILD_TESTING)
     list(REMOVE_DUPLICATES _io_dirs)
     string(REPLACE ";" ":" _io_dirs "${_io_dirs}")
     set_tests_properties(io-load PROPERTIES ENVIRONMENT "DYLD_FALLBACK_LIBRARY_PATH=${_io_dirs}")
-    if(OFX_DEPLOY_BUNDLES)
-      if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
-        set(_io_installed "${PLUGIN_INSTALLDIR}")
-      else()
-        set(_io_installed "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}")
-      endif()
-      add_test(NAME io-load-installed
-               COMMAND io_verify_plugin_loads "${_io_installed}/IO.ofx.bundle/Contents/${ARCHDIR}/IO.ofx")
-      set_tests_properties(io-load-installed PROPERTIES PASS_REGULAR_EXPRESSION "Num_plugins: ${_io_nplugins}\n"
-        FAIL_REGULAR_EXPRESSION "error|Failed"
-        ENVIRONMENT "DYLD_LIBRARY_PATH=;DYLD_FALLBACK_LIBRARY_PATH=;DYLD_FRAMEWORK_PATH=")
+  endif()
+  # io-load-installed: the installed bundle (macOS: deployed, OFX_DEPLOY_BUNDLES; Linux, FreeBSD: with its install
+  # rpath, before any patchelf) loads without DYLD_*/LD_LIBRARY_PATH; skipped if it was not installed yet
+  if((APPLE AND OFX_DEPLOY_BUNDLES) OR (UNIX AND NOT APPLE))
+    if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
+      set(_io_installed "${PLUGIN_INSTALLDIR}")
+    else()
+      set(_io_installed "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}")
     endif()
+    set(_io_installed "${_io_installed}/IO.ofx.bundle/Contents/${ARCHDIR}/IO.ofx")
+    add_test(NAME io-load-installed
+             COMMAND sh -c "test -f \"$1\" || { echo \"not installed: $1\"; exit 77; }; exec \"$0\" \"$1\""
+                     "$<TARGET_FILE:io_verify_plugin_loads>" "${_io_installed}")
+    set_tests_properties(io-load-installed PROPERTIES PASS_REGULAR_EXPRESSION "Num_plugins: ${_io_nplugins}\n"
+      FAIL_REGULAR_EXPRESSION "error|Failed" SKIP_RETURN_CODE 77
+      ENVIRONMENT "DYLD_LIBRARY_PATH=;DYLD_FALLBACK_LIBRARY_PATH=;DYLD_FRAMEWORK_PATH=;LD_LIBRARY_PATH=")
   endif()
 
   find_program(IO_MAKE_PROGRAM NAMES gmake make mingw32-make)

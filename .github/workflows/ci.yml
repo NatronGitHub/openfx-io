@@ -86,7 +86,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake bison flex libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
             libgl-dev libegl-dev liblcms2-dev libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf libexpat1-dev
       - name: Cache SeExpr
         id: cache-seexpr
         uses: actions/cache@v4

@@ -87,7 +87,7 @@ def get_deps_for_binary(binary_path, search_directories):
                 sys.exit(1)
         else:
             if ("linux-vdso.so.1" in line or 
-                "ld-linux-x86-64.so" in line or
+                re.search(r"ld-linux[^/ ]*\.so", line) or  # the dynamic loader (x86-64, aarch64, ...)
                 "statically linked" in line):
                 continue
             print(f"Unexpected line in ldd output: {line}")
