@@ -252,29 +252,32 @@ WriteEXRPlugin::encode(const string& filename,
 
         Imf_::OutputFile outputFile(filename.c_str(), exrheader);
 
-        for (int y = bounds.y1; y < bounds.y2; ++y) {
-            /*First we create a row that will serve as the output buffer.
-               We copy the scan-line (with y inverted) in the inputImage to the row.*/
-            int exrY = bounds.y2 - y - 1;
-            float* src_pixels = (float*)((char*)pixelData + (ptrdiff_t)(exrY - bounds.y1) * (ptrdiff_t)rowBytes);
+        const int width = bounds.x2 - bounds.x1;
+        // the half row buffer, reused for each row
+        Imf_::Array2D<half> halfwriterow(pixelDataNComps, width);
+        // OpenEXR's scan lines are written top to bottom (INCREASING_Y), OFX's rows are bottom to top
+        for (int ofxY = bounds.y2 - 1; ofxY >= bounds.y1; --ofxY) {
+            const float* src_pixels = (const float*)((const char*)pixelData + (ptrdiff_t)(ofxY - bounds.y1) * (ptrdiff_t)rowBytes);
 
-            /*we create the frame buffer*/
+            /*we create the frame buffer: a Slice's base is the address of pixel (0,0), the data window starts at
+              exrDataW.min.x, and the y stride is 0 (one scan line at a time)*/
             Imf_::FrameBuffer fbuf;
             if (depth == 32) {
+                const size_t xStride = sizeof(float) * pixelDataNComps;
                 for (int chan = 0; chan < pixelDataNComps; ++chan) {
-                    fbuf.insert(chanNames[chan], Imf_::Slice(Imf_::FLOAT, (char*)src_pixels + chan, sizeof(float) * pixelDataNComps, 0));
+                    fbuf.insert(chanNames[chan],
+                                Imf_::Slice(Imf_::FLOAT,
+                                            (char*)(src_pixels + chan) - (ptrdiff_t)exrDataW.min.x * (ptrdiff_t)xStride,
+                                            xStride, 0));
                 }
             } else {
-                Imf_::Array2D<half> halfwriterow(pixelDataNComps, bounds.x2 - bounds.x1);
-
                 for (int chan = 0; chan < pixelDataNComps; ++chan) {
                     fbuf.insert(chanNames[chan],
                                 Imf_::Slice(Imf_::HALF,
                                             (char*)(&halfwriterow[chan][0] - exrDataW.min.x),
                                             sizeof(halfwriterow[chan][0]), 0));
-                    const float* from = src_pixels + chan;
-                    for (int i = exrDataW.min.x, f = exrDataW.min.x; i < exrDataW.max.x; ++i, f += pixelDataNComps) {
-                        halfwriterow[chan][i - exrDataW.min.x] = from[f];
+                    for (int i = 0; i < width; ++i) {
+                        halfwriterow[chan][i] = src_pixels[(ptrdiff_t)i * pixelDataNComps + chan];
                     }
                 }
             }
