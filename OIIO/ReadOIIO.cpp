@@ -1521,7 +1521,10 @@ ReadOIIOPlugin::restoreStateFromParams()
         return;
     }
 
-    buildOutputLayerMenu(subimages);
+    // (the layer params only exist if the host supports dynamic choices and multi-plane effects)
+    if (gHostSupportsDynamicChoices && gHostSupportsMultiPlane) {
+        buildOutputLayerMenu(subimages);
+    }
 
     // Only support tiles if tile size is set
     const ImageSpec& spec = subimages[0];
@@ -3054,7 +3057,7 @@ ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments& args, OFX::Clip*& ide
     }
     // If the plane in argument is the color-plane and the user selected another plane in the output plane selector, be identity on that plane.
     // is the one selected in output of the plug-in as color plane
-    if (args.plane == kOfxMultiplaneColorPlaneID) {
+    if (_outputLayer && (args.plane == kOfxMultiplaneColorPlaneID)) {
         int layer_i;
         _outputLayer->getValue(layer_i);
         if (layer_i >= 0 && layer_i < (int)_outputLayerMenu.size()) {
