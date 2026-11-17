@@ -3244,6 +3244,8 @@ ReadOIIOPluginFactory::load()
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());
 #endif
+    // last: only count a successful load (if load throws, the host does not call unload)
+    OIIOPluginLoaded(getUID());
 }
 
 void
@@ -3266,7 +3268,8 @@ ReadOIIOPluginFactory::unload()
 #endif
 #endif
 
-    shutdownOIIOThreads();
+    // stop OpenImageIO's thread pool if this was the last OIIO plug-in loaded
+    OIIOPluginUnloaded(getUID());
 }
 
 /** @brief The basic describe function, passed a plugin descriptor */

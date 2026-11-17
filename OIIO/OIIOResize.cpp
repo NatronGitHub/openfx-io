@@ -772,9 +772,10 @@ OIIOResizePlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
     }
 }
 
-// unload: stop OpenImageIO's thread pool, which ImageBufAlgo::resize() may have started, as ReadOIIO and WriteOIIO do
-// (on MS Windows, its threads deadlock when they are joined while the DLL is unloaded)
-mDeclarePluginFactoryVersioned(OIIOResizePluginFactory, { ofxsThreadSuiteCheck(); }, { shutdownOIIOThreads(); });
+// unload: stop OpenImageIO's thread pool, which ImageBufAlgo::resize() may have started, if this was the last OIIO
+// plug-in loaded, as ReadOIIO and WriteOIIO do (on MS Windows, its threads deadlock when they are joined while the
+// DLL is unloaded). Each major version is a plug-in, loaded and unloaded separately: getUID() has the version.
+mDeclarePluginFactoryVersioned(OIIOResizePluginFactory, { ofxsThreadSuiteCheck(); OIIOPluginLoaded(this->getUID()); }, { OIIOPluginUnloaded(this->getUID()); });
 
 /** @brief The basic describe function, passed a plugin descriptor */
 template <unsigned int majorVersion>

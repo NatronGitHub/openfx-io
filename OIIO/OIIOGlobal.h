@@ -20,7 +20,19 @@
 #ifndef IO_GLOBAL_OIIO_H
 #define IO_GLOBAL_OIIO_H
 
+#include <string>
+
+// Set OpenImageIO's threading attributes (and start its thread pool): called by the OIIO plug-ins' instances.
 void initOIIOThreads();
-void shutdownOIIOThreads();
+
+// The OIIO plug-ins of this binary (ReadOIIO, WriteOIIO, OIIOText, OIIOResize) share OpenImageIO's thread pool
+// (and, on MS Windows, OpenEXR's IlmThread pool), which must be stopped before the binary is unloaded. Each
+// plug-in calls OIIOPluginLoaded() at the end of its load action, with its unique identifier (getUID(): one per
+// plug-in version), and OIIOPluginUnloaded() in its unload action: the pools are stopped by the unload of the
+// last loaded OIIO plug-in, not by the first one, while the others may still use them (#118).
+// Thread-safe. A plug-in loaded twice is counted once, and the unload of a plug-in that is not loaded (e.g. after
+// its load failed) does not stop the pools while other OIIO plug-ins are loaded.
+void OIIOPluginLoaded(const std::string& pluginUID);
+void OIIOPluginUnloaded(const std::string& pluginUID);
 
 #endif /* IO_GLOBAL_OIIO_H*/
