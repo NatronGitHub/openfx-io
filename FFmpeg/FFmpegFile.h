@@ -156,6 +156,15 @@ private:
         const AVCodec* _videoCodec;
         AVFrame* _avFrame; // decoding frame
         AVFrame* _avIntermediateFrame; // decode into this if an image conversion is required
+        // Decoded frames kept since the last seek, to serve the frames that fall between two decoded
+        // frames. In a variable frame rate movie, there is no frame at some frame times (timestamp
+        // gaps), and the frame displayed at that time is the last decoded frame whose PTS is at or
+        // before it, as in players. The decoder outputs frames in presentation order, so these are
+        // decided from the decoded frames, not from the packets (which are in decoding order, and
+        // whose durations are the nominal frame duration in Matroska).
+        AVFrame* _avHeldFrame; // the last decoded frame at or before the last requested frame (empty if none)
+        AVFrame* _avNextFrame; // the decoded frame that follows _avHeldFrame, if already decoded (empty if not)
+        bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
         // Source/destination parameters the cached _convertCtx was created for,
@@ -207,6 +216,9 @@ private:
             , _videoCodec(nullptr)
             , _avFrame(nullptr)
             , _avIntermediateFrame(nullptr)
+            , _avHeldFrame(nullptr)
+            , _avNextFrame(nullptr)
+            , _heldFrameIsLast(false)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
             , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
@@ -259,6 +271,14 @@ private:
                 av_frame_free(&_avIntermediateFrame);
             }
 
+            if (_avHeldFrame) {
+                av_frame_free(&_avHeldFrame);
+            }
+
+            if (_avNextFrame) {
+                av_frame_free(&_avNextFrame);
+            }
+
             if (_codecContext) {
                 avcodec_flush_buffers(_codecContext);
                 avcodec_free_context(&_codecContext);
@@ -272,6 +292,48 @@ private:
         static void destroy(Stream* s)
         {
             delete (s);
+        }
+
+        static bool hasFrame(const AVFrame* f)
+        {
+            return f && f->buf[0];
+        }
+
+        // Forget the decoded frames kept since the last seek. Must be called whenever the
+        // demuxer or the decoder is repositioned.
+        void resetHeldFrames()
+        {
+            if (_avHeldFrame) {
+                av_frame_unref(_avHeldFrame);
+            }
+            if (_avNextFrame) {
+                av_frame_unref(_avNextFrame);
+            }
+            _heldFrameIsLast = false;
+        }
+
+        // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
+        // since the last seek, or by decoding the next frame.
+        bool isSequential(int frame) const
+        {
+            if (!hasFrame(_avHeldFrame)) {
+                return false;
+            }
+            int held = ptsToFrame(_avHeldFrame->pts);
+            if (frame < held) {
+                return false;
+            }
+            if (hasFrame(_avNextFrame)) {
+                int next = ptsToFrame(_avNextFrame->pts);
+                if (frame < next) {
+                    return true;
+                }
+                held = next; // _avNextFrame will become the held frame
+            } else if (_heldFrameIsLast) {
+                return true;
+            }
+
+            return frame <= held + 1;
         }
 
         // Conversions between 0-based frame indices and timestamps round to the nearest value,
