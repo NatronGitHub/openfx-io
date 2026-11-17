@@ -37,6 +37,7 @@
 #include <windows.h>
 
 #include "RunScriptWin32.h"
+#include "RunScriptOutput.h"
 
 #include <cstdio> // snprintf, _snwprintf
 #include <cwchar> // wcslen
@@ -273,6 +274,30 @@ withoutTrailingBackslash(const wstring& dir)
     return d;
 }
 
+// The Windows system programs that a Unix-style name ("#!/usr/bin/env cmd") may designate, and their path in the
+// system directory, or NULL. Only these are taken from the system directory, which is otherwise skipped for Unix
+// names (see resolveProgram()): they have no Unix counterpart that the name could mean instead (unlike bash.exe,
+// which is WSL's), and they are only taken from the system directory, never from the PATH.
+static const wchar_t*
+unixNameSystemProgram(const wstring& name)
+{
+    wstring l = toLower(name);
+    if (endsWith(l, L".exe")) {
+        l.erase(l.size() - 4);
+    }
+    if (l == L"cmd") {
+        return L"cmd.exe";
+    }
+    if (l == L"powershell") {
+        return L"WindowsPowerShell\\v1.0\\powershell.exe";
+    }
+    if (l == L"wsl") {
+        return L"wsl.exe";
+    }
+
+    return NULL;
+}
+
 bool
 resolveProgram(const wstring& programName,
                bool fromUnixPath,
@@ -318,12 +343,33 @@ resolveProgram(const wstring& programName,
 
     // search %PATH% only: CreateProcess and SearchPath (with the default search path) would look in the host's
     // directory and in the current directory (often the project directory) first
-    wstring systemDir;
+    wstring systemDir; // lowercase, for comparisons
+    wstring systemDirPath;
     {
         wchar_t sysdir[MAX_PATH + 1];
         UINT n = GetSystemDirectoryW(sysdir, MAX_PATH + 1);
         if (n > 0 && n <= MAX_PATH) {
-            systemDir = toLower(withoutTrailingBackslash(wstring(sysdir, n)));
+            systemDirPath = withoutTrailingBackslash(wstring(sysdir, n));
+            systemDir = toLower(systemDirPath);
+        }
+    }
+    if (fromUnixPath) {
+        const wchar_t* sysProgram = unixNameSystemProgram(name);
+        if (sysProgram) {
+            if (systemDirPath.empty()) {
+                *error = "cannot find the system directory";
+
+                return false;
+            }
+            const wstring p = systemDirPath + L"\\" + sysProgram;
+            if (!isFile(p)) {
+                *error = "cannot find " + wideToUtf8(p);
+
+                return false;
+            }
+            *fullPath = p;
+
+            return true;
         }
     }
     wstring path;
@@ -444,51 +490,36 @@ closeHandle(HANDLE* h)
     *h = NULL;
 }
 
-// keep at most this many stderr lines (the last ones)
-#define kMaxErrLines 1000
+enum ReadStatus {
+    eReadEOF = 0, // end of file (or error)
+    eReadDrained, // the pipe is empty
+    eReadMore // the pipe may contain more: call again soon
+};
 
-static void
-addLines(string* pending,
-         const char* data,
-         size_t n,
-         vector<string>* lines)
-{
-    pending->append(data, n);
-    size_t pos;
-    while ((pos = pending->find('\n')) != string::npos) {
-        string line = pending->substr(0, pos);
-        if (!line.empty() && line[line.size() - 1] == '\r') {
-            line.erase(line.size() - 1);
-        }
-        lines->push_back(line);
-        pending->erase(0, pos + 1);
-    }
-    if (lines->size() > 2 * kMaxErrLines) {
-        lines->erase(lines->begin(), lines->begin() + (lines->size() - kMaxErrLines));
-    }
-}
-
-// read what is available in the pipe without blocking; returns false at the end of file (or on error)
-static bool
+// Read what is available in the pipe without blocking. At most kMaxReads reads of 4 KB are done, so that the caller
+// checks for abort regularly, even if the process writes faster than we read (e.g. "yes >&2").
+static ReadStatus
 readAvailable(HANDLE pipe,
-              string* pending,
-              vector<string>* lines)
+              RunScriptOutput::LineCollector* lines)
 {
-    for (;;) {
+    const int kMaxReads = 16;
+    for (int i = 0; i < kMaxReads; ++i) {
         DWORD avail = 0;
         if (!PeekNamedPipe(pipe, NULL, 0, NULL, &avail, NULL)) {
-            return false; // ERROR_BROKEN_PIPE: all the writers have closed it
+            return eReadEOF; // ERROR_BROKEN_PIPE: all the writers have closed it
         }
         if (avail == 0) {
-            return true;
+            return eReadDrained;
         }
         char buf[4096];
         DWORD n = 0;
         if (!ReadFile(pipe, buf, avail < sizeof(buf) ? avail : (DWORD)sizeof(buf), &n, NULL) || n == 0) {
-            return false;
+            return eReadEOF;
         }
-        addLines(pending, buf, n, lines);
+        lines->add(buf, n);
     }
+
+    return eReadMore;
 }
 
 // an inheritable copy of h
@@ -658,13 +689,16 @@ runProcess(const wstring& applicationName,
     // Read stderr while waiting for the process, and poll for abort. After the process exits, read what remains
     // for a short time only: a process that it started (e.g. "start viewer") may keep the pipe open.
     RunResult result = eRunOK;
-    string pending;
+    RunScriptOutput::LineCollector lines(errLines);
     bool eof = false;
     bool exited = false;
     DWORD exitTick = 0;
     for (;;) {
+        bool more = false; // the pipe was not drained: do not wait before reading again
         if (!eof) {
-            eof = !readAvailable(errRead, &pending, errLines);
+            const ReadStatus rs = readAvailable(errRead, &lines);
+            eof = rs == eReadEOF;
+            more = rs == eReadMore;
         }
         if (exited && (eof || (GetTickCount() - exitTick) > 200)) {
             break;
@@ -681,20 +715,15 @@ runProcess(const wstring& applicationName,
             break;
         }
         if (!exited) {
-            if (WaitForSingleObject(pi.hProcess, 20) == WAIT_OBJECT_0) {
+            if (WaitForSingleObject(pi.hProcess, more ? 0 : 20) == WAIT_OBJECT_0) {
                 exited = true;
                 exitTick = GetTickCount();
             }
-        } else {
+        } else if (!more) {
             Sleep(10);
         }
     }
-    if (!pending.empty()) {
-        if (pending[pending.size() - 1] == '\r') {
-            pending.erase(pending.size() - 1);
-        }
-        errLines->push_back(pending);
-    }
+    lines.finish();
     closeHandle(&errRead);
 
     DWORD code = 0;
@@ -761,6 +790,19 @@ splitFirstWord(const string& s,
         *first = t.substr(0, sp);
         *rest = (sp == string::npos) ? string() : trimLeft(t.substr(sp));
     }
+}
+
+// true if program is cmd.exe (in any directory)
+static bool
+isCmdExe(const wstring& program)
+{
+    wstring name = toLower(stripTrailingDotsAndSpaces(program));
+    size_t sep = name.find_last_of(L"\\/");
+    if (sep != wstring::npos) {
+        name.erase(0, sep + 1);
+    }
+
+    return name == L"cmd.exe" || name == L"cmd.com";
 }
 
 // an extension for the script file, which some interpreters require (e.g. PowerShell needs .ps1)
@@ -914,6 +956,19 @@ runScript(const string& scriptContents,
 
             return eRunFailed;
         }
+        if (isCmdExe(interpreter)) {
+            // "#!cmd" or "#!/usr/bin/env cmd": the rest of the script is a batch file, run as such (by the system's
+            // cmd.exe, with the quoting of the arguments for batch files): "cmd.exe script args" would not run it,
+            // and "cmd.exe /c script args" would quote the arguments for CommandLineToArgvW, which allows command
+            // injection. The options are ignored, and the shebang line is replaced with an empty line, so that the
+            // line numbers are unchanged.
+            interpreter.clear();
+            options.clear();
+            const size_t eol = script.find('\n');
+            script = (eol == string::npos) ? string() : script.substr(eol);
+        }
+    }
+    if (!interpreter.empty()) {
         extension = scriptExtension(interpreter);
         data = script;
     } else {

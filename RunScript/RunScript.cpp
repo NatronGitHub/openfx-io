@@ -33,7 +33,9 @@
 #else
 #define DBG(x) (void)0
 #endif
+#include <cerrno>
 #include <cstdlib>
+#include <cstring> // strerror
 #include <sstream>
 #include <stdio.h> // for snprintf & _snprintf
 #include <string>
@@ -50,6 +52,8 @@
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
 #include "ofxsCopier.h"
+
+#include "RunScriptOutput.h"
 
 #ifdef RUNSCRIPT_WIN32
 #include "RunScriptWin32.h"
@@ -84,7 +88,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass -File`, but not `cmd /c` or `powershell -Command`). " \
     "A path that contains spaces must be quoted: `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. " \
     "A program name without a directory is searched for in the directories of the PATH only (not in the current directory), with `.exe` or `.com` appended if needed; a relative path such as `bin\\prog.exe` is not allowed. " \
-    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH, not the WSL `bash.exe`. " \
+    "A Unix path is reduced to its file name, and `#!/usr/bin/env name` to `name`, and the system directory is then skipped, so that `#!/bin/sh` or `#!/bin/bash` runs the one found in the PATH, not the WSL `bash.exe`, " \
+    "except for `cmd`, `powershell` and `wsl`, which are then always taken from the system directory. " \
+    "With `#!cmd` or `#!/usr/bin/env cmd`, the rest of the script is run as a batch file (see above), and the options are ignored. " \
     "Git for Windows does not put its `sh` and `bash` in the PATH by default: add `C:\\Program Files\\Git\\bin` (or `Git\\usr\\bin`) to the PATH, or give the full path on the shebang line. " \
     "A `bash.exe` alias in `%LOCALAPPDATA%\\Microsoft\\WindowsApps` (WSL) may also be found in the PATH. " \
     "`python3` or `python` in the PATH may be the Microsoft Store installer stub: prefer `#!py -3` (the Python launcher) or a full path. " \
@@ -467,7 +473,7 @@ RunScriptPlugin::render(const RenderArguments& args)
         _script->getValue(script);
         unsigned long exitCode = 0;
         string error;
-        RunScriptWin32::RunResult r = RunScriptWin32::runScript(script, argv, &errors, &exitCode, &error, &runScriptAborted, this);
+        RunScriptWin32::RunResult r = RunScriptWin32::runScript(script, argv, &errors, &exitCode, &error, &runScriptAborted, static_cast<ImageEffect*>(this));
         if (r == RunScriptWin32::eRunAborted) {
             throwSuiteStatusException(kOfxStatFailed);
 
@@ -483,15 +489,36 @@ RunScriptPlugin::render(const RenderArguments& args)
         DBG(std::cout << "exit code: " << exitCode << std::endl);
         if (exitCode != 0) {
             failure = "exited with code " + std::to_string(exitCode);
+            if (exitCode >= 0xC0000000UL) {
+                // an NTSTATUS error code, e.g. 0xC0000005 (access violation) if it crashed
+                char hex[16];
+                snprintf(hex, sizeof(hex), "%08lX", exitCode);
+                failure += string(" (0x") + hex + ")";
+            }
         }
     }
 #else
-    redi::ipstream in(scriptname, argv, redi::pstreambuf::pstderr | redi::pstreambuf::pstderr);
-    string errmsg;
-    while (std::getline(in, errmsg)) {
-        errors.push_back(errmsg);
-        DBG(std::cout << "output: " << errmsg << std::endl);
+    redi::ipstream in(scriptname, argv, redi::pstreambuf::pstderr);
+    if (!in.rdbuf()->is_open()) {
+        // fork() or exec() failed (pstream gets the errno of execvp() from the child): e.g. the interpreter on the
+        // shebang line does not exist (ENOENT), or /tmp is mounted noexec (EACCES)
+        const int err = in.rdbuf()->error();
+        (void)unlink(scriptname);
+        string msg = string("RunScript: cannot execute ") + scriptname + ": " + (err ? std::strerror(err) : "unknown error");
+        if (err == ENOENT) {
+            msg += " (check the interpreter on the first line of the script)";
+        }
+        setPersistentMessage(Message::eMessageError, "", msg);
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
     }
+    {
+        // not std::getline(): a lone '\r' (progress output) starts the line again, and a long line is cut
+        RunScriptOutput::LineCollector lines(&errors);
+        RunScriptOutput::readAll(in.rdbuf(), &lines);
+    }
+    DBG(for (size_t i = 0; i < errors.size(); ++i) std::cout << "output: " << errors[i] << std::endl);
     // wait for the script, and get its exit status
     in.close();
     const int status = in.rdbuf()->status();
@@ -512,9 +539,10 @@ RunScriptPlugin::render(const RenderArguments& args)
         string msg = "The script " + failure + ".";
         if (!errors.empty()) {
             const size_t kLastLines = 5;
+            const size_t kMaxLineBytes = 500;
             msg += " Last lines of its standard error:";
             for (size_t i = errors.size() > kLastLines ? errors.size() - kLastLines : 0; i < errors.size(); ++i) {
-                msg += "\n" + errors[i];
+                msg += "\n" + RunScriptOutput::truncateUtf8(errors[i], kMaxLineBytes);
             }
         }
         setPersistentMessage(Message::eMessageWarning, "", msg);

@@ -104,7 +104,7 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32,)
 
 .PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test oiio_threadpool_test
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test runscript_output_test oiio_threadpool_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -156,8 +156,11 @@ ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
-runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h
+runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h ../RunScript/RunScriptOutput.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
+
+runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h ../RunScript/pstream.h
+	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
 test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads
@@ -179,9 +182,11 @@ test-ofx: ofx_entrypoints_test ofx_actions_test
 test-render: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov
 
-# RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70)
-test-runscript: runscript_win32_test
+# RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70);
+# on all systems: splitting the script's stderr into lines, with bounded memory (#111)
+test-runscript: runscript_win32_test runscript_output_test
 	./runscript_win32_test
+	./runscript_output_test
 
 # ReadOIIO's EXR channel name -> view/layer mapping (multi-view EXRs, #75)
 test-layers: oiio_layers_test
@@ -208,4 +213,4 @@ clean:
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \
-	       runscript_win32_test runscript_win32_test.dSYM
+	       runscript_win32_test runscript_win32_test.dSYM runscript_output_test runscript_output_test.dSYM

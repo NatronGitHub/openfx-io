@@ -7,7 +7,8 @@
  * (parsed from GetCommandLineW() with the MSVC runtime rules, as UTF-8, each followed by a NUL) to that file,
  * prints two lines to stderr, and exits with code 3. It also checks command-injection canaries in batch files,
  * the interpreter search (PATH only, not the current directory), "x.bat." (CVE-2024-43402), a process started
- * with "start" that keeps stderr open, and abort.
+ * with "start" that keeps stderr open, and abort. When RUNSCRIPT_TEST_MODE is set, the child instead floods stderr
+ * ("flood"), or prints "\r"-only progress output ("cr"), to test abort and the line splitting (#111).
  *
  * On other systems, it does nothing (RunScript uses pstream there).
  */
@@ -22,6 +23,7 @@
 #include <shellapi.h>
 
 #include <cstdio>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -156,6 +158,51 @@ childMain(const wstring& outFile)
     return 3;
 }
 
+// RUNSCRIPT_TEST_MODE=flood: write to stderr as fast as possible, until killed
+// RUNSCRIPT_TEST_MODE=cr: 100000 "\r"-terminated progress lines then "frame=last" without a line break, a 200 KB line,
+// and "after"; exit code 1
+static int
+childModeMain(const wstring& mode)
+{
+    if (mode == L"flood") {
+        static char buf[65536];
+        for (size_t i = 0; i < sizeof(buf); ++i) {
+            buf[i] = (i % 2) ? '\n' : 'y';
+        }
+        for (;;) {
+            if (std::fwrite(buf, 1, sizeof(buf), stderr) != sizeof(buf)) {
+                return 1;
+            }
+        }
+    }
+    if (mode == L"cr") {
+        std::setvbuf(stderr, NULL, _IOFBF, 65536);
+        std::fputs(string(200000, 'x').c_str(), stderr);
+        std::fputs("\nafter\n", stderr);
+        for (int i = 0; i < 100000; ++i) {
+            std::fprintf(stderr, "frame=%d\r", i);
+        }
+        std::fputs("frame=last", stderr);
+        std::fflush(stderr);
+
+        return 1;
+    }
+
+    return 2;
+}
+
+static int gModeAbortPolls = 0;
+static DWORD gAbortTick = 0;
+
+// abort 300 ms after gAbortTick
+static bool
+abortAfter300ms(void*)
+{
+    ++gModeAbortPolls;
+
+    return (GetTickCount() - gAbortTick) > 300;
+}
+
 static vector<string>
 readChildArgs(const wstring& outFile)
 {
@@ -240,6 +287,17 @@ cleared(string& s)
 
 static int gAbortPolls = 0;
 
+static wstring
+toLowerW(const wstring& s)
+{
+    wstring l(s);
+    for (size_t i = 0; i < l.size(); ++i) {
+        l[i] = (wchar_t)towlower(l[i]);
+    }
+
+    return l;
+}
+
 static bool
 abortAfterAFewPolls(void*)
 {
@@ -250,7 +308,11 @@ int
 main()
 {
     wchar_t buf[32768];
-    DWORD n = GetEnvironmentVariableW(L"RUNSCRIPT_TEST_OUT", buf, 32768);
+    DWORD n = GetEnvironmentVariableW(L"RUNSCRIPT_TEST_MODE", buf, 32768);
+    if (n > 0 && n < 32768) {
+        return childModeMain(wstring(buf, n));
+    }
+    n = GetEnvironmentVariableW(L"RUNSCRIPT_TEST_OUT", buf, 32768);
     if (n > 0 && n < 32768) {
         return childMain(wstring(buf, n));
     }
@@ -452,6 +514,78 @@ main()
         dt = GetTickCount() - t0;
         CHECK(r == eRunAborted, "aborted");
         CHECK(dt < 5000, ("abort is quick (" + std::to_string(dt) + " ms)").c_str());
+    }
+
+    // 8. abort while the child floods stderr, and "\r"-only progress output (#111)
+    std::printf("stderr flood and progress output:\n");
+    {
+        wstring app, cmd;
+        string error;
+        vector<string> errLines;
+        unsigned long code = 0;
+        SetEnvironmentVariableW(L"RUNSCRIPT_TEST_MODE", L"flood");
+        bool built = buildCommandLine(self, L"", vector<wstring>(), &app, &cmd, &cleared(error));
+        CHECK(built, ("command line: " + error).c_str());
+        gAbortTick = GetTickCount();
+        RunResult r = built ? runProcess(app, cmd, &errLines, &code, &cleared(error), &abortAfter300ms, NULL) : eRunFailed;
+        DWORD dt = GetTickCount() - gAbortTick;
+        CHECK(r == eRunAborted, ("aborted while flooding stderr: " + error).c_str());
+        CHECK(dt < 3000, ("abort is honoured within 3 s while flooding stderr (" + std::to_string(dt) + " ms, " + std::to_string(gModeAbortPolls) + " polls)").c_str());
+        CHECK(!errLines.empty() && errLines.size() <= 2000 && errLines.back().size() <= 1,
+              ("stderr lines kept are bounded (" + std::to_string(errLines.size()) + ")").c_str());
+
+        errLines.clear();
+        SetEnvironmentVariableW(L"RUNSCRIPT_TEST_MODE", L"cr");
+        r = built ? runProcess(app, cmd, &errLines, &code, &cleared(error)) : eRunFailed;
+        CHECK(r == eRunOK && code == 1, ("progress output: started: " + error).c_str());
+        CHECK(errLines.size() == 3 && errLines[0] == string(64 * 1024, 'x') + "..." && errLines[1] == "after" && errLines[2] == "frame=last",
+              ("long line cut, lone \\r keeps the last segment: " + std::to_string(errLines.size()) + " lines"
+               + (errLines.empty() ? string() : ", last [" + errLines.back().substr(0, 40) + "]"))
+                  .c_str());
+        SetEnvironmentVariableW(L"RUNSCRIPT_TEST_MODE", NULL);
+    }
+
+    // 9. "#!/usr/bin/env cmd": cmd.exe from the system directory (#111), running the rest as a batch file
+    std::printf("#!/usr/bin/env cmd:\n");
+    {
+        wchar_t sysdir[MAX_PATH + 1];
+        UINT sn = GetSystemDirectoryW(sysdir, MAX_PATH + 1);
+        const wstring sys(sysdir, sn);
+        wstring path;
+        string error;
+        bool ok = resolveProgram(L"cmd", true, &path, &cleared(error));
+        CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\cmd.exe").c_str()) == 0, ("a Unix-style \"cmd\" is the system's cmd.exe: " + wideToUtf8(path) + error).c_str());
+        ok = resolveProgram(L"powershell", true, &path, &cleared(error));
+        CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\WindowsPowerShell\\v1.0\\powershell.exe").c_str()) == 0,
+              ("a Unix-style \"powershell\" is the system's powershell.exe: " + wideToUtf8(path) + error).c_str());
+        // bash is still not taken from the system directory (WSL's bash.exe)
+        ok = resolveProgram(L"bash", true, &path, &cleared(error));
+        CHECK(!ok || toLowerW(path).compare(0, sys.size() + 1, toLowerW(sys + L"\\")) != 0,
+              ("a Unix-style \"bash\" is not taken from the system directory: " + (ok ? wideToUtf8(path) : error)).c_str());
+
+        // a cmd.exe planted earlier in the PATH is not used
+        const wstring dirPath = tmp + L"rs_test_cmd";
+        CreateDirectoryW(dirPath.c_str(), NULL);
+        CopyFileW(self.c_str(), (dirPath + L"\\cmd.exe").c_str(), FALSE);
+        n = GetEnvironmentVariableW(L"PATH", buf, 32768);
+        const wstring oldPath(buf, n);
+        SetEnvironmentVariableW(L"PATH", (dirPath + L";" + oldPath).c_str());
+        ok = resolveProgram(L"cmd", true, &path, &cleared(error));
+        CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\cmd.exe").c_str()) == 0, ("not a cmd.exe earlier in the PATH: " + wideToUtf8(path) + error).c_str());
+
+        vector<string> args = commonArgs(true);
+        vector<string> errLines;
+        unsigned long code = 0;
+        RunResult r = runScript("#!/usr/bin/env cmd /c\n@echo off\n\"%RUNSCRIPT_TEST_EXE%\" %*\nexit /b %ERRORLEVEL%\n", args, &errLines, &code, &cleared(error));
+        CHECK(r == eRunOK, ("started" + (r == eRunOK ? string() : ": " + error)).c_str());
+        vector<string> got = readChildArgs(outFile);
+        CHECK(got == args, ("run as a batch file, arguments: " + show(got)).c_str());
+        CHECK(code == 3, ("exit code 3 (got " + std::to_string(code) + ")").c_str());
+        CHECK(!markerExists(), "no command injection (marker file absent)");
+
+        SetEnvironmentVariableW(L"PATH", oldPath.c_str());
+        DeleteFileW((dirPath + L"\\cmd.exe").c_str());
+        RemoveDirectoryW(dirPath.c_str());
     }
 
     DeleteFileW(gMarker.c_str());

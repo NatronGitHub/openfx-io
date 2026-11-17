@@ -13,7 +13,7 @@ make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
-make test-runscript # RunScript on MS Windows: quoting, program/batch/shebang launch (no-op elsewhere)
+make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 ```
 
