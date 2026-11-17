@@ -269,10 +269,14 @@ OfxStatus msg(void*, const char* type, const char*, const char* fmt, ...)
   va_start(a, fmt); recordMessage(type, fmt, a); va_end(a); return kOfxStatOK; }
 OfxMessageSuiteV1 gMsgSuite = { msg };
 
+// The current persistent error message of the plug-in, if any (cleared by clearPersistentMessage).
+std::string gPersistentError;
 OfxStatus msgPersist(void*, const char* type, const char*, const char* fmt, ...)
 { va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
-  va_start(a, fmt); recordMessage(type, fmt, a); va_end(a); return kOfxStatOK; }
-OfxStatus msgClear(void*) { return kOfxStatOK; }
+  va_start(a, fmt); recordMessage(type, fmt, a); va_end(a);
+  if (type && !std::strcmp(type, kOfxMessageError)) { char buf[4096]; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a); gPersistentError = buf; } else { gPersistentError.clear(); }
+  return kOfxStatOK; }
+OfxStatus msgClear(void*) { gPersistentError.clear(); return kOfxStatOK; }
 OfxMessageSuiteV2 gMsgSuiteV2 = { msg, msgPersist, msgClear };
 
 OfxStatus itSwap(OfxInteractHandle) { return kOfxStatOK; }
