@@ -127,7 +127,7 @@ binB=$(binary_of "$B")
 for bin in "$binA" "$binB"; do
     case $bin in *$'\n'*)
         echo "error: more than one Contents/<arch>/*.ofx binary (only single-binary bundles are supported):"
-        printf '  %s\n' "$bin"
+        printf '%s\n' "$bin" | sed -e 's/^/  /'
         exit 2 ;;
     esac
 done
@@ -155,7 +155,7 @@ files() { # relative path, type and link target of every file, including the mac
 plist() { cat "$1/Contents/Info.plist"; }
 resources() {
     [ -d "$1/Contents/Resources" ] || { echo "(no Resources)"; return 0; }
-    (cd "$1/Contents" && find Resources -type f | LC_ALL=C sort | { st=0; while IFS= read -r f; do sha256 "$f" || st=1; done; exit "$st"; })
+    (cd "$1/Contents" && find Resources ! -type d | LC_ALL=C sort | { st=0; while IFS= read -r f; do sha256 "$f" || st=1; done; exit "$st"; })
 }
 mode() { mode_of "$2"; }
 
@@ -169,16 +169,20 @@ compare binary-mode mode
 echo
 echo "== binary"
 if [ "$os" = Darwin ]; then
-    if need nm otool file; then
+    if need nm otool; then
         exports() { nm -gU "$2" | awk '{print $NF}' | LC_ALL=C sort; }
-        # otool prints a header line ending in ':' per file, or per architecture in universal binaries
-        libs() { otool -L "$2" | sed -e '/:$/d' | awk '{print $1}' | LC_ALL=C sort -u; }
-        rpaths() { otool -l "$2" | awk '/LC_RPATH/{getline; getline; print $2}'; }
+        # otool prints a header line ending in ':' per file, or per architecture in universal binaries: prefix
+        # each line with its architecture (if any), so that a library or rpath missing in one slice shows
+        # shellcheck disable=SC2016 # awk code
+        archs='/:$/ { arch = ""; if (match($0, /\(architecture [^)]*\)/)) arch = substr($0, RSTART + 14, RLENGTH - 15) " "; next }'
+        libs() { otool -L "$2" | awk "$archs"' { print arch $1 }' | LC_ALL=C sort -u; }
+        rpaths() { otool -l "$2" | awk "$archs"' /LC_RPATH/ { getline; getline; print arch $2 }'; }
         # absolute library references and rpaths outside the bundle and the system, in every Mach-O file of the bundle
         # (a library's own install name, otool -D, isn't a reference)
         outside() {
             local f id deps rp
             find "$1/Contents" -type f -print | LC_ALL=C sort | { st=0; while IFS= read -r f; do
+                [ -r "$f" ] || { echo "unreadable: $f" >&2; st=1; continue; }
                 file -b "$f" | grep Mach-O >/dev/null || continue
                 id=$(otool -D "$f" | sed -e '/:$/d' | sed -n 1p) || st=1
                 deps=$(otool -L "$f" | sed -e '/:$/d' | awk '{print $1}') || st=1
@@ -192,7 +196,11 @@ if [ "$os" = Darwin ]; then
         compare rpath rpaths
         echo
         echo "== self-containment (each bundle on its own)"
-        problems outside-references outside
+        if need file; then
+            problems outside-references outside
+        else
+            echo "  SKIPPED: outside references"
+        fi
     else
         echo "  SKIPPED: exported symbols, linked libraries, rpath, outside references"
     fi
