@@ -25,9 +25,11 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdio> // fopen...
+#include <locale>
 #include <sstream> // std::ostringstream
 
 #include "IOUtility.h"
+#include "ofxsFileOpen.h"
 #include "ofxNatron.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
@@ -147,6 +149,7 @@ public:
 
     /* override changedParam */
     virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
+    void exportCDL(double time, const string& exportName);
 
     /* override changed clip */
     virtual void changedClip(const InstanceChangedArgs& args, const string& clipName) OVERRIDE FINAL;
@@ -1033,6 +1036,86 @@ OCIOCDLTransformPlugin::beginEdit()
     }
 }
 
+// write the grade at time to a new ColorCorrection XML file (.cc), or report why it can't be written
+void
+OCIOCDLTransformPlugin::exportCDL(double time,
+                                  const string& exportName)
+{
+    if (exportName.empty()) {
+        sendMessage(Message::eMessageError, "", "Export file name is empty, please enter a valid non-existing file name.");
+
+        return;
+    }
+    if (_direction->getValueAtTime(time) != 0) {
+        // the .cc format has no direction: the file would apply the forward grade
+        sendMessage(Message::eMessageError, "", "The ColorCorrection (.cc) format cannot express an inverse grade: set Direction to Forward to export this grade.");
+
+        return;
+    }
+    double slope_r, slope_g, slope_b;
+    _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
+    double offset_r, offset_g, offset_b;
+    _offset->getValueAtTime(time, offset_r, offset_g, offset_b);
+    double power_r, power_g, power_b;
+    _power->getValueAtTime(time, power_r, power_g, power_b);
+    double saturation;
+    _saturation->getValueAtTime(time, saturation);
+
+    string xml; // the grade, as a ColorCorrection XML file
+    try {
+        AutoSetAndRestoreThreadLocale locale;
+        OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
+        if (!config) {
+            throw std::runtime_error("OCIO: no current config");
+        }
+        OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
+#if OCIO_VERSION_HEX >= 0x02000000
+        double sop[9] = { slope_r, slope_g, slope_b, offset_r, offset_g, offset_b, power_r, power_g, power_b };
+#else
+        float sop[9] = { (float)slope_r, (float)slope_g, (float)slope_b, (float)offset_r, (float)offset_g, (float)offset_b,
+                         (float)power_r, (float)power_g, (float)power_b };
+#endif
+        cc->setSOP(sop);
+#if OCIO_VERSION_HEX >= 0x02000000
+        cc->setSat(saturation); // a double: write 0.7, not 0.699999988079071
+#else
+        cc->setSat((float)saturation);
+#endif
+        cc->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
+
+#if OCIO_VERSION_HEX >= 0x02000000
+        // the same ColorCorrection XML (.cc) as OCIO 1's CDLTransform::getXML()
+        OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
+        g->appendTransform(cc);
+        std::ostringstream os;
+        os.imbue(std::locale::classic());
+        g->write(config, "ColorCorrection", os);
+        xml = os.str();
+#else
+        xml = cc->getXML();
+#endif
+    } catch (const std::exception& e) {
+        sendMessage(Message::eMessageError, "", string("Cannot export the grade: ") + e.what());
+
+        return;
+    }
+    // "x": create a new file, never overwrite an existing one (C11; glibc, macOS, MSVCRT/UCRT)
+    std::FILE* file = OFX::fopen_utf8(exportName.c_str(), "wx");
+    if (!file) {
+        if (OFX::exists_utf8(exportName.c_str())) {
+            sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
+        } else {
+            sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
+        }
+
+        return;
+    }
+    const bool written = std::fputs(xml.c_str(), file) >= 0;
+    if ((std::fclose(file) != 0) || !written) {
+        sendMessage(Message::eMessageError, "", string("Error while writing file ") + exportName);
+    }
+} // OCIOCDLTransformPlugin::exportCDL
+
 void
 OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
                                      const string& paramName)
@@ -1059,105 +1142,9 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
     } else if ((paramName == kParamExport) && (args.reason == eChangeUserEdit)) {
         string exportName;
         _export->getValueAtTime(args.time, exportName);
-        // if file already exists, don't overwrite it
-        if (exportName.empty()) {
-            sendMessage(Message::eMessageError, "", "Export file name is empty, please enter a valid non-existing file name.");
-        } else {
-            std::FILE* file = std::fopen(exportName.c_str(), "r");
-            if (file) {
-                std::fclose(file);
-                sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
-            } else if (_direction->getValueAtTime(args.time) != 0) {
-                // the .cc format has no direction: the file would apply the forward grade
-                sendMessage(Message::eMessageError, "", "The ColorCorrection (.cc) format cannot express an inverse grade: set Direction to Forward to export this grade.");
-            } else {
-                const double time = args.time;
-                double slope_r, slope_g, slope_b;
-                _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
-                double offset_r, offset_g, offset_b;
-                _offset->getValueAtTime(time, offset_r, offset_g, offset_b);
-                double power_r, power_g, power_b;
-                _power->getValueAtTime(time, power_r, power_g, power_b);
-                double saturation;
-                _saturation->getValueAtTime(time, saturation);
-                int _directioni;
-                _direction->getValueAtTime(time, _directioni);
-
-                string xml; // the grade, as a ColorCorrection XML file
-                try {
-                    AutoSetAndRestoreThreadLocale locale;
-                    OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
-                    if (!config) {
-                        throw std::runtime_error("OCIO: no current config");
-                    }
-                    OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
-#if OCIO_VERSION_HEX >= 0x02000000
-                    double sop[9] = {
-                        slope_r,
-                        slope_g,
-                        slope_b,
-                        offset_r,
-                        offset_g,
-                        offset_b,
-                        power_r,
-                        power_g,
-                        power_b
-                    };
-#else
-                    float sop[9] = {
-                        (float)slope_r,
-                        (float)slope_g,
-                        (float)slope_b,
-                        (float)offset_r,
-                        (float)offset_g,
-                        (float)offset_b,
-                        (float)power_r,
-                        (float)power_g,
-                        (float)power_b
-                    };
-#endif
-                    cc->setSOP(sop);
-                    cc->setSat((float)saturation);
-
-                    if (_directioni == 0) {
-                        cc->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
-                    } else {
-                        cc->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
-                    }
-
-#if OCIO_VERSION_HEX >= 0x02000000
-                    // the same ColorCorrection XML (.cc) as OCIO 1's CDLTransform::getXML()
-                    OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
-                    g->appendTransform(cc);
-                    std::ostringstream os;
-                    g->write(config, "ColorCorrection", os);
-                    xml = os.str();
-#else
-                    xml = cc->getXML();
-#endif
-                } catch (const std::exception& e) {
-                    setPersistentMessage(Message::eMessageError, "", e.what());
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
-                }
-                file = std::fopen(exportName.c_str(), "w");
-                if (!file) {
-                    sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
-                }
-                const bool written = std::fputs(xml.c_str(), file) >= 0;
-                if ((std::fclose(file) != 0) || !written) {
-                    sendMessage(Message::eMessageError, "", string("Error while writing file ") + exportName);
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
-                }
-            }
-        }
-
+        // Export is a side effect: errors are reported with sendMessage() (not a persistent message, which would
+        // stop rendering), and the param is always reset to its default
+        exportCDL(args.time, exportName);
         // reset back to default
         _export->setValue(kParamExportDefault);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)

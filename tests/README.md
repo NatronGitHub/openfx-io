@@ -145,7 +145,13 @@ of `ofx_test_host.h`, in the Filter context:
   ColorCorrection XML that an OCIO `FileTransform` reads back as a CDL with the
   same values, no error must be reported, and the param must be reset to its default;
 * exporting to an existing file must report an error, leave the file unchanged, and
-  reset the param.
+  reset the param;
+* exporting an inverse grade (which a .cc file can't express) must report an error and
+  write no file;
+* exporting to a file that can't be created must report an error, without a persistent
+  message (which would stop rendering), and reset the param.
+
+The test itself needs OCIO >= 2 (it reads the file back with `Processor::createGroupTransform()`).
 
 With OCIO 2, Export used to fail (`GroupTransform::write()` with a nonexistent "CDL"
 format, on an empty group), leaving an empty file. It sets `OCIO=test.ocio`.

@@ -137,15 +137,16 @@ reader_hooks_test: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(
 # ../Makefile.master (OCIOPluginBase.cpp needs it) and its OCIO_OPENGL_OBJS
 OCIO_CDL_SRCS := ../OCIO/OCIOCDLTransform.cpp ../OCIO/OCIOPluginBase.cpp \
     ../IOSupport/GenericOCIO.cpp ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp \
-    ../SupportExt/glad/glad.cpp ../SupportExt/ofxsOGLUtilities.cpp \
-    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp
+    ../SupportExt/glad/glad.cpp ../SupportExt/glad/gladegl.cpp ../SupportExt/ofxsOGLUtilities.cpp \
+    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp ../SupportExt/ofxsFileOpen.cpp
 OCIO_CDL_CXXFLAGS := -DOFX_SUPPORTS_OPENGLRENDER -I../OCIO -I../SupportExt/glad -I../openfx/Support/Plugins/include
 ifeq ($(OS),Windows_NT)
   OCIO_CDL_LIBS := -lopengl32
 else ifeq ($(shell uname -s),Darwin)
   OCIO_CDL_LIBS := -framework OpenGL
 else
-  OCIO_CDL_LIBS := -lGL
+  # glad's loaders use dlopen(), in libdl before glibc 2.34
+  OCIO_CDL_LIBS := -lGL -ldl
 endif
 
 ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)

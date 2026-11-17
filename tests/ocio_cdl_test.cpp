@@ -4,7 +4,8 @@
  * Setting the Export string param (a user edit) must write the grade as a ColorCorrection
  * XML file (.cc) that OCIO reads back with the same slope, offset, power and saturation,
  * must not overwrite an existing file, must refuse an inverse grade (which a .cc file can't
- * express), and must reset the param to its default.
+ * express), must report errors without a persistent message (which would stop rendering),
+ * and must reset the param to its default in every case.
  * (With OCIO >= 2, Export used to fail: GroupTransform::write() was called with a
  * nonexistent "CDL" format on an empty group, leaving an empty file, and the error path
  * called fclose(NULL).)
@@ -149,7 +150,7 @@ readCDL(const std::string& filename, std::string* error)
 }
 
 bool
-near(double a, double b)
+closeEnough(double a, double b)
 {
     return std::fabs(a - b) <= 1e-5;
 }
@@ -164,6 +165,7 @@ testExport(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
     OfxStatus st = exportTo(p, ctx, inst, filename);
     check(ok(st), "instanceChanged(export) returns OK (status %d)", st);
     check(gMessages.empty(), "no error message (got \"%s\")", gMessages.c_str());
+    check(gPersistentError.empty(), "no persistent error (got \"%s\")", gPersistentError.c_str());
     check(fileExists(filename), "%s exists", filename.c_str());
     const std::string xml = fileContents(filename);
     check(xml.find("<ColorCorrection") != std::string::npos, "the file is a ColorCorrection XML (%zu bytes)", xml.size());
@@ -175,11 +177,11 @@ testExport(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
         cdl->getSOP(sop);
         bool same = true;
         for (int c = 0; c < 3; ++c) {
-            same = same && near(sop[c], kSlope[c]) && near(sop[3 + c], kOffset[c]) && near(sop[6 + c], kPower[c]);
+            same = same && closeEnough(sop[c], kSlope[c]) && closeEnough(sop[3 + c], kOffset[c]) && closeEnough(sop[6 + c], kPower[c]);
         }
         check(same, "slope (%g %g %g), offset (%g %g %g), power (%g %g %g) read back",
               sop[0], sop[1], sop[2], sop[3], sop[4], sop[5], sop[6], sop[7], sop[8]);
-        check(near(cdl->getSat(), kSaturation), "saturation %g read back", cdl->getSat());
+        check(closeEnough(cdl->getSat(), kSaturation), "saturation %g read back", cdl->getSat());
         check(cdl->getDirection() == OCIO::TRANSFORM_DIR_FORWARD, "direction forward");
     }
     check(exportValue(ctx) == kParamExportDefault, "Export param reset to its default (\"%s\")", exportValue(ctx).c_str());
@@ -219,6 +221,20 @@ testInverse(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
     check(exportValue(ctx) == kParamExportDefault, "Export param reset to its default (\"%s\")", exportValue(ctx).c_str());
     setOverrideInt(&ctx, "direction", 0);
     std::remove(filename.c_str());
+}
+
+void
+testUnwritable(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
+{
+    std::printf("==== Export to a file that can't be created ====\n");
+    const std::string filename = dir + "/no such directory/grade.cc";
+    gMessages.clear();
+    gPersistentError.clear();
+    OfxStatus st = exportTo(p, ctx, inst, filename);
+    check(ok(st), "instanceChanged(export) returns OK (status %d)", st);
+    check(gMessages.find("cannot be written") != std::string::npos, "error message: cannot be written (got \"%s\")", gMessages.c_str());
+    check(gPersistentError.empty(), "no persistent error, which would stop rendering (got \"%s\")", gPersistentError.c_str());
+    check(exportValue(ctx) == kParamExportDefault, "Export param reset to its default (\"%s\")", exportValue(ctx).c_str());
 }
 
 } // namespace
@@ -273,6 +289,7 @@ main(int, char**)
     testExport(p, ctx, inst, dir);
     testExistingFile(p, ctx, inst, dir);
     testInverse(p, ctx, inst, dir);
+    testUnwritable(p, ctx, inst, dir);
 
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
