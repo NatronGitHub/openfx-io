@@ -27,6 +27,7 @@
 
 #include "IOUtility.h"
 #include <memory>
+#include <stdexcept>
 #include <ofxsImageEffect.h>
 #include <ofxsMacros.h>
 
@@ -138,6 +139,16 @@ public:
         eBeforeAfterError,
     };
 
+    // Options of the kParamOnMissingFrame ("onMissingFrame") choice param, in order.
+    // Do not reorder: the value is saved in projects.
+    enum MissingEnum {
+        eMissingPrevious,
+        eMissingNext,
+        eMissingNearest,
+        eMissingError, // the default
+        eMissingBlack,
+    };
+
 protected:
     /**
      * @brief Called from changedParam() when kParamFilename is changed for any reason other than eChangeTime.
@@ -148,6 +159,23 @@ protected:
     virtual void changedFilename(const OFX::InstanceChangedArgs& args);
 
     OFX::ChoiceParam* _missingFrameParam; //< what to do on missing frame
+
+    /**
+     * @brief Thrown by decode() or decodePlane() when the frame is missing from the file (e.g. a frame
+     * outside of a video stream) and kParamOnMissingFrame is Black (eMissingBlack). render() catches it and
+     * fills the render window of every output plane with transparent black (0,0,0,0), as for a missing
+     * file in an image sequence: no colorspace conversion, no opaque alpha.
+     * A frame that is in the file but fails to decode is an error, whatever kParamOnMissingFrame.
+     **/
+    class MissingFrameBlackException
+        : public std::runtime_error
+    {
+    public:
+        MissingFrameBlackException()
+            : std::runtime_error("Missing frame")
+        {
+        }
+    };
 
     OfxStatus getFilenameAtTime(double t, std::string* filename) const;
 
@@ -320,8 +348,10 @@ private:
 
     /**
      * @brief Returns the filename of the image at the sequence time t.
+     * time is the host time, at which animated params (kParamOnMissingFrame) are evaluated.
      **/
-    GetFilenameRetCodeEnum getFilenameAtSequenceTime(double t,
+    GetFilenameRetCodeEnum getFilenameAtSequenceTime(double time,
+                                                     double t,
                                                      bool proxyFiles,
                                                      bool checkForExistingFile,
                                                      std::string* filename) const WARN_UNUSED_RETURN;

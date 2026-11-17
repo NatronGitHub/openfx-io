@@ -114,7 +114,11 @@ public:
 
     virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
-    bool loadNearestFrame() const;
+    // value of kParamOnMissingFrame at the given time
+    MissingEnum getMissingFrame(OfxTime time) const;
+
+    // whether FFmpegFile::decode() should load the nearest frame if the frame is missing
+    static bool loadNearestFrame(MissingEnum missingFrame);
 
     /**
      * @brief Restore any state from the parameters set
@@ -192,14 +196,40 @@ ReadFFmpegPlugin::restoreStateFromParams()
     //_manager.getOrCreate(this, filename);
 }
 
-bool
-ReadFFmpegPlugin::loadNearestFrame() const
+GenericReaderPlugin::MissingEnum
+ReadFFmpegPlugin::getMissingFrame(OfxTime time) const
 {
-    int v;
+    // kParamOnMissingFrame animates
+    int v = _missingFrameParam->getValueAtTime(time);
 
-    _missingFrameParam->getValue(v);
+    if ((v < eMissingPrevious) || (eMissingBlack < v)) {
+        return eMissingError;
+    }
 
-    return v == 0;
+    return (MissingEnum)v;
+}
+
+// FFmpegFile::decode() can only clamp a frame outside of the stream to its first
+// or last frame ("load nearest"). GenericReader, for image sequences, searches
+// for an existing file in one direction (previous or next) or both (nearest).
+// For a video, the only missing frames are before the first frame or after the
+// last one, so "Load nearest" is exact, but "Hold previous" before the first frame
+// and "Load next" after the last frame also load the nearest (first or last)
+// frame, where an image sequence would fail.
+bool
+ReadFFmpegPlugin::loadNearestFrame(MissingEnum missingFrame)
+{
+    switch (missingFrame) {
+    case eMissingPrevious:
+    case eMissingNext:
+    case eMissingNearest:
+        return true;
+    case eMissingError:
+    case eMissingBlack:
+        break;
+    }
+
+    return false;
 }
 
 static string
@@ -339,6 +369,7 @@ ReadFFmpegPlugin::decode(const string& filename,
 
     if (file && file->isInvalid()) {
         setPersistentMessage(Message::eMessageError, "", file->getError());
+        throwSuiteStatusException(kOfxStatFailed);
 
         return;
     }
@@ -360,7 +391,8 @@ ReadFFmpegPlugin::decode(const string& filename,
         return;
     }
 
-    bool firstTrackOnly = _firstTrackOnly->getValueAtTime(time);
+    // kParamFirstTrackOnly does not animate (and time is the sequence time, not the host time)
+    bool firstTrackOnly = _firstTrackOnly->getValue();
     if (firstTrackOnly) {
         view = 0;
     }
@@ -403,31 +435,41 @@ ReadFFmpegPlugin::decode(const string& filename,
     }
     // this is the first stream (in fact the only one we consider for now), allocate the output buffer according to the bitdepth
 
+    // Same semantics as GenericReaderPlugin::render() for an image sequence, where a frame is
+    // missing if its file does not exist. Here, a frame is missing if it is outside of the movie:
+    // - Error sets a persistent message and fails,
+    // - Black throws MissingFrameBlackException: render() fills the output with transparent black,
+    // - Previous/Next/Nearest load the nearest frame (see loadNearestFrame()).
+    // A frame inside the movie that fails to decode is an error, whatever the option, as an
+    // existing file that cannot be read in an image sequence.
+    // kParamOnMissingFrame animates: evaluate it at the render time, not at the sequence time.
+    const MissingEnum missingFrame = getMissingFrame(getRenderTime());
+    string error;
     try {
-        if (!file->decode(this, (int)time, loadNearestFrame(), buffer)) {
-            if (abort()) {
-                // decode() probably existed because plugin was aborted
-                return;
-            }
-            setPersistentMessage(Message::eMessageError, "", file->getError());
-            throwSuiteStatusException(kOfxStatFailed);
+        if (file->decode(this, (int)time, loadNearestFrame(missingFrame), buffer)) {
+            convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
 
             return;
         }
+        if (abort()) {
+            // decode() probably exited because plugin was aborted
+            return;
+        }
+        error = file->getError();
+    } catch (const FFmpegFile::MissingFrameException& e) {
+        // the frame is outside of the stream, and !loadNearestFrame(missingFrame)
+        if (missingFrame == eMissingBlack) {
+            throw MissingFrameBlackException();
+        }
+        error = e.what();
     } catch (const std::exception& e) {
-        int choice;
-        _missingFrameParam->getValue(choice);
-        if (choice == 1) { // error
-            setPersistentMessage(Message::eMessageError, "", e.what());
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
-
-        return;
+        error = e.what();
     }
-
-    convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+    if (error.empty()) {
+        error = "Cannot decode frame";
+    }
+    setPersistentMessage(Message::eMessageError, "", filename + ": " + error);
+    throwSuiteStatusException(kOfxStatFailed);
 } // ReadFFmpegPlugin::decode
 
 bool
@@ -493,7 +535,8 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
         return false;
     }
 
-    bool firstTrackOnly = _firstTrackOnly->getValueAtTime(time);
+    // kParamFirstTrackOnly does not animate (and time is the sequence time, not the host time)
+    bool firstTrackOnly = _firstTrackOnly->getValue();
     if (firstTrackOnly) {
         view = 0;
     }

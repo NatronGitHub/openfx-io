@@ -157,14 +157,6 @@ enum FrameModeEnum {
 
 #define kParamTimeDomainUserEdited "timeDomainUserEdited"
 
-enum MissingEnum {
-    eMissingPrevious,
-    eMissingNext,
-    eMissingNearest,
-    eMissingError,
-    eMissingBlack,
-};
-
 #define kReaderOptionHold "Hold", "While before the sequence, load the first frame.", "hold"
 #define kReaderOptionLoop "Loop", "Repeat the sequence before the first frame", "loop"
 #define kReaderOptionBounce "Bounce", "Repeat the sequence in reverse before the first frame", "bounce"
@@ -368,7 +360,7 @@ GenericReaderPlugin::refreshSubLabel(OfxTime time)
     GetSequenceTimeRetEnum getTimeRet = getSequenceTime(time, &sequenceTime);
     if ((getTimeRet == eGetSequenceTimeWithinSequence) || (getTimeRet == eGetSequenceTimeBeforeSequence) || (getTimeRet == eGetSequenceTimeAfterSequence)) {
         string filename;
-        GetFilenameRetCodeEnum getFileNameRet = getFilenameAtSequenceTime(sequenceTime, false, false, &filename);
+        GetFilenameRetCodeEnum getFileNameRet = getFilenameAtSequenceTime(time, sequenceTime, false, false, &filename);
         if (getFileNameRet == eGetFileNameReturnedFullRes) {
             _sublabel->setValue(basename(filename));
         } else {
@@ -753,13 +745,15 @@ checkIfFileExists(const string& path)
 }
 
 GenericReaderPlugin::GetFilenameRetCodeEnum
-GenericReaderPlugin::getFilenameAtSequenceTime(double sequenceTime,
+GenericReaderPlugin::getFilenameAtSequenceTime(double time,
+                                               double sequenceTime,
                                                bool proxyFiles,
                                                bool checkForExistingFile,
                                                string* filename) const
 {
     GetFilenameRetCodeEnum ret;
-    const MissingEnum missingFrame = (MissingEnum)_missingFrameParam->getValue();
+    // kParamOnMissingFrame animates: evaluate it at the host time, not at the sequence time
+    const MissingEnum missingFrame = (MissingEnum)_missingFrameParam->getValueAtTime(time);
     string filename0;
     bool filenameGood = true;
     int offset = 0;
@@ -865,7 +859,7 @@ GenericReaderPlugin::getFilenameAtTime(double t,
     case eGetSequenceTimeAfterSequence:
         break;
     }
-    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, filename);
+    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(t, sequenceTime, false, true, filename);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
 
@@ -1321,7 +1315,7 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& ar
 
     /*We don't want to use the proxy image for the region of definition*/
     string filename;
-    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, &filename);
+    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &filename);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
         if (_syncClip && _syncClip->isConnected()) {
@@ -1619,7 +1613,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
     }
 
     string filename;
-    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, &filename);
+    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &filename);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
         setPersistentMessage(Message::eMessageError, "", filename + ": Cannot load frame");
@@ -1650,7 +1644,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
     string proxyFile;
     if (useProxy) {
         /// Use the proxy only if getFilenameAtSequenceTime returned a valid proxy filename different from the original file
-        GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(sequenceTime, true, true, &proxyFile);
+        GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(args.time, sequenceTime, true, true, &proxyFile);
         switch (getFilenameAtSequenceTimeRetPx) {
         case eGetFileNameFailed:
             // should never happen: it should return at least the full res frame
@@ -1727,214 +1721,222 @@ GenericReaderPlugin::render(const RenderArguments& args)
     // See below: we round the render window to the tile size
     renderWindowNotRounded = renderWindowFullRes;
 
-    for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
-        // Read into a temporary image, apply colorspace conversion, then copy
-        bool isOCIOIdentity = true;
+    try {
+        for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
+            // Read into a temporary image, apply colorspace conversion, then copy
+            bool isOCIOIdentity = true;
 
-        // if components are custom, remap it to a OFX components with the same number of channels
-        PixelComponentEnum remappedComponents = it->comps;
+            // if components are custom, remap it to a OFX components with the same number of channels
+            PixelComponentEnum remappedComponents = it->comps;
 
-        bool isColor = (it->comps == ePixelComponentRGB) || (it->comps == ePixelComponentRGBA);
-        bool isCustom = false;
-        if (remappedComponents == ePixelComponentCustom) {
-            MultiPlane::ImagePlaneDesc plane, pairedPlane;
-            MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(it->rawComps, &plane, &pairedPlane);
-            const std::vector<std::string>& channels = plane.getChannels();
-            isColor = ((channels.size() == 3 && channels[0] == "R" && channels[1] == "G" && channels[2] == "B") || (channels.size() == 4 && channels[0] == "R" && channels[1] == "G" && channels[2] == "B" && channels[3] == "A"));
-            isCustom = true;
+            bool isColor = (it->comps == ePixelComponentRGB) || (it->comps == ePixelComponentRGBA);
+            bool isCustom = false;
+            if (remappedComponents == ePixelComponentCustom) {
+                MultiPlane::ImagePlaneDesc plane, pairedPlane;
+                MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(it->rawComps, &plane, &pairedPlane);
+                const std::vector<std::string>& channels = plane.getChannels();
+                isColor = ((channels.size() == 3 && channels[0] == "R" && channels[1] == "G" && channels[2] == "B") || (channels.size() == 4 && channels[0] == "R" && channels[1] == "G" && channels[2] == "B" && channels[3] == "A"));
+                isCustom = true;
 
-            if (it->numChans == 3) {
-                remappedComponents = ePixelComponentRGB;
-            } else if (it->numChans == 4) {
-                remappedComponents = ePixelComponentRGBA;
-            } else if (it->numChans == 2) {
-                remappedComponents = ePixelComponentXY;
-            } else if (it->numChans == 1) {
-                remappedComponents = ePixelComponentAlpha;
+                if (it->numChans == 3) {
+                    remappedComponents = ePixelComponentRGB;
+                } else if (it->numChans == 4) {
+                    remappedComponents = ePixelComponentRGBA;
+                } else if (it->numChans == 2) {
+                    remappedComponents = ePixelComponentXY;
+                } else if (it->numChans == 1) {
+                    remappedComponents = ePixelComponentAlpha;
+                }
             }
-        }
-#ifdef OFX_IO_USING_OCIO
-        if (isColor) {
-            isOCIOIdentity = _ocio->isIdentity(args.time);
-        }
-#endif
-
-        PreMultiplicationEnum filePremult = eImageUnPreMultiplied;
-        PreMultiplicationEnum outputPremult = eImageUnPreMultiplied;
-        if ((remappedComponents == ePixelComponentRGB) || (remappedComponents == ePixelComponentXY)) {
-            filePremult = outputPremult = eImageOpaque;
-        } else if (remappedComponents == ePixelComponentAlpha) {
-            filePremult = outputPremult = eImagePreMultiplied;
-        } else if ((it->comps == ePixelComponentRGBA) || (isCustom && isColor && (remappedComponents == ePixelComponentRGBA))) {
-            int premult_i;
-            _filePremult->getValue(premult_i);
-            filePremult = (PreMultiplicationEnum)premult_i;
-
-            int oPremult_i;
-            _outputPremult->getValue(oPremult_i);
-            outputPremult = (PreMultiplicationEnum)oPremult_i;
-        }
-
-        // we have to do the final premultiplication if:
-        // - pixelComponents is RGBA
-        //  AND
-        //   - buffer is PreMultiplied AND OCIO is not identity (OCIO works only on unpremultiplied data)
-        //   OR
-        //   - premult is unpremultiplied
-        bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
-        // An Opaque file has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
-        const bool opaqueAlpha = (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
-        if (opaqueAlpha) {
-            mustPremult = false;
-        }
-
-        if (!mustPremult && isOCIOIdentity && (!kSupportsRenderScale || (renderMipmapLevel == 0))) {
-            // no colorspace conversion, no premultiplication, no proxy, just read file
-            DBG(std::printf("decode (to dst)\n"));
-
-            if (!_isMultiPlanar) {
-                decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
-            } else {
-                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
+    #ifdef OFX_IO_USING_OCIO
+            if (isColor) {
+                isOCIOIdentity = _ocio->isIdentity(args.time);
             }
+    #endif
+
+            PreMultiplicationEnum filePremult = eImageUnPreMultiplied;
+            PreMultiplicationEnum outputPremult = eImageUnPreMultiplied;
+            if ((remappedComponents == ePixelComponentRGB) || (remappedComponents == ePixelComponentXY)) {
+                filePremult = outputPremult = eImageOpaque;
+            } else if (remappedComponents == ePixelComponentAlpha) {
+                filePremult = outputPremult = eImagePreMultiplied;
+            } else if ((it->comps == ePixelComponentRGBA) || (isCustom && isColor && (remappedComponents == ePixelComponentRGBA))) {
+                int premult_i;
+                _filePremult->getValue(premult_i);
+                filePremult = (PreMultiplicationEnum)premult_i;
+
+                int oPremult_i;
+                _outputPremult->getValue(oPremult_i);
+                outputPremult = (PreMultiplicationEnum)oPremult_i;
+            }
+
+            // we have to do the final premultiplication if:
+            // - pixelComponents is RGBA
+            //  AND
+            //   - buffer is PreMultiplied AND OCIO is not identity (OCIO works only on unpremultiplied data)
+            //   OR
+            //   - premult is unpremultiplied
+            bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
+            // An Opaque file has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
+            const bool opaqueAlpha = (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
             if (opaqueAlpha) {
-                setOpaqueAlpha(args.renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
+                mustPremult = false;
             }
-        } else {
-            int pixelBytes;
-            if (it->comps == ePixelComponentCustom) {
-                pixelBytes = it->numChans * sizeof(float);
-            } else {
-                pixelBytes = it->numChans * getComponentBytes(firstDepth);
-            }
-            assert(pixelBytes > 0);
 
-            /*
-               If tile_width and tile_height is set, round the renderWindow to the enclosing tile size to make sure the plug-in has a buffer
-               large enough to decode tiles. This is needed for OpenImageIO. Note that
-             */
-            if ((tile_width > 0) && (tile_height > 0)) {
-                double frameHeight = frameBounds.y2 - frameBounds.y1;
-                if (isTileOrientationTopDown()) {
-                    // invert Y before rounding
+            if (!mustPremult && isOCIOIdentity && (!kSupportsRenderScale || (renderMipmapLevel == 0))) {
+                // no colorspace conversion, no premultiplication, no proxy, just read file
+                DBG(std::printf("decode (to dst)\n"));
 
-                    renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
-                    renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
-                    frameBounds.y1 = frameHeight - frameBounds.y1;
-                    frameBounds.y2 = frameHeight - frameBounds.y2;
-
-                    renderWindowFullRes.x1 = (std::min)((double)std::ceil((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
-                    renderWindowFullRes.y1 = (std::min)((double)std::ceil((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
-                    renderWindowFullRes.x2 = (std::max)((double)std::floor((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
-                    renderWindowFullRes.y2 = (std::max)((double)std::floor((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
+                if (!_isMultiPlanar) {
+                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
                 } else {
-                    renderWindowFullRes.x1 = (std::max)((double)std::floor((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
-                    renderWindowFullRes.y1 = (std::max)((double)std::floor((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
-                    renderWindowFullRes.x2 = (std::min)((double)std::ceil((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
-                    renderWindowFullRes.y2 = (std::min)((double)std::ceil((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
+                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
                 }
-
-                if (isTileOrientationTopDown()) {
-                    // invert back Y
-                    renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
-                    renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
-                    frameBounds.y1 = frameHeight - frameBounds.y1;
-                    frameBounds.y2 = frameHeight - frameBounds.y2;
+                if (opaqueAlpha) {
+                    setOpaqueAlpha(args.renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
                 }
-            }
-
-            int tmpRowBytes = (renderWindowFullRes.x2 - renderWindowFullRes.x1) * pixelBytes;
-            size_t memSize = (size_t)(renderWindowFullRes.y2 - renderWindowFullRes.y1) * (size_t)tmpRowBytes;
-            ImageMemory mem(memSize, this);
-            float* tmpPixelData = (float*)mem.lock();
-
-            // read file
-            DBG(std::printf("decode (to tmp)\n"));
-
-            if (!_isMultiPlanar) {
-                decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
             } else {
-                decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
-            }
+                int pixelBytes;
+                if (it->comps == ePixelComponentCustom) {
+                    pixelBytes = it->numChans * sizeof(float);
+                } else {
+                    pixelBytes = it->numChans * getComponentBytes(firstDepth);
+                }
+                assert(pixelBytes > 0);
 
-            if (abort()) {
-                return;
-            }
+                /*
+                   If tile_width and tile_height is set, round the renderWindow to the enclosing tile size to make sure the plug-in has a buffer
+                   large enough to decode tiles. This is needed for OpenImageIO. Note that
+                 */
+                if ((tile_width > 0) && (tile_height > 0)) {
+                    double frameHeight = frameBounds.y2 - frameBounds.y1;
+                    if (isTileOrientationTopDown()) {
+                        // invert Y before rounding
 
+                        renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
+                        renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
+                        frameBounds.y1 = frameHeight - frameBounds.y1;
+                        frameBounds.y2 = frameHeight - frameBounds.y2;
 
-            /// do the color-space conversion
-            if (!isOCIOIdentity && isColor) {
-                if (filePremult == eImagePreMultiplied) {
-                    assert(remappedComponents == ePixelComponentRGBA);
-                    DBG(std::printf("unpremult (tmp in-place)\n"));
-                    // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = tmpPixelData[3] = 0.5;
-                    unPremultPixelData(renderWindowNotRounded, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes);
-
-                    if (abort()) {
-                        return;
+                        renderWindowFullRes.x1 = (std::min)((double)std::ceil((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
+                        renderWindowFullRes.y1 = (std::min)((double)std::ceil((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
+                        renderWindowFullRes.x2 = (std::max)((double)std::floor((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
+                        renderWindowFullRes.y2 = (std::max)((double)std::floor((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
+                    } else {
+                        renderWindowFullRes.x1 = (std::max)((double)std::floor((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
+                        renderWindowFullRes.y1 = (std::max)((double)std::floor((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
+                        renderWindowFullRes.x2 = (std::min)((double)std::ceil((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
+                        renderWindowFullRes.y2 = (std::min)((double)std::ceil((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
                     }
 
-                    // assert(tmpPixelData[0] == 1. && tmpPixelData[1] == 1. && tmpPixelData[2] == 1. && tmpPixelData[3] == 0.5);
-                }
-#ifdef OFX_IO_USING_OCIO
-                DBG(std::printf("OCIO (tmp in-place)\n"));
-                _ocio->apply(args.time, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
-#endif
-            }
-
-            // after the colorspace conversion, which may also modify the alpha channel
-            if (opaqueAlpha) {
-                setOpaqueAlpha(renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
-            }
-
-            if (kSupportsRenderScale && (downscaleLevels > 0)) {
-                if (!mustPremult) {
-                    // we can write directly to dstPixelData
-                    /// adjust the scale to match the given output image
-                    DBG(std::printf("scale (no premult, tmp to dst)\n"));
-                    scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
-                                   it->numChans, firstDepth, renderWindowFullRes, tmpRowBytes, it->pixelData,
-                                   remappedComponents, it->numChans, firstDepth, firstBounds, it->rowBytes);
-                } else {
-                    // allocate a temporary image (we must avoid reading from dstPixelData, in case several threads are rendering the same area)
-                    int mem2RowBytes = (firstBounds.x2 - firstBounds.x1) * pixelBytes;
-                    size_t mem2Size = (size_t)(firstBounds.y2 - firstBounds.y1) * (size_t)mem2RowBytes;
-                    ImageMemory mem2(mem2Size, this);
-                    float* scaledPixelData = (float*)mem2.lock();
-
-                    /// adjust the scale to match the given output image
-                    DBG(std::printf("scale (tmp to scaled)\n"));
-                    scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
-                                   remappedComponents, it->numChans, firstDepth,
-                                   renderWindowFullRes, tmpRowBytes, scaledPixelData,
-                                   remappedComponents, it->numChans, firstDepth,
-                                   firstBounds, mem2RowBytes);
-
-                    if (abort()) {
-                        return;
+                    if (isTileOrientationTopDown()) {
+                        // invert back Y
+                        renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
+                        renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
+                        frameBounds.y1 = frameHeight - frameBounds.y1;
+                        frameBounds.y2 = frameHeight - frameBounds.y2;
                     }
+                }
 
-                    // apply premult
-                    DBG(std::printf("premult (scaled to dst)\n"));
-                    // scaledPixelData[0] = scaledPixelData[1] = scaledPixelData[2] = 1.; scaledPixelData[3] = 0.5;
-                    premultPixelData(args.renderWindow, args.renderScale, scaledPixelData, firstBounds, remappedComponents, it->numChans, firstDepth, mem2RowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
-                    // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
-                }
-            } else {
-                // copy
-                if (mustPremult) {
-                    DBG(std::printf("premult (no scale, tmp to dst)\n"));
-                    // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = 1.; tmpPixelData[3] = 0.5;
-                    premultPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
-                    // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
+                int tmpRowBytes = (renderWindowFullRes.x2 - renderWindowFullRes.x1) * pixelBytes;
+                size_t memSize = (size_t)(renderWindowFullRes.y2 - renderWindowFullRes.y1) * (size_t)tmpRowBytes;
+                ImageMemory mem(memSize, this);
+                float* tmpPixelData = (float*)mem.lock();
+
+                // read file
+                DBG(std::printf("decode (to tmp)\n"));
+
+                if (!_isMultiPlanar) {
+                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
                 } else {
-                    DBG(std::printf("copy (no premult no scale, tmp to dst)\n"));
-                    copyPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
                 }
+
+                if (abort()) {
+                    return;
+                }
+
+
+                /// do the color-space conversion
+                if (!isOCIOIdentity && isColor) {
+                    if (filePremult == eImagePreMultiplied) {
+                        assert(remappedComponents == ePixelComponentRGBA);
+                        DBG(std::printf("unpremult (tmp in-place)\n"));
+                        // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = tmpPixelData[3] = 0.5;
+                        unPremultPixelData(renderWindowNotRounded, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes);
+
+                        if (abort()) {
+                            return;
+                        }
+
+                        // assert(tmpPixelData[0] == 1. && tmpPixelData[1] == 1. && tmpPixelData[2] == 1. && tmpPixelData[3] == 0.5);
+                    }
+    #ifdef OFX_IO_USING_OCIO
+                    DBG(std::printf("OCIO (tmp in-place)\n"));
+                    _ocio->apply(args.time, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
+    #endif
+                }
+
+                // after the colorspace conversion, which may also modify the alpha channel
+                if (opaqueAlpha) {
+                    setOpaqueAlpha(renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
+                }
+
+                if (kSupportsRenderScale && (downscaleLevels > 0)) {
+                    if (!mustPremult) {
+                        // we can write directly to dstPixelData
+                        /// adjust the scale to match the given output image
+                        DBG(std::printf("scale (no premult, tmp to dst)\n"));
+                        scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
+                                       it->numChans, firstDepth, renderWindowFullRes, tmpRowBytes, it->pixelData,
+                                       remappedComponents, it->numChans, firstDepth, firstBounds, it->rowBytes);
+                    } else {
+                        // allocate a temporary image (we must avoid reading from dstPixelData, in case several threads are rendering the same area)
+                        int mem2RowBytes = (firstBounds.x2 - firstBounds.x1) * pixelBytes;
+                        size_t mem2Size = (size_t)(firstBounds.y2 - firstBounds.y1) * (size_t)mem2RowBytes;
+                        ImageMemory mem2(mem2Size, this);
+                        float* scaledPixelData = (float*)mem2.lock();
+
+                        /// adjust the scale to match the given output image
+                        DBG(std::printf("scale (tmp to scaled)\n"));
+                        scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
+                                       remappedComponents, it->numChans, firstDepth,
+                                       renderWindowFullRes, tmpRowBytes, scaledPixelData,
+                                       remappedComponents, it->numChans, firstDepth,
+                                       firstBounds, mem2RowBytes);
+
+                        if (abort()) {
+                            return;
+                        }
+
+                        // apply premult
+                        DBG(std::printf("premult (scaled to dst)\n"));
+                        // scaledPixelData[0] = scaledPixelData[1] = scaledPixelData[2] = 1.; scaledPixelData[3] = 0.5;
+                        premultPixelData(args.renderWindow, args.renderScale, scaledPixelData, firstBounds, remappedComponents, it->numChans, firstDepth, mem2RowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                        // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
+                    }
+                } else {
+                    // copy
+                    if (mustPremult) {
+                        DBG(std::printf("premult (no scale, tmp to dst)\n"));
+                        // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = 1.; tmpPixelData[3] = 0.5;
+                        premultPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                        // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
+                    } else {
+                        DBG(std::printf("copy (no premult no scale, tmp to dst)\n"));
+                        copyPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                    }
+                }
+                mem.unlock();
             }
-            mem.unlock();
+        } // for (std::list<PlaneToRender>::iterator it = planes.begin(); it!=planes.end(); ++it) {
+    } catch (const MissingFrameBlackException&) {
+        // decode()/decodePlane(): the frame is not in the file and kParamOnMissingFrame is Black
+        clearPersistentMessage();
+        for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
+            fillWithBlack(args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, firstDepth, it->rowBytes);
         }
-    } // for (std::list<PlaneToRender>::iterator it = planes.begin(); it!=planes.end(); ++it) {
+    }
 }
 
 void
@@ -2192,8 +2194,8 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
         case eGetSequenceTimeBeforeSequence:
         case eGetSequenceTimeWithinSequence:
         case eGetSequenceTimeAfterSequence: {
-            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(sequenceTime, false, true, &originalFileName);
-            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(sequenceTime, true, true, &proxyFile);
+            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &originalFileName);
+            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(args.time, sequenceTime, true, true, &proxyFile);
 
             if ((getFilenameAtSequenceTimeRet == eGetFileNameReturnedFullRes) && (getFilenameAtSequenceTimeRetPx == eGetFileNameReturnedProxy) && (proxyFile != originalFileName)) {
                 assert(!proxyFile.empty());
@@ -2437,7 +2439,7 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
         timeDomainFromSequenceTimeDomain(sequenceTimeDomain, startingTime, &timeDomain);
 
         string filename;
-        GetFilenameRetCodeEnum e = getFilenameAtSequenceTime(timeDomain.min, false, true, &filename);
+        GetFilenameRetCodeEnum e = getFilenameAtSequenceTime(timeDomain.min, timeDomain.min, false, true, &filename);
         if (e == eGetFileNameReturnedFullRes) {
             OfxRectI bounds, format;
             double par = 1.;
@@ -3079,18 +3081,18 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
         ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamOnMissingFrame);
         param->setLabel(kParamOnMissingFrameLabel);
         param->setHint(kParamOnMissingFrameHint);
-        assert(param->getNOptions() == eMissingPrevious);
+        assert(param->getNOptions() == GenericReaderPlugin::eMissingPrevious);
         param->appendOption(kReaderOptionPrevious);
-        assert(param->getNOptions() == eMissingNext);
+        assert(param->getNOptions() == GenericReaderPlugin::eMissingNext);
         param->appendOption(kReaderOptionNext);
-        assert(param->getNOptions() == eMissingNearest);
+        assert(param->getNOptions() == GenericReaderPlugin::eMissingNearest);
         param->appendOption(kReaderOptionNearest);
-        assert(param->getNOptions() == eMissingError);
+        assert(param->getNOptions() == GenericReaderPlugin::eMissingError);
         param->appendOption(kReaderOptionError);
-        assert(param->getNOptions() == eMissingBlack);
+        assert(param->getNOptions() == GenericReaderPlugin::eMissingBlack);
         param->appendOption(kReaderOptionBlack);
         param->setAnimates(true);
-        param->setDefault(eMissingError);
+        param->setDefault(GenericReaderPlugin::eMissingError);
         if (page) {
             page->addChild(*param);
         }
