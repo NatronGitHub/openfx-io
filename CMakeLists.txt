@@ -67,7 +67,7 @@ endif()
 set(OPENFX_PATH "${PROJECT_SOURCE_DIR}/openfx")
 set(OFXS_EXT_PATH "${PROJECT_SOURCE_DIR}/SupportExt")
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" "${PROJECT_SOURCE_DIR}/IOSupport/cmake")
-# openfx's add_ofx_plugin() & co. (add_subdirectory(openfx)) and the supportext_add_sources() stand-in
+# openfx's add_ofx_plugin() & co. (add_subdirectory(openfx)) and SupportExt's supportext_add_sources()
 include(OpenFXLocal)
 include(IOSupport)
 
@@ -368,9 +368,8 @@ endmacro()
 
 if(OFX_IO_WITH_OCIO AND TARGET OpenColorIO::OpenColorIO)
   string(APPEND _io_groups " OCIO")
-  # OFX_IO_USING_OCIO, OpenColorIO::OpenColorIO and the OpenGL sources: from ioSupport_add_sources(IO ALL) above;
-  # EGL too, as IO/Makefile's OCIO_OPENGL_OBJS (gladegl.o), on every OS
-  supportext_add_sources(IO EGL)
+  # OFX_IO_USING_OCIO, OpenColorIO::OpenColorIO and the OpenGL sources (SupportExt's OPENGL: glad, gladegl,
+  # ofxsOGLUtilities, as IO/Makefile's OCIO_OPENGL_OBJS): from ioSupport_add_sources(IO ALL) above
   set(_io_src_OCIO
     OCIO/OCIOPluginBase.cpp OCIO/OCIOColorSpace.cpp OCIO/OCIODisplay.cpp OCIO/OCIOCDLTransform.cpp
     OCIO/OCIOFileTransform.cpp OCIO/OCIOLogConvert.cpp OCIO/OCIOLookTransform.cpp)
@@ -410,7 +409,8 @@ endif()
 
 if(OFX_IO_WITH_OIIO AND TARGET OpenImageIO::OpenImageIO)
   string(APPEND _io_groups " OIIO")
-  supportext_add_sources(IO COMPONENTS THREADS MULTIPLANE)
+  # (OIIOText draws with ofxsPositionInteract.h)
+  supportext_add_sources(IO COMPONENTS THREADS MULTIPLANE POSITION_INTERACT)
   # OIIOGlobal.cpp includes <IlmThreadPool.h>: OpenEXR's include paths too, as in Makefile.master
   target_link_libraries(IO PRIVATE OpenImageIO::OpenImageIO $<TARGET_NAME_IF_EXISTS:OpenEXR::OpenEXR>)
   set(_io_src_OIIO OIIO/ReadOIIO.cpp OIIO/WriteOIIO.cpp OIIO/OIIOGlobal.cpp OIIO/OIIOText.cpp OIIO/OIIOResize.cpp)
