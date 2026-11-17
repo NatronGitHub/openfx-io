@@ -1522,11 +1522,12 @@ public:
     // file does not support) is shown in the persistent message, and must not make the creation fail.
     virtual void restoreStateFromParams() OVERRIDE FINAL
     {
-        GenericWriterPlugin::restoreStateFromParams();
+        // (an exception would escape from the factory's createInstance(), which would leak the instance)
         try {
+            GenericWriterPlugin::restoreStateFromParams(); // may throw, e.g. checkCodec() for an unavailable codec
             syncPrivateData();
         } catch (const OFX::Exception::Suite&) {
-            // reported by updatePixelFormat()
+            // already reported (by checkCodec() or updatePixelFormat())
         }
     }
 
