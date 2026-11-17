@@ -18,7 +18,8 @@
 # ***** END LICENSE BLOCK *****
 
 # CMake build of the IO.ofx bundle. It builds what IO/Makefile builds (same plug-ins, sources, defines, include
-# paths and resources), except that a group of plug-ins is left out when its libraries are not found.
+# paths and resources), except that a group of plug-ins is left out when its libraries are not found (unless
+# OFX_IO_REQUIRE_ALL is ON).
 #
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
 #   cmake --build build
@@ -30,6 +31,9 @@
 #   OFX_DEPLOY_BUNDLES      install step that makes the bundle self-contained (macOS: osxDeploy.sh, like the
 #                           Makefile's release builds)
 #   BUILD_TESTING           ctest runs the tests of tests/Makefile (IO_TESTS_MAKE_ARGS: extra make arguments)
+#   OFX_IO_WITH_<group>     build the group if its libraries are found (default ON): OCIO EXR FFMPEG OIIO LIBRAW
+#                           PNG SEEXPR RUNSCRIPT
+#   OFX_IO_REQUIRE_ALL      fail if a group that is not disabled can't be built (default OFF; for packagers)
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
 cmake_minimum_required(VERSION 3.16...3.31)
@@ -75,7 +79,8 @@ message(STATUS "Platform: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}, bundle
 # ---------------------------------------------------------------------------------------------------------------
 # Dependencies. Each one gives an imported target; a group of plug-ins is only built if its libraries are found,
 # and if its OFX_IO_WITH_<group> option is ON. CMAKE_DISABLE_FIND_PACKAGE_<package> also skips the pkg-config
-# fallbacks (packages: OpenColorIO OpenEXR OpenImageIO LibRaw PNG FFmpeg SeExpr).
+# fallbacks (packages: OpenColorIO OpenEXR OpenImageIO LibRaw PNG FFmpeg SeExpr); with OFX_IO_REQUIRE_ALL, that
+# counts as "not found": disable the group with OFX_IO_WITH_<group>=OFF instead.
 foreach(_g OCIO EXR FFMPEG OIIO LIBRAW PNG SEEXPR RUNSCRIPT)
   option(OFX_IO_WITH_${_g} "Build the ${_g} plug-ins (LIBRAW: RAW support in ReadOIIO) if the libraries are found" ON)
 endforeach()
@@ -321,11 +326,13 @@ io_resources(
 
 set(_io_groups "PFM")
 set(_io_missing "")
+set(_io_missing_options "")
 set(_io_disabled "")
 # a group that is not built: disabled (OFX_IO_WITH_<g>=OFF), or its libraries were not found
 macro(_io_not_built _g _what)
   if(OFX_IO_WITH_${_g})
     string(APPEND _io_missing " ${_what}")
+    string(APPEND _io_missing_options " -DOFX_IO_WITH_${_g}=OFF")
   else()
     string(APPEND _io_disabled " ${_g}")
   endif()
@@ -450,7 +457,7 @@ if(_io_disabled)
 endif()
 if(OFX_IO_REQUIRE_ALL AND _io_missing)
   message(FATAL_ERROR "IO.ofx: OFX_IO_REQUIRE_ALL is ON, but the libraries of these plug-in groups were not found:"
-                      "${_io_missing}. Install them (or point CMake to them), or disable the groups (OFX_IO_WITH_<group>=OFF).")
+                      "${_io_missing}. Install them (or point CMake to them), or disable the groups:${_io_missing_options}")
 endif()
 
 # stale resources in the build tree's bundle
