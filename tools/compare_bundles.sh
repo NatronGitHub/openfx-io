@@ -80,7 +80,7 @@ fi
 
 files() { # relative path and type of every file (the signature seal is reported separately)
     (cd "$1" && find . -print | LC_ALL=C sort | while read -r f; do
-        if [ -L "$f" ]; then t=link; elif [ -d "$f" ]; then t=dir; else t=file; fi
+        if [ -L "$f" ]; then t="link"; elif [ -d "$f" ]; then t="dir"; else t="file"; fi
         echo "$t $f"
     done)
 }
