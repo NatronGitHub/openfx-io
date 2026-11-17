@@ -106,7 +106,9 @@ RunResult runProcess(const std::wstring& applicationName,
 //   the interpreter is found with resolveProgram(). If it is cmd.exe ("#!cmd", "#!/usr/bin/env cmd"), the rest of
 //   the script is run as a batch file (see below), and the options are ignored. If it is powershell.exe or
 //   pwsh.exe, "-File" is appended to the options unless they already end with it (Windows PowerShell would
-//   otherwise run the script path and the arguments as a command), and -Command or -EncodedCommand is an error.
+//   otherwise run the script path and the arguments as a command), and -Command or -EncodedCommand is an error
+//   (with any dash that PowerShell accepts: '-', '/', "--", en dash, em dash, horizontal bar). With -File, Windows
+//   PowerShell 5.1 may bind an argument that begins with '-' to a parameter of the script.
 //   wsl.exe is rejected (it passes the command line to the Linux shell). The first line may end with LF, CRLF or CR.
 // - otherwise, it is a batch file, saved as a .bat file (with CRLF line endings) and run by cmd.exe.
 // The file is written in a new directory in the temporary directory, which only the current user (and SYSTEM) can

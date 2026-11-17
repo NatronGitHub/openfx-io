@@ -290,7 +290,7 @@ static const wchar_t*
 systemProgram(const wstring& name)
 {
     wstring l = toLower(name);
-    if (endsWith(l, L".exe")) {
+    if (endsWith(l, L".exe") || endsWith(l, L".com")) {
         l.erase(l.size() - 4);
     }
     if (l == L"cmd") {
@@ -817,22 +817,51 @@ isCmdExe(const wstring& program)
     return isProgram(program, L"cmd");
 }
 
-// true if the lowercase option o (with a leading '-' or '/') is a prefix of the PowerShell parameter p (with a
-// leading '-'), at least minLength characters long, as PowerShell accepts it
+// true if the lowercase option name n (without its dashes) is a prefix of the PowerShell parameter name p, at least
+// minLength characters long, as PowerShell accepts it
 static bool
-isPowerShellParameter(const string& o,
+isPowerShellParameter(const string& n,
                       const char* p,
                       size_t minLength)
 {
     const string param(p);
 
-    return o.size() >= minLength && o.size() <= param.size() && o.compare(1, string::npos, param, 1, o.size() - 1) == 0;
+    return n.size() >= minLength && n.size() <= param.size() && param.compare(0, n.size(), n) == 0;
+}
+
+// If the UTF-8 word w is a PowerShell option, set *name to its lowercase name and return true. Both PowerShells take
+// '-', '/', and the en dash, em dash and horizontal bar (U+2013, U+2014, U+2015) as the dash, and pwsh also takes
+// "--name": strip one of these, then one optional '-'.
+static bool
+powerShellOptionName(const string& w,
+                     string* name)
+{
+    size_t start = 0;
+    if (!w.empty() && (w[0] == '-' || w[0] == '/')) {
+        start = 1;
+    } else if (w.size() >= 3 && (unsigned char)w[0] == 0xE2 && (unsigned char)w[1] == 0x80
+               && ((unsigned char)w[2] == 0x93 || (unsigned char)w[2] == 0x94 || (unsigned char)w[2] == 0x95)) {
+        start = 3;
+    } else {
+        return false;
+    }
+    if (start < w.size() && w[start] == '-') {
+        ++start;
+    }
+    *name = w.substr(start);
+    for (size_t j = 0; j < name->size(); ++j) {
+        (*name)[j] = (char)std::tolower((unsigned char)(*name)[j]);
+    }
+
+    return !name->empty();
 }
 
 // Make sure that the shebang options of powershell.exe or pwsh.exe end with -File, so that the script is run as a
 // file, with its arguments passed as literal strings: "-File" is appended unless the last option is already -File.
 // Options that would run the arguments as code (-Command, -EncodedCommand, ...) or -File elsewhere are an error.
 // -NoProfile and -ExecutionPolicy are left to the user (a script file may not run with the default policy).
+// Note that with -File, Windows PowerShell 5.1 may bind an argument that begins with '-' to a parameter of the script
+// (declared with param()), rather than pass it in $args.
 static bool
 powerShellFileOptions(string* options,
                       string* error)
@@ -852,21 +881,18 @@ powerShellFileOptions(string* options,
         }
     }
     for (size_t i = 0; i < words.size(); ++i) {
-        string o = words[i];
-        for (size_t j = 0; j < o.size(); ++j) {
-            o[j] = (char)std::tolower((unsigned char)o[j]);
-        }
-        if (o.size() < 2 || (o[0] != '-' && o[0] != '/')) {
+        string o;
+        if (!powerShellOptionName(words[i], &o)) {
             continue;
         }
-        if (isPowerShellParameter(o, "-command", 2) || isPowerShellParameter(o, "-commandwithargs", 2) || o.substr(1) == "cwa"
-            || o.substr(1) == "e" || o.substr(1) == "ec" || isPowerShellParameter(o, "-encodedcommand", 3)
-            || o.substr(1) == "ea" || isPowerShellParameter(o, "-encodedarguments", 3)) {
+        if (isPowerShellParameter(o, "command", 1) || isPowerShellParameter(o, "commandwithargs", 1) || o == "cwa"
+            || o == "e" || o == "ec" || isPowerShellParameter(o, "encodedcommand", 2)
+            || o == "ea" || isPowerShellParameter(o, "encodedarguments", 2)) {
             *error = "PowerShell option " + words[i] + " is not allowed: the script must be run with -File (its arguments would be run as code)";
 
             return false;
         }
-        if (isPowerShellParameter(o, "-file", 2)) {
+        if (isPowerShellParameter(o, "file", 1)) {
             if (i + 1 != words.size()) {
                 *error = "PowerShell option " + words[i] + " must be the last option on the first line of the script";
 
@@ -916,20 +942,29 @@ scriptExtension(const wstring& interpreterPath)
 }
 
 // a security descriptor that gives full access to the current user and SYSTEM only (not inherited from the
-// parent directory, and inherited by what is created in the directory); free it with LocalFree()
+// parent directory, and inherited by what is created in the directory); free it with LocalFree(). On failure, returns
+// NULL and sets *err.
 static PSECURITY_DESCRIPTOR
-privateSecurityDescriptor()
+privateSecurityDescriptor(DWORD* err)
 {
     HANDLE token = NULL;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        *err = GetLastError();
+
         return NULL;
     }
     DWORD size = 0;
     GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    *err = GetLastError(); // ERROR_INSUFFICIENT_BUFFER if size is set
     vector<char> buf(size ? size : 1);
     wchar_t* sid = NULL;
-    if (size && GetTokenInformation(token, TokenUser, &buf[0], size, &size)) {
-        ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(&buf[0])->User.Sid, &sid);
+    if (size) {
+        if (!GetTokenInformation(token, TokenUser, &buf[0], size, &size)) {
+            *err = GetLastError();
+        } else if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(&buf[0])->User.Sid, &sid)) {
+            *err = GetLastError();
+            sid = NULL;
+        }
     }
     CloseHandle(token);
     if (!sid) {
@@ -940,6 +975,8 @@ privateSecurityDescriptor()
     LocalFree(sid);
     PSECURITY_DESCRIPTOR sd = NULL;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, NULL)) {
+        *err = GetLastError();
+
         return NULL;
     }
 
@@ -949,13 +986,17 @@ privateSecurityDescriptor()
 // Create a new directory with a unique name in the temporary directory, which only the current user can access, and
 // a new file in it, and write data to it. In the temporary directory itself, which may be shared (TMP=C:\Temp),
 // another user could replace the file before the interpreter opens it.
+// *dirHandle is a handle to the directory, opened without FILE_SHARE_DELETE, so that the directory cannot be renamed
+// or deleted (and replaced) while it is open: close it before removing the directory.
 static bool
 writeTempFile(const wchar_t* extension,
               const string& data,
               wstring* dirPath,
+              HANDLE* dirHandle,
               wstring* path,
               string* error)
 {
+    *dirHandle = INVALID_HANDLE_VALUE;
     DWORD n = GetTempPathW(0, NULL);
     if (n == 0) {
         *error = "cannot get the temporary directory: " + systemErrorMessage(GetLastError());
@@ -974,9 +1015,10 @@ writeTempFile(const wchar_t* extension,
         tmpdir.push_back(L'\\');
     }
 
-    PSECURITY_DESCRIPTOR sd = privateSecurityDescriptor();
+    DWORD sdError = 0;
+    PSECURITY_DESCRIPTOR sd = privateSecurityDescriptor(&sdError);
     if (!sd) {
-        *error = "cannot create the security descriptor of a private directory: " + systemErrorMessage(GetLastError());
+        *error = "cannot create the security descriptor of a private directory: " + systemErrorMessage(sdError);
 
         return false;
     }
@@ -1013,11 +1055,21 @@ writeTempFile(const wchar_t* extension,
 
         return false;
     }
+    // FILE_FLAG_BACKUP_SEMANTICS: needed to open a directory
+    *dirHandle = CreateFileW(dirPath->c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (*dirHandle == INVALID_HANDLE_VALUE) {
+        *error = "cannot open " + wideToUtf8(*dirPath) + ": " + systemErrorMessage(GetLastError());
+        RemoveDirectoryW(dirPath->c_str());
+
+        return false;
+    }
     *path = *dirPath + L"\\runscript" + extension;
     // the file inherits the private access rights of the directory
     HANDLE h = CreateFileW(path->c_str(), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         *error = "cannot create " + wideToUtf8(*path) + ": " + systemErrorMessage(GetLastError());
+        closeHandle(dirHandle);
         RemoveDirectoryW(dirPath->c_str());
 
         return false;
@@ -1030,6 +1082,7 @@ writeTempFile(const wchar_t* extension,
             *error = "cannot write " + wideToUtf8(*path) + ": " + systemErrorMessage(GetLastError());
             CloseHandle(h);
             DeleteFileW(path->c_str());
+            closeHandle(dirHandle);
             RemoveDirectoryW(dirPath->c_str());
 
             return false;
@@ -1138,8 +1191,9 @@ runScript(const string& scriptContents,
     }
 
     wstring scriptDir;
+    HANDLE scriptDirHandle = INVALID_HANDLE_VALUE;
     wstring scriptPath;
-    if (!writeTempFile(extension, data, &scriptDir, &scriptPath, error)) {
+    if (!writeTempFile(extension, data, &scriptDir, &scriptDirHandle, &scriptPath, error)) {
         return eRunFailed;
     }
 
@@ -1164,6 +1218,7 @@ runScript(const string& scriptContents,
 
     // remove the script (this may fail if a process started by the script still has it open)
     DeleteFileW(scriptPath.c_str());
+    closeHandle(&scriptDirHandle);
     RemoveDirectoryW(scriptDir.c_str());
 
     return result;

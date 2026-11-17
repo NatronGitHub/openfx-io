@@ -665,6 +665,40 @@ main()
             CHECK(runScript("#!/usr/bin/env powershell -EncodedCommand\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("powershell -EncodedCommand is an error: " + error).c_str());
             CHECK(runScript("#!powershell -File -NoProfile\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("-File not last is an error: " + error).c_str());
             CHECK(runScript("#!wsl\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("#!wsl is an error: " + error).c_str());
+            // the dashes that PowerShell accepts
+            const char* const badOptions[] = { "--command", "/Command", "\xE2\x80\x93" "Command", "\xE2\x80\x94" "c", "\xE2\x80\x95" "EncodedCommand",
+                                               "\xE2\x80\x93-command", "--ec", "--file -NoProfile", "\xE2\x80\x94" "File -NoProfile" };
+            for (size_t i = 0; i < sizeof(badOptions) / sizeof(badOptions[0]); ++i) {
+                CHECK(runScript(string("#!powershell ") + badOptions[i] + "\n", args, &errLines, &code, &cleared(error)) == eRunFailed,
+                      ("#!powershell " + string(badOptions[i]) + " is an error: " + error).c_str());
+            }
+        }
+        // pwsh (here, a copy of this program), with any dash: -File is appended unless the last option is -File
+        {
+            const wstring dirPath = tmp + L"rs_test_pwsh";
+            CreateDirectoryW(dirPath.c_str(), NULL);
+            CopyFileW(self.c_str(), (dirPath + L"\\pwsh.exe").c_str(), FALSE);
+            const string pwsh = "#!\"" + wideToUtf8(dirPath) + "\\pwsh.exe\" ";
+            vector<string> pargs(1, "arg");
+            vector<string> errLines;
+            unsigned long code = 0;
+            CHECK(runScript(pwsh + "--command\n", pargs, &errLines, &code, &cleared(error)) == eRunFailed && readChildArgs(outFile).empty(),
+                  ("#!pwsh --command is an error: " + error).c_str());
+            CHECK(runScript(pwsh + "\xE2\x80\x93" "Command\n", pargs, &errLines, &code, &cleared(error)) == eRunFailed && readChildArgs(outFile).empty(),
+                  ("#!pwsh \xE2\x80\x93" "Command is an error: " + error).c_str());
+            RunResult r = runScript(pwsh + "\xE2\x80\x93NoProfile\n", pargs, &errLines, &code, &cleared(error));
+            vector<string> got = readChildArgs(outFile);
+            CHECK(r == eRunOK && got.size() == 4 && got[0] == "\xE2\x80\x93NoProfile" && got[1] == "-File" && got[3] == "arg",
+                  ("#!pwsh \xE2\x80\x93NoProfile: -File appended: " + show(got) + error).c_str());
+            r = runScript(pwsh + "--file\n", pargs, &errLines, &code, &cleared(error));
+            got = readChildArgs(outFile);
+            CHECK(r == eRunOK && got.size() == 3 && got[0] == "--file" && got[2] == "arg", ("#!pwsh --file: nothing appended: " + show(got) + error).c_str());
+            DeleteFileW((dirPath + L"\\pwsh.exe").c_str());
+            RemoveDirectoryW(dirPath.c_str());
+        }
+        {
+            vector<string> errLines;
+            unsigned long code = 0;
             CHECK(runScript("#!/usr/bin/env wsl\n", args, &errLines, &code, &cleared(error)) == eRunFailed, ("#!/usr/bin/env wsl is an error: " + error).c_str());
         }
 
@@ -694,6 +728,11 @@ main()
             ok = resolveProgram(L"powershell.exe", false, &path, &cleared(error));
             CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\WindowsPowerShell\\v1.0\\powershell.exe").c_str()) == 0,
                   ("#!powershell.exe is the system's powershell.exe: " + wideToUtf8(path) + error).c_str());
+            ok = resolveProgram(L"powershell.com", false, &path, &cleared(error));
+            CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\WindowsPowerShell\\v1.0\\powershell.exe").c_str()) == 0,
+                  ("#!powershell.com is the system's powershell.exe: " + wideToUtf8(path) + error).c_str());
+            ok = resolveProgram(L"CMD.COM", true, &path, &cleared(error));
+            CHECK(ok && lstrcmpiW(path.c_str(), (sys + L"\\cmd.exe").c_str()) == 0, ("#!/usr/bin/env CMD.COM is the system's cmd.exe: " + wideToUtf8(path) + error).c_str());
             SetEnvironmentVariableW(L"PATH", oldPath.c_str());
             DeleteFileW((dirPath + L"\\cmd.exe").c_str());
             DeleteFileW((dirPath + L"\\powershell.exe").c_str());

@@ -88,6 +88,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "so the interpreter must take a script file followed by literal arguments (e.g. `#!python`, `#!py -3`, `#!powershell -NoProfile -ExecutionPolicy Bypass`, but not `powershell -Command`). " \
     "For `powershell` and `pwsh`, `-File` is added after the options if they do not end with it (Windows PowerShell would otherwise run the arguments as code), and `-Command` is not allowed; " \
     "`-NoProfile` and `-ExecutionPolicy Bypass` are not added (the default execution policy may not allow running a script file). " \
+    "With `-File`, Windows PowerShell 5.1 may bind an argument that begins with `-` to a parameter of the script (declared with `param()`), rather than pass it in `$args`. " \
     "`wsl` cannot be the interpreter (it passes the arguments to the Linux shell, which would interpret them). " \
     "A path that contains spaces must be quoted: `#!\"C:\\Program Files\\Git\\bin\\bash.exe\"`. " \
     "A program name without a directory is searched for in the directories of the PATH only (not in the current directory), with `.exe` or `.com` appended if needed; a relative path such as `bin\\prog.exe` is not allowed. " \
