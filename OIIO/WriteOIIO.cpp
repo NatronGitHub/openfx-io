@@ -289,8 +289,8 @@ enum EParamTextureformat {
 #define kParamOutputChannels kNatronOfxParamOutputChannels
 #define kParamOutputChannelsChoice kParamOutputChannels "Choice"
 #define kParamOutputChannelsLabel "Layer(s)"
-#define kParamOutputChannelsHint "Select which layer to write to the file. This is either All or a single layer. " \
-                                 "This is not yet possible to append a layer to an existing file."
+#define kParamOutputChannelsHint "Select the layer to write to the file. To write all layers, check \"All Layers\" instead. " \
+                                 "It is not yet possible to append a layer to an existing file."
 
 #define kParamPartsSplitting "partSplitting"
 #define kParamPartsSplittingLabel "Parts"
@@ -304,7 +304,7 @@ enum EParamTextureformat {
 
 #define kParamPartsSplitViews kParamPartsSplitViewsOption, kParamPartsSplitViewsOptionHint, kParamPartsSplitViewsOptionEnum
 #define kParamPartsSplitViewsOption "Split Views"
-#define kParamPartsSplitViewsOptionHint "All views will have its own part, and each part will contain all layers. This will produce an EXR optimized in size that " \
+#define kParamPartsSplitViewsOptionHint "Each view will have its own part, and each part will contain all layers. This will produce an EXR optimized in size that " \
                                         "can be opened only with applications supporting OpenEXR 2"
 #define kParamPartsSplitViewsOptionEnum "views"
 
