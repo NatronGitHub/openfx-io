@@ -137,7 +137,7 @@ enum ETuttlePluginComponents {
 #define kParamOutputZSTDCompressionLevel "zstdCompressionLevel"
 #define kParamOutputZSTDCompressionLevelLabel "ZSTD Compression Level"
 #define kParamOutputZSTDCompressionLevelHint \
-    "Compression level for Zstandard compression, on a scale from 1 (fastest, minimal compression) to 22 (slowest, maximal compression) [EXR w/ ZSTD comp.]"
+    "Compression level for Zstandard compression, on a scale from 1 (fastest, minimal compression) to 22 (slowest, maximal compression). Needs OpenImageIO >= 3.2.1. [EXR w/ ZSTD comp.]"
 #define kParamOutputZSTDCompressionLevelDefault 5
 
 #define kParamOutputLineOrder "lineOrder"
@@ -199,8 +199,11 @@ enum EOutputOrientation {
     "Compression type [TIFF,EXR,DDS,IFF,SGI,TGA]\n"                                                                            \
     "Indicates the type of compression the file uses. Supported compression modes will vary from format to format. "           \
     "As an example, the TIFF format supports \"none\", \"lzw\", \"ccittrle\", \"zip\" (the default), \"jpeg\", \"packbits\", " \
-    "and the EXR format supports \"none\", \"rle\", \"zip\" (the default), \"piz\", \"pxr24\", \"b44\", \"b44a\", "            \
-    "\"dwaa\" or \"dwab\"."
+    "and the EXR format supports \"none\", \"rle\", \"zip\" (the default), \"zips\", \"piz\", \"pxr24\", \"b44\", "            \
+    "\"b44a\", \"dwaa\", \"dwab\", \"htj2k256\", \"htj2k32\" (OpenImageIO built with OpenEXR 3.4 or later) or "                \
+    "\"zstd\" (OpenImageIO 3.2.1 or later, built with OpenEXR 3.5 or later). An EXR compression that OpenImageIO does not "    \
+    "support falls back to \"zip\". The DWA, ZIP and ZSTD Compression Level parameters set the level of the dwaa/dwab, "       \
+    "zip/zips and zstd compressions."
 
 #define kParamOutputCompressionOptionAuto "default", "Guess from the output format", "default"
 #define kParamOutputCompressionOptionNone "none", "No compression [EXR, TIFF, IFF]", "none"
@@ -215,7 +218,7 @@ enum EOutputOrientation {
 #define kParamOutputCompressionOptionDWAb "dwab", "lossy DCT based compression, in blocks of 256 scanlines. More efficient space wise and faster to decode full frames than DWAA. [EXR]", "dwab"
 #define kParamOutputCompressionOptionHTJ2K256 "htj2k256", "JPEG 2000 lossless coding, in blocks of 256 scanlines and using the High-Throughput (HT) blocker. Offers both speed and high-coding efficiency. Requires OpenImageIO built with OpenEXR >= 3.4, falls back to zip otherwise. [EXR]", "htj2k256"
 #define kParamOutputCompressionOptionHTJ2K32 "htj2k32", "JPEG 2000 lossless coding, in blocks of 32 scanlines and using the High-Throughput (HT) blocker. Offers both speed and high-coding efficiency. Requires OpenImageIO built with OpenEXR >= 3.4, falls back to zip otherwise. [EXR]", "htj2k32"
-#define kParamOutputCompressionOptionZSTD "zstd", "Zstandard compression (lossless). Requires OpenImageIO built with OpenEXR >= 3.5, falls back to zip otherwise. [EXR]", "zstd"
+#define kParamOutputCompressionOptionZSTD "zstd", "Zstandard compression (lossless). Requires OpenImageIO >= 3.2.1 built with OpenEXR >= 3.5, falls back to zip otherwise. [EXR]", "zstd"
 #define kParamOutputCompressionOptionLZW "lzw", "Lempel-Ziv Welsch compression (lossless) [TIFF]", "lzw"
 #define kParamOutputCompressionOptionCCITTRLE "ccittrle", "CCITT modified Huffman RLE (lossless) [TIFF]", "ccittrle"
 #define kParamOutputCompressionOptionJPEG "jpeg", "JPEG [TIFF]", "jpeg"
