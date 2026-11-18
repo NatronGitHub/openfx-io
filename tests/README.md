@@ -514,7 +514,12 @@ reader remembers the damaged ranges, instead of reading the damaged packets agai
 In one with packets 100-179 and 181-183 damaged, decoding frames 101, 184, 181 and 182 in that
 order in a newly opened file (`--order`) must fail for 101, and give frame 181 for the other
 three: with frame threads, the error of a damaged packet comes with a later packet, and the good
-frame 181 must not join a damaged range. An MPEG-TS with a continuity counter error (a packet flagged
+frame 181 must not join a damaged range. In a long-GOP H.264 MP4 (GOP 300) with a damaged first keyframe, every
+frame must fail, and decoding every frame sequentially and in reverse order must read at most 4
+times the file (the frames that cannot be decoded from the start of the file are not decoded again
+for each request). In a Matroska H.264 clip with a GOP of 100 and B-frames, with packets 50-150
+damaged, frames 49 and 52 (decoded before the run, and still in the decoder when it gives up after
+too many damaged packets) must decode in any order, and frames 53-200 must fail. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to

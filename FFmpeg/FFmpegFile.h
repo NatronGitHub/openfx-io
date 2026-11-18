@@ -170,7 +170,10 @@ private:
         int _invalidDataSkipped; // the error of the last damaged packet dropped during the current decode() (0 if none)
         std::vector<int64_t> _damagedPts; // the PTS of the damaged packets dropped so far (bounded)
         int _truncatedFrame; // the frame of the partial last packet of a truncated file, from which frames fail (-1 if none)
-        int _lastReadFrame; // the largest frame of the packets read by the current decode()
+        int _firstOutputFrame; // the first frame decoded by the last demuxAndDecode() (-1 if none)
+        int _firstFrameAfter; // the first frame after the requested one decoded by the last demuxAndDecode() (-1 if none)
+        bool _reachedEnd; // the last demuxAndDecode() drained the decoder at the end of the file, without a frame to hold
+        bool _drainedEarly; // the decoder was drained after too many damaged packets: decoding further needs a seek
         int _lastDamagedFrame; // the largest frame of the damaged packets found by the current decode() (-1 if none)
         int _requestDroppedPackets; // the packets dropped by all the attempts of the current decode()
         bool _noTimestamps; // the current decode() found a decoded frame without a timestamp, and stopped
@@ -239,7 +242,10 @@ private:
             , _invalidDataSkipped(0)
             , _damagedPts()
             , _truncatedFrame(-1)
-            , _lastReadFrame(-1)
+            , _firstOutputFrame(-1)
+            , _firstFrameAfter(-1)
+            , _reachedEnd(false)
+            , _drainedEarly(false)
             , _lastDamagedFrame(-1)
             , _requestDroppedPackets(0)
             , _noTimestamps(false)
@@ -384,6 +390,7 @@ private:
                 av_frame_unref(_avNextFrame);
             }
             _heldFrameIsLast = false;
+            _drainedEarly = false;
             _decodingFromStart = false;
             _nextDecodedPts = AV_NOPTS_VALUE;
         }
@@ -407,6 +414,9 @@ private:
                 held = next; // _avNextFrame will become the held frame
             } else if (_heldFrameIsLast) {
                 return true;
+            }
+            if (_drainedEarly) {
+                return frame == held; // the decoder gives no more frames
             }
 
             return frame <= held + 1;
