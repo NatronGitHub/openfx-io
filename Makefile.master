@@ -65,8 +65,10 @@ endif
 FFMPEG_CXXFLAGS += -DOFX_IO_MT_FFMPEG
 
 # OpenImageIO
-OIIO_CXXFLAGS = $(OCIO_CXXFLAGS) `pkg-config --cflags OpenImageIO` $(OPENEXR_CXXFLAGS) -DOFX_IO_USING_LIBRAW `pkg-config --cflags libraw_r libwebp libtiff-4 libopenjp2 libpng`
-OIIO_LINKFLAGS = $(OCIO_LINKFLAGS) `pkg-config --libs OpenImageIO` $(OPENEXR_LINKFLAGS) `pkg-config --libs libraw_r libwebp libtiff-4 libopenjp2 libpng`
+# One pkg-config call per library: a library whose .pc file is broken (e.g. a Requires.private that is not found)
+# must not drop the flags of the others.
+OIIO_CXXFLAGS = $(OCIO_CXXFLAGS) `pkg-config --cflags OpenImageIO` $(OPENEXR_CXXFLAGS) -DOFX_IO_USING_LIBRAW `pkg-config --cflags libraw_r` `pkg-config --cflags libwebp` `pkg-config --cflags libtiff-4` `pkg-config --cflags libopenjp2` `pkg-config --cflags libpng`
+OIIO_LINKFLAGS = $(OCIO_LINKFLAGS) `pkg-config --libs OpenImageIO` $(OPENEXR_LINKFLAGS) `pkg-config --libs libraw_r` `pkg-config --libs libwebp` `pkg-config --libs libtiff-4` `pkg-config --libs libopenjp2` `pkg-config --libs libpng`
 ifeq ($(OS),Linux)
 # libraw_r may be in a separate directory for licence reasons (eg in the Natron SDK)
 OIIO_LINKFLAGS += -Wl,-rpath,`pkg-config --variable=prefix OpenImageIO`/lib -Wl,-rpath,`pkg-config --variable=libdir libraw_r`
