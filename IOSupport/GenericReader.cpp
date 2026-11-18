@@ -2378,9 +2378,10 @@ GenericReaderPlugin::setOutputComponents(PixelComponentEnum comps)
 {
     int i;
 
-    for (i = 0; i < 4 && _outputComponentsTable[i] != comps; ++i) {
+    // the table ends with ePixelComponentNone: the entries after it are not set
+    for (i = 0; i < 4 && _outputComponentsTable[i] != ePixelComponentNone && _outputComponentsTable[i] != comps; ++i) {
     }
-    if (i >= 4) {
+    if ((i >= 4) || (_outputComponentsTable[i] == ePixelComponentNone) || (_outputComponentsTable[i] != comps)) {
         // not found, set the first supported component
         i = 0;
     }
