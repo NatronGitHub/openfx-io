@@ -18,6 +18,7 @@ make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in'
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-exr-tsan # the same, built with ThreadSanitizer
+make test-exr-ubsan # the same, built with UndefinedBehaviorSanitizer
 make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```

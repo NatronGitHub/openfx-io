@@ -183,6 +183,21 @@ exr_read_test: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 exr_read_test_tsan: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) -fsanitize=thread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# the same, with UndefinedBehaviorSanitizer (e.g. GenericReader's components table read past its end, an
+# uninitialized enum, in the luminance/chroma case), stopping at the first error. pointer-overflow is left out: the
+# test computes the OpenEXR slice bases with pointer arithmetic out of the buffers (fixed by #185). (Added to clean
+# here, on lines of their own.)
+exr_read_test_ubsan: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) -fsanitize=undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+.PHONY: test-exr-ubsan clean-exr-ubsan
+clean: clean-exr-ubsan
+test-exr-ubsan: exr_read_test_ubsan
+	rm -rf .exr_read_ubsan && mkdir -p .exr_read_ubsan
+	OCIO=$(CURDIR)/test.ocio ./exr_read_test_ubsan $(CURDIR)/.exr_read_ubsan
+clean-exr-ubsan:
+	rm -rf exr_read_test_ubsan exr_read_test_ubsan.dSYM .exr_read_ubsan
+
 # DEBUG builds of exr_read_test and reader_hooks_test with ThreadSanitizer: -DDEBUG enables the Support
 # library's property validation and logging, which run on the threads that describe/create instances while
 # other threads render (openfx #144: races on PropertySet::_gPropLogging and PropertyDescription::_exists)
