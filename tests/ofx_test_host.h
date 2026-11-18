@@ -274,7 +274,13 @@ OfxStatus mxU(const OfxMutexHandle m) { reinterpret_cast<std::mutex*>(m)->unlock
 OfxStatus mxT(const OfxMutexHandle m) { return reinterpret_cast<std::mutex*>(m)->try_lock() ? kOfxStatOK : kOfxStatFailed; }
 OfxMultiThreadSuiteV1 gMTSuite = { mtRun, mtNum, mtIdx, mtSpawned, mxC, mxD, mxL, mxU, mxT };
 
+// The messages of the plug-ins (gMessages, gPersistentError) are written under this lock: concurrent renders send
+// them from several threads (e.g. GenericReader's render clears the persistent message). The tests read and clear
+// them while no render runs.
+std::mutex gMessagesMutex;
+
 // All the messages sent by the plug-ins, as "type: text\n" lines (cleared by the tests that check them).
+// (called with gMessagesMutex locked)
 std::string gMessages;
 void recordMessage(const char* type, const char* fmt, va_list a)
 {
@@ -285,6 +291,7 @@ void recordMessage(const char* type, const char* fmt, va_list a)
 
 OfxStatus msg(void*, const char* type, const char*, const char* fmt, ...)
 { va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx msg/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
+  std::lock_guard<std::mutex> lock(gMessagesMutex);
   va_start(a, fmt); recordMessage(type, fmt, a); va_end(a); return kOfxStatOK; }
 OfxMessageSuiteV1 gMsgSuite = { msg };
 
@@ -292,10 +299,11 @@ OfxMessageSuiteV1 gMsgSuite = { msg };
 std::string gPersistentError;
 OfxStatus msgPersist(void*, const char* type, const char*, const char* fmt, ...)
 { va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
+  std::lock_guard<std::mutex> lock(gMessagesMutex);
   va_start(a, fmt); recordMessage(type, fmt, a); va_end(a);
   if (type && !std::strcmp(type, kOfxMessageError)) { char buf[4096]; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a); gPersistentError = buf; } else { gPersistentError.clear(); }
   return kOfxStatOK; }
-OfxStatus msgClear(void*) { gPersistentError.clear(); return kOfxStatOK; }
+OfxStatus msgClear(void*) { std::lock_guard<std::mutex> lock(gMessagesMutex); gPersistentError.clear(); return kOfxStatOK; }
 OfxMessageSuiteV2 gMsgSuiteV2 = { msg, msgPersist, msgClear };
 
 OfxStatus itSwap(OfxInteractHandle) { return kOfxStatOK; }

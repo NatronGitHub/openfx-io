@@ -23,6 +23,8 @@
  */
 
 #include <algorithm>
+#include <mutex>
+#include <new>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -49,8 +51,6 @@ GCC_DIAG_OFF(deprecated)
 #include <ImfPixelType.h>
 GCC_DIAG_ON(deprecated)
 
-#include "fast_mutex.h"
-#include "ofxsMultiThread.h"
 
 #include "GenericOCIO.h"
 #include "GenericReader.h"
@@ -100,6 +100,9 @@ public:
 
 private:
     virtual bool isVideoStream(const string& /*filename*/) OVERRIDE FINAL { return false; }
+
+    // the purge caches action: forget the headers of the files read
+    virtual void clearAnyCache() OVERRIDE FINAL;
 
     virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
@@ -437,82 +440,114 @@ InputFile::~InputFile()
 // What getFrameBounds() and guessParamsFromFilename() need to know about a file, read from its header. The file is
 // not kept open: decode() opens it again (see InputFile).
 struct File {
-    explicit File(const string& filename);
+    File()
+        : channel_map()
+        , views()
+        , displayWindow()
+        , dataWindow()
+        , pixelAspectRatio(1.)
+    {
+    }
+
+    explicit File(const Imf_::Header& header);
+
+    bool operator==(const File& other) const
+    {
+        return channel_map == other.channel_map && views == other.views && sameRect(displayWindow, other.displayWindow)
+            && sameRect(dataWindow, other.dataWindow) && pixelAspectRatio == other.pixelAspectRatio;
+    }
+
+    bool operator!=(const File& other) const { return !(*this == other); }
 
     ChannelsMap channel_map;
     vector<string> views;
     OfxRectI displayWindow;
     OfxRectI dataWindow;
     float pixelAspectRatio;
+
+private:
+    static bool sameRect(const OfxRectI& a, const OfxRectI& b) { return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2; }
 };
 
-File::File(const string& filename)
+File::File(const Imf_::Header& header)
     : channel_map()
     , views()
     , displayWindow()
     , dataWindow()
     , pixelAspectRatio(1.)
 {
-    InputFile file(filename);
-    const Imf_::Header& header = file.get().header();
-
     mapChannels(header, views, &channel_map);
     getWindows(header, &displayWindow, &dataWindow);
     pixelAspectRatio = header.pixelAspectRatio();
 }
 
-// Keeps track of all Exr::File mapped against file name.
+// The header information of the files read, by file name (one small entry per file name, until the purge caches
+// action).
+// It is not invalidated when a file changes on disk: decode() reads the header again, and updates the entry if
+// it changed, so that the next getRegionOfDefinition gets the new RoD.
 class FileManager {
-    typedef map<string, File*> FilesMap;
+    typedef map<string, File> FilesMap;
 
     FilesMap _files;
-    // locks _files (concurrent renders, getRegionOfDefinition...): a fast_mutex, which doesn't need the host's
-    // multi-thread suite, so that it can be a static object
-    tthread::fast_mutex _lock;
+    std::mutex _lock; // locks _files (concurrent renders, getRegionOfDefinition...)
 
 public:
     // singleton
     static FileManager s_readerManager;
 
-    FileManager();
+    FileManager()
+        : _files()
+        , _lock()
+    {
+    }
 
-    ~FileManager();
+    // The information about a file: reads its header if it is not cached yet (throws if it can not be read)
+    File get(const string& filename);
 
-    // get a specific reader: throws if the file can not be read
-    const File* get(const string& filename);
+    // Sets the information about a file, from a header that was just read
+    void set(const string& filename, const File& file);
+
+    // Empties the cache
+    void clear();
 };
 
 FileManager FileManager::s_readerManager;
 
-// constructor
-FileManager::FileManager()
-    : _files()
-    , _lock()
-{
-}
-
-FileManager::~FileManager()
-{
-    for (FilesMap::iterator it = _files.begin(); it != _files.end(); ++it) {
-        delete it->second;
-    }
-}
-
-// get a specific reader
-const File*
+File
 FileManager::get(const string& filename)
 {
-    OFX::MultiThread::AutoMutexT<tthread::fast_mutex> g(_lock);
-    FilesMap::iterator it = _files.find(filename);
-    if (it == _files.end()) {
-        File* file = new File(filename); // (may throw)
-        pair<FilesMap::iterator, bool> ret = _files.insert(make_pair(string(filename), file));
-        assert(ret.second);
-
-        return ret.first->second;
-    } else {
-        return it->second;
+    {
+        std::lock_guard<std::mutex> g(_lock);
+        FilesMap::const_iterator it = _files.find(filename);
+        if (it != _files.end()) {
+            return it->second;
+        }
     }
+    // Read the header without holding the lock (this may be slow, e.g. on a network file system). If another
+    // thread did the same in the meantime, keep its entry.
+    File file;
+    {
+        InputFile in(filename); // (may throw)
+        file = File(in.get().header());
+    }
+    std::lock_guard<std::mutex> g(_lock);
+
+    return _files.insert(make_pair(filename, file)).first->second;
+}
+
+void
+FileManager::set(const string& filename,
+                 const File& file)
+{
+    std::lock_guard<std::mutex> g(_lock);
+    _files[filename] = file;
+}
+
+void
+FileManager::clear()
+{
+    std::lock_guard<std::mutex> g(_lock);
+    _files.clear();
 }
 } // namespace Exr
 
@@ -524,6 +559,12 @@ ReadEXRPlugin::ReadEXRPlugin(OfxImageEffectHandle handle,
 
 ReadEXRPlugin::~ReadEXRPlugin()
 {
+}
+
+void
+ReadEXRPlugin::clearAnyCache()
+{
+    Exr::FileManager::s_readerManager.clear();
 }
 
 void
@@ -546,7 +587,9 @@ ReadEXRPlugin::decode(const string& filename,
                       int pixelComponentCount,
                       int rowBytes)
 {
-    assert(renderScale.x == 1. && renderScale.y == 1.);
+    // renderWindow and bounds are in the pixels of the file: GenericReader scales the image afterwards if the render
+    // scale is not 1 (or reads a proxy file), but passes the render scale of the render action (so it is not
+    // always 1, and not used here)
     unused(renderScale);
     /// we only support RGBA output clip
     if ((pixelComponents != ePixelComponentRGBA) || (pixelComponentCount != 4)) {
@@ -555,8 +598,9 @@ ReadEXRPlugin::decode(const string& filename,
         return;
     }
 
-    // pixelData holds the image of the given bounds: write the render window (the whole RoD: tiles are not
-    // supported), clipped to these bounds.
+    // pixelData holds the image of the given bounds: write the render window, clipped to these bounds. The render
+    // window is usually the whole RoD (tiles are not supported: the host provides full RoD images), but it may be
+    // smaller, and the RoD is the one getFrameBounds() returned, from a header that may be older than the file.
     const int x1 = (std::max)(renderWindow.x1, bounds.x1);
     const int x2 = (std::min)(renderWindow.x2, bounds.x2);
     const int y1 = (std::max)(renderWindow.y1, bounds.y1);
@@ -566,6 +610,7 @@ ReadEXRPlugin::decode(const string& filename,
     }
     const ptrdiff_t pixelBytes = 4 * sizeof(float);
 
+    bool outOfMemory = false;
     bool failed = false;
     string error;
     try {
@@ -574,13 +619,13 @@ ReadEXRPlugin::decode(const string& filename,
         Exr::InputFile in(filename);
         Imf_::InputFile& file = in.get();
         const Imf_::Header& header = file.header();
-#ifndef NDEBUG
         {
-            OfxRectI displayWindow, dataWindow;
-            Exr::getWindows(header, &displayWindow, &dataWindow);
-            assert(kSupportsTiles || (renderWindow.x1 == dataWindow.x1 && renderWindow.x2 == dataWindow.x2 && renderWindow.y1 == dataWindow.y1 && renderWindow.y2 == dataWindow.y2));
+            // the file changed since its header was cached: update the cache, for the next getRegionOfDefinition
+            const Exr::File info(header);
+            if (info != Exr::FileManager::s_readerManager.get(filename)) {
+                Exr::FileManager::s_readerManager.set(filename, info);
+            }
         }
-#endif
         Exr::ChannelsMap channels;
         Exr::mapChannels(header, vector<string>(), &channels);
 
@@ -678,13 +723,19 @@ ReadEXRPlugin::decode(const string& filename,
                 }
             }
         }
+    } catch (const std::bad_alloc&) {
+        outOfMemory = true;
     } catch (const std::exception& e) {
         failed = true;
         error = e.what();
     }
+    if (outOfMemory) {
+        setPersistentMessage(Message::eMessageError, "", filename + ": out of memory");
+        throwSuiteStatusException(kOfxStatErrMemory);
+    }
     if (failed) {
         // the image is incomplete: the render fails
-        setPersistentMessage(Message::eMessageError, "", string("OpenEXR error") + ": " + error);
+        setPersistentMessage(Message::eMessageError, "", filename + ": OpenEXR error: " + error);
         throwSuiteStatusException(kOfxStatFailed);
     }
 } // ReadEXRPlugin::decode
@@ -717,17 +768,22 @@ ReadEXRPlugin::guessParamsFromFilename(const string& newFile,
 {
     assert(colorspace && filePremult && components && componentCount);
 
-    const Exr::File* file = NULL;
+    if (newFile.empty()) {
+        return false;
+    }
+    Exr::File info;
     try {
-        file = newFile.empty() ? NULL : Exr::FileManager::s_readerManager.get(newFile);
+        info = Exr::FileManager::s_readerManager.get(newFile);
+    } catch (const std::bad_alloc&) {
+        setPersistentMessage(Message::eMessageError, "", newFile + ": out of memory");
+
+        return false;
     } catch (const std::exception& e) {
-        setPersistentMessage(Message::eMessageError, "", string("OpenEXR error") + ": " + e.what());
+        setPersistentMessage(Message::eMessageError, "", newFile + ": OpenEXR error: " + e.what());
 
         return false;
     }
-    if (!file) {
-        return false;
-    }
+    const Exr::File* file = &info;
 
 #ifdef OFX_IO_USING_OCIO
     // Unless otherwise specified, exr files are assumed to be linear.
@@ -788,16 +844,23 @@ ReadEXRPlugin::getFrameBounds(const string& filename,
                               int* tile_height)
 {
     assert(bounds && par);
-    const Exr::File* file = NULL;
+    Exr::File info;
     try {
-        file = Exr::FileManager::s_readerManager.get(filename);
+        info = Exr::FileManager::s_readerManager.get(filename);
+    } catch (const std::bad_alloc&) {
+        if (error) {
+            *error = filename + ": out of memory";
+        }
+
+        return false;
     } catch (const std::exception& e) {
         if (error) {
-            *error = string("OpenEXR error") + ": " + e.what();
+            *error = filename + ": OpenEXR error: " + e.what();
         }
 
         return false;
     }
+    const Exr::File* file = &info;
     bounds->x1 = file->dataWindow.x1;
     bounds->x2 = file->dataWindow.x2;
     bounds->y1 = file->dataWindow.y1;

@@ -6,6 +6,8 @@
  *    around the data window (when the windows differ) is black, and the channels that are not in the file are 0
  *  - UINT channels are normalized by 2^32-1, as in ReadOIIO
  *  - luminance/chroma files (Y, RY, BY): read as before #123 (not converted)
+ *  - a render window narrower than the data window, render scale 1/2, and a file rewritten with other windows
+ *    (the header cache is updated by the next render, or emptied by the purge caches action)
  *  - a truncated file: the render fails, with an error message (it used to succeed with rows left unwritten)
  *  - concurrent renders (ReadEXR is kOfxImageEffectRenderFullySafe): several instances render the same file
  *    and another one from several threads at once, and each must get the same image as a single render. Build
@@ -231,13 +233,14 @@ struct Reader {
         return true;
     }
 
-    // getRegionOfDefinition, then an output image (RGBA float) that covers the RoD (GenericReader asserts it,
-    // for a reader that doesn't support tiles), filled with NaN (so that unwritten pixels are seen)
-    OfxStatus prepare()
+    // getRegionOfDefinition, then an output image (RGBA float) that covers the RoD at the given render scale
+    // (GenericReader asserts it, for a reader that doesn't support tiles), filled with NaN (so that unwritten pixels
+    // are seen). rod is in canonical coordinates, img in pixels at that scale.
+    OfxStatus prepare(double scale = 1.)
     {
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
+        double rs[2] = { scale, scale };
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
@@ -248,7 +251,7 @@ struct Reader {
         double r[4] = { 0., 0., 0., 0. };
         pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, r);
         rod = { (int)std::floor(r[0]), (int)std::floor(r[1]), (int)std::ceil(r[2]), (int)std::ceil(r[3]) };
-        img = rod;
+        img = { (int)std::floor(r[0] * scale), (int)std::floor(r[1] * scale), (int)std::ceil(r[2] * scale), (int)std::ceil(r[3] * scale) };
         const int w = img.x2 - img.x1;
         const int h = img.y2 - img.y1;
         const int rowBytes = w * 4 * (int)sizeof(float);
@@ -257,24 +260,32 @@ struct Reader {
         OfxPropertySetHandle ip = PH(&out->image);
         pSetPointer(ip, kOfxImagePropData, 0, out->buffer.data());
         int b[4] = { img.x1, img.y1, img.x2, img.y2 };
-        int rodI[4] = { rod.x1, rod.y1, rod.x2, rod.y2 };
         pSetIntN(ip, kOfxImagePropBounds, 4, b);
-        pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, rodI);
+        pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, b);
         pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
+        pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
         pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, r);
 
         return kOfxStatOK;
     }
 
-    // render the whole RoD (prepare() first)
-    OfxStatus render()
+    // render the whole image (prepare() first)
+    OfxStatus render() { return render(img); }
+
+    // render a window (in pixels at the render scale) of the image (prepare(scale) first)
+    OfxStatus render(const OfxRectI& window, double scale = 1.)
     {
         PropSet ra = makeRenderInArgs(1., 0, 0);
-        int win[4] = { rod.x1, rod.y1, rod.x2, rod.y2 };
+        int win[4] = { window.x1, window.y1, window.x2, window.y2 };
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+        double rs[2] = { scale, scale };
+        pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
 
         return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
     }
+
+    // the purge caches action
+    OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, H(inst), nullptr, nullptr); }
 
     OfxStatus prepareAndRender()
     {
@@ -312,6 +323,60 @@ sameImage(const std::vector<float>& a, const std::vector<float>& b)
 
 // ------------------------------------------------------------------ tests
 
+void
+checkRoD(const Reader& r, const OfxRectI& expectedRoD)
+{
+    check(r.rod.x1 == expectedRoD.x1 && r.rod.y1 == expectedRoD.y1 && r.rod.x2 == expectedRoD.x2 && r.rod.y2 == expectedRoD.y2,
+          "RoD %d,%d,%d,%d (expected %d,%d,%d,%d)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2,
+          expectedRoD.x1, expectedRoD.y1, expectedRoD.x2, expectedRoD.y2);
+}
+
+// The number of wrong pixel values in a render of a file written with spec s, at render scale 1. In the window:
+// the file's pixels (EXR pixel (x, y) is OFX pixel (x - display.min.x, display.max.y - y)), and 0 out of the data
+// window and in the channels that are not in the file. Out of the window: NaN (not written).
+int
+wrongPixels(const Reader& r, const ExrSpec& s, const OfxRectI& window)
+{
+    int bad = 0;
+    for (int y = r.img.y1; y < r.img.y2; ++y) {
+        for (int x = r.img.x1; x < r.img.x2; ++x) {
+            const int ex = x + s.display.min.x;
+            const int ey = s.display.max.y - y;
+            const bool inData = ex >= s.data.min.x && ex <= s.data.max.x && ey >= s.data.min.y && ey <= s.data.max.y;
+            const bool inWindow = x >= window.x1 && x < window.x2 && y >= window.y1 && y < window.y2;
+            const float* px = r.pixel(x, y);
+            for (int c = 0; c < 4; ++c) {
+                if (!inWindow) {
+                    if (!std::isnan(px[c])) {
+                        if (bad < 5) {
+                            std::printf("  pixel (%d,%d) channel %d, out of the render window: %.9g, expected NaN\n", x, y, c, px[c]);
+                        }
+                        ++bad;
+                    }
+                    continue;
+                }
+                float expected = 0.f;
+                if (inData && s.channels.find("RGBA"[c]) != std::string::npos) {
+                    if (c == 0 && s.uintRed) {
+                        expected = (float)((float)uintValue(ex, ey) * (1. / 4294967295.));
+                    } else {
+                        expected = pixelValue(ex, ey, c);
+                    }
+                }
+                const bool good = (c == 0 && s.uintRed) ? std::fabs(px[c] - expected) <= 1e-6f * std::fabs(expected) : px[c] == expected;
+                if (!good) {
+                    if (bad < 5) {
+                        std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], expected);
+                    }
+                    ++bad;
+                }
+            }
+        }
+    }
+
+    return bad;
+}
+
 // Reads a file written with spec s, and checks its RoD and every pixel.
 void
 testPixels(OfxPlugin* p, const std::string& dir, const char* name, const ExrSpec& s, const OfxRectI& expectedRoD)
@@ -335,37 +400,124 @@ testPixels(OfxPlugin* p, const std::string& dir, const char* name, const ExrSpec
     if (!ok(st)) {
         return;
     }
-    check(r.rod.x1 == expectedRoD.x1 && r.rod.y1 == expectedRoD.y1 && r.rod.x2 == expectedRoD.x2 && r.rod.y2 == expectedRoD.y2,
-          "RoD %d,%d,%d,%d (expected %d,%d,%d,%d)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2,
-          expectedRoD.x1, expectedRoD.y1, expectedRoD.x2, expectedRoD.y2);
-    // EXR pixel (x, y) is OFX pixel (x - display.min.x, display.max.y - y)
-    int bad = 0;
-    for (int y = r.img.y1; y < r.img.y2; ++y) {
-        for (int x = r.img.x1; x < r.img.x2; ++x) {
-            const int ex = x + s.display.min.x;
-            const int ey = s.display.max.y - y;
-            const bool inData = ex >= s.data.min.x && ex <= s.data.max.x && ey >= s.data.min.y && ey <= s.data.max.y;
-            const float* px = r.pixel(x, y);
-            for (int c = 0; c < 4; ++c) {
-                float expected = 0.f;
-                if (inData && s.channels.find("RGBA"[c]) != std::string::npos) {
-                    if (c == 0 && s.uintRed) {
-                        expected = (float)((float)uintValue(ex, ey) * (1. / 4294967295.));
-                    } else {
-                        expected = pixelValue(ex, ey, c);
-                    }
-                }
-                const bool good = (c == 0 && s.uintRed) ? std::fabs(px[c] - expected) <= 1e-6f * std::fabs(expected) : px[c] == expected;
-                if (!good) {
-                    if (bad < 5) {
-                        std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], expected);
-                    }
-                    ++bad;
-                }
-            }
-        }
-    }
+    checkRoD(r, expectedRoD);
+    const int bad = wrongPixels(r, s, r.img);
     check(bad == 0, "every pixel, channel and border is the expected value (%d wrong)", bad);
+}
+
+// The render window is narrower than the data window: decode() then reads the lines into a buffer, and copies the
+// part that is in the render window (the pixels out of it must not be written).
+void
+testWindow(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== render window narrower than the data window ====\n");
+    const std::string path = dir + "/window.exr";
+    ExrSpec s;
+    s.display = box(5, 7, 104, 66);
+    s.data = box(0, 3, 109, 69);
+    if (!writeExr(path, s)) {
+        ++gFailures;
+
+        return;
+    }
+    Reader r;
+    if (!r.create(p, path) || !ok(r.prepare())) {
+        check(false, "getRegionOfDefinition");
+
+        return;
+    }
+    const OfxRectI window = { r.rod.x1 + 7, r.rod.y1 + 4, r.rod.x2 - 9, r.rod.y2 - 2 };
+    gPersistentError.clear();
+    OfxStatus st = r.render(window);
+    check(ok(st) && gPersistentError.empty(), "render of %d,%d,%d,%d in the RoD %d,%d,%d,%d = %d", window.x1, window.y1, window.x2,
+          window.y2, r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2, st);
+    const int bad = wrongPixels(r, s, window);
+    check(bad == 0, "the render window has the expected values, the rest is not written (%d wrong)", bad);
+}
+
+// Render scale 1/2: GenericReader passes the render scale to decode() with a full-resolution render window (which
+// a debug build of ReadEXR 1.0 asserted against), then halves the image.
+void
+testScale(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== render scale 1/2 ====\n");
+    const std::string path = dir + "/scale.exr";
+    ExrSpec s;
+    s.display = box(0, 0, 99, 59);
+    s.data = box(10, 20, 69, 49);
+    if (!writeExr(path, s)) {
+        ++gFailures;
+
+        return;
+    }
+    Reader r;
+    if (!r.create(p, path) || !ok(r.prepare(0.5))) {
+        check(false, "getRegionOfDefinition");
+
+        return;
+    }
+    gPersistentError.clear();
+    OfxStatus st = r.render(r.img, 0.5);
+    check(ok(st) && gPersistentError.empty(), "render = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    int nan = 0;
+    for (float v : r.image()) {
+        nan += std::isnan(v) ? 1 : 0;
+    }
+    check(nan == 0, "image %d,%d,%d,%d: no unwritten pixel (%d NaN)", r.img.x1, r.img.y1, r.img.x2, r.img.y2, nan);
+}
+
+// The file is rewritten with other windows while an instance reads it: no render may fail (or assert), and the RoD
+// and the image are those of the new file after the next render (which updates the header cache), or after the
+// purge caches action.
+void
+testRewrite(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== file rewritten with other windows ====\n");
+    const std::string path = dir + "/rewrite.exr";
+    ExrSpec a, b, c;
+    a.display = a.data = box(0, 0, 255, 127);
+    b.display = box(0, 0, 127, 63);
+    b.data = box(-10, -10, 137, 73); // (overscan: a larger RoD)
+    c.display = c.data = box(0, 0, 63, 31);
+    Reader r;
+    if (!writeExr(path, a) || !r.create(p, path) || !ok(r.prepareAndRender())) {
+        check(false, "first render");
+
+        return;
+    }
+    checkRoD(r, { 0, 0, 256, 128 });
+    for (int k = 0; k < 2; ++k) {
+        const ExrSpec& s = k ? c : b;
+        const OfxRectI expected = k ? OfxRectI { 0, 0, 64, 32 } : OfxRectI { -11, -11, 139, 75 };
+        std::printf("  rewritten: RoD %d,%d,%d,%d\n", expected.x1, expected.y1, expected.x2, expected.y2);
+        if (!writeExr(path, s)) {
+            ++gFailures;
+
+            return;
+        }
+        // the cached RoD is the old one: the image is the new one, within the old RoD
+        OfxStatus st = r.prepareAndRender();
+        check(ok(st), "render after the rewrite, with the old RoD = %d", st);
+        // that render updated the cache
+        st = r.prepareAndRender();
+        check(ok(st), "next render = %d", st);
+        checkRoD(r, expected);
+        const int bad = wrongPixels(r, s, r.img);
+        check(bad == 0, "the image is the new one (%d wrong)", bad);
+    }
+    // the purge caches action: the next RoD is the new one
+    std::printf("  rewritten, then purge caches\n");
+    if (!writeExr(path, a)) {
+        ++gFailures;
+
+        return;
+    }
+    check(ok(r.purgeCaches()), "purge caches");
+    OfxStatus st = r.prepareAndRender();
+    check(ok(st), "render = %d", st);
+    checkRoD(r, { 0, 0, 256, 128 });
+    const int bad = wrongPixels(r, a, r.img);
+    check(bad == 0, "the image is the new one (%d wrong)", bad);
 }
 
 // A luminance/chroma file: Y, and RY and BY subsampled 2x2. They are not converted (#123 keeps the behaviour of
@@ -679,6 +831,9 @@ main(int argc, char** argv)
     testPixels(p, dir, "uint", s, { 0, 0, 64, 32 });
 
     testLumaChroma(p, dir);
+    testWindow(p, dir);
+    testScale(p, dir);
+    testRewrite(p, dir);
     testTruncated(p, dir);
     testThreads(p, dir);
 
