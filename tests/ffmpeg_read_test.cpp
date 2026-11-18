@@ -58,13 +58,18 @@
  *      file (e.g. a seek into a run of damaged frames), and checks it against the sequential
  *      decode (and, with --ramp, its content), or that it fails, for a --fail frame,
  *  16. optionally (--max-seq-bytes N) checks that decoding every frame sequentially reads at most N
- *      bytes (e.g. a file damaged from some point on must not be read again for each frame).
+ *      bytes (e.g. a file damaged from some point on must not be read again for each frame), and
+ *      (--max-reverse-bytes N) that decoding every frame in reverse order, in a newly opened file,
+ *      reads at most N bytes,
+ *  17. optionally (--order F1,F2,...) decodes the 1-based frames Fi in that order in a newly opened
+ *      file, and checks each one against the sequential decode (or that it fails, for a --fail
+ *      frame): e.g. a render order that must not make a good frame fail.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -112,7 +117,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -133,6 +138,8 @@ main(int argc, char** argv)
     std::vector<int> concealed; // 1-based frames whose content and seek consistency are not checked
     std::vector<int> fresh; // 1-based frames to decode first in a newly opened file
     long long maxSeqBytes = -1;
+    long long maxReverseBytes = -1;
+    std::vector<int> renderOrder; // 1-based frames to decode in that order in a newly opened file
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -150,6 +157,14 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--max-reverse-bytes" && i + 1 < argc) {
+            maxReverseBytes = std::atoll(argv[++i]);
+        } else if (a == "--order" && i + 1 < argc) {
+            std::istringstream is(argv[++i]);
+            std::string item;
+            while (std::getline(is, item, ',')) {
+                renderOrder.push_back(std::atoi(item.c_str()));
+            }
         } else if (a == "--max-seq-bytes" && i + 1 < argc) {
             maxSeqBytes = std::atoll(argv[++i]);
         } else if (a == "--max-open-bytes" && i + 1 < argc) {
@@ -473,6 +488,54 @@ main(int argc, char** argv)
     }
 
     const auto seekEnd = std::chrono::steady_clock::now();
+
+    // --order: the frames in that order, in a newly opened file.
+    if (!renderOrder.empty()) {
+        FFmpegFile orderFile(filename);
+        for (int f : renderOrder) {
+            std::memset(buf.data(), 0, bufBytes);
+            bool ok = false;
+            try {
+                ok = orderFile.decode(nullptr, f, loadNearest, buf.data());
+            } catch (const std::exception& e) {
+                ok = false;
+            }
+            if (isMustFail(f)) {
+                if (ok || orderFile.isInvalid() || orderFile.getError().empty()) {
+                    std::printf("  FAIL-CHECK order frame %d: %s\n", f, ok ? "decoded, but must fail" : "failed without an error message, or made the file invalid");
+                    ++failErrors;
+                }
+                continue;
+            }
+            if (!ok) {
+                std::printf("  ORDER decode frame %d returned false (%s)\n", f, orderFile.getError().c_str());
+                ++mismatches;
+                continue;
+            }
+            const double sig = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
+            if (!isConcealed(f) && (std::fabs(sig - seqSig[f]) > tol)) {
+                std::printf("  ORDER MISMATCH frame %d: sequential=%.3f in this order=%.3f\n", f, seqSig[f], sig);
+                ++mismatches;
+            }
+        }
+    }
+    // --max-reverse-bytes: every frame in reverse order, in a newly opened file.
+    if (maxReverseBytes >= 0) {
+        FFmpegFile reverseFile(filename);
+        const long long bytes0 = reverseFile.getBytesRead();
+        for (int f = frames; f >= 1; --f) {
+            try {
+                (void)reverseFile.decode(nullptr, f, loadNearest, buf.data());
+            } catch (const std::exception& e) {
+            }
+        }
+        const long long bytes = reverseFile.getBytesRead() - bytes0;
+        std::printf("  reverse decode: read %lld bytes\n", bytes);
+        if (bytes > maxReverseBytes) {
+            std::printf("  REVERSE-BYTES reverse decode read %lld bytes, expected at most %lld\n", bytes, maxReverseBytes);
+            ++seekErrors;
+        }
+    }
 
     // Each --fresh frame, decoded first in a newly opened file.
     for (int f : fresh) {

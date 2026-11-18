@@ -592,16 +592,18 @@ check_ts_cc() {
     done
 }
 
-# check_damaged_long NAME DESCRIPTION NOISE_AMOUNT FAIL_FROM FAIL_TO FRESH MAX_SEQ_BYTES_FACTOR
+# check_damaged_long NAME DESCRIPTION NOISE_AMOUNT FAIL_FROM FAIL_TO FRESH MAX_SEQ_BYTES_FACTOR [ORDER]
 # A 300-frame 320x240 ProRes MOV, damaged by the noise bitstream filter with the amount expression
 # NOISE_AMOUNT (e.g. "between(n,100,199)", a run of 100 damaged packets, or "gte(n,6)", damaged from the 7th
 # packet on): the frames FAIL_FROM to FAIL_TO (1-based) must fail, without making the file invalid, sequentially,
 # after a seek, and when decoded first in a newly opened file (FRESH, e.g. the good frames just after the
 # damage, which a damaged range must not include), with 1 and 8 decoder threads; the other frames must decode.
-# Decoding every frame sequentially must read at most MAX_SEQ_BYTES_FACTOR times the size of the file (the
-# known damaged range is extended, instead of reading the damaged packets again for each frame).
+# Decoding every frame sequentially, and in reverse order, must read at most MAX_SEQ_BYTES_FACTOR times the
+# size of the file (the known damaged ranges are extended, instead of reading the damaged packets again for
+# each frame). If ORDER is given (e.g. "101,184,181"), these frames are also decoded in that order in a newly
+# opened file.
 check_damaged_long() {
-    local name="$1" desc="$2" amount="$3" from="$4" to="$5" fresh="$6" factor="$7"
+    local name="$1" desc="$2" amount="$3" from="$4" to="$5" fresh="$6" factor="$7" order="${8:-}"
     echo "== $desc =="
     if ! have_encoder prores_ks; then
         echo "SKIPPED: no prores_ks encoder in the ffmpeg CLI"
@@ -625,7 +627,7 @@ check_damaged_long() {
     for threads in 1 8; do
         # shellcheck disable=SC2086
         if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 --frames 300 --fail "$fail" ${fresh:+--fresh "$fresh"} \
-            --max-seq-bytes $((size * factor)) ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            ${order:+--order "$order"} --max-seq-bytes $((size * factor)) --max-reverse-bytes $((size * factor)) ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
             grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
             echo "(with $threads decoder threads)"
             rc=1
@@ -755,6 +757,10 @@ check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two dama
 # file damaged from some point on must not be read again for each frame.
 check_damaged_long ramp_damaged_run100.mov "MOV (ProRes, 300 frames, packets 100-199 damaged)" "between(n,100,199)" 101 200 201,202,203,204,150 12
 check_damaged_long ramp_damaged_from6.mov "MOV (ProRes, 300 frames, damaged from the 7th packet on)" "gte(n,6)" 7 300 7,8,100 12
+# A good frame (181) between two damaged runs must not join a damaged range, whatever the order (with frame
+# threads, the error of a packet comes with a later one).
+check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
+    "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
 check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p

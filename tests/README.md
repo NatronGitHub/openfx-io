@@ -508,8 +508,13 @@ them, also when each one is decoded first in a newly opened file (`--fresh`, in 
 another order). A truncated H.264 MP4 (faststart, with B-frames) must fail from the DTS of the
 truncated packet, found in the index at open, in any render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
 decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one
-damaged from its 7th packet on, decoding every frame sequentially must read at most 12 times the
-file (`--max-seq-bytes`). An MPEG-TS with a continuity counter error (a packet flagged
+damaged from its 7th packet on, decoding every frame sequentially, and in reverse order in a newly
+opened file, must read at most 12 times the file (`--max-seq-bytes`, `--max-reverse-bytes`: the
+reader remembers the damaged ranges, instead of reading the damaged packets again for each frame).
+In one with packets 100-179 and 181-183 damaged, decoding frames 101, 184, 181 and 182 in that
+order in a newly opened file (`--order`) must fail for 101, and give frame 181 for the other
+three: with frame threads, the error of a damaged packet comes with a later packet, and the good
+frame 181 must not join a damaged range. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to

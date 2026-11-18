@@ -174,10 +174,10 @@ private:
         int _lastDamagedFrame; // the largest frame of the damaged packets found by the current decode() (-1 if none)
         int _requestDroppedPackets; // the packets dropped by all the attempts of the current decode()
         bool _noTimestamps; // the current decode() found a decoded frame without a timestamp, and stopped
-        int _damagedRangeFrom; // a range of frames found to fail because of persistent damage (-1 if none)
-        int _damagedRangeTo;
+        std::vector<std::pair<int, int>> _damagedRanges; // ranges of frames found to fail because of damage (sorted, disjoint)
         int _damagedRangeError;
-        bool _stoppedOnDamagedPacket; // intra-only: the last demuxAndDecode() stopped on a damaged packet after the requested frame
+        bool _sawFrameWithoutTimestamp; // the current decode() decoded a frame without a timestamp
+        bool _stoppedOnDamagedPacket; // intra-only: the last demuxAndDecode() found only damaged packets from its start to the requested frame (and stopped)
         bool _tooManyDroppedPackets; // decoding stopped after too many consecutive damaged packets in the current decode()
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
@@ -243,9 +243,9 @@ private:
             , _lastDamagedFrame(-1)
             , _requestDroppedPackets(0)
             , _noTimestamps(false)
-            , _damagedRangeFrom(-1)
-            , _damagedRangeTo(-1)
+            , _damagedRanges()
             , _damagedRangeError(0)
+            , _sawFrameWithoutTimestamp(false)
             , _stoppedOnDamagedPacket(false)
             , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
@@ -322,6 +322,45 @@ private:
         static void destroy(Stream* s)
         {
             delete (s);
+        }
+
+        bool inDamagedRange(int frame) const
+        {
+            for (const auto& r : _damagedRanges) {
+                if ((frame >= r.first) && (frame <= r.second)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // the end of the last damaged range before the frame (-1 if none)
+        int damagedRangeEndBefore(int frame) const
+        {
+            int end = -1;
+            for (const auto& r : _damagedRanges) {
+                if ((r.second < frame) && (r.second > end)) {
+                    end = r.second;
+                }
+            }
+            return end;
+        }
+
+        // add a damaged range, merged with the ranges it overlaps or touches
+        void addDamagedRange(int lo, int hi)
+        {
+            std::vector<std::pair<int, int>> ranges;
+            for (const auto& r : _damagedRanges) {
+                if ((r.second + 1 < lo) || (r.first > hi + 1)) {
+                    ranges.push_back(r);
+                } else {
+                    lo = (std::min)(lo, r.first);
+                    hi = (std::max)(hi, r.second);
+                }
+            }
+            ranges.push_back(std::make_pair(lo, hi));
+            std::sort(ranges.begin(), ranges.end());
+            _damagedRanges.swap(ranges);
         }
 
         bool isDamagedPts(int64_t pts) const
@@ -714,7 +753,8 @@ public:
 private:
     bool seekToFrame(int64_t frame, int seekFlags);
 
-    bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame);
+    // damagedFrom: intra-only, the first frame of the frames up to the requested one known to be damaged (-1 if none)
+    bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame, int damagedFrom = -1);
 
     bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
 };
