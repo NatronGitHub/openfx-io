@@ -457,7 +457,9 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
 
     if ((srcBounds.x2 <= srcBounds.x1) || (srcBounds.y2 <= srcBounds.y1)) {
         // An empty source image has no pixel data (getPixelAddress() is NULL): an ImageBuf wrapping it crashed
-        // ImageBufAlgo::resize() with OpenImageIO 2.4. The render window is black.
+        // ImageBufAlgo::resize() with OpenImageIO 2.4. The render window is black. (Only this path honours the render
+        // window: the resize below renders the whole output image, which is the render window, since kSupportsTiles
+        // is 0.)
         OfxRectI window;
         if (Coords::rectIntersection(args.renderWindow, dstImgBounds, &window)) {
             const std::size_t rowSize = (std::size_t)(window.x2 - window.x1) * nComps * sizeof(PIX);
