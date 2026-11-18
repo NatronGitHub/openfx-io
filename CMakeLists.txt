@@ -377,9 +377,6 @@ if(OFX_IO_WITH_FFMPEG AND TARGET PkgConfig::FFMPEG)
   string(APPEND _io_groups " FFmpeg")
   target_compile_definitions(IO PRIVATE OFX_IO_MT_FFMPEG)
   target_link_libraries(IO PRIVATE PkgConfig::FFMPEG)
-  # WriteFFmpeg uses std::filesystem: with GCC < 9 (e.g. GCC 8.5, Rocky Linux 8's system compiler), it is in
-  # libstdc++fs, not in libstdc++ (https://gcc.gnu.org/gcc-9/changes.html)
-  target_link_libraries(IO PRIVATE $<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9>>:stdc++fs>)
   # FFmpeg's include directories first (-I, before the -isystem of OpenColorIO's or OpenImageIO's prefix, which
   # may have another FFmpeg: MacPorts' /opt/local/include, while ffmpeg8 is in /opt/local/libexec/ffmpeg8/include)
   target_include_directories(IO BEFORE PRIVATE ${FFMPEG_INCLUDE_DIRS})
