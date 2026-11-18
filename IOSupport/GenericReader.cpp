@@ -1748,11 +1748,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
                     remappedComponents = ePixelComponentAlpha;
                 }
             }
-    #ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
             if (isColor) {
                 isOCIOIdentity = _ocio->isIdentity(args.time);
             }
-    #endif
+#endif
 
             PreMultiplicationEnum filePremult = eImageUnPreMultiplied;
             PreMultiplicationEnum outputPremult = eImageUnPreMultiplied;
@@ -1871,10 +1871,10 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
                         // assert(tmpPixelData[0] == 1. && tmpPixelData[1] == 1. && tmpPixelData[2] == 1. && tmpPixelData[3] == 0.5);
                     }
-    #ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
                     DBG(std::printf("OCIO (tmp in-place)\n"));
                     _ocio->apply(args.time, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
-    #endif
+#endif
                 }
 
                 // after the colorspace conversion, which may also modify the alpha channel
