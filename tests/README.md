@@ -486,6 +486,12 @@ decode, identically after a seek except at the two swapped frame times
 (`--no-seek-check`): there, FFmpeg 8 gives timestamps after a seek that depend on the
 timestamps decoded before, since `avcodec_flush_buffers()` does not reset its
 best_effort_timestamp heuristic.
+Damaged packets (issue #151): Matroska clips (CFR, and VFR with gaps) have two packets
+damaged by the `noise` bitstream filter, which the decoder rejects with
+AVERROR_INVALIDDATA: the reader must drop them and go on decoding, and their frame times
+must show the previous frame (`--positions`, from the timestamps of the other packets).
+With a damaged first GOP, its frames must fail with an error message (`--fail`), and the
+other frames must decode.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration

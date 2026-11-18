@@ -167,6 +167,7 @@ private:
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
+        bool _invalidDataSkipped; // a damaged packet was dropped during the current decode()
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         SwsContext* _convertCtx;
@@ -224,6 +225,7 @@ private:
             , _avNextFrame(nullptr)
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
+            , _invalidDataSkipped(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)

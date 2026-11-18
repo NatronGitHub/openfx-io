@@ -41,13 +41,16 @@
  *      the seeks decode from the start), and (--max-indexed-frame N) that the index of the stream
  *      does not reach beyond the 1-based frame N after the open (e.g. that reading the last packets
  *      to find the end did not add an index entry near the end, which would make the seeks decode
- *      from near the start, in FLV without a keyframe index).
+ *      from near the start, in FLV without a keyframe index),
+ *  12. optionally (--fail F1,F2,...) checks that the 1-based frames Fi fail to decode, with
+ *      an error message, sequentially and after a seek (e.g. a damaged first GOP), and
+ *      excludes them from the other checks; every other frame must still decode.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -95,7 +98,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -111,6 +114,7 @@ main(int argc, char** argv)
     int maxIndexedFrame = -1;
     long long maxSeekBytes = -1;
     std::vector<int> noSeekCheck; // 1-based frames that may give another image after a seek
+    std::vector<int> mustFail; // 1-based frames that must fail to decode
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -146,6 +150,12 @@ main(int argc, char** argv)
             std::string item;
             while (std::getline(is, item, ',')) {
                 noSeekCheck.push_back(std::atoi(item.c_str()));
+            }
+        } else if (a == "--fail" && i + 1 < argc) {
+            std::istringstream is(argv[++i]);
+            std::string item;
+            while (std::getline(is, item, ',')) {
+                mustFail.push_back(std::atoi(item.c_str()));
             }
         } else if (a == "--positions" && i + 1 < argc) {
             std::istringstream is(argv[++i]);
@@ -255,10 +265,35 @@ main(int argc, char** argv)
     const size_t bufBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
     std::vector<unsigned char> buf(bufBytes);
 
+    // A frame that must fail to decode (--fail): returns true if it did fail, with an error message.
+    auto isMustFail = [&mustFail](int f) -> bool { return std::find(mustFail.begin(), mustFail.end(), f) != mustFail.end(); };
+    int failErrors = 0;
+    auto checkFails = [&](int f, const char* phase) {
+        bool ok = false;
+        try {
+            ok = file.decode(nullptr, f, loadNearest, buf.data());
+        } catch (const std::exception& e) {
+            ok = false;
+        }
+        if (ok) {
+            std::printf("  FAIL-CHECK %s frame %d decoded, but must fail\n", phase, f);
+            ++failErrors;
+        } else if (file.getError().empty()) {
+            std::printf("  FAIL-CHECK %s frame %d failed without an error message\n", phase, f);
+            ++failErrors;
+        } else if (verbose) {
+            std::printf("  %s frame %d failed as expected: %s\n", phase, f, file.getError().c_str());
+        }
+    };
+
     // 1) Sequential decode -> ground-truth signatures (1-based frame indices).
     std::vector<double> seqSig(static_cast<size_t>(frames) + 1, -1.0);
     for (int f = 1; f <= frames; ++f) {
         std::memset(buf.data(), 0, bufBytes);
+        if (isMustFail(f)) {
+            checkFails(f, "sequential");
+            continue;
+        }
         bool ok = false;
         try {
             ok = file.decode(nullptr, f, loadNearest, buf.data());
@@ -298,7 +333,7 @@ main(int argc, char** argv)
     if (!positions.empty()) {
         for (int f = 1; f <= frames; ++f) {
             const int heldAt = positions[rampDisplayed(f) - 1] + 1; // 1-based frame of the held frame
-            if ((heldAt != f) && (heldAt <= frames) && (seqSig[f] != seqSig[heldAt])) {
+            if ((heldAt != f) && (heldAt <= frames) && !isMustFail(f) && !isMustFail(heldAt) && (seqSig[f] != seqSig[heldAt])) {
                 std::printf("  HOLD frame %d: sig=%.3f, differs from the held frame %d: sig=%.3f\n",
                             f, seqSig[f], heldAt, seqSig[heldAt]);
                 ++holdErrors;
@@ -310,6 +345,9 @@ main(int argc, char** argv)
     int monotonicViolations = 0;
     if (checkMonotonic) {
         for (int f = 2; f <= frames; ++f) {
+            if (isMustFail(f) || isMustFail(f - 1)) {
+                continue;
+            }
             if (!(seqSig[f] > seqSig[f - 1])) {
                 std::printf("  MONOTONIC violation: frame %d sig=%.3f <= frame %d sig=%.3f\n",
                             f, seqSig[f], f - 1, seqSig[f - 1]);
@@ -337,6 +375,10 @@ main(int argc, char** argv)
     const auto seekStart = std::chrono::steady_clock::now();
     for (int f : order) {
         std::memset(buf.data(), 0, bufBytes);
+        if (isMustFail(f)) {
+            checkFails(f, "seeked");
+            continue;
+        }
         bool ok = false;
         try {
             ok = file.decode(nullptr, f, loadNearest, buf.data());
@@ -374,10 +416,10 @@ main(int argc, char** argv)
     const auto seekEnd = std::chrono::steady_clock::now();
     const double seekMs = std::chrono::duration<double, std::milli>(seekEnd - seekStart).count();
 
-    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekErrors=%d seekPhaseMs=%.1f\n",
-                order.size(), mismatches, monotonicViolations, contentErrors, holdErrors, seekErrors, seekMs);
+    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekErrors=%d failErrors=%d seekPhaseMs=%.1f\n",
+                order.size(), mismatches, monotonicViolations, contentErrors, holdErrors, seekErrors, failErrors, seekMs);
 
-    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0 || holdErrors != 0 || seekErrors != 0) {
+    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0 || holdErrors != 0 || seekErrors != 0 || failErrors != 0) {
         std::printf("FAIL\n");
         return 1;
     }

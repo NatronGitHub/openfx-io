@@ -51,6 +51,10 @@
 #     frame (the frame displayed at that time), not an error or another frame. With a
 #     long gap, and with a gap at the end, the number of seeks is bounded: the reader
 #     must not decode from the start again for each frame in the gap.
+#   * Matroska (CFR, and VFR with gaps) with two packets damaged by the noise bitstream
+#     filter, which the decoder rejects (AVERROR_INVALIDDATA): the reader must drop them,
+#     and their frame times show the previous frame. With a damaged first GOP, its frames
+#     must fail with an error, and the other frames must decode.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -333,6 +337,58 @@ check_ss_copy() {
     "$bin" "$tmp/$name" --tol 3 --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
+# check_damaged NAME DESCRIPTION SETPTS PACKETS FAIL_FRAMES
+# A 40-frame textured ramp at 24 fps in Matroska (GOP 8, fixed B-frames), with the timestamps
+# SETPTS (a setpts expression, in frames; N for CFR), where the packets PACKETS (0-based, in
+# decoding order, e.g. "13 27") are damaged by the noise bitstream filter, so that the decoder
+# rejects them (AVERROR_INVALIDDATA). The reader must drop them and go on decoding: the frame
+# time of a damaged packet becomes a gap, which shows the previous frame (--positions, from the
+# timestamps of the other packets). If FAIL_FRAMES (1-based, e.g. "1,2") is not empty, these
+# frames cannot be decoded at all (e.g. the first GOP is damaged), and must fail with an error
+# (--fail); the timestamps are then not checked.
+check_damaged() {
+    local name="$1" desc="$2" setpts="$3" packets="$4" fail="$5"
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(texramp)" -vf "trim=end_frame=$NFRAMES,setpts=($setpts)/(24*TB)" -fps_mode passthrough \
+        -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0 -pix_fmt yuv420p "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    local expr="0" n
+    for n in $packets; do
+        expr="$expr+eq(n\,$n)"
+    done
+    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if($expr\,2\,0)" "$tmp/$name" 2>/dev/null; then
+        echo "SKIPPED: no noise bitstream filter"
+        return
+    fi
+    # The frames (Matroska timestamps are in milliseconds) of the packets that are not damaged.
+    local positions
+    positions="$(ffprobe -v error -select_streams v:0 -show_entries packet=pts -of csv=p=0 "$tmp/clean_$name" |
+        awk -v damaged=" $packets " 'index(damaged, " " (NR - 1) " ") == 0 { printf "%d\n", ($1 * 24 + 500) / 1000 }' | sort -n | paste -s -d, -)"
+    local args=()
+    if [ -n "$fail" ]; then
+        args=(--fail "$fail")
+    else
+        args=(--positions "$positions")
+    fi
+    # shellcheck disable=SC2086
+    # (the decoder errors are not shown, but the harness failures are)
+    if ! "$bin" "$tmp/$name" --tol 3 "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+        grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+        rc=1
+    fi
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -430,6 +486,10 @@ check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame be
 check_corrupt ramp_corrupt_long_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a 20-frame gap)" 24 21 1 0 2
 check_corrupt ramp_corrupt_end_gap.mkv "VFR MKV (H.264, 24 fps, corrupted last frame before a 35-frame gap at the end)" 13 0 0 2 2
 check_swapped ramp_swapped.mov "MOV (H.264, 24 fps, broken timestamps: two PTS swapped)"
+check_damaged ramp_damaged.mkv "MKV (H.264, 24 fps, two damaged packets)" N "13 27" ""
+check_damaged ramp_damaged_vfr.mkv "VFR MKV (H.264, 24 fps, gaps, two damaged packets)" \
+    "if(lte(N\,12)\,N\,12+2+2*(N-13))" "13 27" ""
+check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its frames fail)" N "0 1 2 3 4 5 6 7" 1,2,3,4,5,6,7,8
 
 # Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
 # cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is

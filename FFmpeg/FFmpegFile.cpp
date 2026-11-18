@@ -1913,6 +1913,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     bool retriedSeek = false;
     bool retriedDecode = false;
+    stream->_invalidDataSkipped = false;
 
     while (!retriedDecode) {
 
@@ -1946,6 +1947,10 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         }
         // The decoder position is unknown: seek before the next decode.
         stream->resetHeldFrames();
+        if (stream->_invalidDataSkipped && !isInvalid()) {
+            // No frame could be decoded for the requested frame, and damaged packets were dropped.
+            setInternalError(AVERROR_INVALIDDATA, "FFmpeg Reader Failed to decode packet: ");
+        }
     }
 
     return hasPicture;
@@ -2109,6 +2114,23 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         return true;
     };
 
+    // A damaged packet (AVERROR_INVALIDDATA) is dropped, and decoding goes on, as in players: the
+    // frame time it covered becomes a gap, which shows the previous frame (see processDecodedFrame),
+    // and the following frames decode normally once the next keyframe or reference frame arrives
+    // (or with errors, concealed by the decoder). With frame threads, the error may be returned by
+    // avcodec_receive_frame() instead of avcodec_send_packet(). If no frame can be produced at all
+    // (e.g. a damaged first GOP), decode() fails with that error.
+    auto skipInvalidData = [stream](int r) -> bool {
+        if (r != AVERROR_INVALIDDATA) {
+            return false;
+        }
+        stream->_invalidDataSkipped = true;
+#if TRACE_DECODE_PROCESS
+        std::cout << "FFmpeg Reader: skipping a damaged packet" << std::endl;
+#endif
+        return true;
+    };
+
     // Drain all frames currently available from the decoder, checking each against the
     // target frame. Returns:
     //   1  if the target frame was found (and converted into avFrameOut),
@@ -2121,6 +2143,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             int r = avcodec_receive_frame(stream->_codecContext, avFrameDecodeDst);
             if ((r == AVERROR(EAGAIN)) || (r == AVERROR_EOF)) {
                 return 0;
+            }
+            if (skipInvalidData(r)) {
+                continue;
             }
             if (r < 0) {
                 return r;
@@ -2142,7 +2167,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // buffer is full it returns EAGAIN, which per the API contract means we must drain
         // output first and then resend the *same* packet (rather than dropping it).
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
-        if ((res < 0) && (res != AVERROR(EAGAIN))) {
+        if (skipInvalidData(res)) {
+            res = 0; // the packet is dropped: drain the frames of the previous packets
+        } else if ((res < 0) && (res != AVERROR(EAGAIN))) {
             setInternalError(res, "FFmpeg Reader Failed to decode packet: ");
             return false;
         }
@@ -2159,7 +2186,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         if (res == AVERROR(EAGAIN)) {
             // The packet was not accepted before; resend it now that output has been drained.
             res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
-            if (res < 0) {
+            if (skipInvalidData(res)) {
+                res = 0;
+            } else if (res < 0) {
                 setInternalError(res, "FFmpeg Reader Failed to decode packet: ");
                 return false;
             }
