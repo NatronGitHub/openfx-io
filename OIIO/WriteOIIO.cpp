@@ -282,14 +282,10 @@ enum EParamTextureformat {
 };
 
 
-#define kParamProcessAllLayers "processAllLayers"
-#define kParamProcessAllLayersLabel "All Layers"
-#define kParamProcessAllLayersHint "When checked, all layers will be written to the file"
-
 #define kParamOutputChannels kNatronOfxParamOutputChannels
 #define kParamOutputChannelsChoice kParamOutputChannels "Choice"
 #define kParamOutputChannelsLabel "Layer(s)"
-#define kParamOutputChannelsHint "Select the layer to write to the file. To write all layers, check \"All Layers\" instead. " \
+#define kParamOutputChannelsHint "Select the layer to write to the file. To write all layers, check \"All Planes\" instead. " \
                                  "It is not yet possible to append a layer to an existing file."
 
 #define kParamPartsSplitting "partSplitting"

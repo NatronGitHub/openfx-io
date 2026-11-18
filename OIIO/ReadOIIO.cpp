@@ -332,13 +332,11 @@ getLibRawDemosaicCaps(bool* gpl2,
 // Channels 0 and 1 are reserved for 0 and 1 constants
 #define kXChannelFirst 2
 
-#define kParamChannelOutputLayerHint "This is the layer that will be set to the the color plane. This is relevant only for image formats that can have multiple layers: " \
+#define kParamChannelOutputLayerHint "This is the layer that will be set to the color plane. This is relevant only for image formats that can have multiple layers: " \
                                      "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
 
 #define kParamChannelOutputLayer "outputLayer"
 #define kParamChannelOutputLayerLabel "Output Layer"
-#define kParamChannelOutputLayerHint "This is the layer that will be set to the the color plane. This is relevant only for image formats that can have multiple layers: " \
-                                     "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
 
 // The string param behind the dynamic choice menu
 #define kParamChannelOutputLayerChoice kParamChannelOutputLayer "Choice"
