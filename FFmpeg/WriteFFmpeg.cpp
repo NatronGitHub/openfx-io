@@ -609,6 +609,21 @@ frameRateFromFps(double fps)
     return frame_rate;
 }
 
+// The minimum bitrate tolerance (in Mbit/s), bitrate / min(fps, 4) rounded up to 1 bit/s, from ffserver.c
+// (bit_rate_tolerance = FFMAX(bit_rate / 4, bit_rate * time_base)). The frame rate param may be 0: bitrate / 0 was inf
+// (or NaN for a bitrate of 0), converted to int. A frame rate of 0 or less gives bitrate / 4, and the result is at
+// most maxTolerance.
+static double
+bitrateToleranceMin(double bitrate,
+                    double fps,
+                    double maxTolerance)
+{
+    const double divisor = ((0. < fps) && (fps < 4.)) ? fps : 4.;
+    const double tolerance = std::ceil((bitrate / divisor) * 1000000) / 1000000.;
+
+    return (tolerance < maxTolerance) ? tolerance : maxTolerance;
+}
+
 // The frame rate of the video stream, as encoded with the given codec.
 // MPEG-4 part 2 can not have a time base denominator above 65535 (libavcodec/mpeg4videoenc.c:
 // "timebase %d/%d not supported by MPEG 4 standard, the maximum admitted value for the timebase
@@ -3265,14 +3280,17 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
                 avCodecContext->bit_rate_tolerance = 0;
             } else {
                 double fps = _fps->getValue();
-                double bitrateToleranceMin = std::ceil((bitrate / (std::min)(fps, 4.)) * 1000000) / 1000000.;
-                bitrateTolerance = (std::max)(bitrateToleranceMin, bitrateTolerance);
+                const double toleranceMin = bitrateToleranceMin(bitrate, fps, kParamBitrateToleranceMax);
+                bitrateTolerance = (std::max)(toleranceMin, bitrateTolerance);
 
                 avCodecContext->bit_rate_tolerance = (int)(bitrateTolerance * 1000000);
             }
         } else {
             // avoid warning from mpegvideo_enc.c
-            avCodecContext->bit_rate_tolerance = avCodecContext->bit_rate * av_q2d(avCodecContext->time_base);
+            // the time base is 1/0 for a frame rate of 0 (av_q2d() gives inf, and 0 * inf = NaN): avcodec_open2() then
+            // fails ("The encoder timebase is not set")
+            const AVRational timeBase = avCodecContext->time_base;
+            avCodecContext->bit_rate_tolerance = ((timeBase.num > 0) && (timeBase.den > 0)) ? avCodecContext->bit_rate * av_q2d(timeBase) : 0;
         }
     }
     if (p.qrange) {
@@ -5376,8 +5394,8 @@ WriteFFmpegPlugin::updateBitrateToleranceRange()
     // We're not force limiting the range since the upper range is not bounded.
     double bitrate = _bitrate->getValue();
     double fps = _fps->getValue();
-    // guard against division by zero - the 4 comes from the ffserver.c code
-    double minRange = std::ceil((bitrate / (std::min)(fps, 4.)) * 1000000) / 1000000.;
+    // the 4 comes from the ffserver.c code
+    double minRange = bitrateToleranceMin(bitrate, fps, kParamBitrateToleranceMax);
 
     _bitrateTolerance->setRange(minRange, kParamBitrateToleranceMax);
     _bitrateTolerance->setDisplayRange(minRange, kParamBitrateToleranceMax);

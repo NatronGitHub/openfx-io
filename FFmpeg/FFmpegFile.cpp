@@ -469,13 +469,15 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
 /*static*/ double
 FFmpegFile::Stream::GetStreamAspectRatio(Stream* stream)
 {
-    if (stream->_avstream->sample_aspect_ratio.num) {
+    // a sample aspect ratio with a numerator or denominator of 0 or less is unknown or invalid (av_q2d() would give
+    // 0, inf, NaN or a negative PAR)
+    if ((stream->_avstream->sample_aspect_ratio.num > 0) && (stream->_avstream->sample_aspect_ratio.den > 0)) {
 #if TRACE_FILE_OPEN
         std::cout << "      Aspect ratio (from stream)=" << av_q2d(stream->_avstream->sample_aspect_ratio) << std::endl;
 #endif
 
         return av_q2d(stream->_avstream->sample_aspect_ratio);
-    } else if (stream->_codecContext->sample_aspect_ratio.num) {
+    } else if ((stream->_codecContext->sample_aspect_ratio.num > 0) && (stream->_codecContext->sample_aspect_ratio.den > 0)) {
 #if TRACE_FILE_OPEN
         std::cout << "      Aspect ratio (from codec)=" << av_q2d(stream->_codecContext->sample_aspect_ratio) << std::endl;
 #endif
