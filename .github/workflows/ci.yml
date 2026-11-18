@@ -186,7 +186,7 @@ jobs:
           # Use only MacPorts tools and libraries: take Homebrew out of PATH.
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           sudo port -N selfupdate
-          sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng
+          sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng expat
           port installed
       - name: Prepare the SeExpr prefix
         # In MacPorts' prefix, so that osxDeploy.sh (which bundles /opt/local libraries) bundles libSeExpr
@@ -301,7 +301,7 @@ jobs:
           # pacboy's "name:p" is ${MINGW_PACKAGE_PREFIX}-name for the msystem above: no hard-coded environment
           pacboy: >-
             cc:p pkgconf:p python:p cmake:p ninja:p
-            openimageio:p opencolorio:p openexr:p libraw:p ffmpeg:p seexpr:p libpng:p fmt:p
+            openimageio:p opencolorio:p openexr:p libraw:p ffmpeg:p seexpr:p libpng:p fmt:p expat:p
       - name: Build (release, CMake)
         run: |
           set -eo pipefail

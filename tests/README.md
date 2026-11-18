@@ -300,8 +300,8 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 ### 4. `io-hostdemo` — every plug-in of the installed bundle, rendered by openfx's hostDemo
 
 Not a `tests/Makefile` target: a ctest test of the CMake build, with `-DIO_HOSTDEMO_TESTS=ON` (CI turns it on),
-which builds openfx's example host `hostDemo` (`openfx/HostSupport/examples`, with HostSupport and its bundled
-expat) from the `openfx` submodule. It runs after `cmake --install`, on the installed bundle (it is skipped if the
+which builds openfx's example host `hostDemo` (`openfx/HostSupport/examples`, with HostSupport, which needs the
+system expat) from the `openfx` submodule. It runs after `cmake --install`, on the installed bundle (it is skipped if the
 bundle is not installed):
 
 ```sh
