@@ -460,8 +460,10 @@ private:
     // The number of frames of the stream that are not displayed
     int64_t getDiscardedFrames(Stream& stream);
 
-    // The largest timestamp in the index of the stream, in AV_TIME_BASE units
+#if LIBAVFORMAT_VERSION_MAJOR < 59
+    // The largest timestamp in the index of the stream, in AV_TIME_BASE units (lavf 58: fragmented MP4)
     int64_t getLastIndexTimestamp(Stream& stream);
+#endif
 
     // The end of the movie (in AV_TIME_BASE units) and the largest PTS of the video stream, from the last packets
     bool probeEnd(Stream& stream, int64_t& movieEnd, int64_t& lastVideoPts);

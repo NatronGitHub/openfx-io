@@ -386,6 +386,9 @@ check ramp_audio_first.flv "FLV (H.264 with B-frames, 24 fps, starting 0.5 s aft
 check ramp_nodur.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata)" libx264 24 $X264 -flvflags no_duration_filesize
 check ramp_nodur_offset.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, non-zero start time)" libx264 24 \
     $X264 -flvflags no_duration_filesize -output_ts_offset 10
+# A low frame rate with audio: the last 64 tags are audio tags and the AVC end of sequence (not a frame).
+check ramp_low_rate.flv "FLV (H.264, 0.5 fps, AAC audio)" libx264 0.5 \
+    -map 1:v -map 0:a -c:v libx264 -bf 0 -pix_fmt yuv420p -c:a aac -shortest -- -f lavfi -t 80 -i sine=r=48000
 check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, GOP 8, start time 0.5 s, duration written as a length, as mkvmerge does)" -g 8
 check_mkv_length ramp_length_gop.mkv "Matroska (H.264, 24 fps, default GOP, start time 0.5 s, duration written as a length)"
 check_flv_overhang ramp_overhang.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, AAC audio ending 40 ms after the video)"
@@ -460,9 +463,8 @@ if have_encoder libx264 && have_encoder aac; then
 fi
 # MPEG-TS/PS, whose end is read from the last packets: two programs in a TS (the second starting at 100 s:
 # only the program of the video stream counts), an MPEG-PS whose last reference frame has no PTS (it is
-# displayed after the B-frames that follow it), a VOB with B-frames and audio, and an MPEG-PS cut in the
-# middle of a GOP (its first frames cannot be decoded: the count and the frame numbering must not depend on
-# the decoder threads). The expected count is the number of video packets.
+# displayed after the B-frames that follow it), VOBs with B-frames, with and without audio (the last
+# reference frame has no PTS, and no B-frame follows it). The expected count is the number of video packets.
 check_packets() {
     local name="$1" desc="$2" threads
     shift 2
@@ -478,17 +480,47 @@ check_packets() {
         FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames "$packets" --open-only "$@" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
     done
 }
-if have_encoder mpeg2video && have_encoder mp2; then
+# An MPEG-PS cut at several offsets (in the middle of a GOP, or on an I-frame followed by the leading B-frames
+# of an open GOP): the frames are counted from the start time of the stream (its first PTS) to the last frame
+# displayed. The leading B-frames of an open GOP have a PTS before it, and are not counted; after a cut in the
+# middle of a GOP, the frames after the start time that cannot be decoded (their reference frames are cut)
+# are counted, and fail. The expected count is from the frames decoded by ffprobe (25 fps): from the start
+# time to the last decoded frame with a timestamp, plus the frames decoded after it without a timestamp (the
+# last reference frame). The count must not depend on the decoder threads.
+check_ps_cuts() {
+    local name="$1" desc="$2" offset threads start expected
+    shift 2
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "== $desc =="
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    for offset in "$@"; do
+        echo "== $desc (cut at byte $offset) =="
+        tail -c +"$offset" "$tmp/$name" > "$tmp/cut_$offset.mpg"
+        start=$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$tmp/cut_$offset.mpg" | head -n 1 | tr -d ',\r')
+        expected=$(ffprobe -v error -select_streams v:0 -show_entries frame=best_effort_timestamp_time -of csv=p=0 "$tmp/cut_$offset.mpg" 2>/dev/null | tr -d ',\r' |
+            awk -v s="$start" 'BEGIN { m = -1; na = 0 } $1 == "N/A" { if (m >= 0) na++ } $1 != "N/A" { if ($1 + 0 > m) { m = $1 + 0; na = 0 } } END { printf "%d\n", int((m - s) * 25 + 1.5) + na }')
+        for threads in 1 8; do
+            # shellcheck disable=SC2086
+            FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/cut_$offset.mpg" --frames "$expected" --open-only ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+        done
+    done
+}
+if have_encoder mpeg2video && have_encoder mp2 && have_encoder ac3; then
     if ffmpeg -y -loglevel error -f lavfi -i testsrc=d=4 -itsoffset 100 -f lavfi -i testsrc2=d=4 -map 0:v -map 1:v \
         -c:v mpeg2video -program st=0 -program st=1 "$tmp/two_programs.ts" &&
         ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" -c:v mpeg2video -bf 2 -g 8 -q:v 2 -f mpeg "$tmp/ramp_ps.mpg" &&
         ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -f lavfi -i sine -t 10 -c:v mpeg2video -bf 2 -g 12 -c:a mp2 -f vob "$tmp/b_frames.vob" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -t 8 -c:v mpeg2video -bf 2 -g 12 -f vob "$tmp/vob_no_audio.vob" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -f lavfi -i sine -t 8 -c:v mpeg2video -bf 2 -g 12 -c:a ac3 -f vob "$tmp/vob_ac3.vob" &&
         ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=640x360:r=25 -f lavfi -i sine -t 10 -c:v mpeg2video -b:v 4M -bf 2 -g 15 -c:a mp2 -f mpeg "$tmp/full_ps.mpg"; then
-        tail -c +1234568 "$tmp/full_ps.mpg" > "$tmp/cut_ps.mpg"
         check_packets two_programs.ts "MPEG-TS (two programs, the second one starting at 100 s)"
         check_packets ramp_ps.mpg "MPEG-PS (MPEG-2 with B-frames, the last reference frame has no PTS)"
         check_packets b_frames.vob "VOB (MPEG-2 with B-frames, MP2 audio)"
-        check_packets cut_ps.mpg "MPEG-PS cut in the middle of a GOP"
+        check_packets vob_no_audio.vob "VOB (MPEG-2 with B-frames, no audio, the last reference frame has no PTS)"
+        check_packets vob_ac3.vob "VOB (MPEG-2 with B-frames, AC3 audio, the last reference frame has no PTS)"
+        check_ps_cuts full_ps.mpg "MPEG-PS cut" 300000 777777 1000001 1234568 1269589 1500000 2222223 2600000 3000000 4000000
     else
         echo "FAIL: could not generate the MPEG-TS/PS clips"
         rc=1

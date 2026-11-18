@@ -299,10 +299,16 @@ times); opening a 60 s Matroska with a start time, and a 60 s FLV, also truncate
 the index of the FLV must not reach its end after the open (`--max-indexed-frame`: an index entry
 near the end, added while reading the last packets, made the seeks decode from near the start); a high
 bit rate FLV without the duration metadata (400 kB per frame), with and without a start time, must
-count its frames from its last packets; an MPEG-TS with two programs (the second one at 100 s),
-an MPEG-PS whose last reference frame has no PTS, a VOB with B-frames, and an MPEG-PS cut in the
-middle of a GOP must count their video packets, with 1 and 8 decoder threads
-(`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
+count its frames from its last packets, as must an FLV at 0.5 fps with AAC audio (its last 64
+tags are audio tags and the AVC end of sequence); an MPEG-TS with two programs (the second one at
+100 s), an MPEG-PS whose last reference frame has no PTS, and VOBs with B-frames (with MP2, AC3 or
+no audio; the last reference frame has no PTS and no B-frame follows it) must count their video
+packets, with 1 and 8 decoder threads (`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`); an
+MPEG-PS cut at 10 offsets (in the middle of a GOP, or on an I-frame followed by the leading
+B-frames of an open GOP) must count its frames from the start time of the stream (its first PTS)
+to the last frame that ffprobe decodes, with 1 and 8 threads: the leading B-frames of an open GOP
+are before the start time, and not counted, while the frames after it whose reference frames are
+cut are counted (they fail); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
 not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
