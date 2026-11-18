@@ -76,12 +76,27 @@ const int H = 2;
 const double kInput = 0.25;
 
 int gFailures = 0;
+bool gQuiet = false; // (fuzzer) don't print the checks that pass
+std::function<void(const char*)> gOnFail; // (fuzzer) called with the message of a failed check
 
 void
 check(bool cond,
       const char* fmt,
       ...)
 {
+    if (cond && gQuiet) {
+        return;
+    }
+    if (!cond && gOnFail) {
+        char buf[1024];
+        va_list b;
+        va_start(b, fmt);
+        std::vsnprintf(buf, sizeof(buf), fmt, b);
+        va_end(b);
+        ++gFailures;
+        gOnFail(buf);
+        return;
+    }
     va_list a;
     va_start(a, fmt);
     std::printf("  %s: ", cond ? "PASS" : "FAIL");
@@ -101,8 +116,10 @@ double gCurrentTime = 0.; // the time of the host's timeline
 // the keys of a string or choice param (time -> value), and its expression, by param
 struct Anim {
     std::map<double, std::string> s;
+    std::map<double, int> sidx; // (gNatronExact) the curve of a string param: the index of the key's string, as of its last set
     std::map<double, int> i;
     std::function<std::string(double)> expr; // a string param's expression (optional)
+    std::function<int(double)> iexpr; // a choice param's expression, or link (optional)
     size_t size() const { return s.size() + i.size(); }
 };
 std::map<ParamRec*, Anim> gAnim;
@@ -122,6 +139,7 @@ int gMaxDepth = 0;
 const int kMaxDepth = 16; // a deeper re-entry is a loop
 bool gLoop = false;
 std::vector<std::string> gLog; // "name reason time", for the failures
+std::function<void(const char*, const char*, double)> gOnInstanceChanged; // (fuzzer)
 int gKeyWritesOutsideInstanceChanged = 0; // keys set by the plug-in outside of an instance changed action
 
 bool
@@ -157,6 +175,19 @@ evaluatesOnChange(ParamRec* r)
     return e != 0;
 }
 
+// gNatronExact (optional, OCIO_ANIM_NATRON_EXACT): model the string keys of Natron versions without
+// NatronGitHub/Natron#1291, which fixes NatronGitHub/Natron#1290 (Engine/StringAnimationManager.cpp, Curve.cpp,
+// KnobImpl.h); by default, the host models Natron with the fix. Without it:
+// - the curve key of a string param holds the index of its string in the sorted list of string keys, computed when
+//   the key is set: inserting or deleting a key before other keys does not update theirs, which then read another
+//   string (or the last one, if the index is out of range);
+// - setting an existing key whose index is unchanged is "nothing changed": no kOfxActionInstanceChanged;
+// - KnobGui::setValueAtTime() returns true for a modified key too, so that MultipleKnobEditsUndoCommand records it as
+//   an added key, and its undo removes it.
+bool gNatronExact = false;
+// OfxStringInstance::get(time) reads the value at floor(time + 0.5) (not a bug: Natron's OFX string params)
+bool gRoundStringTime = true;
+
 template <typename T>
 const T&
 heldValue(const std::map<double, T>& keys,
@@ -171,6 +202,72 @@ heldValue(const std::map<double, T>& keys,
     return it->second;
 }
 
+// the string of a param with keys at time t
+std::string
+sValue(const Anim& k,
+       double t)
+{
+    if (!gNatronExact) {
+        return heldValue(k.s, t);
+    }
+    const int idx = heldValue(k.sidx, t);
+    if (idx >= (int)k.s.size()) {
+        return k.s.rbegin()->second;
+    }
+    std::map<double, std::string>::const_iterator it = k.s.begin();
+    std::advance(it, idx);
+
+    return it->second;
+}
+
+// set a string key: 0 = nothing changed, 1 = modified, 2 = added
+int
+sSetKey(Anim& k,
+        double t,
+        const std::string& v)
+{
+    const bool existed = k.s.count(t) > 0;
+    if (!gNatronExact) {
+        const bool ch = !existed || (k.s[t] != v);
+        k.s[t] = v;
+        k.sidx[t] = 0;
+
+        return !existed ? 2 : (ch ? 1 : 0);
+    }
+    k.s[t] = v;
+    const int idx = (int)std::distance(k.s.begin(), k.s.find(t));
+    if (!existed) {
+        k.sidx[t] = idx;
+
+        return 2;
+    }
+    const bool ch = (k.sidx[t] != idx);
+    k.sidx[t] = idx;
+
+    return ch ? 1 : 0;
+}
+
+void
+sErase(Anim& k,
+       double t)
+{
+    k.s.erase(t);
+    k.sidx.erase(t);
+}
+
+void
+sAssign(Anim& k,
+        const std::map<double, std::string>& m,
+        const std::map<double, int>* idx = nullptr)
+{
+    k.s = m;
+    k.sidx.clear();
+    int i = 0;
+    for (std::map<double, std::string>::const_iterator it = m.begin(); it != m.end(); ++it, ++i) {
+        k.sidx[it->first] = (idx && idx->count(it->first)) ? idx->at(it->first) : i;
+    }
+}
+
 std::string
 stringAt(ParamRec* r,
          double t)
@@ -180,7 +277,7 @@ stringAt(ParamRec* r,
         return k.expr(t);
     }
 
-    return k.s.empty() ? std::string(paramString(r)) : heldValue(k.s, t);
+    return k.s.empty() ? std::string(paramString(r)) : sValue(k, t);
 }
 
 int
@@ -188,6 +285,9 @@ intAt(ParamRec* r,
       double t)
 {
     const Anim& k = gAnim[r];
+    if (k.iexpr) {
+        return k.iexpr(t);
+    }
 
     return k.i.empty() ? paramInt(r, 0) : heldValue(k.i, t);
 }
@@ -219,6 +319,7 @@ removeAnimation(ParamRec* r)
         setStatic(r, intAt(r, gCurrentTime));
     }
     k.s.clear();
+    k.sidx.clear();
     k.i.clear();
 }
 
@@ -228,7 +329,7 @@ keyTimes(ParamRec* r)
 {
     std::vector<double> times;
     const Anim& k = gAnim[r];
-    if (k.expr) {
+    if (k.expr || k.iexpr) {
         return { 0., 1. };
     }
     for (std::map<double, std::string>::const_iterator it = k.s.begin(); it != k.s.end(); ++it) {
@@ -259,6 +360,9 @@ instanceChanged(const char* name,
         return;
     }
     ++gCalls;
+    if (gOnInstanceChanged) {
+        gOnInstanceChanged(name, reason, t);
+    }
     ++gDepth;
     gMaxDepth = std::max(gMaxDepth, gDepth);
     PropSet a;
@@ -271,8 +375,7 @@ instanceChanged(const char* name,
     pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     OfxStatus st = gPlug->p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(gInst), ap, nullptr);
     if (!ok(st)) {
-        std::printf("  FAIL: instanceChanged(%s, %s, %g) returns %d\n", name, reason, t, st);
-        ++gFailures;
+        check(false, "instanceChanged(%s, %s, %g) returns %d", name, reason, t, st);
     }
     --gDepth;
 }
@@ -285,10 +388,24 @@ struct UndoOp {
     bool keyAdded; // ... where there was none
     std::string oldS; // the previous value (at that time)
     int oldI;
+    std::string newS; // the new value (for redo)
+    int newI;
 };
 bool gRecording = false;
 std::vector<UndoOp> gBlock; // the changes of the current edit block
 std::vector<UndoOp> gLastBlock; // those of the last one: the undo step
+
+std::vector<UndoOp> gRedoBlock; // the undone block (redo)
+bool gMergeBlocks = true; // model Natron's merge of consecutive MultipleKnobEditsUndoCommands
+
+// A user edit of a param that evaluates on change is pushed on the panel's undo stack (Gui/KnobGui.cpp,
+// pushUndoCommand()): the plug-in's edit block is then no longer the last command, and the undone ones are deleted
+void
+userCommandPushed()
+{
+    gLastBlock.clear();
+    gRedoBlock.clear();
+}
 
 OfxStatus
 aEditBegin(OfxParamSetHandle,
@@ -300,11 +417,46 @@ aEditBegin(OfxParamSetHandle,
     return kOfxStatOK;
 }
 
+// The new undo command is pushed (QUndoStack::push() deletes the undone commands), and merged into the last one if
+// its first param is in it (MultipleKnobEditsUndoCommand::mergeWith(), Gui/KnobUndoCommand.cpp): the merged command
+// keeps the previous values of the first one
 OfxStatus
 aEditEnd(OfxParamSetHandle)
 {
     gRecording = false;
-    gLastBlock = gBlock;
+    gRedoBlock.clear();
+    if (gBlock.empty()) {
+        return kOfxStatOK;
+    }
+    bool merge = false;
+    if (gMergeBlocks) {
+        for (size_t i = 0; i < gLastBlock.size(); ++i) {
+            if (gLastBlock[i].r == gBlock[0].r) {
+                merge = true;
+            }
+        }
+    }
+    if (!merge) {
+        gLastBlock = gBlock;
+
+        return kOfxStatOK;
+    }
+    for (size_t i = 0; i < gBlock.size(); ++i) {
+        const UndoOp& v = gBlock[i];
+        bool found = false;
+        for (size_t j = 0; j < gLastBlock.size(); ++j) {
+            UndoOp& w = gLastBlock[j];
+            if ((w.r == v.r) && (w.time == v.time) && (w.key == v.key)) {
+                w.newS = v.newS;
+                w.newI = v.newI;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            gLastBlock.push_back(v);
+        }
+    }
 
     return kOfxStatOK;
 }
@@ -331,7 +483,8 @@ aGetValueAtTime(OfxParamHandle ph,
     va_start(ap, time);
     OfxStatus s = kOfxStatOK;
     if (isString(r)) {
-        *va_arg(ap, const char**) = keepString(stringAt(r, time));
+        // (Engine/OfxParamInstance.cpp, OfxStringInstance::get(time))
+        *va_arg(ap, const char**) = keepString(stringAt(r, gRoundStringTime ? std::floor(time + 0.5) : time));
     } else if (isChoice(r)) {
         *va_arg(ap, int*) = intAt(r, time);
     } else {
@@ -373,18 +526,23 @@ aSet(ParamRec* r,
     if (!atTime) {
         time = gCurrentTime;
     }
+    if (isString(r) && gRoundStringTime) {
+        // (Natron's key times are integers, and OfxStringInstance reads and writes at floor(time + 0.5))
+        time = std::floor(time + 0.5);
+    }
     const bool key = animates(r) && (atTime || (k.size() > 0));
-    UndoOp op = { r, time, key, false, std::string(), 0 };
+    UndoOp op = { r, time, key, false, std::string(), 0, std::string(), 0 };
     bool changed = true;
     if (isString(r)) {
         const char* c = va_arg(ap, const char*);
         const std::string v = c ? c : "";
+        op.newS = v;
         if (key) {
-            std::map<double, std::string>::iterator it = k.s.find(time);
-            op.keyAdded = (it == k.s.end());
-            op.oldS = op.keyAdded ? stringAt(r, time) : it->second;
-            changed = op.keyAdded || (it->second != v);
-            k.s[time] = v;
+            op.oldS = stringAt(r, time);
+            const int rc = sSetKey(k, time, v);
+            // (KnobGui::setValueAtTime() returns true for an added or a modified key)
+            op.keyAdded = gNatronExact ? (rc != 0) : (rc == 2);
+            changed = (rc != 0);
         } else {
             op.oldS = paramString(r);
             changed = (op.oldS != v);
@@ -392,6 +550,7 @@ aSet(ParamRec* r,
         }
     } else if (isChoice(r)) {
         const int v = va_arg(ap, int);
+        op.newI = v;
         if (key) {
             std::map<double, int>::iterator it = k.i.find(time);
             op.keyAdded = (it == k.i.end());
@@ -409,7 +568,7 @@ aSet(ParamRec* r,
     if (key && changed && (gDepth == 0)) {
         ++gKeyWritesOutsideInstanceChanged;
     }
-    if (changed && gRecording && evaluatesOnChange(r) && (isString(r) || isChoice(r))) {
+    if ((changed || gNatronExact) && gRecording && evaluatesOnChange(r) && (isString(r) || isChoice(r))) {
         gBlock.push_back(op);
     }
     if (changed) {
@@ -444,10 +603,20 @@ aSetValueAtTime(OfxParamHandle ph,
     return s;
 }
 
+// (a host that doesn't animate a type of param fails to give the keys of these params)
+bool
+hostAnimatesType(ParamRec* r)
+{
+    return !((isString(r) && !gStringAnimation) || (isChoice(r) && !gChoiceAnimation));
+}
+
 OfxStatus
 aGetNumKeys(OfxParamHandle ph,
             unsigned int* n)
 {
+    if (!hostAnimatesType(reinterpret_cast<ParamRec*>(ph))) {
+        return kOfxStatErrUnsupported;
+    }
     *n = (unsigned int)keyTimes(reinterpret_cast<ParamRec*>(ph)).size();
 
     return kOfxStatOK;
@@ -458,6 +627,9 @@ aGetKeyTime(OfxParamHandle ph,
             unsigned int nth,
             OfxTime* time)
 {
+    if (!hostAnimatesType(reinterpret_cast<ParamRec*>(ph))) {
+        return kOfxStatErrUnsupported;
+    }
     const std::vector<double> times = keyTimes(reinterpret_cast<ParamRec*>(ph));
     if (nth >= times.size()) {
         return kOfxStatErrBadIndex;
@@ -473,6 +645,9 @@ aGetKeyIndex(OfxParamHandle ph,
              int direction,
              int* index)
 {
+    if (!hostAnimatesType(reinterpret_cast<ParamRec*>(ph))) {
+        return kOfxStatErrUnsupported;
+    }
     const std::vector<double> times = keyTimes(reinterpret_cast<ParamRec*>(ph));
     *index = -1;
     for (size_t i = 0; i < times.size(); ++i) {
@@ -501,8 +676,11 @@ aDeleteKey(OfxParamHandle ph,
     Anim& k = gAnim[r];
     const double t = keyTimes(r)[index];
     const size_t n = k.size();
-    k.s.erase(t);
+    sErase(k, t);
     k.i.erase(t);
+    if (gDepth == 0) {
+        ++gKeyWritesOutsideInstanceChanged;
+    }
     if (k.size() != n) {
         instanceChanged(r->name.c_str(), kOfxChangeUserEdited, time);
     }
@@ -516,6 +694,9 @@ aDeleteAllKeys(OfxParamHandle ph)
     ParamRec* r = reinterpret_cast<ParamRec*>(ph);
     if (gAnim[r].size() == 0) {
         return kOfxStatOK;
+    }
+    if (gDepth == 0) {
+        ++gKeyWritesOutsideInstanceChanged;
     }
     removeAnimation(r);
     instanceChanged(r->name.c_str(), kOfxChangeUserEdited, gCurrentTime);
@@ -582,7 +763,7 @@ anim(const char* name)
     os << '{';
     bool first = true;
     for (std::map<double, std::string>::const_iterator it = k.s.begin(); it != k.s.end(); ++it) {
-        os << (first ? "" : ",") << it->first << ':' << scaleOf(it->second);
+        os << (first ? "" : ",") << it->first << ':' << scaleOf(sValue(k, it->first));
         first = false;
     }
     for (std::map<double, int>::const_iterator it = k.i.begin(); it != k.i.end(); ++it) {
@@ -619,6 +800,9 @@ checkSides(const std::string& input,
 void
 dumpLog()
 {
+    if (gQuiet) {
+        return;
+    }
     for (size_t i = 0; i < gLog.size(); ++i) {
         std::printf("      %s\n", gLog[i].c_str());
     }
@@ -680,6 +864,9 @@ userSet(const char* name,
         changed = (paramInt(r, 0) != v);
         setStatic(r, v);
     }
+    if (changed && evaluatesOnChange(r)) {
+        userCommandPushed();
+    }
     if (changed) {
         instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     }
@@ -697,11 +884,13 @@ userSetString(const char* name,
     Anim& k = gAnim[r];
     bool changed;
     if (animates(r) && (key || (k.size() > 0))) {
-        changed = (k.s.count(gCurrentTime) == 0) || (k.s[gCurrentTime] != v);
-        k.s[gCurrentTime] = v;
+        changed = (sSetKey(k, gCurrentTime, v) != 0);
     } else {
         changed = (paramString(r) != v);
         setStatic(r, v);
+    }
+    if (changed && evaluatesOnChange(r)) {
+        userCommandPushed();
     }
     if (changed) {
         instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
@@ -737,7 +926,7 @@ userDeleteKeys(const char* name,
     }
     for (size_t i = 0; i < times.size(); ++i) {
         const size_t n = k.size();
-        k.s.erase(times[i]);
+        sErase(k, times[i]);
         k.i.erase(times[i]);
         if (k.size() != n) {
             instanceChanged(name, kOfxChangeUserEdited, times[i]);
@@ -813,25 +1002,26 @@ userRemoveAnimation(const char* name,
     u.done();
 }
 
-// (reported twice: the removal of the animation, and the default value, set as a user edit: a key at the current
-// time if the param has keys again)
+// Natron's Knob<T>::resetToDefaultValueWithoutSecretNessAndEnabledNess() (Engine/KnobImpl.h): removeAnimation()
+// (reported, if the param has keys), then setValue(default, eValueChangedReasonRestoreDefault, NULL): the static value,
+// never a key (even if the plug-in set keys again in the meantime), reported if it changed
 void
 userRestoreDefault(const char* name,
                    int maxCalls = 24)
 {
     UserAction u(std::string("restore default of ") + name + at(), maxCalls);
     ParamRec* r = P(name);
-    removeAnimation(r);
-    instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
+    if (gAnim[r].size() > 0) {
+        removeAnimation(r);
+        instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
+    }
     int def = 0;
     pGetInt(PH(r->props), kOfxParamPropDefault, 0, &def);
-    Anim& k = gAnim[r];
-    if (k.size() > 0) {
-        k.i[gCurrentTime] = def;
-    } else {
-        setStatic(r, def);
+    const bool changed = (paramInt(r, 0) != def);
+    setStatic(r, def);
+    if (changed) {
+        instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     }
-    instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
 }
 
@@ -847,6 +1037,7 @@ userUndo(int maxCalls = 40)
         const UndoOp& op = ops[i];
         ParamRec* r = op.r;
         Anim& k = gAnim[r];
+        bool changed = true;
         if (op.keyAdded) {
             // Gui/KnobGui10.cpp: removing the last key gives the param its value at the current time
             if (k.size() == 1) {
@@ -856,11 +1047,14 @@ userUndo(int maxCalls = 40)
                     setStatic(r, intAt(r, gCurrentTime));
                 }
             }
-            k.s.erase(op.time);
+            // (deleteValueAtTime() reports the change even if there was no key, if the param has keys)
+            changed = (k.size() > 0);
+            sErase(k, op.time);
             k.i.erase(op.time);
         } else if (op.key) {
             if (isString(r)) {
-                k.s[op.time] = op.oldS;
+                const int rc = sSetKey(k, op.time, op.oldS);
+                changed = !gNatronExact || (rc != 0);
             } else {
                 k.i[op.time] = op.oldI;
             }
@@ -870,13 +1064,65 @@ userUndo(int maxCalls = 40)
             }
             valuesUndone.insert(r);
             if (isString(r)) {
+                changed = !gNatronExact || (paramString(r) != op.oldS);
                 setStatic(r, op.oldS);
             } else {
                 setStatic(r, op.oldI);
             }
         }
-        instanceChanged(r->name.c_str(), kOfxChangePluginEdited, op.time);
+        if (changed) {
+            instanceChanged(r->name.c_str(), kOfxChangePluginEdited, op.time);
+        }
     }
+    gRedoBlock = ops;
+    u.done();
+}
+
+// Redo the undone edit block, as Natron's MultipleKnobEditsUndoCommand::redo() does (not the first redo)
+void
+userRedo(int maxCalls = 40)
+{
+    UserAction u("redo", maxCalls);
+    std::vector<UndoOp> ops = gRedoBlock;
+    gRedoBlock.clear();
+    for (size_t i = 0; i < ops.size(); ++i) {
+        UndoOp& op = ops[i];
+        ParamRec* r = op.r;
+        Anim& k = gAnim[r];
+        bool changed = true;
+        if (op.key) {
+            if (isString(r)) {
+                const int rc = sSetKey(k, op.time, op.newS);
+                op.keyAdded = gNatronExact ? (rc != 0) : (rc == 2);
+                changed = (rc != 0);
+            } else {
+                op.keyAdded = (k.i.count(op.time) == 0);
+                changed = op.keyAdded || (k.i[op.time] != op.newI);
+                k.i[op.time] = op.newI;
+            }
+        } else {
+            // (Natron compares the value at the time of the first redo)
+            if (isString(r)) {
+                changed = (stringAt(r, op.time) != op.newS);
+                if (changed) {
+                    if (k.size() > 0) {
+                        sSetKey(k, gCurrentTime, op.newS);
+                    } else {
+                        setStatic(r, op.newS);
+                    }
+                }
+            } else {
+                changed = (intAt(r, op.time) != op.newI);
+                if (changed) {
+                    setStatic(r, op.newI);
+                }
+            }
+        }
+        if (changed) {
+            instanceChanged(r->name.c_str(), kOfxChangePluginEdited, op.time);
+        }
+    }
+    gLastBlock = ops;
     u.done();
 }
 
@@ -896,6 +1142,7 @@ destroyInstance()
 struct Restored {
     std::map<double, std::string> inputKeys, outputKeys; // the strings' keys
     std::map<double, int> inputChoiceKeys; // e.g. those of a duplicated node
+    std::map<double, int> inputIdx, outputIdx; // (gNatronExact) the saved curves of the strings, if not consistent
     std::string configFile;
     std::vector<std::pair<std::string, int>> ints; // (name, value)
     std::vector<std::pair<std::string, std::string>> strings;
@@ -915,11 +1162,11 @@ newInstance(Plug& plug,
         it->second.hasOv = false;
         it->second.ov = Value();
     }
-    gAnim[P(kIS)].s = restored.inputKeys;
+    sAssign(gAnim[P(kIS)], restored.inputKeys, &restored.inputIdx);
     gAnim[P(kIS)].expr = restored.inputExpr;
     gAnim[P(kIC)].i = restored.inputChoiceKeys;
     if (plug.ctx.params.count(kOS)) {
-        gAnim[P(kOS)].s = restored.outputKeys;
+        sAssign(gAnim[P(kOS)], restored.outputKeys, &restored.outputIdx);
     }
     if (!restored.configFile.empty()) {
         setOverrideString(&plug.ctx, kConfigFile, restored.configFile);
@@ -932,6 +1179,7 @@ newInstance(Plug& plug,
     }
     gCurrentTime = 0.;
     gLastBlock.clear();
+    gRedoBlock.clear();
     gKeyWritesOutsideInstanceChanged = 0;
     Effect* inst = new Effect();
     inst->delegate = &plug.ctx;
@@ -1263,11 +1511,64 @@ testExpression()
     checkAnim(kIC, "=2"); // (not keyed with the string)
     gCurrentTime = 7.;
     userSet(kIC, 0);
-    checkAnim(kIS, "{0:2,7:1,10:4}"); // (a key under the expression, none deleted)
+    checkAnim(kIS, "{0:2,10:4}"); // (no key under the expression)
+    checkAnim(kIC, "=3"); // the expression's value at t=7
     checkRender(7., 3, 1);
     userPress(kSwap);
-    checkAnim(kIS, "{0:2,7:1,10:4}");
+    checkAnim(kIS, "{0:2,7:1,10:4}"); // (only the values at t=7 are swapped)
     checkAnim(kOS, "=3"); // the expression's value at t=7
+
+    std::printf("==== A menu with an expression or a link (reported as a user edit) ====\n");
+    restored = Restored();
+    restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 3.;
+    userSetString(kKey1, "a");
+    checkSides("{0:2,10:4}", "=1");
+    gAnim[P(kIC)].iexpr = [](double t) { return t < 5. ? 0 : 2; };
+    {
+        UserAction u("expression of the input menu at t=3", 12);
+        instanceChanged(kIC, kOfxChangeUserEdited, gCurrentTime);
+        u.done();
+    }
+    // the string gets the menu's colorspace at that time only, and keeps its keys
+    checkAnim(kIS, "{0:2,3:1,10:4}");
+    gAnim[P(kIC)].iexpr = nullptr;
+
+    std::printf("==== After loading a project: a menu edit, the other string has an expression ====\n");
+    restored = Restored();
+    restored.inputExpr = [](double t) { return std::string(t < 5. ? "x2" : "x3"); };
+    restored.outputKeys = { { 0., "x2" }, { 10., "x4" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 3.;
+    userSet(kIC, 0);
+    checkAnim(kOC, "{0:2,10:4}"); // (the other menu has the keys of its string)
+}
+
+void
+testKeysAt0And1()
+{
+    std::printf("==== Real keys at times 0 and 1 (not an expression), then removing the animation ====\n");
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userSet(kIC, 3, true);
+    gCurrentTime = 1.;
+    userSet(kIC, 0);
+    checkSides("{0:4,1:1}", "=1");
+    userRemoveAnimation(kIC);
+    checkSides("=1", "=1");
+    checkRender(0., 1, 1);
+
+    std::printf("==== Real keys at times 0 and 1: Swap ====\n");
+    Restored restored;
+    restored.inputKeys = { { 0., "x4" }, { 1., "x1" } };
+    restored.outputKeys = { { 5., "x2" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 3.;
+    userPress(kSwap);
+    checkSides("{0:2,1:2,5:2}", "{0:4,1:1,5:1}");
+    checkRender(0., 2, 4);
+    checkRender(3., 2, 1);
 }
 
 void
@@ -1366,6 +1667,18 @@ testWriter()
     userSetString(kFilename, gTmpDir + "/out_x1.exr");
     checkSides("{0:3,10:1}", "{0:2,10:4}");
 
+    std::printf("==== WriteOIIO: loading a project, the colorspace guessed by createInstance, then a menu edit ====\n");
+    restored.strings = { { kFilename, gTmpDir + "/out_x3.exr" } };
+    restored.ints = { { kGuessedParams, 1 } };
+    restored.outputKeys.clear();
+    newInstance(gWriter, restored);
+    checkAnim(kOS, "=3");
+    checkAnim(kOC, "=3");
+    gCurrentTime = 4.;
+    userSet(kOC, 0); // (x1, the menu's value before the guess)
+    checkAnim(kOS, "=1");
+    checkAnim(kOC, "=1");
+
     std::printf("==== WriteOIIO: a new file name with a colorspace, on an output colorspace without keys ====\n");
     restored.outputKeys.clear();
     newInstance(gWriter, restored);
@@ -1422,6 +1735,9 @@ main(int, char**)
 
         return 1;
     }
+    gNatronExact = std::getenv("OCIO_ANIM_NATRON_EXACT") != nullptr;
+    gRoundStringTime = std::getenv("OCIO_ANIM_NO_ROUND") == nullptr;
+    std::printf("Natron-exact string keys: %s, string times rounded: %s\n", gNatronExact ? "yes" : "no", gRoundStringTime ? "yes" : "no");
     initHost();
     // Natron (e.g. GenericOCIO builds the menus of each instance from its config)
     pSetInt(PH(&gHostProps), kNatronOfxHostIsNatron, 0, 1);
@@ -1447,6 +1763,7 @@ main(int, char**)
     testProjectLoad();
     testSwap();
     testExpression();
+    testKeysAt0And1();
     testHostWithoutStringAnimation();
     testHostWithoutChoiceAnimation();
     testNoConfig();

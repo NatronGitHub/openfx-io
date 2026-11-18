@@ -236,8 +236,26 @@ number of instance changed actions of each user action (no loop, no redundant ch
 * a string param with an expression; hosts that animate choices but not strings (like
   hostDemo), or strings but not choices; an instance without a config;
 * WriteOIIO and ReadOIIO: loading a project with keyed colorspaces (no key set in
-  createInstance), a file name with a colorspace on a keyed colorspace (not guessed), and a
-  key deleted by the plug-in (which doesn't mark the colorspace as set by the user).
+  createInstance), a file name with a colorspace on a keyed colorspace (not guessed), a menu
+  edit after the colorspace was guessed by createInstance, and a key deleted by the plug-in
+  (which doesn't mark the colorspace as set by the user);
+* real keys at times 0 and 1 (Natron reads string params at `floor(t + 0.5)`), and a menu with
+  an expression or a link.
+
+`ocio_anim_fuzz.cpp` (which includes `ocio_colorspace_anim_test.cpp`) applies random user
+actions (menu and string edits, key deletions and moves, paste, Remove animation, Restore
+default, Swap, undo and redo of the plug-in's edit blocks, which Natron merges, project
+save/load, file names, expressions, time changes) to OCIOColorSpace, WriteOIIO or ReadOIIO,
+and checks after each one that the menus have the keys and values of the strings, that no key
+is set outside of an instance changed action, that there is no loop, that the renders follow
+the strings, that ops that add no key add none, and that undoing a swap of keyed sides
+restores them. `make test-ocio-anim` runs 2000 operations on each plug-in, with fixed seeds
+(`FUZZ_OPS=n` for more); run `ocio_anim_fuzz cs|writer|reader <ops> <seed>` directly for
+others. By default, the host models Natron with NatronGitHub/Natron#1291;
+`OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron versions without it, which hold
+the index of their string (NatronGitHub/Natron#1290: some invariants then fail, e.g. the undo
+of a swap);
+`ocio_anim_fuzz scenario 0 0` with `SCEN=main` or `SCEN=exact` prints some repros.
 
 ### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118)
 
@@ -443,6 +461,8 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
+| `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
+| `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `swap.ocio`                 | OpenColorIO config where xN is N times the reference (`test-ocio-anim`, `hostdemo/run.sh`). |
