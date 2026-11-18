@@ -3287,8 +3287,9 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
             }
         } else {
             // avoid warning from mpegvideo_enc.c
-            // the time base is 1/0 for a frame rate of 0 (av_q2d() gives inf, and 0 * inf = NaN): avcodec_open2() then
-            // fails ("The encoder timebase is not set")
+            // The time base of the codec context is not set yet here (it is set below, from the frame rate), so it is
+            // still the default {0, 1}, and this is always 0. The guard only prevents an infinite tolerance (or
+            // 0 * inf = NaN, converted to int) if the time base is ever set before, for a frame rate of 0 (1/0).
             const AVRational timeBase = avCodecContext->time_base;
             avCodecContext->bit_rate_tolerance = ((timeBase.num > 0) && (timeBase.den > 0)) ? avCodecContext->bit_rate * av_q2d(timeBase) : 0;
         }
