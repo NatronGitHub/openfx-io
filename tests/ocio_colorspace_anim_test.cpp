@@ -175,13 +175,14 @@ evaluatesOnChange(ParamRec* r)
     return e != 0;
 }
 
-// gNatronExact (optional, OCIO_ANIM_NATRON_EXACT): model the string keys of Natron versions without
+// gNatronExact (optional, OCIO_ANIM_NATRON_EXACT): model the string keys of Natron before 2.6, without
 // NatronGitHub/Natron#1291, which fixes NatronGitHub/Natron#1290 (Engine/StringAnimationManager.cpp, Curve.cpp,
 // KnobImpl.h); by default, the host models Natron with the fix. Without it:
 // - the curve key of a string param holds the index of its string in the sorted list of string keys, computed when
 //   the key is set: inserting or deleting a key before other keys does not update theirs, which then read another
 //   string (or the last one, if the index is out of range);
-// - setting an existing key whose index is unchanged is "nothing changed": no kOfxActionInstanceChanged;
+// - setting an existing key whose index is unchanged is "nothing changed" (no kOfxActionInstanceChanged), unless it is
+//   the first or the last key and its neighbour has another string (see endKeyDerivativeChanges());
 // - KnobGui::setValueAtTime() returns true for a modified key too, so that MultipleKnobEditsUndoCommand records it as
 //   an added key, and its undo removes it.
 bool gNatronExact = false;
@@ -221,6 +222,27 @@ sValue(const Anim& k,
     return it->second;
 }
 
+// Setting a key of a string param to its own string changes the derivatives of the curve if it is the first or the last
+// key and its neighbour has another string: Natron compares them too, so that this is a modification (in the
+// interior, the derivatives of a constant curve don't change)
+bool
+endKeyDerivativeChanges(const Anim& k,
+                        double t)
+{
+    if (k.s.size() < 2) {
+        return false;
+    }
+    std::map<double, std::string>::const_iterator it = k.s.find(t);
+    if (it == k.s.begin()) {
+        return std::next(it)->second != it->second;
+    }
+    if (std::next(it) == k.s.end()) {
+        return std::prev(it)->second != it->second;
+    }
+
+    return false;
+}
+
 // set a string key: 0 = nothing changed, 1 = modified, 2 = added
 int
 sSetKey(Anim& k,
@@ -229,13 +251,11 @@ sSetKey(Anim& k,
 {
     const bool existed = k.s.count(t) > 0;
     if (!gNatronExact) {
-        // (with NatronGitHub/Natron#1291, setting a key that has neighbours to its string is a modification: the
-        // derivatives of the curve are compared too)
-        const bool ch = !existed || (k.s[t] != v) || (k.s.size() > 1);
+        const bool ch = !existed || (k.s[t] != v);
         k.s[t] = v;
         k.sidx[t] = 0;
 
-        return !existed ? 2 : (ch ? 1 : 0);
+        return !existed ? 2 : ((ch || endKeyDerivativeChanges(k, t)) ? 1 : 0);
     }
     k.s[t] = v;
     const int idx = (int)std::distance(k.s.begin(), k.s.find(t));
@@ -247,7 +267,7 @@ sSetKey(Anim& k,
     const bool ch = (k.sidx[t] != idx);
     k.sidx[t] = idx;
 
-    return ch ? 1 : 0;
+    return (ch || endKeyDerivativeChanges(k, t)) ? 1 : 0;
 }
 
 void
@@ -1574,9 +1594,50 @@ testFractionalKeyTimes()
 }
 
 void
+testKeysNearIntegerTimes()
+{
+    std::printf("==== A key just after a frame (10.0000001), and one just after the first key ====\n");
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userSetString(kIS, "x4", true);
+    userPasteKeys(kIC, { { 10.0000001, 2 } });
+    checkSides("{0:4,10:3}", "=1");
+    gCurrentTime = 20.;
+    userSet(kOC, 1);
+    userSet(kIC, 2);
+    checkSides("{0:4,10:3,20:3}", "=2");
+    checkRender(11., 3, 2);
+    newInstance(gColorSpace);
+    gCurrentTime = 5.;
+    userSetString(kIS, "x4", true);
+    userPasteKeys(kIC, { { 5.0000005, 2 } });
+    checkSides("{5:4,5:3}", "=1");
+    checkRender(6., 3, 1);
+    checkRender(5., 4, 1);
+
+    std::printf("==== After loading a project: a menu edit to the string's colorspace at that time ====\n");
+    Restored restored;
+    restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 12.;
+    userSet(kIC, 3);
+    checkSides("{0:2,10:4}", "=1");
+
+    std::printf("==== A menu edit after a key with a role name keeps its name ====\n");
+    restored = Restored();
+    restored.inputKeys = { { 0., "x2" }, { 10., "x1" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 3.;
+    userSetString(kKey1, "a");
+    gCurrentTime = 5.;
+    userSet(kIC, 2);
+    check(paramString(P(kIS)) != std::string() && gAnim[P(kIS)].s[10.] == "x1", "the key at 10 is still \"x1\" (got \"%s\")", gAnim[P(kIS)].s[10.].c_str());
+}
+
+void
 testNatronStringKeys()
 {
-    std::printf("==== Natron without NatronGitHub/Natron#1291: string keys hold the index of their string ====\n");
+    std::printf("==== Natron before 2.6 (without NatronGitHub/Natron#1291): string keys hold their string's index ====\n");
     gNatronExact = true;
     newInstance(gColorSpace);
     gCurrentTime = 0.;
@@ -1825,6 +1886,7 @@ main(int, char**)
     testKeysAt0And1();
     testNatronStringKeys();
     testFractionalKeyTimes();
+    testKeysNearIntegerTimes();
     testHostWithoutStringAnimation();
     testHostWithoutChoiceAnimation();
     testNoConfig();

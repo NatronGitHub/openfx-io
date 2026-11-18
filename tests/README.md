@@ -252,8 +252,8 @@ is set outside of an instance changed action, that there is no loop, that the re
 the strings, that ops that add no key add none, and that undoing a swap of keyed sides
 restores them. `make test-ocio-anim` runs 2000 operations on each plug-in, with fixed seeds
 (`FUZZ_OPS=n` for more); run `ocio_anim_fuzz cs|writer|reader <ops> <seed>` directly for
-others. By default, the host models Natron with NatronGitHub/Natron#1291;
-`OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron versions without it, which hold
+others. By default, the host models Natron 2.6, with NatronGitHub/Natron#1291;
+`OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron before 2.6, without it, which hold
 the index of their string (NatronGitHub/Natron#1290: some invariants then fail, e.g. the undo
 of a swap);
 `ocio_anim_fuzz scenario 0 0` with `SCEN=main` or `SCEN=exact` prints some repros.
