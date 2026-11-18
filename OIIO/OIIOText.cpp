@@ -248,6 +248,30 @@ imageSpecFromOFXImage(const OfxRectI& rod,
 } // imageSpecFromOFXImage
 
 /* Override the render */
+// A text position or size, in pixels, converted to int: the params range up to +-DBL_MAX, and a value out of the range of
+// int (or NaN) can not be converted to int. It is clamped to +-2^28 (far out of any image), so that the arithmetic on
+// the text position (e.g. flipping y) does not overflow either.
+static int
+textCoordToInt(double v)
+{
+    const double maxCoord = 268435456.; // 2^28
+    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even with -ffast-math, unlike comparisons
+    if (OFX::IsNaN(v)) {
+        return 0;
+    }
+    if (OFX::IsInfinite(v)) {
+        return (v > 0.) ? (int)maxCoord : -(int)maxCoord;
+    }
+    if (v <= -maxCoord) {
+        return -(int)maxCoord;
+    }
+    if (v >= maxCoord) {
+        return (int)maxCoord;
+    }
+
+    return int(v);
+}
+
 void
 OIIOTextPlugin::render(const RenderArguments& args)
 {
@@ -375,7 +399,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
     assert(tmpSpec.width == args.renderWindow.x2 - args.renderWindow.x1);
     assert(tmpSpec.height == args.renderWindow.y2 - args.renderWindow.y1);
     OIIO::ROI srcRoi(tmpSpec.x, tmpSpec.x + tmpSpec.width, tmpSpec.y, tmpSpec.y + tmpSpec.height);
-    int ytext = int(y * args.renderScale.y);
+    int ytext = textCoordToInt(y * args.renderScale.y);
     if (flipit) {
         // from the OIIO 1.5 release notes:
         // Fixes, minor enhancements, and performance improvements:
@@ -416,7 +440,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
 
     // render text in the temp buffer
     {
-        bool ok = OIIO::ImageBufAlgo::render_text(tmpBuf, int(x * args.renderScale.x), ytext, text, int(fontSize * args.renderScale.y), fontName, textColor);
+        bool ok = OIIO::ImageBufAlgo::render_text(tmpBuf, textCoordToInt(x * args.renderScale.x), ytext, text, textCoordToInt(fontSize * args.renderScale.y), fontName, textColor);
         if (!ok) {
             setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
             // throwSuiteStatusException(kOfxStatFailed);

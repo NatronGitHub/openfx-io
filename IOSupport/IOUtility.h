@@ -111,7 +111,10 @@ template <int numvals>
 int
 floatToInt(float value)
 {
-    if (value <= 0) {
+    // a NaN pixel value (image data may contain NaNs) gives 0 instead of reaching the conversion to int, which would be
+    // undefined behaviour. OFX::IsNaN() tests the bits: it works even if the compiler assumes that there are no NaNs
+    // (-ffast-math), unlike comparisons. The result is the same as before for every other value.
+    if (OFX::IsNaN(value) || (value <= 0)) {
         return 0;
     } else if (value >= 1.) {
         return numvals - 1;

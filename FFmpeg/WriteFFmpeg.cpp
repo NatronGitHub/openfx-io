@@ -582,6 +582,25 @@ unused(const T&)
 static const char* kJpegCodecs[] = { "jpeg", "mjpa", "mjpb" };
 static const int kNumJpegCodecs = sizeof(kJpegCodecs) / sizeof(kJpegCodecs[0]);
 
+// A bitrate in Mbit/s (a param, at least 0) in bit/s, as an int64_t (AVCodecContext::bit_rate, rc_max_rate), clamped to
+// [0, INT_MAX kbit/s] before the conversion: some encoders (e.g. libx264) take the bitrate in kbit/s as an int, and fail
+// ("Invalid argument") above. (On master, the conversion to int overflowed above 2147 Mbit/s.)
+static int64_t
+bitrateToInt64(double mbps)
+{
+    const double bps = mbps * 1000000;
+    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even with -ffast-math, unlike comparisons
+    if (OFX::IsNaN(bps) || (bps <= 0.)) {
+        return 0;
+    }
+    const double maxBps = (double)INT_MAX * 1000.;
+    if (OFX::IsInfinite(bps) || (bps >= maxBps)) {
+        return (int64_t)maxBps;
+    }
+
+    return (int64_t)bps;
+}
+
 // Trap fractional frame rates so that they can be specified correctly
 // in a QuickTime movie. The rational number representation of fractional
 // frame rates is 24000/1001, 30000/1001, 60000/1001, etc.
@@ -3269,19 +3288,27 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     }
     if (setbitrate) {
         double bitrate = _bitrate->getValue();
+        // bit_rate and rc_max_rate are int64_t: the bitrate in bit/s was converted to int, which overflowed (undefined
+        // behaviour) above 2147 Mbit/s. It is now clamped to [0, INT_MAX kbit/s] (bitrateToInt64()).
+        const int64_t bitRate = bitrateToInt64(bitrate);
         if (bitrate >= 0) {
-            avCodecContext->bit_rate = (int)(bitrate * 1000000);
+            avCodecContext->bit_rate = bitRate;
         }
         if (p.bitrateTol) {
             double bitrateTolerance = _bitrateTolerance->getValue();
             if (bitrateTolerance == 0.) {
-                avCodecContext->rc_max_rate = (int)(bitrate * 1000000);
+                avCodecContext->rc_max_rate = bitRate;
                 avCodecContext->rc_max_available_vbv_use = 2.0f;
                 avCodecContext->bit_rate_tolerance = 0;
             } else {
                 double fps = _fps->getValue();
                 const double toleranceMin = bitrateToleranceMin(bitrate, fps, kParamBitrateToleranceMax);
                 bitrateTolerance = (std::max)(toleranceMin, bitrateTolerance);
+                // the host may give a value above the declared maximum of the param (or NaN): tol * 1000000 must fit
+                // in an int
+                if (OFX::IsNaN(bitrateTolerance) || (bitrateTolerance >= (double)kParamBitrateToleranceMax)) {
+                    bitrateTolerance = kParamBitrateToleranceMax;
+                }
 
                 avCodecContext->bit_rate_tolerance = (int)(bitrateTolerance * 1000000);
             }
@@ -3370,7 +3397,10 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // 0.9100000000 != 0.9100002344. This is done as the pixel aspect
     // ratio is provided as a double and the author cannot find a
     // rational representation (num/den) of par.
-    int32_t par = (int32_t)(_inputClip->getPixelAspectRatio() * 100.0);
+    // the PAR comes from the host: it is clamped before the conversion to int (a PAR out of [0, 100] is not one of
+    // those below)
+    const double hostPar = _inputClip->getPixelAspectRatio();
+    int32_t par = ((0. <= hostPar) && (hostPar <= 100.)) ? (int32_t)(hostPar * 100.0) : 0;
     if (200 == par) {
         avStream->sample_aspect_ratio.num = 2;
         avStream->sample_aspect_ratio.den = 1;

@@ -24,6 +24,9 @@
 
 #include <algorithm>
 #include <cfloat> // DBL_MAX
+#include <climits> // INT_MAX
+#include <cmath>
+#include <cstring> // memset
 #include <limits>
 
 #include "ofxsMacros.h"
@@ -57,6 +60,39 @@ GCC_DIAG_ON(unused-parameter)
 using namespace OFX;
 
 using std::string;
+
+// A size in pixels, converted to int after clamping it to [0, INT_MAX] (0 for NaN), without undefined behaviour
+static int
+sizeToInt(double v)
+{
+    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even if the compiler assumes that there are no NaNs
+    // or infinities (-ffast-math), unlike comparisons
+    if (OFX::IsNaN(v) || (v <= 0.)) {
+        return 0;
+    }
+    if (OFX::IsInfinite(v) || (v >= (double)INT_MAX)) {
+        return INT_MAX;
+    }
+
+    return (int)v;
+}
+
+// A coordinate of a RoD from the host, clamped to +-5e289 (0 for NaN): the size of a clamped RoD is at most 1e290, so
+// that it can be multiplied by a size up to INT_MAX without overflow, and inf - inf (NaN) can not happen. Any RoD
+// that makes sense is unchanged.
+static double
+clampRoDCoord(double v)
+{
+    const double maxCoord = 5e289;
+    if (OFX::IsNaN(v)) {
+        return 0.;
+    }
+    if (OFX::IsInfinite(v)) {
+        return (v > 0.) ? maxCoord : -maxCoord;
+    }
+
+    return (v > maxCoord) ? maxCoord : ((v < -maxCoord) ? -maxCoord : v);
+}
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
@@ -414,6 +450,21 @@ OIIOResizePlugin::renderInternal(const RenderArguments& /*args*/,
     ImageSpec srcSpec(srcType);
     const OfxRectI srcBounds = srcImg->getBounds();
 
+    if ((srcBounds.x2 <= srcBounds.x1) || (srcBounds.y2 <= srcBounds.y1)) {
+        // An empty source image has no pixel data (getPixelAddress() is NULL): an ImageBuf wrapping it crashed
+        // ImageBufAlgo::resize() with OpenImageIO 2.4. The output is black.
+        const OfxRectI dstBounds = dstImg->getBounds();
+        const std::size_t rowSize = (std::size_t)(dstBounds.x2 - dstBounds.x1) * nComps * sizeof(PIX);
+        for (int y = dstBounds.y1; y < dstBounds.y2; ++y) {
+            void* row = dstImg->getPixelAddress(dstBounds.x1, y);
+            if (row && rowSize) {
+                std::memset(row, 0, rowSize);
+            }
+        }
+
+        return;
+    }
+
     srcSpec.x = srcBounds.x1;
     srcSpec.y = srcBounds.y1;
     srcSpec.width = srcBounds.x2 - srcBounds.x1;
@@ -641,7 +692,10 @@ OIIOResizePlugin::changedClip(const InstanceChangedArgs& args,
                 foundFormat = true;
             }
         }
-        _size->setValue((int)srcRod.x2 - srcRod.x1, (int)srcRod.y2 - srcRod.y1);
+        // the RoD may be huge or infinite (kOfxFlagInfiniteMin..Max): its size is clamped to the range of int
+        // (std::trunc(x2) - x1: the same value as before, (int)x2 - x1, for a RoD in the range of int)
+        _size->setValue(sizeToInt(std::trunc(clampRoDCoord(srcRod.x2)) - clampRoDCoord(srcRod.x1)),
+                        sizeToInt(std::trunc(clampRoDCoord(srcRod.y2)) - clampRoDCoord(srcRod.y1)));
         if (!foundFormat) {
             _type->setValue((int)eResizeTypeSize);
         }
@@ -682,19 +736,22 @@ OIIOResizePlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
         _preservePAR->getValue(preservePar);
         if (preservePar) {
             OfxRectD srcRoD = _srcClip->getRegionOfDefinition(args.time);
-            double srcW = srcRoD.x2 - srcRoD.x1;
-            double srcH = srcRoD.y2 - srcRoD.y1;
+            // the coordinates of a huge RoD (e.g. +-DBL_MAX, whose size is infinite) are clamped, so that the sizes and
+            // the ratios below are finite (inf / inf would be NaN); the result is unchanged for any size up to 1e290
+            double srcW = clampRoDCoord(srcRoD.x2) - clampRoDCoord(srcRoD.x1);
+            double srcH = clampRoDCoord(srcRoD.y2) - clampRoDCoord(srcRoD.y1);
 
             /// Don't crash if we were provided weird RoDs
             if ((srcH < 1) || (srcW < 1)) {
                 return false;
             }
+            // the sizes are converted to int only within the range of int
             if ((double)w / srcW < (double)h / srcH) {
                 /// Keep the given width, recompute the height
-                h = (int)(srcH * w / srcW);
+                h = sizeToInt(srcH * w / srcW);
             } else {
                 /// Keep the given height,recompute the width
-                w = (int)(srcW * h / srcH);
+                w = sizeToInt(srcW * h / srcH);
             }
         }
         rod.x1 = 0;

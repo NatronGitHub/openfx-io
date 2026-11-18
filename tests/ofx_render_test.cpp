@@ -93,6 +93,8 @@ namespace {
 struct WriterParams {
     std::vector<std::pair<std::string, std::string>> strings;
     std::vector<std::pair<std::string, int>> ints;
+    std::vector<std::pair<std::string, double>> doubles; // double params
+    double inputPar = 1.;            // the PAR of the source clip
     bool expectBeginFailure = false; // beginSequenceRender must fail (and nothing is rendered)
     bool constantImage = false;      // render the same mid-gray image for every frame instead of a ramp
     std::vector<float> frameValues;  // if not empty, the gray level of frame t is frameValues[t - 1] (instead of a ramp)
@@ -142,6 +144,11 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         if (!ctx.params.count(ip.first)) { std::printf("  FAIL: no param %s\n", ip.first.c_str()); return 1; }
         setOverrideInt(&ctx, ip.first.c_str(), ip.second);
     }
+    for (const auto& dp : wp.doubles) {
+        if (!ctx.params.count(dp.first)) { std::printf("  FAIL: no param %s\n", dp.first.c_str()); return 1; }
+        ctx.params[dp.first].hasOv = true;
+        ctx.params[dp.first].ov.d = { dp.second };
+    }
     if (wp.fps > 0.) {
         if (!ctx.params.count("fps")) { std::printf("  FAIL: no param fps\n"); return 1; }
         ctx.params["fps"].hasOv = true;
@@ -162,6 +169,10 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     if (!src) { std::printf("  FAIL: no Source clip\n"); return 1; }
     src->connected = true;
     setupClipImage(src, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+    if (wp.inputPar != 1.) {
+        pSetDouble(PH(&src->props), kOfxImagePropPixelAspectRatio, 0, wp.inputPar);
+        pSetDouble(PH(&src->image), kOfxImagePropPixelAspectRatio, 0, wp.inputPar);
+    }
     if (ctx.clips.count(kOfxImageEffectOutputClipName)) {
         Clip* o = ctx.clips[kOfxImageEffectOutputClipName];
         o->connected = false;
@@ -2066,6 +2077,25 @@ main(int argc, char** argv)
 
     std::printf("==== WriteFFmpeg, Fixed output format with a PAR of 0: the PAR is 1 ====\n");
     failures += testWriterFormatPar0();
+
+    {
+        // a bitrate above 2147 Mbit/s (its conversion to int overflowed) and a PAR out of range from the host (its
+        // conversion to int overflowed): found by -fsanitize=float-cast-overflow; the movie must be written
+        WriterParams wp;
+        // libx264 with CRF None uses the Bitrate param (FFmpeg's own encoders here use qscale instead); skipped without
+        // libx264
+        std::printf("==== WriteFFmpeg libx264, bitrate 3000 Mbit/s, source PAR 1e300: no out-of-range conversion ====\n");
+        if (!avcodec_find_encoder_by_name("libx264")) {
+            std::printf("  SKIP: no libx264 encoder\n");
+        } else {
+            wp.strings = { { "codecShortName", "libx264" } };
+            wp.ints = { { "crf", 0 } }; // CRF None: the bitrate is used
+            wp.doubles = { { "bitrateMbps", 3000. } };
+            wp.inputPar = 1e300;
+            failures += testWriteFFmpeg(outFile + ".bitrate.mp4", W, H, 3, wp);
+            std::remove((outFile + ".bitrate.mp4").c_str());
+        }
+    }
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");

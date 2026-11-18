@@ -156,6 +156,21 @@ ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# OIIOResize and OIIOText with degenerate inputs (an empty source, huge or infinite RoDs, huge text positions), with
+# the OIIO plug-ins (OIIOGlobal), and OpenGL (OIIOText's interact; OCIO_CDL_LIBS). (Added to test and clean here, on
+# lines of their own.)
+oiio_edge_test: oiio_edge_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp ../OIIO/OIIOText.cpp \
+    ../SupportExt/ofxsOGLTextRenderer.cpp ../SupportExt/ofxsOGLFontData.cpp $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+.PHONY: test-oiio-edge clean-oiio-edge
+test: test-oiio-edge
+clean: clean-oiio-edge
+test-oiio-edge: oiio_edge_test
+	OCIO=$(CURDIR)/test.ocio ./oiio_edge_test
+clean-oiio-edge:
+	rm -rf oiio_edge_test oiio_edge_test.dSYM
+
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # -pthread: the test uses std::thread
 EXR_READ_SRCS := ../EXR/ReadEXR.cpp $(READER_HOOKS_SRCS)
