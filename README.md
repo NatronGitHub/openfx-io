@@ -38,6 +38,8 @@ to checkout a given tag.
 ## Requirements
 
 - A C++17 compiler. The plug-ins also compile as C++20.
+- On Linux, GCC 9 or later (`std::filesystem` without `-lstdc++fs`;
+  [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/main/INSTALL.md) 3.x needs 9.3 or later)
 - [OpenColorIO](https://opencolorio.org) 2.x
 - [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
   [LibRaw](https://www.libraw.org) for the RAW formats
@@ -52,8 +54,28 @@ The [CI workflow](.github/workflows/ci.yml) builds and tests the plug-ins on Lin
 on Windows with [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/), and on macOS with
 [Xcode](https://developer.apple.com/xcode/)'s clang and [MacPorts](https://www.macports.org). It is the reference for the
 packages to install and the commands to run on each platform.
-[Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 8 with gcc-toolset-14, on macOS 14 and later (arm64), and on
+[Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 9 (see [Linux runtime requirements](#linux-runtime-requirements)), on macOS 14 and later (arm64), and on
 MSYS2 UCRT64.
+
+### Linux runtime requirements
+
+Linux release bundles carry their libraries (OpenImageIO, OpenColorIO, FFmpeg, …) but no system libraries, which
+come from the system:
+
+- [glibc](https://sourceware.org/glibc/) 2.34 or later;
+- [libstdc++](https://gcc.gnu.org/onlinedocs/libstdc++/) and `libgcc_s` from [GCC](https://gcc.gnu.org) 11 or later;
+- [libgomp](https://gcc.gnu.org/onlinedocs/libgomp/), GCC's [OpenMP](https://www.openmp.org) runtime, when LibRaw
+  uses OpenMP;
+- `libGL` (e.g. [libglvnd](https://gitlab.freedesktop.org/glvnd/libglvnd)).
+
+Release builds target [Rocky Linux](https://rockylinux.org) [9](https://docs.rockylinux.org/releases/release_notes/9_0/)
+(glibc 2.34, GCC 11), with [GCC Toolset](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/developing_c_and_cpp_applications_in_rhel_9/assembly_additional-toolsets-for-development-rhel-9_developing-applications)
+(e.g. `gcc-toolset-14`) if a newer compiler is needed: GCC Toolset links the newer parts of the C++ runtime statically,
+so the plug-ins still only need the system's libstdc++. Their symbol versions must not be newer than those of Rocky
+Linux 9: `GLIBC_2.34` (Rocky Linux 9's glibc 2.34 also has a few backported `GLIBC_2.35` symbols, e.g. `__memcmpeq`),
+`GLIBCXX_3.4.29` and `CXXABI_1.3.13` (libstdc++), `GCC_7.0.0` (libgcc_s, x86-64), `GOMP_5.0.1` and `OMP_5.0.1`
+(libgomp). The Linux bundle built by CI is an Ubuntu 24.04 testing build, not a release: it needs the system libraries
+of Ubuntu 24.04 or later.
 
 ## Compiling with CMake
 
