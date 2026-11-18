@@ -2068,8 +2068,31 @@ GenericOCIO::swapColorspaces(double time)
         // (without string animation, the strings have no keys; the keys of both sides are at the same times, matched
         // exactly)
         for (int side = 0; side < 2; ++side) {
+            StringParam* str = side ? _outputSpace : _inputSpace;
             for (size_t i = 0; i < ownedKeys[side].size(); ++i) {
-                (side ? _outputSpace : _inputSpace)->deleteKeyAtTime(ownedKeys[side][i]);
+                str->deleteKeyAtTime(ownedKeys[side][i]);
+            }
+            // (a key that was hidden less than 1e-6 after a deleted one is then reported: it is deleted too if it is less
+            // than 1e-6 from a key of the swap, which would hide it again)
+            for (int pass = 0; !ownedKeys[side].empty() && (pass < 100); ++pass) {
+                const std::vector<double> now = getKeyTimes(str);
+                bool deleted = false;
+                for (size_t i = 0; i < now.size(); ++i) {
+                    // (the swap's keys are at the same times on both sides; "near" is a macro of <windows.h>)
+                    bool nearKey = false;
+                    bool inSwap = false;
+                    for (size_t j = 0; j < input.keys.size(); ++j) {
+                        nearKey = nearKey || ((now[i] != input.keys[j].first) && (std::fabs(now[i] - input.keys[j].first) < 1e-6));
+                        inSwap = inSwap || (now[i] == input.keys[j].first);
+                    }
+                    if (nearKey && !inSwap) {
+                        str->deleteKeyAtTime(now[i]);
+                        deleted = true;
+                    }
+                }
+                if (!deleted) {
+                    break;
+                }
             }
         }
         applyStringKeys(_config, _inputSpace, output, false, false, false);
