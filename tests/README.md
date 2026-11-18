@@ -297,7 +297,9 @@ stream copies from a non-keyframe and VFR MP4 with a one-frame gap (fewer sample
 times); opening a 60 s Matroska with a start time, and a 60 s FLV, also truncated by 7, 377 and
 12345 bytes, must read at most 2 MB (`--max-open-bytes`, `FFmpegFile::getBytesReadAtOpen()`), and
 the index of the FLV must not reach its end after the open (`--max-indexed-frame`: an index entry
-near the end, added while reading the last packets, made the seeks decode from near the start); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
+near the end, added while reading the last packets, made the seeks decode from near the start); a high
+bit rate FLV without the duration metadata (400 kB per frame), with and without a start time, must
+count its frames from its last packets; NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
 not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must

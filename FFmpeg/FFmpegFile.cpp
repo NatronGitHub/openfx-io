@@ -722,42 +722,82 @@ FFmpegFile::getLastIndexTimestamp(Stream& stream)
     return (last == int64_t(AV_NOPTS_VALUE)) ? last : av_rescale_q(last, stream._avstream->time_base, AV_TIME_BASE_Q);
 }
 
-// The start of the last tags of an FLV file (at most kMaxTags tags, within the last window bytes, read at once), found
-// by walking back from the end with the size of the previous tag, which follows each tag, so that the demuxer does
-// not have to resync. Each tag header is checked (type, data size): -1 if the last tag is not valid (e.g. a
-// truncated file).
+// The start of the last tags of an FLV file (at most kMaxTags tags, and at least kMinVideoTags video tags if
+// possible), found by walking back from the end with the size of the previous tag, which follows each tag, so
+// that the demuxer does not have to resync. The last bytes of the file are read at once (256 kB), and more if
+// needed (only the extra bytes), up to maxBytes in all. Each tag header is checked (type, data size): -1 if the
+// last tag is not valid (e.g. a truncated file).
 static int64_t
-FlvLastTagsStart(AVIOContext* pb, int64_t size, int64_t window, int& videoTags)
+FlvLastTagsStart(AVIOContext* pb,
+                 int64_t size,
+                 int64_t maxBytes)
 {
     const int kMaxTags = 64;
-    videoTags = 0;
+    const int kMinVideoTags = 8;
     const int64_t firstTag = 13; // after the 9-byte header and the first previous tag size
-    const int64_t begin = (std::max)(firstTag, size - window);
-    std::vector<unsigned char> data(size_t(size - begin));
-    if (data.empty() || (avio_seek(pb, begin, SEEK_SET) < 0) || (avio_read(pb, data.data(), (int)data.size()) != (int)data.size())) {
-        return -1;
-    }
-    auto at = [&data, begin](int64_t pos) -> const unsigned char* { return &data[size_t(pos - begin)]; };
-    int64_t tag = size;
+    std::vector<unsigned char> data; // the bytes [begin, size) of the file
+    int64_t begin = size;
     int64_t start = -1;
-    for (int tags = 0; (tags < kMaxTags) && (tag - 4 >= begin); ++tags) {
-        const unsigned char* p = at(tag - 4);
-        const int64_t previousTagSize = (int64_t(p[0]) << 24) | (int64_t(p[1]) << 16) | (int64_t(p[2]) << 8) | int64_t(p[3]);
-        const int64_t tagStart = tag - 4 - previousTagSize;
-        if ((previousTagSize < 11) || (tagStart < (std::max)(begin, firstTag))) {
+    for (int64_t window = int64_t(1) << 18; begin > firstTag; window *= 4) {
+        const int64_t newBegin = (std::max)(firstTag, size - (std::min)(window, maxBytes));
+        if (newBegin >= begin) {
+            break; // maxBytes reached
+        }
+        std::vector<unsigned char> more(size_t(begin - newBegin));
+        if ((avio_seek(pb, newBegin, SEEK_SET) < 0) || (avio_read(pb, more.data(), (int)more.size()) != (int)more.size())) {
+            return -1;
+        }
+        data.insert(data.begin(), more.begin(), more.end());
+        begin = newBegin;
+        auto at = [&data, begin](int64_t pos) -> const unsigned char* { return &data[size_t(pos - begin)]; };
+        int64_t tag = size;
+        int videoTags = 0;
+        start = -1;
+        for (int tags = 0; (tags < kMaxTags) && (tag - 4 >= begin); ++tags) {
+            const unsigned char* p = at(tag - 4);
+            const int64_t previousTagSize = (int64_t(p[0]) << 24) | (int64_t(p[1]) << 16) | (int64_t(p[2]) << 8) | int64_t(p[3]);
+            const int64_t tagStart = tag - 4 - previousTagSize;
+            if ((previousTagSize < 11) || (tagStart < firstTag)) {
+                if (tag == size) {
+                    return -1; // the last tag is not valid
+                }
+                break;
+            }
+            if (tagStart < begin) {
+                if (tag == size) {
+                    // A last tag larger than the bytes read: check its header before reading more (the previous
+                    // tag size of a truncated file may be anything).
+                    unsigned char header[4];
+                    if ((avio_seek(pb, tagStart, SEEK_SET) < 0) || (avio_read(pb, header, 4) != 4) ||
+                        (((header[0] & 0x1f) != 8) && ((header[0] & 0x1f) != 9) && ((header[0] & 0x1f) != 18)) ||
+                        ((((int64_t(header[1]) << 16) | (int64_t(header[2]) << 8) | int64_t(header[3])) + 11) != previousTagSize)) {
+                        return -1;
+                    }
+                }
+                break;
+            }
+            const unsigned char* t = at(tagStart);
+            const int type = t[0] & 0x1f;
+            const int64_t dataSize = (int64_t(t[1]) << 16) | (int64_t(t[2]) << 8) | int64_t(t[3]);
+            if (((type != 8) && (type != 9) && (type != 18)) || (dataSize + 11 != previousTagSize)) {
+                if (tag == size) {
+                    return -1; // the last tag is not valid
+                }
+                break;
+            }
+            if (type == 9) {
+                ++videoTags;
+            }
+            start = tagStart;
+            tag = tagStart;
+        }
+        if ((start < 0) && (tag == size) && (tag - 4 >= begin)) {
+            // the last tag starts before the bytes read: read more
+            continue;
+        }
+        if ((videoTags >= kMinVideoTags) || (tag - 4 < firstTag) || (start < 0)) {
             break;
         }
-        const unsigned char* t = at(tagStart);
-        const int type = t[0] & 0x1f;
-        const int64_t dataSize = (int64_t(t[1]) << 16) | (int64_t(t[2]) << 8) | int64_t(t[3]);
-        if (((type != 8) && (type != 9) && (type != 18)) || (dataSize + 11 != previousTagSize)) {
-            break;
-        }
-        if (type == 9) {
-            ++videoTags;
-        }
-        start = tagStart;
-        tag = tagStart;
     }
 
     return start;
@@ -786,24 +826,24 @@ FFmpegFile::probeEnd(Stream& stream,
     if (size <= 0) {
         return false;
     }
+    // The positioning (e.g. the FLV tag walk) and the reading of the packets each read at most kMaxEndProbeBytes.
     const int64_t kMaxEndProbeBytes = int64_t(4) << 20;
     const char* formatName = _context->iformat ? _context->iformat->name : "";
     const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
     const bool isMatroska = std::strstr(formatName, "matroska") != nullptr;
-    const int64_t bytesRead0 = pb->bytes_read;
+    const bool isMpegTsPs = (std::strcmp(formatName, "mpegts") == 0) || (std::strcmp(formatName, "mpeg") == 0);
     _readAtOpen = true;
+    // MPEG-TS/PS have no index, but their demuxers resync after a byte seek: read the last 1 MB (or 4 MB if it
+    // has too few video packets, e.g. a high bit rate), to get the end that FFmpeg's estimate may miss.
+    int64_t tsWindow = int64_t(1) << 20;
     if (isFlv) {
-        // Enough video tags for the reordered frames (with B-frames, the last tag is not the last frame):
-        // read a larger window if needed, up to kMaxEndProbeBytes.
-        int64_t pos = -1;
-        for (int64_t window = int64_t(1) << 18; window <= kMaxEndProbeBytes; window *= 4) {
-            int videoTags = 0;
-            pos = FlvLastTagsStart(pb, size, window, videoTags);
-            if ((pos < 0) || (videoTags >= 8) || (window >= size)) {
-                break;
-            }
-        }
+        // Enough video tags for the reordered frames (with B-frames, the last tag is not the last frame).
+        const int64_t pos = FlvLastTagsStart(pb, size, kMaxEndProbeBytes);
         if ((pos < 0) || (av_seek_frame(_context, -1, pos, AVSEEK_FLAG_BYTE) < 0)) {
+            return false;
+        }
+    } else if (isMpegTsPs) {
+        if (av_seek_frame(_context, -1, (std::max)(int64_t(0), size - tsWindow), AVSEEK_FLAG_BYTE) < 0) {
             return false;
         }
     } else {
@@ -838,6 +878,8 @@ FFmpegFile::probeEnd(Stream& stream,
     int64_t end = AV_NOPTS_VALUE;
     int64_t videoEnd = AV_NOPTS_VALUE;
     bool eof = false;
+    int videoPackets = 0;
+    int64_t bytesRead0 = pb->bytes_read;
     // The FLV demuxer adds an index entry for each keyframe it reads from a seekable input: an entry near
     // the end would make later seeks in a file without a keyframe index decode from near its start.
     const int seekable = pb->seekable;
@@ -847,6 +889,17 @@ FFmpegFile::probeEnd(Stream& stream,
     MyAVPacket avPacket;
     while (pb->bytes_read - bytesRead0 <= kMaxEndProbeBytes) {
         const int res = av_read_frame(_context, avPacket.pkt());
+        if ((res == AVERROR_EOF) && isMpegTsPs && (videoPackets < 8) && (tsWindow < kMaxEndProbeBytes) && (tsWindow < size)) {
+            // too few video packets in the last bytes: read more
+            tsWindow = kMaxEndProbeBytes;
+            end = videoEnd = lastVideoPts = AV_NOPTS_VALUE;
+            videoPackets = 0;
+            bytesRead0 = pb->bytes_read;
+            if (av_seek_frame(_context, -1, (std::max)(int64_t(0), size - tsWindow), AVSEEK_FLAG_BYTE) < 0) {
+                break;
+            }
+            continue;
+        }
         if (res == AVERROR_EOF) {
             eof = true;
             break;
@@ -866,6 +919,7 @@ FFmpegFile::probeEnd(Stream& stream,
                 end = e;
             }
             if (avPacket->stream_index == stream._idx) {
+                ++videoPackets;
                 if ((videoEnd == int64_t(AV_NOPTS_VALUE)) || (e > videoEnd)) {
                     videoEnd = e;
                 }
@@ -994,7 +1048,12 @@ FFmpegFile::getStreamFrames(Stream& stream)
             if ((_context->start_time != int64_t(AV_NOPTS_VALUE)) && (_context->start_time < firstDTS)) {
                 firstDTS = _context->start_time;
             }
-            const int64_t durationEnd = _context->duration + firstDTS;
+            // The duration, if the last packets cannot be read (e.g. a truncated file): it may be counted from the
+            // first DTS (FFmpeg's FLV muxer), or be the DTS of the last tag, counted from 0 (without the duration
+            // metadata), which does not tell; count it from the start of the video stream, as before, which
+            // includes the B-frame delay: never fewer frames than the duration.
+            (void)firstDTS;
+            const int64_t durationEnd = _context->duration + videoStart;
             int64_t lastVideoPts;
             // A probed end far beyond the duration is not trusted (e.g. a damaged last tag).
             if (!probeEnd(stream, movieEnd, lastVideoPts) || (movieEnd > durationEnd + (std::max)(_context->duration / 10, int64_t(2) * AV_TIME_BASE))) {
@@ -1042,6 +1101,12 @@ FFmpegFile::getStreamFrames(Stream& stream)
 #endif
         } else {
             movieEnd = _context->start_time + _context->duration;
+            // MPEG-TS/PS: FFmpeg estimates the duration from the timestamps of packets near the end, and may miss
+            // the last frames of the video (e.g. with a high bit rate): read the last packets.
+            int64_t probedEnd, lastVideoPts;
+            if (((std::strcmp(formatName, "mpegts") == 0) || (std::strcmp(formatName, "mpeg") == 0)) && probeEnd(stream, probedEnd, lastVideoPts)) {
+                movieEnd = probedEnd;
+            }
         }
         frames = framesUntil(movieEnd);
 

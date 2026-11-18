@@ -433,12 +433,28 @@ if have_encoder libx264; then
         size=$(wc -c < "$tmp/long.flv")
         for cut in 7 377 12345; do
             head -c $((size - cut)) "$tmp/long.flv" > "$tmp/long_cut$cut.flv"
-            check_open "long_cut$cut.flv" "FLV (H.264 with B-frames, 24 fps, 60 s, truncated by $cut bytes): frame count and bytes read at open" 1440 2000000
+            # (the last tag is not valid: the duration is used, counted from the start of the video, as before,
+            # which includes the B-frame delay)
+            check_open "long_cut$cut.flv" "FLV (H.264 with B-frames, 24 fps, 60 s, truncated by $cut bytes): frame count and bytes read at open" 1442 2000000
         done
     else
         echo "FAIL: could not generate the 60 s clips"
         rc=1
     fi
+fi
+# A high bit rate FLV (about 400 kB per frame, more than in the first windows read at the end) without the
+# duration metadata, with and without a start time: the end must still be read from the last packets.
+if have_encoder libx264 && have_encoder aac; then
+    for offset in 0 10; do
+        if ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=640x360:r=25:d=1.2 -f lavfi -i sine=d=1.2 -vf noise=alls=40:allf=t \
+            -c:v libx264 -preset ultrafast -bf 3 -qp 0 -g 250 -pix_fmt yuv420p -c:a aac -flvflags no_duration_filesize \
+            -output_ts_offset "$offset" "$tmp/high_bitrate_$offset.flv"; then
+            check_open "high_bitrate_$offset.flv" "FLV (H.264 with B-frames, 400 kB per frame, no duration metadata, start time $offset s)" 30 40000000
+        else
+            echo "FAIL: could not generate high_bitrate_$offset.flv"
+            rc=1
+        fi
+    done
 fi
 # A stream copy from a non-keyframe: fewer samples than frame times.
 check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6
