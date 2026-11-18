@@ -113,8 +113,8 @@ jobs:
           # installs Bundle/IO.ofx.bundle
           cmake --install build
       - name: Check the installed bundle (linuxCheckBundle.sh)
-        # openfx's linuxCheckBundle.sh (OFX_LINUX_CHECK_BUNDLE): no bundled system library, no GLIBC_PRIVATE, GLIBC_ABI_*
-        # or DT_RELR. This build uses Ubuntu 24.04's libraries (glibc 2.39, GCC 13): --no-needed (they come from the
+        # openfx's linuxCheckBundle.sh (OFX_LINUX_CHECK_BUNDLE): no bundled system library, no GLIBC_PRIVATE, GLIBC_ABI_*,
+        # DT_RELR or unnumbered version need, only $ORIGIN rpaths (or OFX_ABI_RPATH_ALLOW's). This build uses Ubuntu 24.04's libraries (glibc 2.39, GCC 13): --no-needed (they come from the
         # system, nothing is bundled) and no symbol version limit (99). A Rocky Linux 9 build would use the defaults
         # (EL9's limits). Exit status 1 (problems) or 2 (usage error, missing tool) fails the job.
         env:
@@ -128,9 +128,11 @@ jobs:
         run: |
           check=$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)
           test -n "$check" || { echo "OFX_LINUX_CHECK_BUNDLE is not in build/CMakeCache.txt"; exit 1; }
-          # RUNPATH entries that don't start with $ORIGIN are problems (openfx #163), except those of OFX_ABI_RPATH_ALLOW:
-          # this build's in-tree SeExpr and the -Wl,-rpath directories of Makefile.master (installers rewrite the rpath)
-          OFX_ABI_RPATH_ALLOW="$PWD/SeExprBuild/lib $(pkg-config --variable=libdir OpenColorIO) $(pkg-config --variable=prefix OpenImageIO)/lib"
+          # RUNPATH/RPATH entries that don't start with $ORIGIN are problems (openfx #163), except those listed in
+          # OFX_ABI_RPATH_ALLOW (exact match): this build's in-tree SeExpr and the pkg-config library directories that
+          # Makefile.master passes to -Wl,-rpath (installers rewrite the rpath)
+          OFX_ABI_RPATH_ALLOW="$PWD/SeExprBuild/lib $(pkg-config --variable=libdir OpenColorIO)"
+          OFX_ABI_RPATH_ALLOW+=" $(pkg-config --variable=libdir OpenImageIO) $(pkg-config --variable=prefix OpenImageIO)/lib"
           OFX_ABI_RPATH_ALLOW+=" $(pkg-config --variable=libdir libraw_r) $(pkg-config --variable=libdir libpng)"
           export OFX_ABI_RPATH_ALLOW
           echo "OFX_ABI_RPATH_ALLOW=$OFX_ABI_RPATH_ALLOW"
