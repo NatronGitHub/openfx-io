@@ -56,13 +56,15 @@
  *      frames that reference a dropped frame, which the decoder conceals,
  *  15. optionally (--fresh F1,F2,...) decodes each 1-based frame Fi first in a newly opened
  *      file (e.g. a seek into a run of damaged frames), and checks it against the sequential
- *      decode (and, with --ramp, its content).
+ *      decode (and, with --ramp, its content), or that it fails, for a --fail frame,
+ *  16. optionally (--max-seq-bytes N) checks that decoding every frame sequentially reads at most N
+ *      bytes (e.g. a file damaged from some point on must not be read again for each frame).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -110,7 +112,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -130,6 +132,7 @@ main(int argc, char** argv)
     std::vector<int> gaps; // 1-based frames that have no frame (--gaps)
     std::vector<int> concealed; // 1-based frames whose content and seek consistency are not checked
     std::vector<int> fresh; // 1-based frames to decode first in a newly opened file
+    long long maxSeqBytes = -1;
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -147,6 +150,8 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--max-seq-bytes" && i + 1 < argc) {
+            maxSeqBytes = std::atoll(argv[++i]);
         } else if (a == "--max-open-bytes" && i + 1 < argc) {
             maxOpenBytes = std::atoll(argv[++i]);
         } else if (a == "--seek-bytes" && i + 1 < argc) {
@@ -330,6 +335,8 @@ main(int argc, char** argv)
         }
     };
 
+    const long long seqBytes0 = file.getBytesRead();
+
     // 1) Sequential decode -> ground-truth signatures (1-based frame indices).
     std::vector<double> seqSig(static_cast<size_t>(frames) + 1, -1.0);
     for (int f = 1; f <= frames; ++f) {
@@ -362,6 +369,14 @@ main(int argc, char** argv)
 
     // Optional: bounded number of seeks for the sequential decode.
     int seekErrors = 0;
+    const long long seqBytes = file.getBytesRead() - seqBytes0;
+    if (verbose || (maxSeqBytes >= 0)) {
+        std::printf("  sequential decode: read %lld bytes\n", seqBytes);
+    }
+    if ((maxSeqBytes >= 0) && (seqBytes > maxSeqBytes)) {
+        std::printf("  SEQ-BYTES sequential decode read %lld bytes, expected at most %lld\n", seqBytes, maxSeqBytes);
+        ++seekErrors;
+    }
     const unsigned long seqSeeks = file.getSeekCount();
     if (verbose || maxSeeks >= 0) {
         std::printf("  sequential decode: %lu seeks\n", seqSeeks);
@@ -468,6 +483,13 @@ main(int argc, char** argv)
             ok = freshFile.decode(nullptr, f, loadNearest, buf.data());
         } catch (const std::exception& e) {
             ok = false;
+        }
+        if (isMustFail(f)) {
+            if (ok || freshFile.isInvalid() || freshFile.getError().empty()) {
+                std::printf("  FAIL-CHECK fresh frame %d: %s\n", f, ok ? "decoded, but must fail" : "failed without an error message, or made the file invalid");
+                ++failErrors;
+            }
+            continue;
         }
         if (!ok) {
             std::printf("  FRESH decode frame %d returned false (%s)\n", f, freshFile.getError().c_str());

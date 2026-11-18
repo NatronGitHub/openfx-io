@@ -592,6 +592,47 @@ check_ts_cc() {
     done
 }
 
+# check_damaged_long NAME DESCRIPTION NOISE_AMOUNT FAIL_FROM FAIL_TO FRESH MAX_SEQ_BYTES_FACTOR
+# A 300-frame 320x240 ProRes MOV, damaged by the noise bitstream filter with the amount expression
+# NOISE_AMOUNT (e.g. "between(n,100,199)", a run of 100 damaged packets, or "gte(n,6)", damaged from the 7th
+# packet on): the frames FAIL_FROM to FAIL_TO (1-based) must fail, without making the file invalid, sequentially,
+# after a seek, and when decoded first in a newly opened file (FRESH, e.g. the good frames just after the
+# damage, which a damaged range must not include), with 1 and 8 decoder threads; the other frames must decode.
+# Decoding every frame sequentially must read at most MAX_SEQ_BYTES_FACTOR times the size of the file (the
+# known damaged range is extended, instead of reading the damaged packets again for each frame).
+check_damaged_long() {
+    local name="$1" desc="$2" amount="$3" from="$4" to="$5" fresh="$6" factor="$7"
+    echo "== $desc =="
+    if ! have_encoder prores_ks; then
+        echo "SKIPPED: no prores_ks encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! noise_takes_expressions; then
+        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25:d=12 -c:v prores_ks -profile:v 2 "$tmp/clean_$name" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount='$amount'" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    local fail="" i threads size
+    for ((i = from; i <= to; i++)); do
+        fail="${fail:+$fail,}$i"
+    done
+    size=$(wc -c < "$tmp/$name")
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 --frames 300 --fail "$fail" ${fresh:+--fresh "$fresh"} \
+            --max-seq-bytes $((size * factor)) ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -710,6 +751,10 @@ check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" m
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 check_ts_cc ramp_cc_error.ts "MPEG-TS (H.264 and MP2, a continuity counter error in frame 18, not a truncated file)"
 check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two damaged frames)" libsvtav1 -c:v libsvtav1 -g 8 -preset 8
+# Longer damaged runs in ProRes: frames after a run of 100 damaged packets must decode (in any order), and a
+# file damaged from some point on must not be read again for each frame.
+check_damaged_long ramp_damaged_run100.mov "MOV (ProRes, 300 frames, packets 100-199 damaged)" "between(n,100,199)" 101 200 201,202,203,204,150 12
+check_damaged_long ramp_damaged_from6.mov "MOV (ProRes, 300 frames, damaged from the 7th packet on)" "gte(n,6)" 7 300 7,8,100 12
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
 check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p

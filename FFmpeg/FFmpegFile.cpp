@@ -2000,6 +2000,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     stream->_stoppedOnDamagedPacket = false;
     stream->_tooManyDroppedPackets = false;
     stream->_lastReadFrame = -1;
+    stream->_lastDamagedFrame = -1;
+    stream->_requestDroppedPackets = 0;
+    stream->_noTimestamps = false;
 
     while (!retriedDecode) {
 
@@ -2014,7 +2017,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         // This will perform a seek to the start of the file. which is
         // the only reliable way to get frame accurate seeking in a
         // stream with B-frames.
-        if (!hasPicture && !isIntraOnly && !retriedSeek && !stream->_tooManyDroppedPackets) {
+        if (!hasPicture && !isIntraOnly && !retriedSeek && !stream->_tooManyDroppedPackets && !stream->_noTimestamps) {
             retriedSeek = true;
             if (seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)) {
                 // Until the next seek (which resets it), including the next sequential requests:
@@ -2036,8 +2039,12 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // an attempt that failed with another error stops.
     const bool firstAttemptFailedHard = !hasPicture && !stream->_stoppedOnDamagedPacket && !stream->_invalidDataSkipped && !_errorMsg.empty();
     int lastDamageError = stream->_invalidDataSkipped;
-    for (int back = 1; !hasPicture && isIntraOnly && !firstAttemptFailedHard && !stream->_tooManyDroppedPackets && (frame > 0) && (back < (1 << 30)); back *= 2) {
-        const int from = (std::max)(0, frame - back);
+    // Not into a known damaged range just before the requested frame (it cannot give a frame to hold), and with
+    // a bound on the packets dropped by all the attempts of this request.
+    const int backLimit = ((stream->_damagedRangeTo >= 0) && (frame > stream->_damagedRangeTo)) ? (stream->_damagedRangeTo + 1) : 0;
+    bool damagedDownToRange = false;
+    for (int back = 1; !hasPicture && isIntraOnly && !firstAttemptFailedHard && !stream->_tooManyDroppedPackets && (frame > backLimit) && (stream->_requestDroppedPackets <= 2 * kMaxDroppedPacketsPerDecode) && (back < (1 << 30)); back *= 2) {
+        const int from = (std::max)(backLimit, frame - back);
         clearDecodeError();
         stream->_stoppedOnDamagedPacket = false;
         stream->_invalidDataSkipped = 0;
@@ -2048,7 +2055,11 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         if (stream->_invalidDataSkipped) {
             lastDamageError = stream->_invalidDataSkipped;
         }
-        if ((from == 0) || (!hasPicture && !_errorMsg.empty() && !stream->_stoppedOnDamagedPacket && !stream->_invalidDataSkipped)) {
+        if ((from == backLimit) && (backLimit > 0) && !hasPicture && stream->_stoppedOnDamagedPacket) {
+            // no frame from the end of the known damaged range to the requested frame: they are damaged too
+            damagedDownToRange = true;
+        }
+        if ((from == backLimit) || (!hasPicture && !_errorMsg.empty() && !stream->_stoppedOnDamagedPacket && !stream->_invalidDataSkipped)) {
             break; // e.g. the truncated packet, which fails (see demuxAndDecode)
         }
     }
@@ -2056,11 +2067,19 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         stream->_invalidDataSkipped = lastDamageError;
     }
 
-    if (!hasPicture && stream->_tooManyDroppedPackets && (stream->_lastReadFrame > frame)) {
-        // A persistently damaged range: the following requests in it fail without reading it again (until the
-        // file is opened again, also if the error was transient, e.g. a lack of memory).
-        stream->_damagedRangeFrom = frame;
-        stream->_damagedRangeTo = stream->_lastReadFrame;
+    const bool afterDamagedRange = (stream->_damagedRangeFrom >= 0) && (frame >= stream->_damagedRangeFrom) && ((frame <= stream->_damagedRangeTo + 1) || damagedDownToRange);
+    if (!hasPicture && (stream->_tooManyDroppedPackets || (stream->_requestDroppedPackets > 2 * kMaxDroppedPacketsPerDecode) || (afterDamagedRange && stream->_invalidDataSkipped)) &&
+        (stream->_lastDamagedFrame >= frame)) {
+        // A persistently damaged range, up to the last damaged packet: the following requests in it fail without
+        // reading it again (until the file is opened again, also if the error was transient, e.g. a lack of
+        // memory). A range that starts at or just after a known one extends it (a file damaged from some point
+        // on, read sequentially).
+        if (afterDamagedRange) {
+            stream->_damagedRangeTo = (std::max)(stream->_damagedRangeTo, stream->_lastDamagedFrame);
+        } else {
+            stream->_damagedRangeFrom = frame;
+            stream->_damagedRangeTo = stream->_lastDamagedFrame;
+        }
         stream->_damagedRangeError = stream->_invalidDataSkipped ? stream->_invalidDataSkipped : AVERROR_INVALIDDATA;
     }
 
@@ -2166,8 +2185,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
     // Process a frame output by the decoder. Returns true if it gives the requested frame (which is
     // then converted into avFrameOut), or if decoding should stop without a picture (hasPicture is
     // then false, and decode() retries from the start).
-    const int kMaxDroppedPackets = 64; // see skipInvalidData
+    const int kMaxDroppedPackets = kMaxDroppedPacketsPerDecode;
     int droppedPackets = 0; // consecutive dropped packets, without a decoded frame
+    int framesWithoutTimestamp = 0;
     auto processDecodedFrame = [&](AVFrame* decodedFrame) -> bool {
         // Fallback to using the DTS from the AVPacket that triggered returning this frame if no PTS is found
         // Original code, which doesn't work (AVI/m1v):
@@ -2204,7 +2224,17 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             // one gave the last frame for the one before it. decode() then retries from the start.
             // (fftools/ffmpeg_dec.c:350-353 in n6.1 also extrapolates a missing timestamp from the
             // previous frame, and has none after a seek either.)
-            return draining;
+if (draining) {
+                return true; // (the stop must not set _noTimestamps: decode() then retries from the start)
+            }
+            // A few such frames are skipped (e.g. the first one after a seek, in a container without PTS, before
+            // the next one has a DTS), but a stream without timestamps stops (decoding further, or from the
+            // start, would read the rest of the file for each request), without making the file invalid.
+            if (++framesWithoutTimestamp > 32) {
+                stream->_noTimestamps = true;
+                return true; // stop without a picture
+            }
+            return false;
         }
 
         if (damaged) {
@@ -2281,16 +2311,11 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         if ((r >= 0) || (r == AVERROR(EAGAIN)) || (r == AVERROR_EOF)) {
             return false;
         }
+        ++stream->_requestDroppedPackets;
         if (++droppedPackets > kMaxDroppedPackets) {
             stream->_tooManyDroppedPackets = true;
             return false; // fail with this error
         }
-        if (acceptCorruptHeldFrame && pkt && (pkt->pts != int64_t(AV_NOPTS_VALUE)) && (stream->ptsToFrame(pkt->pts) > frame) && !Stream::hasFrame(stream->_avHeldFrame)) {
-            stream->_invalidDataSkipped = r;
-            stream->_stoppedOnDamagedPacket = true;
-            return false; // intra-only: stop, with this error (decode() then decodes from earlier frames)
-        }
-        stream->_invalidDataSkipped = r;
         // With frame threads (or the decoder's own threads, e.g. libdav1d), the error of a packet is
         // returned later, with another packet: it is unknown.
 #if defined(AV_CODEC_CAP_OTHER_THREADS)
@@ -2301,6 +2326,17 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         const bool otherThreads = false;
 #endif
         const bool frameThreads = ((stream->_codecContext->active_thread_type & FF_THREAD_FRAME) != 0) || otherThreads;
+        if (acceptCorruptHeldFrame && pkt && (pkt->pts != int64_t(AV_NOPTS_VALUE)) && (stream->ptsToFrame(pkt->pts) > frame) && !Stream::hasFrame(stream->_avHeldFrame)) {
+            stream->_invalidDataSkipped = r;
+            stream->_stoppedOnDamagedPacket = true;
+            stream->_lastDamagedFrame = (std::max)(stream->_lastDamagedFrame, (std::max)((int)frame, stream->ptsToFrame(pkt->pts) - (frameThreads ? stream->getCodecDelay() : 0)));
+            return false; // intra-only: stop, with this error (decode() then decodes from earlier frames)
+        }
+        stream->_invalidDataSkipped = r;
+        if (pkt && (pkt->pts != int64_t(AV_NOPTS_VALUE))) {
+            const int damagedFrame = stream->ptsToFrame(pkt->pts) - (frameThreads ? stream->getCodecDelay() : 0);
+            stream->_lastDamagedFrame = (std::max)(stream->_lastDamagedFrame, damagedFrame);
+        }
         if (pkt && !frameThreads && (pkt->pts != int64_t(AV_NOPTS_VALUE)) && !stream->isDamagedPts(pkt->pts)) {
             if (stream->_damagedPts.size() >= 1024) {
                 stream->_damagedPts.erase(stream->_damagedPts.begin());
@@ -2360,7 +2396,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // fail, sequentially and after a seek, as before (issue #134).
         // (A packet with a transport error that happens to be the last one of the file, e.g. a TS continuity
         // counter error in the last packet, is also taken as truncated: rare.)
-        if ((avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
+        if ((avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_size(_context->pb) > 0) && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
             const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
             if (ts != int64_t(AV_NOPTS_VALUE)) {
                 const int truncatedFrame = stream->ptsToFrame(ts);

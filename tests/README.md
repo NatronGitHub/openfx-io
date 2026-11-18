@@ -506,7 +506,10 @@ flags as corrupt) must fail for the missing frames, with an error, sequentially 
 seek, as for issue #134. A run of 4 damaged ProRes and MJPEG frames must show the frame before
 them, also when each one is decoded first in a newly opened file (`--fresh`, in reverse and in
 another order). A truncated H.264 MP4 (faststart, with B-frames) must fail from the DTS of the
-truncated packet, found in the index at open, in any render order. An MPEG-TS with a continuity counter error (a packet flagged
+truncated packet, found in the index at open, in any render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
+decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one
+damaged from its 7th packet on, decoding every frame sequentially must read at most 12 times the
+file (`--max-seq-bytes`). An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to

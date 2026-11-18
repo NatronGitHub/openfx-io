@@ -171,6 +171,9 @@ private:
         std::vector<int64_t> _damagedPts; // the PTS of the damaged packets dropped so far (bounded)
         int _truncatedFrame; // the frame of the partial last packet of a truncated file, from which frames fail (-1 if none)
         int _lastReadFrame; // the largest frame of the packets read by the current decode()
+        int _lastDamagedFrame; // the largest frame of the damaged packets found by the current decode() (-1 if none)
+        int _requestDroppedPackets; // the packets dropped by all the attempts of the current decode()
+        bool _noTimestamps; // the current decode() found a decoded frame without a timestamp, and stopped
         int _damagedRangeFrom; // a range of frames found to fail because of persistent damage (-1 if none)
         int _damagedRangeTo;
         int _damagedRangeError;
@@ -237,6 +240,9 @@ private:
             , _damagedPts()
             , _truncatedFrame(-1)
             , _lastReadFrame(-1)
+            , _lastDamagedFrame(-1)
+            , _requestDroppedPackets(0)
+            , _noTimestamps(false)
             , _damagedRangeFrom(-1)
             , _damagedRangeTo(-1)
             , _damagedRangeError(0)
@@ -468,6 +474,9 @@ private:
 
     // clear the decode error
     void clearDecodeError();
+
+    // After this many consecutive damaged packets without a decoded frame, decode() stops (see demuxAndDecode())
+    static const int kMaxDroppedPacketsPerDecode = 64;
 
     // set a decode error, which does not make the file invalid
     void setDecodeError(const char* msg, const char* prefix = 0);
