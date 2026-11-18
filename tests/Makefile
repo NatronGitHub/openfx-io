@@ -228,7 +228,7 @@ test-exr: exr_read_test
 # the same with ThreadSanitizer (needs a compiler that supports -fsanitize=thread)
 test-exr-tsan: exr_read_test_tsan
 	rm -rf .exr_read_tsan && mkdir -p .exr_read_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 suppressions=$(CURDIR)/tsan.supp $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
 
 # ReadEXR's render time on 2048x1556 RGBA half files, ZIP, PIZ and DWAA (EXR_THREADS: OpenEXR's thread count)
 bench-exr: exr_read_bench
