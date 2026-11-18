@@ -212,6 +212,13 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   flipped, the 1-pixel border black); the channels that are not in the file are 0; UINT
   channels are normalized by 2^32-1, as in ReadOIIO; luminance/chroma files (Y, RY, BY)
   are read as before (not converted).
+* **render windows**: narrower than the data window (decode()'s buffer, in blocks of
+  256 lines): exact inside, nothing written outside; render scale 1/2.
+* **a rewritten file**: with larger and smaller windows, the next RoD and image are the new
+  file's (the next render updates the header cache; so does the purge caches action); and
+  with the RoD the host got before the rewrite, at scale 1 (straight into the output image,
+  and through GenericReader's buffer) and 1/2: the whole render window is written, black
+  out of the new frame bounds.
 * **a truncated file**: the render must fail, with an error message.
 * **concurrent renders**: 6 instances render 2 files (3 instances per file) 8 times each
   from 6 threads at once: each render must give the same image as a single-threaded one.

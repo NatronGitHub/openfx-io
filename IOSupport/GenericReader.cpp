@@ -1711,7 +1711,23 @@ GenericReaderPlugin::render(const RenderArguments& args)
         return;
     }
 
-    renderWindowFullRes = upscalePowerOfTwo(args.renderWindow, downscaleLevels); // works even if downscaleLevels == 0
+    // The render window, in the frame bounds (at the render scale, the smallest enclosing rectangle). It is not in
+    // them if the file changed since the host got the RoD (a reader may update its cached frame bounds when it reads
+    // the file, e.g. ReadEXR): the part of the render window out of the new frame bounds is black.
+    OfxRectI renderWindow = args.renderWindow;
+    {
+        const OfxRectI frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        if ((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2)) {
+            for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
+                fillWithBlack(args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, firstDepth, it->rowBytes);
+            }
+            if (!intersect(args.renderWindow, frameWindow, &renderWindow) || isRectNull(renderWindow)) {
+                return;
+            }
+        }
+    }
+
+    renderWindowFullRes = upscalePowerOfTwo(renderWindow, downscaleLevels); // works even if downscaleLevels == 0
 
     // Intersect the full res renderwindow to the real rod,
     // because we may have gone a few pixels too far (but never more than 2^downscaleLevels-1 pixels)
@@ -1788,12 +1804,12 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 DBG(std::printf("decode (to dst)\n"));
 
                 if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
+                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
                 } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
                 }
                 if (opaqueAlpha) {
-                    setOpaqueAlpha(args.renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
+                    setOpaqueAlpha(renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
                 }
             } else {
                 int pixelBytes;
@@ -1887,7 +1903,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
                         // we can write directly to dstPixelData
                         /// adjust the scale to match the given output image
                         DBG(std::printf("scale (no premult, tmp to dst)\n"));
-                        scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
+                        scalePixelData(renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
                                        it->numChans, firstDepth, renderWindowFullRes, tmpRowBytes, it->pixelData,
                                        remappedComponents, it->numChans, firstDepth, firstBounds, it->rowBytes);
                     } else {
@@ -1899,7 +1915,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
                         /// adjust the scale to match the given output image
                         DBG(std::printf("scale (tmp to scaled)\n"));
-                        scalePixelData(args.renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
+                        scalePixelData(renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
                                        remappedComponents, it->numChans, firstDepth,
                                        renderWindowFullRes, tmpRowBytes, scaledPixelData,
                                        remappedComponents, it->numChans, firstDepth,
@@ -1912,7 +1928,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
                         // apply premult
                         DBG(std::printf("premult (scaled to dst)\n"));
                         // scaledPixelData[0] = scaledPixelData[1] = scaledPixelData[2] = 1.; scaledPixelData[3] = 0.5;
-                        premultPixelData(args.renderWindow, args.renderScale, scaledPixelData, firstBounds, remappedComponents, it->numChans, firstDepth, mem2RowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                        premultPixelData(renderWindow, args.renderScale, scaledPixelData, firstBounds, remappedComponents, it->numChans, firstDepth, mem2RowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
                         // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
                     }
                 } else {
@@ -1920,11 +1936,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
                     if (mustPremult) {
                         DBG(std::printf("premult (no scale, tmp to dst)\n"));
                         // tmpPixelData[0] = tmpPixelData[1] = tmpPixelData[2] = 1.; tmpPixelData[3] = 0.5;
-                        premultPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                        premultPixelData(renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
                         // assert(dstPixelDataF[0] == 0.5 && dstPixelDataF[1] == 0.5 && dstPixelDataF[2] == 0.5 && dstPixelDataF[3] == 0.5);
                     } else {
                         DBG(std::printf("copy (no premult no scale, tmp to dst)\n"));
-                        copyPixelData(args.renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
+                        copyPixelData(renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, firstDepth, tmpRowBytes, it->pixelData, firstBounds, remappedComponents, it->numChans, firstDepth, it->rowBytes);
                     }
                 }
                 mem.unlock();

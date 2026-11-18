@@ -6,8 +6,10 @@
  *    around the data window (when the windows differ) is black, and the channels that are not in the file are 0
  *  - UINT channels are normalized by 2^32-1, as in ReadOIIO
  *  - luminance/chroma files (Y, RY, BY): read as before #123 (not converted)
- *  - a render window narrower than the data window, render scale 1/2, and a file rewritten with other windows
- *    (the header cache is updated by the next render, or emptied by the purge caches action)
+ *  - a render window narrower than the data window (in blocks of lines), render scale 1/2, and a file rewritten
+ *    with other windows (the header cache is updated by the next render, or emptied by the purge caches action),
+ *    including renders with the RoD the host got before the rewrite (GenericReader then fills with black the part
+ *    of the render window out of the new frame bounds)
  *  - a truncated file: the render fails, with an error message (it used to succeed with rows left unwritten)
  *  - concurrent renders (ReadEXR is kOfxImageEffectRenderFullySafe): several instances render the same file
  *    and another one from several threads at once, and each must get the same image as a single render. Build
@@ -251,7 +253,17 @@ struct Reader {
         double r[4] = { 0., 0., 0., 0. };
         pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, r);
         rod = { (int)std::floor(r[0]), (int)std::floor(r[1]), (int)std::ceil(r[2]), (int)std::ceil(r[3]) };
-        img = { (int)std::floor(r[0] * scale), (int)std::floor(r[1] * scale), (int)std::ceil(r[2] * scale), (int)std::ceil(r[3] * scale) };
+        setImage({ (int)std::floor(r[0] * scale), (int)std::floor(r[1] * scale), (int)std::ceil(r[2] * scale), (int)std::ceil(r[3] * scale) }, scale);
+
+        return kOfxStatOK;
+    }
+
+    // an output image with the given bounds (in pixels at the render scale), filled with NaN, without
+    // getRegionOfDefinition (as a host that cached the RoD)
+    void setImage(const OfxRectI& bounds, double scale)
+    {
+        img = bounds;
+        double rs[2] = { scale, scale };
         const int w = img.x2 - img.x1;
         const int h = img.y2 - img.y1;
         const int rowBytes = w * 4 * (int)sizeof(float);
@@ -264,9 +276,8 @@ struct Reader {
         pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, b);
         pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
         pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
+        double r[4] = { img.x1 / scale, img.y1 / scale, img.x2 / scale, img.y2 / scale };
         pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, r);
-
-        return kOfxStatOK;
     }
 
     // render the whole image (prepare() first)
@@ -518,6 +529,130 @@ testRewrite(OfxPlugin* p, const std::string& dir)
     checkRoD(r, { 0, 0, 256, 128 });
     const int bad = wrongPixels(r, a, r.img);
     check(bad == 0, "the image is the new one (%d wrong)", bad);
+}
+
+// The file is rewritten with a smaller data window, and the host renders with the RoD it got before (it doesn't
+// call getRegionOfDefinition again): after the first render, which updates ReadEXR's header cache, GenericReader
+// gets frame bounds that don't contain the render window. The render must succeed (a debug build of GenericReader
+// asserted), and write the whole render window: the new image, black out of the new data window. At render scale
+// 1, straight into the output image or (with an unpremultiplied file, premultiplied by GenericReader) through
+// GenericReader's buffer; and at render scale 1/2 (through the buffer).
+void
+testRewriteCachedRoD(OfxPlugin* p, const std::string& dir, bool unpremult)
+{
+    std::printf("==== file rewritten with a smaller data window, the host's RoD is the old one%s ====\n",
+                unpremult ? " (unpremultiplied file: GenericReader's buffer)" : "");
+    const std::string path = dir + (unpremult ? "/rewrite-cached-unpremult.exr" : "/rewrite-cached.exr");
+    ExrSpec a, b;
+    a.display = a.data = box(0, 0, 63, 47);
+    a.type = Imf::HALF;
+    b.display = box(0, 0, 63, 47);
+    b.data = box(20, 10, 30, 20);
+    b.type = Imf::HALF;
+    Reader r;
+    if (!writeExr(path, a) || !r.create(p, path)) {
+        check(false, "first file");
+
+        return;
+    }
+    if (unpremult) {
+        setOverrideInt(&r.ctx, "filePremult", 2); // eImageUnPreMultiplied
+    }
+    // the host gets the RoD at scale 1/2 (and so at scale 1), then the file changes
+    if (!ok(r.prepare(0.5))) {
+        check(false, "getRegionOfDefinition");
+
+        return;
+    }
+    checkRoD(r, { 0, 0, 64, 48 });
+    if (!writeExr(path, b)) {
+        ++gFailures;
+
+        return;
+    }
+    // render at scale 1, the old RoD: this render reads the new header, and updates the cache
+    for (int k = 0; k < 2; ++k) {
+        r.setImage({ 0, 0, 64, 48 }, 1.);
+        gPersistentError.clear();
+        OfxStatus st = r.render(r.img);
+        check(ok(st) && gPersistentError.empty(), "render %d at scale 1, window 0,0,64,48 = %d%s%s", k + 1, st,
+              gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+        // the new image (premultiplied if the file is unpremultiplied), black out of the new data window and its
+        // 1-pixel border, in the whole window
+        int bad = 0;
+        for (int y = 0; y < 48; ++y) {
+            for (int x = 0; x < 64; ++x) {
+                const int ex = x + b.display.min.x;
+                const int ey = b.display.max.y - y;
+                const bool inData = ex >= b.data.min.x && ex <= b.data.max.x && ey >= b.data.min.y && ey <= b.data.max.y;
+                const float* px = r.pixel(x, y);
+                const float alpha = inData ? pixelValue(ex, ey, 3) : 0.f;
+                for (int c = 0; c < 4; ++c) {
+                    float expected = inData ? pixelValue(ex, ey, c) : 0.f;
+                    if (unpremult && c < 3) {
+                        expected *= alpha;
+                    }
+                    if (!(std::fabs(px[c] - expected) <= 1e-6f * (1.f + std::fabs(expected)))) {
+                        if (bad < 5) {
+                            std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], expected);
+                        }
+                        ++bad;
+                    }
+                }
+            }
+        }
+        check(bad == 0, "render %d: the new image, black elsewhere (%d wrong)", k + 1, bad);
+    }
+    // render at scale 1/2, the old RoD
+    r.setImage({ 0, 0, 32, 24 }, 0.5);
+    gPersistentError.clear();
+    OfxStatus st = r.render(r.img, 0.5);
+    check(ok(st) && gPersistentError.empty(), "render at scale 1/2, window 0,0,32,24 = %d%s%s", st,
+          gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    // black out of the new frame bounds at scale 1/2 (the data window and its border, (19,26)-(32,39) at scale 1:
+    // (9,13)-(16,20) at scale 1/2), and no unwritten pixel
+    int nan = 0, notBlack = 0;
+    for (int y = 0; y < 24; ++y) {
+        for (int x = 0; x < 32; ++x) {
+            const float* px = r.pixel(x, y);
+            const bool inBounds = x >= 9 && x < 16 && y >= 13 && y < 20;
+            for (int c = 0; c < 4; ++c) {
+                nan += std::isnan(px[c]) ? 1 : 0;
+                notBlack += (!inBounds && px[c] != 0.f) ? 1 : 0;
+            }
+        }
+    }
+    check(nan == 0 && notBlack == 0, "no unwritten value (%d NaN), black out of the new frame bounds (%d not black)", nan, notBlack);
+}
+
+// A render window narrower than a data window of more lines than a block of decode()'s buffer (256 lines): the
+// lines are read in blocks.
+void
+testWindowBlocks(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== render window narrower than a data window of 600 lines (blocks) ====\n");
+    const std::string path = dir + "/window-blocks.exr";
+    ExrSpec s;
+    s.display = box(0, 0, 39, 599);
+    s.data = box(0, 3, 39, 590);
+    s.compression = Imf::PIZ_COMPRESSION;
+    if (!writeExr(path, s)) {
+        ++gFailures;
+
+        return;
+    }
+    Reader r;
+    if (!r.create(p, path) || !ok(r.prepare())) {
+        check(false, "getRegionOfDefinition");
+
+        return;
+    }
+    const OfxRectI window = { r.rod.x1 + 5, r.rod.y1, r.rod.x2 - 3, r.rod.y2 };
+    OfxStatus st = r.render(window);
+    check(ok(st), "render of %d,%d,%d,%d in the RoD %d,%d,%d,%d = %d", window.x1, window.y1, window.x2, window.y2,
+          r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2, st);
+    const int bad = wrongPixels(r, s, window);
+    check(bad == 0, "the render window has the expected values, the rest is not written (%d wrong)", bad);
 }
 
 // A luminance/chroma file: Y, and RY and BY subsampled 2x2. They are not converted (#123 keeps the behaviour of
@@ -834,6 +969,9 @@ main(int argc, char** argv)
     testWindow(p, dir);
     testScale(p, dir);
     testRewrite(p, dir);
+    testRewriteCachedRoD(p, dir, false);
+    testRewriteCachedRoD(p, dir, true);
+    testWindowBlocks(p, dir);
     testTruncated(p, dir);
     testThreads(p, dir);
 

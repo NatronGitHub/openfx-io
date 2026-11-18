@@ -483,8 +483,10 @@ File::File(const Imf_::Header& header)
 
 // The header information of the files read, by file name (one small entry per file name, until the purge caches
 // action).
-// It is not invalidated when a file changes on disk: decode() reads the header again, and updates the entry if
-// it changed, so that the next getRegionOfDefinition gets the new RoD.
+// It is not invalidated when a file changes on disk: decode() reads the header again, and updates the entry, so
+// that the next getRegionOfDefinition gets the new RoD. The last update wins: without the modification times,
+// there is no telling which header is the newest, e.g. if a render that opened the file before it was replaced
+// (renamed over) finishes after one that opened the new file. The next render that opens the file fixes it.
 class FileManager {
     typedef map<string, File> FilesMap;
 
@@ -504,8 +506,8 @@ public:
     // The information about a file: reads its header if it is not cached yet (throws if it can not be read)
     File get(const string& filename);
 
-    // Sets the information about a file, from a header that was just read
-    void set(const string& filename, const File& file);
+    // Inserts or replaces the information about a file, from a header that was just read
+    void update(const string& filename, const File& file);
 
     // Empties the cache
     void clear();
@@ -536,11 +538,16 @@ FileManager::get(const string& filename)
 }
 
 void
-FileManager::set(const string& filename,
-                 const File& file)
+FileManager::update(const string& filename,
+                    const File& file)
 {
     std::lock_guard<std::mutex> g(_lock);
-    _files[filename] = file;
+    FilesMap::iterator it = _files.find(filename);
+    if (it == _files.end()) {
+        _files.insert(make_pair(filename, file));
+    } else if (it->second != file) {
+        it->second = file;
+    }
 }
 
 void
@@ -619,13 +626,8 @@ ReadEXRPlugin::decode(const string& filename,
         Exr::InputFile in(filename);
         Imf_::InputFile& file = in.get();
         const Imf_::Header& header = file.header();
-        {
-            // the file changed since its header was cached: update the cache, for the next getRegionOfDefinition
-            const Exr::File info(header);
-            if (info != Exr::FileManager::s_readerManager.get(filename)) {
-                Exr::FileManager::s_readerManager.set(filename, info);
-            }
-        }
+        // if the file changed since its header was cached: update the cache, for the next getRegionOfDefinition
+        Exr::FileManager::s_readerManager.update(filename, Exr::File(header));
         Exr::ChannelsMap channels;
         Exr::mapChannels(header, vector<string>(), &channels);
 
@@ -674,53 +676,62 @@ ReadEXRPlugin::decode(const string& filename,
         }
 
         if (hasData) {
-            // The EXR lines exrY1..exrY2 (inclusive) are the OFX lines readY2 - 1..readY1. They are read with a
-            // single readPixels() call (so that OpenEXR decompresses each chunk of 1 to 32 lines once, and may use
-            // its threads) into a frame buffer where EXR pixel (x, y) is at base + x * pixelBytes + y * yStride:
-            // straight into pixelData (yStride < 0: y is flipped) if each line of the data window fits in it (it
-            // always does, unless the bounds are smaller than the RoD), else into a buffer.
+            // The EXR lines exrY1..exrY2 (inclusive) are the OFX lines readY2 - 1..readY1. They are read into a frame
+            // buffer where EXR pixel (x, y) is at base + x * pixelBytes + y * yStride:
+            // - straight into pixelData (yStride < 0: y is flipped), with a single readPixels() call (so that OpenEXR
+            //   decompresses each chunk of 1 to 256 lines once, and may use its threads), if each line of the data
+            //   window fits in the render window (always, unless the render window or the bounds are narrower);
+            // - else into a buffer of kBlockLines lines of the data window at most (32 MB for an 8K-wide image),
+            //   in blocks aligned on the chunks (a multiple of 256 lines from the top of the data window: each chunk
+            //   is decompressed once), from which the part in the render window is copied.
+            const int kBlockLines = 256;
             const int exrY1 = dispwin.max.y - (readY2 - 1);
             const int exrY2 = dispwin.max.y - readY1;
             const bool direct = (readX1 == dataX1) && (readX2 == dataX2);
             const int dataWidth = datawin.max.x - datawin.min.x + 1;
             vector<float> buffer;
-            char* base;
-            ptrdiff_t yStride;
-            if (direct) {
-                yStride = -(ptrdiff_t)rowBytes;
-                base = (char*)pixelData + (ptrdiff_t)(dispwin.max.y - bounds.y1) * rowBytes + (ptrdiff_t)(dataOffset - bounds.x1) * pixelBytes;
-            } else {
-                buffer.assign((size_t)dataWidth * (exrY2 - exrY1 + 1) * 4, 0.f);
-                yStride = (ptrdiff_t)dataWidth * pixelBytes;
-                base = (char*)&buffer[0] - (ptrdiff_t)datawin.min.x * pixelBytes - (ptrdiff_t)exrY1 * yStride;
-            }
-            Imf_::FrameBuffer fbuf;
-            for (Exr::ChannelsMap::const_iterator it = channels.begin(); it != channels.end(); ++it) {
-                const Imf_::Channel* chan = header.channels().findChannel(it->second);
-                const int xs = chan ? chan->xSampling : 1;
-                const int ys = chan ? chan->ySampling : 1;
-                // The sample of a Slice at (x, y) is at base + (x / xs) * xStride + (y / ys) * yStride. A
-                // subsampled channel (RY, BY: not converted) is written as before #123: its samples side by side
-                // from the left of the data window, on the lines that have samples (datawin.min.x, and the x and y
-                // of the samples, are multiples of the sampling rates).
-                char* chanBase = base + (ptrdiff_t)it->first * sizeof(float) + (ptrdiff_t)(datawin.min.x - datawin.min.x / xs) * pixelBytes;
-                fbuf.insert(it->second.c_str(), Imf_::Slice(Imf_::FLOAT, chanBase, pixelBytes, ys * yStride, xs, ys));
-            }
-            file.setFrameBuffer(fbuf);
-            file.readPixels(exrY1, exrY2);
-
-            for (int y = readY1; y < readY2; ++y) {
-                float* dst = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(readX1 - bounds.x1) * pixelBytes);
-                if (!direct) {
-                    const float* src = &buffer[((size_t)(dispwin.max.y - y - exrY1) * dataWidth + (readX1 - dataX1)) * 4];
-                    std::copy(src, src + (size_t)(readX2 - readX1) * 4, dst);
+            for (int blockY1 = exrY1; blockY1 <= exrY2;) {
+                const int blockY2 = direct ? exrY2 : (std::min)(exrY2, datawin.min.y + ((blockY1 - datawin.min.y) / kBlockLines + 1) * kBlockLines - 1);
+                char* base;
+                ptrdiff_t yStride;
+                if (direct) {
+                    yStride = -(ptrdiff_t)rowBytes;
+                    base = (char*)pixelData + (ptrdiff_t)(dispwin.max.y - bounds.y1) * rowBytes + (ptrdiff_t)(dataOffset - bounds.x1) * pixelBytes;
+                } else {
+                    buffer.assign((size_t)dataWidth * (blockY2 - blockY1 + 1) * 4, 0.f);
+                    yStride = (ptrdiff_t)dataWidth * pixelBytes;
+                    base = (char*)&buffer[0] - (ptrdiff_t)datawin.min.x * pixelBytes - (ptrdiff_t)blockY1 * yStride;
                 }
-                // UINT: 0..2^32-1 -> 0..1
-                for (size_t k = 0; k < uintChannels.size(); ++k) {
-                    for (float* p = dst + uintChannels[k]; p < dst + (size_t)(readX2 - readX1) * 4; p += 4) {
-                        *p = (float)(*p * (1. / 4294967295.));
+                Imf_::FrameBuffer fbuf;
+                for (Exr::ChannelsMap::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+                    const Imf_::Channel* chan = header.channels().findChannel(it->second);
+                    const int xs = chan ? chan->xSampling : 1;
+                    const int ys = chan ? chan->ySampling : 1;
+                    // The sample of a Slice at (x, y) is at base + (x / xs) * xStride + (y / ys) * yStride. A
+                    // subsampled channel (RY, BY: not converted) is written as before #123: its samples side by
+                    // side from the left of the data window, on the lines that have samples (datawin.min.x, and the
+                    // x and y of the samples, are multiples of the sampling rates; so are blockY1 - datawin.min.y).
+                    char* chanBase = base + (ptrdiff_t)it->first * sizeof(float) + (ptrdiff_t)(datawin.min.x - datawin.min.x / xs) * pixelBytes;
+                    fbuf.insert(it->second.c_str(), Imf_::Slice(Imf_::FLOAT, chanBase, pixelBytes, ys * yStride, xs, ys));
+                }
+                file.setFrameBuffer(fbuf);
+                file.readPixels(blockY1, blockY2);
+
+                // the OFX lines of this block
+                for (int y = dispwin.max.y - blockY2; y <= dispwin.max.y - blockY1; ++y) {
+                    float* dst = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(readX1 - bounds.x1) * pixelBytes);
+                    if (!direct) {
+                        const float* src = &buffer[((size_t)(dispwin.max.y - y - blockY1) * dataWidth + (readX1 - dataX1)) * 4];
+                        std::copy(src, src + (size_t)(readX2 - readX1) * 4, dst);
+                    }
+                    // UINT: 0..2^32-1 -> 0..1
+                    for (size_t k = 0; k < uintChannels.size(); ++k) {
+                        for (float* p = dst + uintChannels[k]; p < dst + (size_t)(readX2 - readX1) * 4; p += 4) {
+                            *p = (float)(*p * (1. / 4294967295.));
+                        }
                     }
                 }
+                blockY1 = blockY2 + 1;
             }
         }
     } catch (const std::bad_alloc&) {
