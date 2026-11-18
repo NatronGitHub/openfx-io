@@ -1026,7 +1026,7 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
     for (const auto& o : options) {
         setOverrideInt(&ctx, "onMissingFrame", o.option);
         for (int t : frames) {
-            for (size_t i = 0; i < nval; ++i) fp[i] = std::nanf("");
+            fillUnwritten(fp, nval);
             gPersistentError.clear();
             PropSet a = makeRenderInArgs((double)t, OW, OH);
             double rs[2] = { scale, scale };
@@ -1038,7 +1038,7 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
             for (size_t i = 0; i < npix; ++i) {
                 for (int c = 0; c < outComps; ++c) {
                     const float v = fp[i * outComps + c];
-                    if (std::isnan(v)) {
+                    if (isUnwritten(&fp[i * outComps + c])) {
                         ++nNaN;
                     } else if (c < 3) {
                         sum += v;

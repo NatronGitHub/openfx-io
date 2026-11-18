@@ -268,7 +268,7 @@ struct Reader {
         const int h = img.y2 - img.y1;
         const int rowBytes = w * 4 * (int)sizeof(float);
         out->buffer.assign((size_t)rowBytes * h, 0);
-        std::fill((float*)out->buffer.data(), (float*)out->buffer.data() + (size_t)w * h * 4, std::nanf(""));
+        fillUnwritten((float*)out->buffer.data(), (size_t)w * h * 4);
         OfxPropertySetHandle ip = PH(&out->image);
         pSetPointer(ip, kOfxImagePropData, 0, out->buffer.data());
         int b[4] = { img.x1, img.y1, img.x2, img.y2 };
@@ -358,7 +358,7 @@ wrongPixels(const Reader& r, const ExrSpec& s, const OfxRectI& window)
             const float* px = r.pixel(x, y);
             for (int c = 0; c < 4; ++c) {
                 if (!inWindow) {
-                    if (!std::isnan(px[c])) {
+                    if (!isUnwritten(&px[c])) {
                         if (bad < 5) {
                             std::printf("  pixel (%d,%d) channel %d, out of the render window: %.9g, expected NaN\n", x, y, c, px[c]);
                         }
@@ -471,8 +471,8 @@ testScale(OfxPlugin* p, const std::string& dir)
     OfxStatus st = r.render(r.img, 0.5);
     check(ok(st) && gPersistentError.empty(), "render = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
     int nan = 0;
-    for (float v : r.image()) {
-        nan += std::isnan(v) ? 1 : 0;
+    for (const float& v : r.image()) {
+        nan += isUnwritten(&v) ? 1 : 0;
     }
     check(nan == 0, "image %d,%d,%d,%d: no unwritten pixel (%d NaN)", r.img.x1, r.img.y1, r.img.x2, r.img.y2, nan);
 }
@@ -617,7 +617,7 @@ testRewriteCachedRoD(OfxPlugin* p, const std::string& dir, bool unpremult)
             const float* px = r.pixel(x, y);
             const bool inBounds = x >= 9 && x < 16 && y >= 13 && y < 20;
             for (int c = 0; c < 4; ++c) {
-                nan += std::isnan(px[c]) ? 1 : 0;
+                nan += isUnwritten(&px[c]) ? 1 : 0;
                 notBlack += (!inBounds && px[c] != 0.f) ? 1 : 0;
             }
         }
@@ -835,7 +835,7 @@ testThreads(OfxPlugin* p, const std::string& dir)
             }
             for (int n = 0; n < kRenders; ++n) {
                 Reader& r = readers[i];
-                std::fill((float*)r.out->buffer.data(), (float*)(r.out->buffer.data() + r.out->buffer.size()), std::nanf(""));
+                fillUnwritten((float*)r.out->buffer.data(), r.out->buffer.size() / sizeof(float));
                 if (!ok(r.render())) {
                     ++failures;
                 } else if (!sameImage(r.image(), refs[i % kFiles])) {

@@ -369,6 +369,25 @@ void initHost()
 
 bool ok(OfxStatus s) { return s == kOfxStatOK || s == kOfxStatReplyDefault; }
 
+// The pixels of an output image that the plug-in did not write are a NaN. It is written and tested on its bits in
+// memory (not with std::nanf() and std::isnan(), and never passed as a float value), so that the tests also work when
+// built with -ffast-math: the compiler then assumes that there are no NaNs, so std::isnan() is always false, and
+// clang marks float arguments and return values as never NaN (nofpclass), which also folds a test on their bits.
+void fillUnwritten(float* begin, size_t count)
+{
+    const uint32_t bits = 0x7fc00000u; // quiet NaN
+    for (size_t i = 0; i < count; ++i) {
+        std::memcpy(begin + i, &bits, sizeof(bits));
+    }
+}
+
+bool isUnwritten(const float* p)
+{
+    uint32_t bits;
+    std::memcpy(&bits, p, sizeof(bits));
+    return ((bits & 0x7f800000u) == 0x7f800000u) && ((bits & 0x007fffffu) != 0); // a NaN
+}
+
 // ------------------------------------------------------------------ test helpers
 OfxPlugin* findPlugin(const char* id)
 {
