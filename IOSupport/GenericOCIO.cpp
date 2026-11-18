@@ -682,17 +682,13 @@ namespace {
 // Natron, it is held from a key to the next one, and before the first key it is that of the first key): two params
 // with keys at the same times, with the same values, have the same value at all times.
 
+// (key times are compared exactly: they come from the host, and the keys that GenericOCIO sets have the times of other
+// keys)
 bool
 containsTime(const std::vector<double>& times,
              double t)
 {
-    for (size_t i = 0; i < times.size(); ++i) {
-        if (std::fabs(times[i] - t) < 1e-6) {
-            return true;
-        }
-    }
-
-    return false;
+    return std::find(times.begin(), times.end(), t) != times.end();
 }
 
 template <typename ParamT>
@@ -707,14 +703,6 @@ getKeyTimes(ParamT* p)
     }
 
     return times;
-}
-
-template <typename ParamT>
-bool
-hasKeyAtTime(ParamT* p,
-             double t)
-{
-    return (numKeys(p) > 0) && (p->getKeyIndex(t, eKeySearchNear) >= 0);
 }
 
 // Natron reports two keys, at times 0 and 1, for a param that has an expression (e.g. that of "Link to"), whatever
@@ -791,6 +779,21 @@ struct ColorspaceAnimation {
     string value; // at the time of the change
 };
 
+// The value of a string param's key at time t (or, if t is not a key time, the value it has from time t on). Natron
+// reads a string param at the frame floor(time + 0.5) (OfxStringInstance::get()), but sets keys at any time (e.g.
+// from a script): a key at a fractional time is read at the next frame (it can't be read if another key is before
+// that frame), except the first key, whose value is also that of the param before it.
+string
+stringAtKeyTime(StringParam* str,
+                double t)
+{
+    const bool beforeKeys = (numKeys(str) == 0) || (t <= str->getKeyTime(0) + 1e-6);
+    string v;
+    str->getValueAtTime(beforeKeys ? std::floor(t + 1e-6) : std::ceil(t - 1e-6), v);
+
+    return v;
+}
+
 void
 getStringAnimation(StringParam* str,
                    double time,
@@ -800,9 +803,7 @@ getStringAnimation(StringParam* str,
     str->getValueAtTime(time, a.value);
     const std::vector<double> times = getKeyTimes(str);
     for (size_t i = 0; i < times.size(); ++i) {
-        string v;
-        str->getValueAtTime(times[i], v);
-        a.keys.push_back(std::make_pair(times[i], v));
+        a.keys.push_back(std::make_pair(times[i], stringAtKeyTime(str, times[i])));
     }
 }
 
@@ -887,7 +888,7 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
             const double t = old.keys[i - 1].first;
             bool inTarget = false;
             for (size_t j = 0; j < target.keys.size(); ++j) {
-                inTarget = inTarget || (std::fabs(target.keys[j].first - t) < 1e-6);
+                inTarget = inTarget || (target.keys[j].first == t);
             }
             if (inTarget || (fromMenu && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
                 continue;
@@ -925,6 +926,7 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
 {
     if (animates && !a.keys.empty()) {
         std::vector<double> times;
+        const std::vector<double> oldTimes = getKeyTimes(choice);
         for (size_t i = 0; i < a.keys.size(); ++i) {
             const double t = a.keys[i].first;
             const int index = colorspaceIndex(config, a.keys[i].second);
@@ -932,7 +934,7 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
                 continue;
             }
             times.push_back(t);
-            if (hasKeyAtTime(choice, t)) {
+            if (containsTime(oldTimes, t)) {
                 int old;
                 choice->getValueAtTime(t, old);
                 if (old == index) {
@@ -942,7 +944,6 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
             choice->setValueAtTime(t, index);
         }
         if (!times.empty()) {
-            const std::vector<double> oldTimes = getKeyTimes(choice);
             for (size_t i = oldTimes.size(); i > 0; --i) {
                 if (!containsTime(times, oldTimes[i - 1])) {
                     choice->deleteKeyAtTime(oldTimes[i - 1]);
@@ -1373,9 +1374,7 @@ GenericOCIO::changedChoice(Side& side,
             const double t = a.keys[i].first;
             if (colorspaceIndex(_config, a.keys[i].second) == side.initialIndex) {
                 // the colorspace that the menu should have shown at that time
-                string old;
-                str->getValueAtTime(t, old);
-                target.keys.push_back(std::make_pair(t, old));
+                target.keys.push_back(std::make_pair(t, stringAtKeyTime(str, t)));
             } else {
                 target.keys.push_back(a.keys[i]);
             }
@@ -1853,11 +1852,8 @@ GenericOCIO::swapColorspaces(double time)
         input.keys.clear();
         output.keys.clear();
         for (size_t i = 0; i < times.size(); ++i) {
-            string v;
-            _inputSpace->getValueAtTime(times[i], v);
-            input.keys.push_back(std::make_pair(times[i], v));
-            _outputSpace->getValueAtTime(times[i], v);
-            output.keys.push_back(std::make_pair(times[i], v));
+            input.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_inputSpace, times[i])));
+            output.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_outputSpace, times[i])));
         }
     }
 #ifdef OFX_OCIO_CHOICE
