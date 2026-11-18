@@ -65,8 +65,8 @@ if(NOT DEFINED CACHE{OFX_CXX_STANDARD} OR "${OFX_CXX_STANDARD}" STREQUAL "${_OFX
   set(_OFX_IO_CXX_STANDARD_AUTO ${_io_std} CACHE INTERNAL "")
 endif()
 
-# IO_HOSTDEMO_TESTS: build openfx's hostDemo (HostSupport/examples, which needs HostSupport and its bundled expat) for
-# the io-hostdemo test (below)
+# IO_HOSTDEMO_TESTS: build openfx's hostDemo (HostSupport/examples, which needs HostSupport and the system expat, found by
+# openfx) for the io-hostdemo test (below)
 option(IO_HOSTDEMO_TESTS "Build openfx's hostDemo and test rendering every plug-in of the installed bundle with it" OFF)
 if(IO_HOSTDEMO_TESTS)
   set(BUILD_EXAMPLE_HOSTS ON CACHE BOOL "Build the example hosts (HostSupport/examples: hostDemo, cacheDemo, propsetDump)" FORCE)
