@@ -589,11 +589,12 @@ static int64_t
 bitrateToInt64(double mbps)
 {
     const double bps = mbps * 1000000;
-    if (!(bps > 0.)) {
+    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even with -ffast-math, unlike comparisons
+    if (OFX::IsNaN(bps) || (bps <= 0.)) {
         return 0;
     }
     const double maxBps = (double)INT_MAX * 1000.;
-    if (!(bps < maxBps)) {
+    if (OFX::IsInfinite(bps) || (bps >= maxBps)) {
         return (int64_t)maxBps;
     }
 
@@ -3288,7 +3289,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     if (setbitrate) {
         double bitrate = _bitrate->getValue();
         // bit_rate and rc_max_rate are int64_t: the bitrate in bit/s was converted to int, which overflowed (undefined
-        // behaviour) above 2147 Mbit/s. It is now clamped to the range of int64_t.
+        // behaviour) above 2147 Mbit/s. It is now clamped to [0, INT_MAX kbit/s] (bitrateToInt64()).
         const int64_t bitRate = bitrateToInt64(bitrate);
         if (bitrate >= 0) {
             avCodecContext->bit_rate = bitRate;
@@ -3305,7 +3306,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
                 bitrateTolerance = (std::max)(toleranceMin, bitrateTolerance);
                 // the host may give a value above the declared maximum of the param (or NaN): tol * 1000000 must fit
                 // in an int
-                if (!(bitrateTolerance <= (double)kParamBitrateToleranceMax)) {
+                if (OFX::IsNaN(bitrateTolerance) || (bitrateTolerance >= (double)kParamBitrateToleranceMax)) {
                     bitrateTolerance = kParamBitrateToleranceMax;
                 }
 

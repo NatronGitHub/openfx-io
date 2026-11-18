@@ -3,10 +3,10 @@
  * Support library and driven by the in-process host of ofx_test_host.h, in the Filter context:
  *
  *  - render an empty source image (0x0) into a 32x32 output, with the "default" filter: it must not crash (it
- *    segfaulted in ImageBufAlgo::resize()), and the output must be black.
- *  - getRegionOfDefinition, type Size with Preserve PAR, for a source RoD of +-DBL_MAX: the size of the source is
- *    clamped to INT_MAX, so that the ratios are finite (inf / inf gave NaN, converted to int), and the RoD is the
- *    expected one.
+ *    segfaulted in ImageBufAlgo::resize() with OpenImageIO 2.4), and the output must be black.
+ *  - getRegionOfDefinition, type Size with Preserve PAR, for a source RoD of +-DBL_MAX or +-inf: the coordinates of
+ *    the source are clamped to +-5e289, so that the sizes and ratios are finite (inf / inf gave NaN, converted to int),
+ *    and the RoD is the expected one; a size above INT_MAX (an infinite x and y 0..3e9) gives the same RoD as before.
  *  - the source clip changes (changedClip) with an infinite RoD (kOfxFlagInfinite*): the Size param is set to the
  *    size of the RoD clamped to the range of int (the subtraction overflowed int).
  *  - OIIOText with a position of +-DBL_MAX or 1e12: the text position is clamped before its conversion to int, and the
@@ -19,6 +19,7 @@
 #include "ofx_test_host.h"
 
 #include <cfloat>
+#include <cmath>
 #include <climits>
 #include <cstdarg>
 #include <cstdio>
@@ -149,10 +150,13 @@ testPreserveParHugeRoD(OfxPlugin* p)
         double w, h; // the expected size of the RoD
         const char* label;
     } cases[] = {
-        // the size of the source, clamped to INT_MAX: a square, 100 x 100
+        // the coordinates are clamped to +-5e289: a square, 100 x 100
         { -DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX, 100., 100., "+-DBL_MAX" },
-        // INT_MAX x 10 into 100 x 100: 100 x (10 * 100 / INT_MAX), 0 once converted to int
+        { -HUGE_VAL, -HUGE_VAL, HUGE_VAL, HUGE_VAL, 100., 100., "+-inf" }, // inf - inf would be NaN
+        // 5e289 x 10 into 100 x 100: 100 x (10 * 100 / 5e289), 0 once converted to int
         { 0., 0., DBL_MAX, 10., 100., 0., "0,0,DBL_MAX,10" },
+        // an infinite x (kOfxFlagInfinite*) and a finite y above INT_MAX: 100 x (3e9 * 100 / 2^32) = 100 x 69, as on master
+        { (double)kOfxFlagInfiniteMin, 0., (double)kOfxFlagInfiniteMax, 3e9, 100., 69., "infinite x, y 0..3e9" },
         { 0., 0., 10., DBL_MAX, 0., 100., "0,0,10,DBL_MAX" },
         { 0., 0., 200., 100., 100., 50., "0,0,200,100" },
     };

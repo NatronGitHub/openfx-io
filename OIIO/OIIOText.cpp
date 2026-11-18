@@ -255,10 +255,17 @@ static int
 textCoordToInt(double v)
 {
     const double maxCoord = 268435456.; // 2^28
-    if (!(v > -maxCoord)) {
+    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even with -ffast-math, unlike comparisons
+    if (OFX::IsNaN(v)) {
+        return 0;
+    }
+    if (OFX::IsInfinite(v)) {
+        return (v > 0.) ? (int)maxCoord : -(int)maxCoord;
+    }
+    if (v <= -maxCoord) {
         return -(int)maxCoord;
     }
-    if (!(v < maxCoord)) {
+    if (v >= maxCoord) {
         return (int)maxCoord;
     }
 
