@@ -29,6 +29,8 @@
 #   * The bytes read at open: a 60 s Matroska with a start time, and FLV, also truncated.
 #   * MOV/MP4 stream copies from a non-keyframe, and VFR MP4 with a one-frame gap, which have
 #     fewer samples than frame times.
+#   * MPEG-TS with two programs, MPEG-PS and VOB with B-frames, and an MPEG-PS cut in the
+#     middle of a GOP (1 and 8 decoder threads): the end read from their last packets.
 #   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
 #     with B-frames, which has no timestamps.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
@@ -455,6 +457,42 @@ if have_encoder libx264 && have_encoder aac; then
             rc=1
         fi
     done
+fi
+# MPEG-TS/PS, whose end is read from the last packets: two programs in a TS (the second starting at 100 s:
+# only the program of the video stream counts), an MPEG-PS whose last reference frame has no PTS (it is
+# displayed after the B-frames that follow it), a VOB with B-frames and audio, and an MPEG-PS cut in the
+# middle of a GOP (its first frames cannot be decoded: the count and the frame numbering must not depend on
+# the decoder threads). The expected count is the number of video packets.
+check_packets() {
+    local name="$1" desc="$2" threads
+    shift 2
+    echo "== $desc =="
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    local packets
+    packets=$(ffprobe -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 "$tmp/$name" | head -n 1 | tr -d ',')
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames "$packets" --open-only "$@" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    done
+}
+if have_encoder mpeg2video && have_encoder mp2; then
+    if ffmpeg -y -loglevel error -f lavfi -i testsrc=d=4 -itsoffset 100 -f lavfi -i testsrc2=d=4 -map 0:v -map 1:v \
+        -c:v mpeg2video -program st=0 -program st=1 "$tmp/two_programs.ts" &&
+        ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" -c:v mpeg2video -bf 2 -g 8 -q:v 2 -f mpeg "$tmp/ramp_ps.mpg" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -f lavfi -i sine -t 10 -c:v mpeg2video -bf 2 -g 12 -c:a mp2 -f vob "$tmp/b_frames.vob" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=640x360:r=25 -f lavfi -i sine -t 10 -c:v mpeg2video -b:v 4M -bf 2 -g 15 -c:a mp2 -f mpeg "$tmp/full_ps.mpg"; then
+        tail -c +1234568 "$tmp/full_ps.mpg" > "$tmp/cut_ps.mpg"
+        check_packets two_programs.ts "MPEG-TS (two programs, the second one starting at 100 s)"
+        check_packets ramp_ps.mpg "MPEG-PS (MPEG-2 with B-frames, the last reference frame has no PTS)"
+        check_packets b_frames.vob "VOB (MPEG-2 with B-frames, MP2 audio)"
+        check_packets cut_ps.mpg "MPEG-PS cut in the middle of a GOP"
+    else
+        echo "FAIL: could not generate the MPEG-TS/PS clips"
+        rc=1
+    fi
 fi
 # A stream copy from a non-keyframe: fewer samples than frame times.
 check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6

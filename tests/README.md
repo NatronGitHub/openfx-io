@@ -299,7 +299,10 @@ times); opening a 60 s Matroska with a start time, and a 60 s FLV, also truncate
 the index of the FLV must not reach its end after the open (`--max-indexed-frame`: an index entry
 near the end, added while reading the last packets, made the seeks decode from near the start); a high
 bit rate FLV without the duration metadata (400 kB per frame), with and without a start time, must
-count its frames from its last packets; NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
+count its frames from its last packets; an MPEG-TS with two programs (the second one at 100 s),
+an MPEG-PS whose last reference frame has no PTS, a VOB with B-frames, and an MPEG-PS cut in the
+middle of a GOP must count their video packets, with 1 and 8 decoder threads
+(`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
 not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
