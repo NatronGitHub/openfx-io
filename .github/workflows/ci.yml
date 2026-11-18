@@ -130,7 +130,7 @@ jobs:
           if-no-files-found: ignore
       - name: Tests (C++20)
         if: env.EXTRA_VARIANTS == 'true'
-        run: make -C tests clean test CXXSTD=-std=c++20
+        run: make -C tests clean test CXXSTD=-std=c++20 SEEXPR_HOME=$PWD/SeExprBuild
       - name: Generate testing bundle
         run: |
           # Bundle used for Natron's automated testing. It carries the libraries of Ubuntu 24.04, but no system libraries

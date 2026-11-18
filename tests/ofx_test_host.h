@@ -6,6 +6,16 @@
  * Interact suites, plus FnOfxImageEffectPlaneSuiteV2, over a generic property bag:
  * param values (definition defaults or host overrides), image clips backed by a pixel
  * buffer, and a few helpers to load/describe a plugin and build action arguments.
+ * The plug-ins get the host through OfxPlugin::setHost (loadAndDescribe), never OfxSetHost.
+ *
+ * OFX 1.4-only mode (gOfx14Only = true, before initHost()): the host is one that supports
+ * OFX 1.4 and nothing newer, and no extension. fetchSuite returns NULL for every suite but
+ * the mandatory ones of OFX 1.4 (Property, ImageEffect, Parameter, Memory, MultiThread V1,
+ * Message V1 and V2, Interact V1), and every property suite function fails with
+ * kOfxStatErrUnknown on a property that is not defined in the OFX 1.4 headers
+ * (ofx14_names.h), on any property set (host, effect, clip, param, image, action
+ * arguments): reading it fails, and setting it stores nothing. The host has no Natron,
+ * Nuke, Vegas or other extension property, and no OpenGL render suite.
  * Param values are not animated: getValueAtTime() ignores the time, except for a string
  * param whose stringAtTime is set (e.g. a file param naming each frame of an image sequence).
  *
@@ -35,8 +45,11 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
+
+#include "ofx14_names.h"
 
 extern "C" {
 int OfxGetNumberOfPlugins(void);
@@ -88,40 +101,63 @@ struct Effect {
 PropSet gHostProps;
 OfxHost gOfxHost;
 
+// OFX 1.4-only host mode (see the top of this file). Set it before initHost().
+bool gOfx14Only = false;
+
+// Is the property name defined by OFX 1.4?
+bool isOfx14Name(const char* n)
+{
+    static const std::set<std::string> names(std::begin(kOfx14Names), std::end(kOfx14Names));
+    if (names.count(n)) return true;
+    for (const char* prefix : kOfx14ClipPrefixes) {
+        if (!std::strncmp(n, prefix, std::strlen(prefix))) return true;
+    }
+    return false;
+}
+
+// Every property access to a name that the host doesn't know fails with this status (kOfxStatOK: known).
+// With gDefaultUnsetProps, a known property that was never set has a default value (0, "" or NULL) at index 0, as in
+// a real host, which defines every property of a property set: e.g. kOfxParamPropHint, which
+// ChoiceParamDescriptor::appendOption() reads when the host has no kOfxParamPropChoiceLabelOption (an extension), or
+// kOfxParamPropSecret. (Otherwise, the default, reading it fails.)
+bool gDefaultUnsetProps = false;
+OfxStatus unknownProp(const char* n) { return (gOfx14Only && !isOfx14Name(n)) ? kOfxStatErrUnknown : kOfxStatOK; }
+#define CHECK_PROP_KNOWN(n) do { if (unknownProp(n) != kOfxStatOK) return kOfxStatErrUnknown; } while (0)
+
 inline PropSet* PS(OfxPropertySetHandle h) { return reinterpret_cast<PropSet*>(h); }
 inline Effect* EF(OfxImageEffectHandle h) { return reinterpret_cast<Effect*>(h); }
 inline OfxPropertySetHandle PH(PropSet* ps) { return reinterpret_cast<OfxPropertySetHandle>(ps); }
 
 // ------------------------------------------------------------------ property suite
 OfxStatus pSetPointer(OfxPropertySetHandle h, const char* n, int idx, void* v)
-{ auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
 OfxStatus pSetString(OfxPropertySetHandle h, const char* n, int idx, const char* v)
-{ auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
 OfxStatus pSetDouble(OfxPropertySetHandle h, const char* n, int idx, double v)
-{ auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
 OfxStatus pSetInt(OfxPropertySetHandle h, const char* n, int idx, int v)
-{ auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
 // (setting N values sets the dimension of the property to N, e.g. 0 to empty a choice param's options)
-OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
 
 OfxStatus pGetPointer(OfxPropertySetHandle h, const char* n, int idx, void** v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (gDefaultUnsetProps && it == PS(h)->props.end() && idx == 0) { *v = nullptr; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
 OfxStatus pGetString(OfxPropertySetHandle h, const char* n, int idx, const char** v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.s.size() <= idx) return kOfxStatErrUnknown; *v = it->second.s[idx].c_str(); return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (gDefaultUnsetProps && it == PS(h)->props.end() && idx == 0) { *v = ""; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.s.size() <= idx) return kOfxStatErrUnknown; *v = it->second.s[idx].c_str(); return kOfxStatOK; }
 OfxStatus pGetDouble(OfxPropertySetHandle h, const char* n, int idx, double* v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.d.size() <= idx) return kOfxStatErrUnknown; *v = it->second.d[idx]; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (gDefaultUnsetProps && it == PS(h)->props.end() && idx == 0) { *v = 0.; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.d.size() <= idx) return kOfxStatErrUnknown; *v = it->second.d[idx]; return kOfxStatOK; }
 OfxStatus pGetInt(OfxPropertySetHandle h, const char* n, int idx, int* v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.i.size() <= idx) return kOfxStatErrUnknown; *v = it->second.i[idx]; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (gDefaultUnsetProps && it == PS(h)->props.end() && idx == 0) { *v = 0; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.i.size() <= idx) return kOfxStatErrUnknown; *v = it->second.i[idx]; return kOfxStatOK; }
 OfxStatus pGetPointerN(OfxPropertySetHandle h, const char* n, int c, void** v) { for (int k = 0; k < c; ++k) if (pGetPointer(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
 OfxStatus pGetStringN(OfxPropertySetHandle h, const char* n, int c, const char** v) { for (int k = 0; k < c; ++k) if (pGetString(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
 OfxStatus pGetDoubleN(OfxPropertySetHandle h, const char* n, int c, double* v) { for (int k = 0; k < c; ++k) if (pGetDouble(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
 OfxStatus pGetIntN(OfxPropertySetHandle h, const char* n, int c, int* v) { for (int k = 0; k < c; ++k) if (pGetInt(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
-OfxStatus pReset(OfxPropertySetHandle h, const char* n) { PS(h)->props.erase(n); return kOfxStatOK; }
+OfxStatus pReset(OfxPropertySetHandle h, const char* n) { CHECK_PROP_KNOWN(n); PS(h)->props.erase(n); return kOfxStatOK; }
 OfxStatus pGetDimension(OfxPropertySetHandle h, const char* n, int* c)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end()) { *c = 0; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end()) { *c = 0; return kOfxStatOK; }
   const Value& v = it->second; size_t m = v.i.size(); if (v.d.size() > m) m = v.d.size(); if (v.s.size() > m) m = v.s.size(); if (v.p.size() > m) m = v.p.size(); *c = (int)m; return kOfxStatOK; }
 
 OfxPropertySuiteV1 gPropSuite = {
@@ -309,7 +345,8 @@ OfxMessageSuiteV2 gMsgSuiteV2 = { msg, msgPersist, msgClear };
 
 OfxStatus itSwap(OfxInteractHandle) { return kOfxStatOK; }
 OfxStatus itRedraw(OfxInteractHandle) { return kOfxStatOK; }
-OfxStatus itGetPropSet(OfxInteractHandle, OfxPropertySetHandle*) { return kOfxStatErrUnsupported; }
+// an interact handle is its PropSet
+OfxStatus itGetPropSet(OfxInteractHandle h, OfxPropertySetHandle* ps) { if (!h || !ps) return kOfxStatErrBadHandle; *ps = reinterpret_cast<OfxPropertySetHandle>(h); return kOfxStatOK; }
 OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 
 // ------------------------------------------------------------------ FnOfx multi-plane suite v2
@@ -320,16 +357,23 @@ OfxStatus fnGetViewName(OfxImageEffectHandle, int, const char** n) { if (n) *n =
 OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = 1; return kOfxStatOK; }
 FnOfxImageEffectPlaneSuiteV2 gPlaneSuiteV2 = { fnClipGetImagePlaneV2, fnClipGetRoDV2, fnGetViewName, fnGetViewCount };
 
+// The names of the suites that the plug-ins fetched (ofx14_host_test checks them in the OFX 1.4-only mode)
+std::set<std::string> gFetchedSuites;
+
+// Only the versions that the host implements (e.g. no OfxMultiThreadSuiteV2, OFX 1.5): NULL for any other suite or
+// version, as the spec allows ("returns a pointer to the suite, or NULL if the suite is not supported").
 const void* fetchSuite(OfxPropertySetHandle, const char* name, int v)
 {
-    if (!std::strcmp(name, kOfxPropertySuite)) return &gPropSuite;
-    if (!std::strcmp(name, kOfxImageEffectSuite)) return &gEffectSuite;
-    if (!std::strcmp(name, kOfxParameterSuite)) return &gParamSuite;
-    if (!std::strcmp(name, kOfxMemorySuite)) return &gMemSuite;
-    if (!std::strcmp(name, kOfxMultiThreadSuite)) return &gMTSuite;
-    if (!std::strcmp(name, kOfxMessageSuite)) return v >= 2 ? (const void*)&gMsgSuiteV2 : (const void*)&gMsgSuite;
-    if (!std::strcmp(name, kOfxInteractSuite)) return &gInteractSuite;
-    if (!std::strcmp(name, kFnOfxImageEffectPlaneSuite)) return v >= 2 ? (const void*)&gPlaneSuiteV2 : nullptr;
+    gFetchedSuites.insert(std::string(name) + " V" + std::to_string(v));
+    if (!std::strcmp(name, kOfxPropertySuite)) return v == 1 ? &gPropSuite : nullptr;
+    if (!std::strcmp(name, kOfxImageEffectSuite)) return v == 1 ? &gEffectSuite : nullptr;
+    if (!std::strcmp(name, kOfxParameterSuite)) return v == 1 ? &gParamSuite : nullptr;
+    if (!std::strcmp(name, kOfxMemorySuite)) return v == 1 ? &gMemSuite : nullptr;
+    if (!std::strcmp(name, kOfxMultiThreadSuite)) return v == 1 ? &gMTSuite : nullptr;
+    if (!std::strcmp(name, kOfxMessageSuite)) return v == 2 ? (const void*)&gMsgSuiteV2 : (v == 1 ? (const void*)&gMsgSuite : nullptr);
+    if (!std::strcmp(name, kOfxInteractSuite)) return v == 1 ? &gInteractSuite : nullptr;
+    if (gOfx14Only) return nullptr; // no extension suite
+    if (!std::strcmp(name, kFnOfxImageEffectPlaneSuite)) return v == 2 ? (const void*)&gPlaneSuiteV2 : nullptr;
     return nullptr;
 }
 
@@ -346,7 +390,8 @@ void initHost()
     pSetInt(h, kOfxImageEffectPropTemporalClipAccess, 0, 1);
     pSetInt(h, kOfxImageEffectPropSetableFrameRate, 0, 0);
     pSetInt(h, kOfxImageEffectPropSetableFielding, 0, 0);
-    pSetInt(h, kOfxImageEffectPropSupportsOverlays, 0, 0);
+    // (the OFX 1.4-only host has overlays, so that the plug-ins register their overlay interacts)
+    pSetInt(h, kOfxImageEffectPropSupportsOverlays, 0, gOfx14Only ? 1 : 0);
     pSetInt(h, kOfxPropAPIVersion, 0, 1); pSetInt(h, kOfxPropAPIVersion, 1, 4);
     pSetInt(h, kOfxPropVersion, 0, 1);
     pSetInt(h, kOfxParamHostPropSupportsStringAnimation, 0, 1);
