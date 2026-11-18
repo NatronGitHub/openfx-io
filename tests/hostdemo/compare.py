@@ -11,7 +11,9 @@
 # The output bounds must be the same, and no component mean may differ by more than <tolerance> (absolute, the images
 # are in [0,1]). With --crc (lossless formats), the CRC-32 of the images (output.crc32) must also be the same, which
 # catches flipped, mirrored or shifted images that have the same means. The reader's output must have no NaN
-# (unwritten) pixel. With --bounds, the reader's output bounds must also be x1,y1,x2,y2. Exit status: 0 if all match, 1 otherwise.
+# (unwritten) pixel. A null mean (hostDemo writes null for a component with no value, e.g. in an empty image) only
+# matches a null mean. With --bounds, the reader's output bounds must also be x1,y1,x2,y2. Exit status: 0 if all
+# match, 1 otherwise.
 import json
 import sys
 
@@ -19,6 +21,10 @@ import sys
 def load(path):
     with open(path) as f:
         return json.load(f)
+
+
+def rnd(v):
+    return None if v is None else round(v, 4)
 
 
 def main():
@@ -72,10 +78,15 @@ def main():
         rm = out["mean"]
         wm = expected["output"]["mean"]
         n = min(len(rm), len(wm))
-        diff = max(abs(rm[c] - wm[c]) for c in range(n)) if n else float("inf")
+        # a component with no value (e.g. an empty image) has a null mean: it matches only another null mean
+        nulls = [c for c in range(n) if (rm[c] is None) != (wm[c] is None)]
+        diffs = [abs(rm[c] - wm[c]) for c in range(n) if rm[c] is not None and wm[c] is not None]
+        diff = max(diffs) if diffs else (0. if n else float("inf"))
         what = "t=%s view %s: mean %s, the writer's (t=%s view %s) %s" % (
-            t, view, [round(v, 4) for v in rm], expected["time"], expected["view"], [round(v, 4) for v in wm])
+            t, view, [rnd(v) for v in rm], expected["time"], expected["view"], [rnd(v) for v in wm])
         bad = []
+        if nulls:
+            bad.append("components %s have a mean in one image only" % nulls)
         if out.get("bounds") != expected["output"].get("bounds"):
             bad.append("bounds %s, the writer's %s" % (out.get("bounds"), expected["output"].get("bounds")))
         if bounds is not None and out.get("bounds") != bounds:
