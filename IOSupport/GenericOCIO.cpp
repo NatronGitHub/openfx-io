@@ -880,7 +880,8 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
                 StringParam* str,
                 const ColorspaceAnimation& target,
                 bool deleteOthers,
-                bool fromMenu)
+                bool fromMenu,
+                bool nearest = true)
 {
     ColorspaceAnimation old;
     old.keys = getStringKeys(str);
@@ -902,11 +903,13 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
     for (size_t i = 0; i < old.keys.size(); ++i) {
         keys[old.keys[i].first] = old.keys[i].second;
     }
-    // The time of the param's key that each key of target sets: the key at the same time, else, if deleteOthers is not
-    // set, the nearest key less than 1e-6 away that no other key of target sets (a new key there would be hidden from
-    // GenericOCIO: Natron's OFX key list only reports the first of the keys less than 1e-6 apart), else its own time.
-    // If deleteOthers is set (target is the menu, whose reported keys are at least 1e-6 apart), the param's other keys
-    // are deleted, including those less than 1e-6 from a key of target that have no menu entry.
+    // The time of the param's key that each key of target sets: the key at the same time, else, if nearest is set and
+    // deleteOthers is not, the nearest key less than 1e-6 away that no other key of target sets (a new key there would
+    // be hidden from GenericOCIO: Natron's OFX key list only reports the first of the keys less than 1e-6 apart), else
+    // its own time. If deleteOthers is set (target is the menu, whose reported keys are at least 1e-6 apart), the
+    // param's other keys are deleted, including those less than 1e-6 from a key of target that have no menu entry;
+    // a key that is then reported (it was less than 1e-6 after a deleted one, hidden from GenericOCIO and from the
+    // menu) is kept, unless it is less than 1e-6 from a key of target, and the menu gets it.
     std::vector<double> times(target.keys.size());
     std::vector<bool> oldUsed(old.keys.size(), false);
     std::vector<bool> matched(target.keys.size(), false);
@@ -920,7 +923,7 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
             }
         }
     }
-    for (size_t j = 0; !deleteOthers && (j < target.keys.size()); ++j) {
+    for (size_t j = 0; nearest && !deleteOthers && (j < target.keys.size()); ++j) {
         int nearest = -1;
         for (size_t i = 0; !matched[j] && (i < old.keys.size()); ++i) {
             const double d = std::fabs(old.keys[i].first - times[j]);
@@ -947,7 +950,8 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
             keys.erase(t);
             firstChange = std::min(firstChange, t);
         }
-        // (a key less than 1e-6 after a deleted one is then reported: delete it too)
+        // (a key less than 1e-6 after a deleted one is then reported: keep it, unless it is less than 1e-6 from a key of
+        // target, and delete it then, which may report another one)
         for (int pass = 0; pass < 100; ++pass) {
             const std::vector<std::pair<double, string>> now = getStringKeys(str);
             bool deleted = false;
@@ -960,7 +964,7 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
                 for (size_t j = 0; j < times.size(); ++j) {
                     nearTarget = nearTarget || (std::fabs(times[j] - t) < 1e-6);
                 }
-                if (fromMenu && !nearTarget && (colorspaceIndex(config, now[i - 1].second) < 0)) {
+                if (!nearTarget) {
                     keys[t] = now[i - 1].second;
                     continue;
                 }
@@ -1931,6 +1935,8 @@ GenericOCIO::swapColorspaces(double time)
     const bool outputExpression = hasExpressionKeys(_outputSpace);
 #endif
     const bool expression = inputExpression || outputExpression;
+    std::vector<std::pair<double, double>> movedFrom; // (new time, original time) of the swap's keys that are moved
+    std::vector<double> ownedKeys[2]; // the keys of each side that are moved or dropped, see below
     if (expression) {
         input.keys.clear();
         output.keys.clear();
@@ -1948,10 +1954,61 @@ GenericOCIO::swapColorspaces(double time)
         std::sort(times.begin(), times.end());
         input.keys.clear();
         output.keys.clear();
-        for (size_t i = 0; i < times.size(); ++i) {
-            input.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_inputSpace, times[i])));
-            output.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_outputSpace, times[i])));
+        // In Natron, a key that a side has less than 1e-6 after a key of the other side would be hidden from GenericOCIO
+        // on the other side (its OFX key list only reports the first of the keys less than 1e-6 apart). Natron reads
+        // string params at frames (floor(time + 0.5)), so that the value of such a key is read from the next frame on
+        // (ceil(time)): it is set there instead, on both sides, or nowhere if another key is at or before that frame
+        // (no frame reads it), and the side's own key is deleted (Natron's undo doesn't restore it). Likewise for a
+        // key at a frame less than 1e-6 after another one: the other one is only read before the first key, it is then
+        // set at its frame (floor(time)), else nowhere.
+        std::vector<double> owned[2]; // (the keys of each side that are moved or dropped)
+        if (getImageEffectHostDescription()->isNatron) {
+            bool changed = true;
+            while (changed) {
+                changed = false;
+                for (size_t i = 1; i < times.size(); ++i) {
+                    if (!(times[i] - times[i - 1] < 1e-6)) {
+                        continue;
+                    }
+                    size_t moved = i;
+                    double newTime = std::ceil(times[i]);
+                    bool drop = (i + 1 < times.size()) && (times[i + 1] <= newTime);
+                    if (newTime == times[i]) {
+                        // (times[i] is at a frame: times[i - 1] is only read before the first key)
+                        moved = i - 1;
+                        newTime = std::floor(times[i - 1]);
+                        drop = (i - 1 > 0);
+                    }
+                    for (int side = 0; side < 2; ++side) {
+                        if (containsTime(getKeyTimes(side ? _outputSpace : _inputSpace), times[moved])) {
+                            owned[side].push_back(times[moved]);
+                        }
+                    }
+                    if (drop) {
+                        times.erase(times.begin() + moved);
+                    } else {
+                        // (read the values at the original time, see stringAtKeyTime())
+                        movedFrom.push_back(std::make_pair(newTime, times[moved]));
+                        times[moved] = newTime;
+                    }
+                    changed = true;
+
+                    break;
+                }
+            }
         }
+        for (size_t i = 0; i < times.size(); ++i) {
+            double readTime = times[i];
+            for (size_t m = 0; m < movedFrom.size(); ++m) {
+                if (movedFrom[m].first == times[i]) {
+                    readTime = movedFrom[m].second;
+                }
+            }
+            input.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_inputSpace, readTime)));
+            output.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_outputSpace, readTime)));
+        }
+        ownedKeys[0] = owned[0];
+        ownedKeys[1] = owned[1];
     }
 #ifdef OFX_OCIO_CHOICE
     // the choice menus are only those of the colorspaces if they were built from the current config
@@ -2008,9 +2065,15 @@ GenericOCIO::swapColorspaces(double time)
             setColorspaceAtTime(_outputSpace, time, input.value);
         }
     } else {
-        // (without string animation, the strings have no keys)
-        applyStringKeys(_config, _inputSpace, output, false, false);
-        applyStringKeys(_config, _outputSpace, input, false, false);
+        // (without string animation, the strings have no keys; the keys of both sides are at the same times, matched
+        // exactly)
+        for (int side = 0; side < 2; ++side) {
+            for (size_t i = 0; i < ownedKeys[side].size(); ++i) {
+                (side ? _outputSpace : _inputSpace)->deleteKeyAtTime(ownedKeys[side][i]);
+            }
+        }
+        applyStringKeys(_config, _inputSpace, output, false, false, false);
+        applyStringKeys(_config, _outputSpace, input, false, false, false);
     }
 #ifdef OFX_OCIO_CHOICE
     if (mirror) {
