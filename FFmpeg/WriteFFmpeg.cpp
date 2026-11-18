@@ -3304,10 +3304,12 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
                 double fps = _fps->getValue();
                 const double toleranceMin = bitrateToleranceMin(bitrate, fps, kParamBitrateToleranceMax);
                 bitrateTolerance = (std::max)(toleranceMin, bitrateTolerance);
-                // the host may give a value above the declared maximum of the param (or NaN): tol * 1000000 must fit
-                // in an int
+                // the host may give a value out of the declared range of the param (or NaN): tol * 1000000 must fit
+                // in an int, and be at least 0
                 if (OFX::IsNaN(bitrateTolerance) || (bitrateTolerance >= (double)kParamBitrateToleranceMax)) {
                     bitrateTolerance = kParamBitrateToleranceMax;
+                } else if (bitrateTolerance <= 0.) {
+                    bitrateTolerance = 0.;
                 }
 
                 avCodecContext->bit_rate_tolerance = (int)(bitrateTolerance * 1000000);
@@ -3400,7 +3402,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // the PAR comes from the host: it is clamped before the conversion to int (a PAR out of [0, 100] is not one of
     // those below)
     const double hostPar = _inputClip->getPixelAspectRatio();
-    int32_t par = ((0. <= hostPar) && (hostPar <= 100.)) ? (int32_t)(hostPar * 100.0) : 0;
+    int32_t par = (!OFX::IsNaN(hostPar) && (0. <= hostPar) && (hostPar <= 100.)) ? (int32_t)(hostPar * 100.0) : 0;
     if (200 == par) {
         avStream->sample_aspect_ratio.num = 2;
         avStream->sample_aspect_ratio.den = 1;

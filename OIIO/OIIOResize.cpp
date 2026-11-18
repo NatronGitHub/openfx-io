@@ -441,7 +441,7 @@ OIIOResizePlugin::render(const RenderArguments& args)
 
 template <typename PIX, int nComps>
 void
-OIIOResizePlugin::renderInternal(const RenderArguments& /*args*/,
+OIIOResizePlugin::renderInternal(const RenderArguments& args,
                                  TypeDesc srcType,
                                  const Image* srcImg,
                                  TypeDesc dstType,
@@ -449,16 +449,25 @@ OIIOResizePlugin::renderInternal(const RenderArguments& /*args*/,
 {
     ImageSpec srcSpec(srcType);
     const OfxRectI srcBounds = srcImg->getBounds();
+    const OfxRectI dstImgBounds = dstImg->getBounds();
+    if ((dstImgBounds.x2 <= dstImgBounds.x1) || (dstImgBounds.y2 <= dstImgBounds.y1)) {
+        // nothing to render
+        return;
+    }
 
     if ((srcBounds.x2 <= srcBounds.x1) || (srcBounds.y2 <= srcBounds.y1)) {
         // An empty source image has no pixel data (getPixelAddress() is NULL): an ImageBuf wrapping it crashed
-        // ImageBufAlgo::resize() with OpenImageIO 2.4. The output is black.
-        const OfxRectI dstBounds = dstImg->getBounds();
-        const std::size_t rowSize = (std::size_t)(dstBounds.x2 - dstBounds.x1) * nComps * sizeof(PIX);
-        for (int y = dstBounds.y1; y < dstBounds.y2; ++y) {
-            void* row = dstImg->getPixelAddress(dstBounds.x1, y);
-            if (row && rowSize) {
-                std::memset(row, 0, rowSize);
+        // ImageBufAlgo::resize() with OpenImageIO 2.4. The render window is black. (Only this path honours the render
+        // window: the resize below renders the whole output image, which is the render window, since kSupportsTiles
+        // is 0.)
+        OfxRectI window;
+        if (Coords::rectIntersection(args.renderWindow, dstImgBounds, &window)) {
+            const std::size_t rowSize = (std::size_t)(window.x2 - window.x1) * nComps * sizeof(PIX);
+            for (int y = window.y1; y < window.y2; ++y) {
+                void* row = dstImg->getPixelAddress(window.x1, y);
+                if (row) {
+                    std::memset(row, 0, rowSize);
+                }
             }
         }
 
@@ -502,10 +511,10 @@ OIIOResizePlugin::renderInternal(const RenderArguments& /*args*/,
             setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());
         }
     } else {
-        // an empty source image gives a ratio of 1 (dividing by its size would give inf or NaN, and a NaN filter
-        // width); ImageBufAlgo::resize() then fails on it
-        float wratio = (srcSpec.full_width > 0) ? float(dstSpec.full_width) / float(srcSpec.full_width) : 1.f;
-        float hratio = (srcSpec.full_height > 0) ? float(dstSpec.full_height) / float(srcSpec.full_height) : 1.f;
+        // the source image is not empty (see above)
+        assert(srcSpec.full_width > 0 && srcSpec.full_height > 0);
+        float wratio = float(dstSpec.full_width) / float(srcSpec.full_width);
+        float hratio = float(dstSpec.full_height) / float(srcSpec.full_height);
         const int num_filters = Filter2D::num_filters();
         /// interpolate using the selected filter
         FilterDesc fd;
@@ -737,7 +746,7 @@ OIIOResizePlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
         if (preservePar) {
             OfxRectD srcRoD = _srcClip->getRegionOfDefinition(args.time);
             // the coordinates of a huge RoD (e.g. +-DBL_MAX, whose size is infinite) are clamped, so that the sizes and
-            // the ratios below are finite (inf / inf would be NaN); the result is unchanged for any size up to 1e290
+            // the ratios below are finite (inf / inf would be NaN); the result is unchanged for coordinates within +-5e289
             double srcW = clampRoDCoord(srcRoD.x2) - clampRoDCoord(srcRoD.x1);
             double srcH = clampRoDCoord(srcRoD.y2) - clampRoDCoord(srcRoD.y1);
 

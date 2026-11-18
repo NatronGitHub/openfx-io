@@ -43,6 +43,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
+#include <cstring> // memcpy
 #include <functional>
 #include <locale>
 #include <string>
@@ -111,13 +113,26 @@ template <int numvals>
 int
 floatToInt(float value)
 {
-    // a NaN pixel value (image data may contain NaNs) gives 0 instead of reaching the conversion to int, which would be
-    // undefined behaviour. OFX::IsNaN() tests the bits: it works even if the compiler assumes that there are no NaNs
-    // (-ffast-math), unlike comparisons. The result is the same as before for every other value.
-    if (OFX::IsNaN(value) || (value <= 0)) {
+    if (value <= 0) {
         return 0;
     } else if (value >= 1.) {
         return numvals - 1;
+    }
+    // A NaN pixel value (image data may contain NaNs) normally fails both comparisons above (with -ffast-math, the
+    // compiler may rewrite them so that a NaN takes the first branch, which also gives 0), and would reach the
+    // conversion to int, which is undefined behaviour: it gives 0. Its bits are tested (behind an optimization
+    // barrier), which works even if the compiler assumes that there are no NaNs, and is fast (the comparisons above
+    // come first, as before). The result is the same as before for every other value.
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__("" : "+r"(bits)); // an optimization barrier: the compiler can't know the bits
+#else
+    volatile uint32_t volatileBits = bits;
+    bits = volatileBits;
+#endif
+    if ((bits & 0x7fffffffU) > 0x7f800000U) {
+        return 0;
     }
 
     return (int)(value * (numvals - 1) + 0.5);

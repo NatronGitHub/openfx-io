@@ -139,6 +139,65 @@ testEmptySource(OfxPlugin* p)
     }
     check(ok(st) && notBlack == 0, "render = %d, the output is black (%d values are not)%s%s", st, notBlack,
           gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+
+    // a render window that is the bottom half of the image: only the render window is written
+    for (int i = 0; i < w * h * 4; ++i) {
+        d[i] = 0.5f;
+    }
+    PropSet a2 = makeRenderInArgs(1., w, h);
+    int win[4] = { 0, 0, w, h / 2 };
+    pSetIntN(PH(&a2), kOfxImageEffectPropRenderWindow, 4, win);
+    st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a2), nullptr);
+    int wrong = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int i = 0; i < w * 4; ++i) {
+            wrong += (d[y * w * 4 + i] != ((y < h / 2) ? 0.f : 0.5f)) ? 1 : 0;
+        }
+    }
+    check(ok(st) && wrong == 0, "render window 0,0,%d,%d: render = %d, black in the window, untouched out of it (%d wrong)", w, h / 2, st, wrong);
+
+    // an empty output image: nothing is rendered
+    setupClipImage(dst, 0, 0, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    PropSet a3 = makeRenderInArgs(1., 0, 0);
+    st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a3), nullptr);
+    check(ok(st), "empty output image: render = %d", st);
+}
+
+// a non-empty source and an empty output image (and render window): nothing is rendered (master crashed: a stack
+// overflow in ImageBufAlgo::resize(), with roi.xbegin = INT_MIN)
+void
+testEmptyOutput(OfxPlugin* p)
+{
+    const struct {
+        int filter; // -1: the default
+        const char* label;
+    } cases[] = { { -1, "default filter" }, { 0, "filter 0 (impulse)" } };
+    for (const auto& c : cases) {
+        std::printf("==== render a 16x16 source into an empty output image, %s ====\n", c.label);
+        Resize r(p);
+        if (!r.created) {
+            check(false, "CreateInstance");
+
+            return;
+        }
+        Clip* src = r.src();
+        Clip* dst = r.dst();
+        src->connected = true;
+        dst->connected = true;
+        setupClipImage(src, 16, 16, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+        float* s = reinterpret_cast<float*>(src->buffer.data());
+        for (int i = 0; i < 16 * 16 * 4; ++i) {
+            s[i] = 0.5f;
+        }
+        setupClipImage(dst, 0, 0, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+        if (c.filter >= 0) {
+            setOverrideInt(&r.ctx, "filter", c.filter);
+        }
+        gPersistentError.clear();
+        PropSet a = makeRenderInArgs(1., 0, 0);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a), nullptr);
+        check(ok(st) && gPersistentError.empty(), "render = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    }
 }
 
 void
@@ -290,6 +349,7 @@ main()
         return 1;
     }
     testEmptySource(p);
+    testEmptyOutput(p);
     testPreserveParHugeRoD(p);
     testChangedClipInfiniteRoD(p);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
