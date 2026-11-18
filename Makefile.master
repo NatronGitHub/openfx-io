@@ -6,8 +6,10 @@ PATHTOROOT = $(OFXPATH)/Support
 
 # Minimum macOS version of the plug-ins (Natron 2.6 supports macOS 14 and later). openfx's Makefile.master passes it
 # to -mmacosx-version-min; without it, the plug-ins would require the SDK's macOS version. Override it with
-# `make MACOSX_DEPLOYMENT_TARGET=...` or in the environment. Ignored on other systems.
-MACOSX_DEPLOYMENT_TARGET ?= 14.0
+# `make MACOSX_DEPLOYMENT_TARGET=...` or in the environment (an empty value also gives 14.0). Ignored on other systems.
+ifeq ($(strip $(MACOSX_DEPLOYMENT_TARGET)),)
+MACOSX_DEPLOYMENT_TARGET := 14.0
+endif
 
 include $(PATHTOROOT)/Plugins/Makefile.master
 
