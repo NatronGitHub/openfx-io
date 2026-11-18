@@ -1645,6 +1645,27 @@ FFmpegFile::FFmpegFile(const string& filename)
         // save the stream
         _streams.push_back(stream);
     }
+    // A truncated file whose index (e.g. MOV/MP4 with the index at the start) has samples beyond the end of the
+    // file: the frames from the first of them on fail, whatever the render order (otherwise, it is only known
+    // when the partial last packet is read, see demuxAndDecode()).
+    if (_context && _context->pb) {
+        const int64_t size = avio_size(_context->pb);
+        for (size_t s = 0; (size > 0) && (s < _streams.size()); ++s) {
+            Stream* st = _streams[s];
+            const int entries = IndexEntriesCount(st->_avstream);
+            int64_t truncatedTs = AV_NOPTS_VALUE;
+            for (int i = 0; i < entries; ++i) {
+                const AVIndexEntry* e = IndexEntry(st->_avstream, i);
+                if (e && (e->pos >= 0) && (e->size > 0) && (e->pos + e->size > size) && (e->timestamp != int64_t(AV_NOPTS_VALUE)) &&
+                    ((truncatedTs == int64_t(AV_NOPTS_VALUE)) || (e->timestamp < truncatedTs))) {
+                    truncatedTs = e->timestamp;
+                }
+            }
+            if (truncatedTs != int64_t(AV_NOPTS_VALUE)) {
+                st->_truncatedFrame = (std::max)(0, st->ptsToFrame(truncatedTs)); // a DTS: at or before the frame
+            }
+        }
+    }
     _bytesReadAtOpen = (_context && _context->pb) ? _context->pb->bytes_read : 0;
     if (_streams.empty()) {
         setError(unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream");
@@ -1794,6 +1815,18 @@ FFmpegFile::setError(const char* msg,
     _invalidState = true;
 }
 
+// Clear the decode error (the error message of the last frame), unless the file is invalid
+void
+FFmpegFile::clearDecodeError()
+{
+#ifdef OFX_IO_MT_FFMPEG
+    AutoMutex guard(_invalidStateLock);
+#endif
+    if (!_invalidState) {
+        _errorMsg.clear();
+    }
+}
+
 // A decode error: the error message of a frame, which does not make the file invalid (other frames may decode)
 void
 FFmpegFile::setDecodeError(const char* msg,
@@ -1854,25 +1887,16 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     AutoMutex guard(_lock);
 #endif
 
-    if (_streams.empty()) {
-        return false;
-    }
-
-    assert(_selectedStream && "Null _selectedStream");
-    if (!_selectedStream) {
+    if (_streams.empty() || !_selectedStream) {
+        if (errorMsg) {
+            *errorMsg = _errorMsg.empty() ? string("FFmpeg Reader: no video stream") : _errorMsg;
+        }
         return false;
     }
     Stream* stream = _selectedStream;
 
     // The error message of the previous frame, if any (unless the file is invalid)
-    {
-#ifdef OFX_IO_MT_FFMPEG
-        AutoMutex guard(_invalidStateLock);
-#endif
-        if (!_invalidState) {
-            _errorMsg.clear();
-        }
-    }
+    clearDecodeError();
 
     // Translate from the 1-based frames expected to 0-based frame offsets for use in the rest of this code.
     frame = frame - 1;
@@ -1932,6 +1956,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     if ((res = av_image_fill_linesizes(avFrameOut->linesize, stream->_outputPixelFormat, stream->_width)) < 0) {
         setDecodeError(res, "FFmpeg Reader Failed to fill image linesizes: ");
+        if (errorMsg) {
+            *errorMsg = _errorMsg;
+        }
         return false;
     }
 
@@ -1944,6 +1971,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     if (res < 0) {
         setDecodeError(res, "FFmpeg Reader Failed to fill image pointers: ");
+        if (errorMsg) {
+            *errorMsg = _errorMsg;
+        }
         return false;
     }
 
@@ -1967,6 +1997,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     bool retriedSeek = false;
     bool retriedDecode = false;
     stream->_invalidDataSkipped = 0;
+    stream->_stoppedOnDamagedPacket = false;
     stream->_tooManyDroppedPackets = false;
     stream->_lastReadFrame = -1;
 
@@ -2001,20 +2032,33 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // the seek reads no packet before the end): decode from earlier frames, each a keyframe, 1, 2, 4,
     // ... frames before, to hold the last good one, as when decoding sequentially (whatever the
     // render order). Not if the damage is persistent (see demuxAndDecode).
-    const bool firstAttemptFailedHard = !hasPicture && !stream->_invalidDataSkipped && !_errorMsg.empty();
+    // An attempt that stopped on a damaged packet (several consecutive damaged frames) goes on further back;
+    // an attempt that failed with another error stops.
+    const bool firstAttemptFailedHard = !hasPicture && !stream->_stoppedOnDamagedPacket && !stream->_invalidDataSkipped && !_errorMsg.empty();
+    int lastDamageError = stream->_invalidDataSkipped;
     for (int back = 1; !hasPicture && isIntraOnly && !firstAttemptFailedHard && !stream->_tooManyDroppedPackets && (frame > 0) && (back < (1 << 30)); back *= 2) {
         const int from = (std::max)(0, frame - back);
+        clearDecodeError();
+        stream->_stoppedOnDamagedPacket = false;
+        stream->_invalidDataSkipped = 0;
         if (!seekToFrame(stream->frameToPts(from), AVSEEK_FLAG_BACKWARD)) {
             break;
         }
         hasPicture = demuxAndDecode(avFrameOut, frame, /*acceptCorruptHeldFrame=*/isIntraOnly);
-        if ((from == 0) || (!hasPicture && !_errorMsg.empty())) {
-            break; // e.g. the truncated packet, which fails (see skipInvalidData)
+        if (stream->_invalidDataSkipped) {
+            lastDamageError = stream->_invalidDataSkipped;
         }
+        if ((from == 0) || (!hasPicture && !_errorMsg.empty() && !stream->_stoppedOnDamagedPacket && !stream->_invalidDataSkipped)) {
+            break; // e.g. the truncated packet, which fails (see demuxAndDecode)
+        }
+    }
+    if (!hasPicture && !stream->_invalidDataSkipped) {
+        stream->_invalidDataSkipped = lastDamageError;
     }
 
     if (!hasPicture && stream->_tooManyDroppedPackets && (stream->_lastReadFrame > frame)) {
-        // A persistently damaged range: the following requests in it fail without reading it again.
+        // A persistently damaged range: the following requests in it fail without reading it again (until the
+        // file is opened again, also if the error was transient, e.g. a lack of memory).
         stream->_damagedRangeFrom = frame;
         stream->_damagedRangeTo = stream->_lastReadFrame;
         stream->_damagedRangeError = stream->_invalidDataSkipped ? stream->_invalidDataSkipped : AVERROR_INVALIDDATA;
@@ -2243,13 +2287,16 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         }
         if (acceptCorruptHeldFrame && pkt && (pkt->pts != int64_t(AV_NOPTS_VALUE)) && (stream->ptsToFrame(pkt->pts) > frame) && !Stream::hasFrame(stream->_avHeldFrame)) {
             stream->_invalidDataSkipped = r;
-            return false; // intra-only: stop, with this error
+            stream->_stoppedOnDamagedPacket = true;
+            return false; // intra-only: stop, with this error (decode() then decodes from earlier frames)
         }
         stream->_invalidDataSkipped = r;
         // With frame threads (or the decoder's own threads, e.g. libdav1d), the error of a packet is
         // returned later, with another packet: it is unknown.
-#ifdef AV_CODEC_CAP_OTHER_THREADS
+#if defined(AV_CODEC_CAP_OTHER_THREADS)
         const bool otherThreads = stream->_videoCodec && (stream->_videoCodec->capabilities & AV_CODEC_CAP_OTHER_THREADS) && (stream->_codecContext->thread_count != 1);
+#elif defined(AV_CODEC_CAP_AUTO_THREADS) // FFmpeg 4.0-4.3 (e.g. libdav1d)
+        const bool otherThreads = stream->_videoCodec && (stream->_videoCodec->capabilities & AV_CODEC_CAP_AUTO_THREADS) && (stream->_codecContext->thread_count != 1);
 #else
         const bool otherThreads = false;
 #endif
@@ -2311,6 +2358,8 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // the end of the file) is missing data: it is not decoded (an intra-only frame would decode from a
         // part of its data, and give different images in different orders), and the frames from there on
         // fail, sequentially and after a seek, as before (issue #134).
+        // (A packet with a transport error that happens to be the last one of the file, e.g. a TS continuity
+        // counter error in the last packet, is also taken as truncated: rare.)
         if ((avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
             const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
             if (ts != int64_t(AV_NOPTS_VALUE)) {

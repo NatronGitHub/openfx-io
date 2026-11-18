@@ -371,6 +371,7 @@ noise_takes_expressions() {
 #     (--positions), and a frame in a gap must be identical to the frame displayed at that time.
 #   * If FAIL (1-based, e.g. "1,2") is not empty, these frames cannot be decoded at all (e.g. the
 #     first GOP is damaged), and must fail with an error (--fail).
+# CHECK_DAMAGED_ARGS are extra harness arguments (e.g. --fresh F1,F2,...).
 check_damaged() {
     local name="$1" desc="$2" encoder="$3" setpts="$4" packets="$5" gaps="$6" concealed="$7" fail="$8"
     shift 8
@@ -426,7 +427,7 @@ check_damaged() {
     for threads in 1 8; do
         # (the decoder errors are not shown, but the harness failures are)
         # shellcheck disable=SC2086
-        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 "${args[@]}" ${CHECK_DAMAGED_ARGS:-} ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
             grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
             echo "(with $threads decoder threads)"
             rc=1
@@ -491,15 +492,17 @@ check_damaged_av1() {
     done
 }
 
-# check_truncated_intra NAME DESCRIPTION ENCODER FFMPEG_OUTPUT_ARGS...
+# check_truncated_intra NAME DESCRIPTION FIRST_FAIL ENCODER FFMPEG_OUTPUT_ARGS...
 # A 48-frame ramp of an intra-only codec in MOV with the index at the start (faststart), truncated in
 # the middle of the packet of frame 16, which the demuxer flags as corrupt: the frames 16 to 48 have no
 # data, and must fail with an error, as for issue #134, without making the file invalid, sequentially
 # and after a seek (in any render order: the seek reads no packet, and the reader decodes from earlier
-# frames), and the frames 1 to 15 must decode, with 1 and 8 decoder threads.
+# frames), and the frames before must decode, with 1 and 8 decoder threads. With a long-GOP codec, the
+# frames fail from FIRST_FAIL on (the DTS of the truncated packet, found in the index at open, so that the
+# result does not depend on the render order).
 check_truncated_intra() {
-    local name="$1" desc="$2" encoder="$3"
-    shift 3
+    local name="$1" desc="$2" first="$3" encoder="$4"
+    shift 4
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
@@ -518,7 +521,7 @@ check_truncated_intra() {
     read -r size pos < <(ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of csv=p=0 "$tmp/clean_$name" | sed -n 16p | tr ',' ' ')
     head -c $((pos + size / 2)) "$tmp/clean_$name" > "$tmp/$name"
     local fail="" i threads
-    for ((i = 16; i <= 48; i++)); do
+    for ((i = first; i <= 48; i++)); do
         fail="${fail:+$fail,}$i"
     done
     for threads in 1 8; do
@@ -697,15 +700,21 @@ check_damaged ramp_damaged_vfr.mkv "VFR MKV (H.264, 24 fps, gaps, two damaged B-
     "if(lte(N\,12)\,N\,12+2+2*(N-13))" "13 27" "" "" "" $X264_GOP
 check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its frames fail)" libx264 N "0 1 2 3 4 5 6 7" "" "" \
     1,2,3,4,5,6,7,8 $X264_GOP
-# Intra-only codecs: after a seek to the damaged frame, the previous frame must be held too.
+# Intra-only codecs: after a seek to the damaged frame, the previous frame must be held too, also in a run of
+# 4 damaged frames, decoded first in a newly opened file (--fresh), in reverse and in another order.
+CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check_damaged ramp_damaged_run_prores.mov "MOV (ProRes, 24 fps, a run of 4 damaged frames)" prores_ks N "20 21 22 23" 21,22,23,24 "" "" -c:v prores_ks -profile:v 2
+CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check_damaged ramp_damaged_run_mjpeg.avi "AVI (MJPEG, 24 fps, a run of 4 damaged frames)" mjpeg N "20 21 22 23" 21,22,23,24 "" "" \
+    -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
 check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 check_ts_cc ramp_cc_error.ts "MPEG-TS (H.264 and MP2, a continuity counter error in frame 18, not a truncated file)"
 check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two damaged frames)" libsvtav1 -c:v libsvtav1 -g 8 -preset 8
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
-check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" prores_ks -c:v prores_ks
-check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
+check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 \
+    -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p
 
 # Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
 # cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is

@@ -174,6 +174,7 @@ private:
         int _damagedRangeFrom; // a range of frames found to fail because of persistent damage (-1 if none)
         int _damagedRangeTo;
         int _damagedRangeError;
+        bool _stoppedOnDamagedPacket; // intra-only: the last demuxAndDecode() stopped on a damaged packet after the requested frame
         bool _tooManyDroppedPackets; // decoding stopped after too many consecutive damaged packets in the current decode()
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
@@ -239,6 +240,7 @@ private:
             , _damagedRangeFrom(-1)
             , _damagedRangeTo(-1)
             , _damagedRangeError(0)
+            , _stoppedOnDamagedPacket(false)
             , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
             , _convertCtx(nullptr)
@@ -463,6 +465,9 @@ private:
 
     // set reader error
     void setError(const char* msg, const char* prefix = 0);
+
+    // clear the decode error
+    void clearDecodeError();
 
     // set a decode error, which does not make the file invalid
     void setDecodeError(const char* msg, const char* prefix = 0);

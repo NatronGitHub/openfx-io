@@ -47,19 +47,22 @@
  *      excludes them from the other checks; every other frame must still decode. As in the
  *      plug-in, a failed frame must not make the file invalid (FFmpegFile::isInvalid()), and it
  *      must have an error message,
- *  11. optionally (--gaps F1,F2,...) checks a clip where the 1-based frames Fi have no frame
+ *  13. optionally (--gaps F1,F2,...) checks a clip where the 1-based frames Fi have no frame
  *      (e.g. their packets were damaged and dropped): as --positions, each one must give
  *      the last frame before it that is not in a gap (with --ramp, the ramp content of
  *      that frame, i.e. OFFSET + STEP * (its frame - 1)),
- *  12. optionally (--concealed F1,F2,...) does not check the content of the 1-based frames
+ *  14. optionally (--concealed F1,F2,...) does not check the content of the 1-based frames
  *      Fi, nor that they give the same image after a seek (they must still decode): e.g.
- *      frames that reference a dropped frame, which the decoder conceals.
+ *      frames that reference a dropped frame, which the decoder conceals,
+ *  15. optionally (--fresh F1,F2,...) decodes each 1-based frame Fi first in a newly opened
+ *      file (e.g. a seek into a run of damaged frames), and checks it against the sequential
+ *      decode (and, with --ramp, its content).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -107,7 +110,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -126,6 +129,7 @@ main(int argc, char** argv)
     std::vector<int> mustFail; // 1-based frames that must fail to decode
     std::vector<int> gaps; // 1-based frames that have no frame (--gaps)
     std::vector<int> concealed; // 1-based frames whose content and seek consistency are not checked
+    std::vector<int> fresh; // 1-based frames to decode first in a newly opened file
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -162,8 +166,8 @@ main(int argc, char** argv)
             while (std::getline(is, item, ',')) {
                 noSeekCheck.push_back(std::atoi(item.c_str()));
             }
-        } else if ((a == "--fail" || a == "--gaps" || a == "--concealed") && i + 1 < argc) {
-            std::vector<int>& list = (a == "--fail") ? mustFail : (a == "--gaps") ? gaps : concealed;
+        } else if ((a == "--fail" || a == "--gaps" || a == "--concealed" || a == "--fresh") && i + 1 < argc) {
+            std::vector<int>& list = (a == "--fail") ? mustFail : (a == "--gaps") ? gaps : (a == "--fresh") ? fresh : concealed;
             std::istringstream is(argv[++i]);
             std::string item;
             while (std::getline(is, item, ',')) {
@@ -454,6 +458,32 @@ main(int argc, char** argv)
     }
 
     const auto seekEnd = std::chrono::steady_clock::now();
+
+    // Each --fresh frame, decoded first in a newly opened file.
+    for (int f : fresh) {
+        FFmpegFile freshFile(filename);
+        std::memset(buf.data(), 0, bufBytes);
+        bool ok = false;
+        try {
+            ok = freshFile.decode(nullptr, f, loadNearest, buf.data());
+        } catch (const std::exception& e) {
+            ok = false;
+        }
+        if (!ok) {
+            std::printf("  FRESH decode frame %d returned false (%s)\n", f, freshFile.getError().c_str());
+            ++mismatches;
+            continue;
+        }
+        const double sig = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
+        if (std::fabs(sig - seqSig[f]) > tol) {
+            std::printf("  FRESH MISMATCH frame %d: sequential=%.3f fresh=%.3f\n", f, seqSig[f], sig);
+            ++mismatches;
+        }
+        if (rampStep > 0 && !isConcealed(f) && std::fabs(sig - rampExpected(f)) > rampTol) {
+            std::printf("  CONTENT fresh frame %d: sig=%.3f expected=%.3f\n", f, sig, rampExpected(f));
+            ++contentErrors;
+        }
+    }
     const double seekMs = std::chrono::duration<double, std::milli>(seekEnd - seekStart).count();
 
     std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekErrors=%d failErrors=%d seekPhaseMs=%.1f\n",
