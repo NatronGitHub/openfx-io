@@ -711,7 +711,8 @@ getKeyTimes(ParamT* p)
 // held from a key to the next one: if the value is not that of the key at 0 before time 0.5, or that of the key at 1
 // after it, the param has an expression. (Natron reads a string param at floor(time + 0.5), see
 // OfxStringInstance::get(): no sample is in [0.5, 1). An expression that has these values at the times sampled here
-// is not detected.)
+// is not detected: e.g. the value of a "Link to" choice param doesn't depend on the time (NatronGitHub/Natron#1336), so
+// that its menu gets keys at 0 and 1, with that value, which changes nothing.)
 template <typename T, typename ParamT>
 bool
 hasExpressionKeysT(ParamT* p,
@@ -1356,7 +1357,8 @@ setColorspaceAtTime(StringParam* str,
 // initialIndex, where once the menus have the strings' keys it removes the animation.
 // Else, the string param gets the menu's colorspace at time: a key, if it has keys and the host animates strings,
 // else its value; e.g. if the menu has an expression (see hasExpressionKeys()), whose changes Natron reports as user
-// edits. A string param with an expression is not set.
+// edits (but not the setting of the expression, NatronGitHub/Natron#1336, so that the string param doesn't get its
+// value until then). A string param with an expression is not set.
 void
 GenericOCIO::changedChoice(Side& side,
                            double time)
@@ -1814,19 +1816,21 @@ GenericOCIO::getProcessingColorspacesAtTime(double time,
 // have keys: they get the keys of the other side's menu, and the string params the other side's colorspace at the given
 // time. No key of the string params is deleted, since Natron's undo doesn't restore the keys that a plug-in deletes: if
 // a side has keys, both sides get keys at the times of the keys of both sides (string and choice values are held from a
-// key to the next one, so that this is the other side's animation), and only the keys that differ are set. Natron's
-// undo (of the swap's edit block) then removes the keys that the swap added and restores those it changed, which
-// restores the animation of a side that had keys. That of a side that had no keys is not restored: when undo removes
-// its last key, Natron gives it its value at the current time, i.e. the other side's colorspace at that time (as it was
-// before the swap), not its value before the swap. The menus are not undone either (their edits are not undoable), but
-// they get the keys of the string params again at the next instance changed action of a string param. A string param
-// with an expression (see hasExpressionKeys()) has no real keys: then only the values at the given time are swapped,
-// and a side with an expression is not set (its value is that of the expression). This is only right in Natron 2.6 and
-// later, which have NatronGitHub/Natron#1291 (the fix of NatronGitHub/Natron#1290): before, a key of a string param
-// holds the index of its string in the sorted list of the param's strings, which is not updated when an earlier key is
-// added, so that later keys may then have other strings (applyStringKeys() sets them again), and its undo removes the
-// keys that were changed (and the first and last keys that were set again to their own strings, see applyStringKeys()),
-// not only those that were added, so that the animation is lost.
+// key to the next one, so that this is the other side's animation), and only the keys that differ are set. In Natron
+// with NatronGitHub/Natron#1335, the undo of the swap's edit block then removes the keys that the swap added and
+// restores those it changed, which restores the animation of a side that had keys (without it, Natron ends the edit
+// block when the instance changed action of the swap's first change returns, so that its undo only undoes that change,
+// e.g. the input's first key, and the swap's other changes are not undoable). That of a side that had no keys is not
+// restored: when undo removes its last key, Natron gives it its value at the current time, i.e. the other side's
+// colorspace at that time (as it was before the swap), not its value before the swap. The menus are not undone either
+// (their edits are not undoable), but they get the keys of the string params again at the next instance changed action
+// of a string param. A string param with an expression (see hasExpressionKeys()) has no real keys: then only the values
+// at the given time are swapped, and a side with an expression is not set (its value is that of the expression). This
+// is only right in Natron 2.6 and later, which have NatronGitHub/Natron#1291 (the fix of NatronGitHub/Natron#1290):
+// before, a key of a string param holds the index of its string in the sorted list of the param's strings, which is not
+// updated when an earlier key is added, so that later keys may then have other strings (applyStringKeys() sets them
+// again), and its undo removes the keys that were changed (and the first and last keys that were set again to their own
+// strings, see applyStringKeys()), not only those that were added, so that the animation is lost.
 void
 GenericOCIO::swapColorspaces(double time)
 {
