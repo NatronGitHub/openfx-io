@@ -434,8 +434,9 @@ if(OFX_IO_WITH_SEEXPR AND TARGET SeExpr::SeExpr)
   supportext_add_sources(IO COMPONENTS RECTANGLE_INTERACT RAMP TRANSFORM_INTERACT)
   target_link_libraries(IO PRIVATE SeExpr::SeExpr)
   set(_io_src_SEEXPR SeExpr/SeExpr.cpp SeExpr/SeGrain.cpp SeExpr/SeNoise.cpp)
-  # IO/Makefile has no SeExprSimple icons
-  io_resources( SeExpr/fr.inria.openfx.SeExpr.png SeExpr/fr.inria.openfx.SeExpr.svg)
+  io_resources(
+    SeExpr/fr.inria.openfx.SeExpr.png SeExpr/fr.inria.openfx.SeExpr.svg
+    SeExpr/fr.inria.openfx.SeExprSimple.png SeExpr/fr.inria.openfx.SeExprSimple.svg)
 else()
   _io_not_built(SEEXPR "SeExpr(SeExpr 2.11, SEEXPR_HOME)")
 endif()
@@ -485,6 +486,8 @@ ofx_deploy_bundle(IO)
 # Tests (ctest):
 # - io-load: loads the IO.ofx of the build tree with .github/workflows/verify_plugin_loads.cpp (RTLD_NOW, as in
 #   CI) and checks the number of plug-ins against the groups built;
+# - io-icons: each plug-in of the build tree's bundle has its icon, Contents/Resources/<identifier>.png
+#   (tests/check_icons.cmake);
 # - io-load-installed (macOS, OFX_DEPLOY_BUNDLES): the same on the installed, deployed bundle, without DYLD_*
 #   variables: run it after cmake --install;
 # - tests-make-*: the tests of tests/Makefile (which builds them in tests/, with its own flags), with this build's
@@ -541,6 +544,13 @@ if(BUILD_TESTING)
     list(REMOVE_DUPLICATES _io_dirs)
     string(REPLACE ";" ":" _io_dirs "${_io_dirs}")
     set_tests_properties(io-load PROPERTIES ENVIRONMENT "DYLD_FALLBACK_LIBRARY_PATH=${_io_dirs}")
+  endif()
+  # io-icons: every plug-in of the build tree's bundle has its icon, Contents/Resources/<identifier>.png
+  add_test(NAME io-icons
+           COMMAND "${CMAKE_COMMAND}" "-DVERIFY=$<TARGET_FILE:io_verify_plugin_loads>" "-DBINARY=$<TARGET_FILE:IO>"
+                   "-DBUNDLE=${_io_bundle}" -P "${PROJECT_SOURCE_DIR}/tests/check_icons.cmake")
+  if(APPLE)
+    set_tests_properties(io-icons PROPERTIES ENVIRONMENT "DYLD_FALLBACK_LIBRARY_PATH=${_io_dirs}")
   endif()
   # io-load-installed: the installed bundle (macOS: deployed, OFX_DEPLOY_BUNDLES; Linux, FreeBSD: with its install
   # rpath, before any patchelf) loads without DYLD_*/LD_LIBRARY_PATH; skipped if it was not installed yet
