@@ -167,6 +167,8 @@ private:
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
+        int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
+        // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
         // Source/destination parameters the cached _convertCtx was created for,
@@ -184,7 +186,7 @@ private:
         int _fpsDen;
 
         int64_t _startPTS; // PTS of the first frame in the stream
-        int64_t _startDTS; // DTS of the first frame in the stream
+        int64_t _startDTS; // DTS of the first packet in the stream (_startPTS if unknown)
         int64_t _frames; // video duration in frames
 
         bool _ptsSeen; // True if a read AVPacket has ever contained a valid PTS during this stream's decode,
@@ -222,6 +224,7 @@ private:
             , _avNextFrame(nullptr)
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
+            , _nextDecodedPts(AV_NOPTS_VALUE)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
             , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
@@ -314,6 +317,7 @@ private:
             }
             _heldFrameIsLast = false;
             _decodingFromStart = false;
+            _nextDecodedPts = AV_NOPTS_VALUE;
         }
 
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
@@ -346,17 +350,6 @@ private:
         // 24 fps the third frame (index 2) is at 83 ms, and 83 * 24 / 1000 = 1.992 must give
         // frame 2, not 1 (truncation made every third frame impossible to find).
         // Timestamps that are an exact number of frames (most MOV/MP4) give the same result.
-        int64_t frameToDts(int frame) const
-        {
-            int64_t numerator = int64_t(_fpsDen) * _avstream->time_base.den;
-            int64_t denominator = int64_t(_fpsNum) * _avstream->time_base.num;
-
-            // guard against division by zero
-            assert(denominator);
-
-            return _startDTS + (denominator ? av_rescale_rnd(frame, numerator, denominator, AV_ROUND_NEAR_INF) : int64_t(frame) * numerator);
-        }
-
         int64_t frameToPts(int frame) const
         {
             int64_t numerator = int64_t(_fpsDen) * _avstream->time_base.den;
@@ -459,10 +452,14 @@ private:
     // get stream start time
     int64_t getStreamStartTime(Stream& stream);
 
+    // Read the first packet of the stream: its DTS, and the timestamp of the first decoded frame if it has no PTS
+    int64_t probeStreamStart(Stream& stream, int64_t& firstDTS);
+
+    // The number of frames of the stream that are not displayed
+    int64_t getDiscardedFrames(Stream& stream);
+
     // Get the video stream duration in frames...
     int64_t getStreamFrames(Stream& stream);
-
-    bool seekFrame(int frame, Stream* stream);
 
 public:
     // FFmpegFile();

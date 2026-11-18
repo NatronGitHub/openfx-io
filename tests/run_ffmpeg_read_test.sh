@@ -14,9 +14,16 @@
 #   * MOV  (H.264, 24 fps)
 #   * MPEG-TS (H.264, start_time ~1.48s) -- non-zero stream start PTS, which is the
 #     case that stresses the frame<->PTS seek arithmetic (Stream::frameToPts).
+#   * M2TS (AVCHD-like: interlaced H.264 at 29.97 fps, with an AC3 audio track that starts
+#     before the video): the frames are counted from the start of the video stream.
 #   * Matroska (H.264) at 23.976, 24, 25, 30 and 60 fps, and ProRes at 24 fps: Matroska
 #     stores timestamps in milliseconds, which are not a whole number of frames, and
 #     Stream::ptsToFrame() must round them to the nearest frame.
+#   * Matroska and FLV (H.264 with B-frames) with a non-zero start time: their duration is
+#     not counted from the start of the movie, but from timestamp 0 (FLV: from the first DTS).
+#   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
+#     timestamps): they are counted in the stream's number of frames, but not displayed.
+#   * AVI (MPEG-4 with B-frames), which has no PTS.
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
 #     screen recordings).
@@ -75,22 +82,42 @@ have_encoder() {
 X264="-c:v libx264 -g 8 -bf 2 -pix_fmt yuv420p"
 
 rc=0
-# check NAME DESCRIPTION ENCODER RATE FFMPEG_OUTPUT_ARGS...
-check() {
-    local name="$1" desc="$2" encoder="$3" rate="$4"
-    shift 4
+# check_frames NAME DESCRIPTION ENCODER RATE EXPECTED_FRAMES FIRST_FRAME FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
+# A gray ramp of $NFRAMES frames, of which the reader must report EXPECTED_FRAMES, the first one
+# being ramp frame FIRST_FRAME (0-based), e.g. if an edit list does not display the first frames.
+# FFMPEG_INPUT_ARGS, after "--", are extra ffmpeg inputs, before the ramp (e.g. an audio track:
+# the ramp is then input 1).
+check_frames() {
+    local name="$1" desc="$2" encoder="$3" rate="$4" expected="$5" first="$6"
+    shift 6
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
         return
     fi
-    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp "$rate")" -frames:v "$NFRAMES" "$@" "$tmp/$name"; then
+    local outargs=() inargs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        outargs+=("$1")
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        shift
+        inargs=("$@")
+    fi
+    if ! ffmpeg -y -loglevel error ${inargs[@]+"${inargs[@]}"} -f lavfi -i "$(ramp "$rate")" -frames:v "$NFRAMES" ${outargs[@]+"${outargs[@]}"} "$tmp/$name"; then
         echo "FAIL: could not generate $name"
         rc=1
         return
     fi
     # shellcheck disable=SC2086
-    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp "$((16 + 4 * first)),4" --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check NAME DESCRIPTION ENCODER RATE FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
+check() {
+    local name="$1" desc="$2" encoder="$3" rate="$4"
+    shift 4
+    check_frames "$name" "$desc" "$encoder" "$rate" "$NFRAMES" 0 "$@"
 }
 
 # check_vfr NAME DESCRIPTION FRAMES AFTER JUMP SPACING AUDIO_SECONDS EXPECTED_FRAMES FFMPEG_OUTPUT_ARGS...
@@ -231,11 +258,26 @@ check ramp.mp4 "MP4 (H.264, start_time 0)" libx264 25 $X264
 check ramp_offset.mp4 "MP4 (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
 check ramp.mov "MOV (H.264, 24 fps)" libx264 24 $X264
 check ramp.ts "MPEG-TS (H.264, non-zero start_time)" libx264 25 $X264 -f mpegts
+# The audio track starts before the video: the frames are counted from the start of the video.
+check ramp_avchd.m2ts "M2TS (AVCHD-like: H.264 interlaced, 29.97 fps, AC3 audio starting before the video)" libx264 30000/1001 \
+    -map 1:v -map 0:a $X264 -flags +ildct+ilme -x264-params tff=1 -c:a ac3 -shortest -f mpegts -mpegts_m2ts_mode 1 \
+    -- -f lavfi -i anullsrc=r=48000:cl=stereo
 check ramp_23.976.mkv "Matroska (H.264, 23.976 fps)" libx264 24000/1001 $X264
 check ramp_24.mkv "Matroska (H.264, 24 fps)" libx264 24 $X264
 check ramp_25.mkv "Matroska (H.264, 25 fps)" libx264 25 $X264
 check ramp_30.mkv "Matroska (H.264, 30 fps)" libx264 30 $X264
 check ramp_60.mkv "Matroska (H.264, 60 fps)" libx264 60 $X264
+# The Matroska and FLV durations are not counted from the start of the movie.
+check ramp_offset.mkv "Matroska (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10.01
+check ramp.flv "FLV (H.264 with B-frames, 24 fps)" libx264 24 $X264
+check ramp_offset.flv "FLV (H.264 with B-frames, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
+# An edit list that starts after the first frames (negative timestamps): they are not displayed.
+check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed: negative timestamp)" libx264 24 39 1 \
+    $X264 -output_ts_offset -0.041666666666666667
+check_frames ramp_preroll3.mp4 "MP4 (H.264, edit list, first 3 frames not displayed: negative timestamps)" libx264 24 37 3 \
+    $X264 -output_ts_offset -0.125
+# AVI has no PTS: the decoder gives the frames the DTS of the packet after which they are output.
+check ramp_bframes.avi "AVI (MPEG-4 with B-frames, no PTS)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
 check ramp_prores_24.mkv "Matroska (ProRes, 24 fps)" prores_ks 24 -c:v prores_ks
 check ramp_vp9_24.webm "WebM (VP9, 24 fps)" libvpx-vp9 24 -c:v libvpx-vp9 -g 8 -crf 10 -b:v 0
 check ramp_vp8_24.webm "WebM (VP8, 24 fps)" libvpx 24 -c:v libvpx -g 8 -crf 4 -b:v 10M

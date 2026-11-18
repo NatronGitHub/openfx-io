@@ -283,6 +283,13 @@ H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 
 non-zero start time, MOV, MPEG-TS (`start_time ~1.48 s`), Matroska at 23.976, 24, 25,
 30 and 60 fps, ProRes in Matroska, VP9 and VP8 in WebM, and a Matroska file with
 jittered (VFR) timestamps. The MPEG-TS clip stresses the non-zero stream start PTS.
+Frame counts (issue #145): an AVCHD-like M2TS (interlaced H.264 at 29.97 fps, with an
+AC3 audio track that starts before the video) must count the frames from the start of
+the video stream; Matroska with a non-zero start time and FLV with B-frames (with and
+without a start time) store a duration that is not counted from the start of the movie;
+MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
+not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
+still decode at its own frame.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a
