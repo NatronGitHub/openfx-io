@@ -486,12 +486,18 @@ decode, identically after a seek except at the two swapped frame times
 (`--no-seek-check`): there, FFmpeg 8 gives timestamps after a seek that depend on the
 timestamps decoded before, since `avcodec_flush_buffers()` does not reset its
 best_effort_timestamp heuristic.
-Damaged packets (issue #151): Matroska clips (CFR, and VFR with gaps) have two packets
-damaged by the `noise` bitstream filter, which the decoder rejects with
-AVERROR_INVALIDDATA: the reader must drop them and go on decoding, and their frame times
-must show the previous frame (`--positions`, from the timestamps of the other packets).
-With a damaged first GOP, its frames must fail with an error message (`--fail`), and the
-other frames must decode.
+Damaged packets (issue #151): the `noise` bitstream filter (with expressions, FFmpeg 5.1 or
+later) modifies every byte of chosen packets, which the decoder rejects with
+AVERROR_INVALIDDATA: an H.264 P-frame, IDR frame or B-frame in Matroska, two B-frames in a VFR
+Matroska clip, and two frames of ProRes (MOV) and MJPEG (AVI), each with 1 and 8 decoder
+threads (`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`). The reader must drop them and
+go on decoding: the frame time of a damaged packet shows the previous frame, with its ramp
+content (`--gaps`, or `--positions` for the VFR clip), sequentially and after a seek (for the
+intra-only codecs, the reader decodes from the previous frames). The other frames of the GOP
+of a damaged H.264 frame (and the last frames of the previous GOP, which the decoder outputs
+after the next reference frame) show what the decoder conceals: they must decode, but their
+content is not checked (`--concealed`). With a damaged first GOP, its frames must fail with
+an error message, checked in a newly opened file (`--fail`), and the other frames must decode.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration

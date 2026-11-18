@@ -44,13 +44,21 @@
  *      from near the start, in FLV without a keyframe index),
  *  12. optionally (--fail F1,F2,...) checks that the 1-based frames Fi fail to decode, with
  *      an error message, sequentially and after a seek (e.g. a damaged first GOP), and
- *      excludes them from the other checks; every other frame must still decode.
+ *      excludes them from the other checks; every other frame must still decode. The error
+ *      message is checked on a newly opened file, since FFmpegFile keeps the first one,
+ *  11. optionally (--gaps F1,F2,...) checks a clip where the 1-based frames Fi have no frame
+ *      (e.g. their packets were damaged and dropped): as --positions, each one must give
+ *      the last frame before it that is not in a gap (with --ramp, the ramp content of
+ *      that frame, i.e. OFFSET + STEP * (its frame - 1)),
+ *  12. optionally (--concealed F1,F2,...) does not check the content of the 1-based frames
+ *      Fi, nor that they give the same image after a seek (they must still decode): e.g.
+ *      frames that reference a dropped frame, which the decoder conceals.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -98,7 +106,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -115,6 +123,8 @@ main(int argc, char** argv)
     long long maxSeekBytes = -1;
     std::vector<int> noSeekCheck; // 1-based frames that may give another image after a seek
     std::vector<int> mustFail; // 1-based frames that must fail to decode
+    std::vector<int> gaps; // 1-based frames that have no frame (--gaps)
+    std::vector<int> concealed; // 1-based frames whose content and seek consistency are not checked
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -151,11 +161,12 @@ main(int argc, char** argv)
             while (std::getline(is, item, ',')) {
                 noSeekCheck.push_back(std::atoi(item.c_str()));
             }
-        } else if (a == "--fail" && i + 1 < argc) {
+        } else if ((a == "--fail" || a == "--gaps" || a == "--concealed") && i + 1 < argc) {
+            std::vector<int>& list = (a == "--fail") ? mustFail : (a == "--gaps") ? gaps : concealed;
             std::istringstream is(argv[++i]);
             std::string item;
             while (std::getline(is, item, ',')) {
-                mustFail.push_back(std::atoi(item.c_str()));
+                list.push_back(std::atoi(item.c_str()));
             }
         } else if (a == "--positions" && i + 1 < argc) {
             std::istringstream is(argv[++i]);
@@ -177,6 +188,10 @@ main(int argc, char** argv)
     }
     if (!positions.empty() && (positions[0] != 0)) {
         std::fprintf(stderr, "--positions must start at 0\n");
+        return 2;
+    }
+    if (!gaps.empty() && !positions.empty()) {
+        std::fprintf(stderr, "--gaps and --positions are exclusive\n");
         return 2;
     }
 
@@ -244,6 +259,21 @@ main(int argc, char** argv)
         return 0;
     }
 
+    // --gaps: the frames that are not in a gap, whose ramp content is that of their own frame
+    const bool rampAtPosition = !gaps.empty();
+    if (rampAtPosition) {
+        for (int f = 1; f <= frames; ++f) {
+            if (std::find(gaps.begin(), gaps.end(), f) == gaps.end()) {
+                positions.push_back(f - 1);
+            }
+        }
+        if (positions.empty() || (positions[0] != 0)) {
+            std::fprintf(stderr, "--gaps: frame 1 must not be in a gap\n");
+            return 2;
+        }
+    }
+    auto isConcealed = [&concealed](int f) -> bool { return std::find(concealed.begin(), concealed.end(), f) != concealed.end(); };
+
     // the content check: the ramp frame displayed at frame f (1-based), and the ramp frame (1-based)
     // whose content is closest to the signature s
     auto rampDisplayed = [&positions](int f) -> int {
@@ -257,7 +287,9 @@ main(int argc, char** argv)
         }
         return i + 1;
     };
-    auto rampExpected = [rampOffset, rampStep, &rampDisplayed](int f) -> double { return rampOffset + rampStep * (rampDisplayed(f) - 1); };
+    auto rampExpected = [rampOffset, rampStep, &rampDisplayed, &positions, rampAtPosition](int f) -> double {
+        return rampOffset + rampStep * (rampAtPosition ? positions[rampDisplayed(f) - 1] : (rampDisplayed(f) - 1));
+    };
     auto rampFrame = [rampOffset, rampStep](double s) -> double { return 1.0 + (s - rampOffset) / rampStep; };
     const double rampTol = 0.4 * rampStep;
     int contentErrors = 0;
@@ -278,11 +310,24 @@ main(int argc, char** argv)
         if (ok) {
             std::printf("  FAIL-CHECK %s frame %d decoded, but must fail\n", phase, f);
             ++failErrors;
-        } else if (file.getError().empty()) {
+            return;
+        }
+        // FFmpegFile keeps its first error message: check it on a newly opened file
+        FFmpegFile fresh(filename);
+        bool freshOk = false;
+        try {
+            freshOk = fresh.decode(nullptr, f, loadNearest, buf.data());
+        } catch (const std::exception& e) {
+            freshOk = false;
+        }
+        if (freshOk) {
+            std::printf("  FAIL-CHECK %s frame %d decoded in a newly opened file, but must fail\n", phase, f);
+            ++failErrors;
+        } else if (fresh.getError().empty()) {
             std::printf("  FAIL-CHECK %s frame %d failed without an error message\n", phase, f);
             ++failErrors;
         } else if (verbose) {
-            std::printf("  %s frame %d failed as expected: %s\n", phase, f, file.getError().c_str());
+            std::printf("  %s frame %d failed as expected: %s\n", phase, f, fresh.getError().c_str());
         }
     };
 
@@ -309,7 +354,7 @@ main(int argc, char** argv)
         if (verbose) {
             std::printf("  frame %d sig=%.3f\n", f, seqSig[f]);
         }
-        if (rampStep > 0 && std::fabs(seqSig[f] - rampExpected(f)) > rampTol) {
+        if (rampStep > 0 && !isConcealed(f) && std::fabs(seqSig[f] - rampExpected(f)) > rampTol) {
             std::printf("  CONTENT sequential frame %d: sig=%.3f expected=%.3f (ramp frame %d, looks like ramp frame %.2f)\n",
                         f, seqSig[f], rampExpected(f), rampDisplayed(f), rampFrame(seqSig[f]));
             ++contentErrors;
@@ -345,7 +390,7 @@ main(int argc, char** argv)
     int monotonicViolations = 0;
     if (checkMonotonic) {
         for (int f = 2; f <= frames; ++f) {
-            if (isMustFail(f) || isMustFail(f - 1)) {
+            if (isMustFail(f) || isMustFail(f - 1) || isConcealed(f) || isConcealed(f - 1)) {
                 continue;
             }
             if (!(seqSig[f] > seqSig[f - 1])) {
@@ -400,13 +445,13 @@ main(int argc, char** argv)
         }
         const double s = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
         const double diff = std::fabs(s - seqSig[f]);
-        const bool seekCheck = std::find(noSeekCheck.begin(), noSeekCheck.end(), f) == noSeekCheck.end();
+        const bool seekCheck = (std::find(noSeekCheck.begin(), noSeekCheck.end(), f) == noSeekCheck.end()) && !isConcealed(f);
         if (seekCheck && (diff > tol)) {
             std::printf("  MISMATCH frame %d: sequential=%.3f seeked=%.3f diff=%.3f (tol=%.3f)\n",
                         f, seqSig[f], s, diff, tol);
             ++mismatches;
         }
-        if (rampStep > 0 && std::fabs(s - rampExpected(f)) > rampTol) {
+        if (rampStep > 0 && !isConcealed(f) && std::fabs(s - rampExpected(f)) > rampTol) {
             std::printf("  CONTENT seeked frame %d: sig=%.3f expected=%.3f (ramp frame %d, looks like ramp frame %.2f)\n",
                         f, s, rampExpected(f), rampDisplayed(f), rampFrame(s));
             ++contentErrors;

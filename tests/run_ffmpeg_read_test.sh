@@ -51,10 +51,11 @@
 #     frame (the frame displayed at that time), not an error or another frame. With a
 #     long gap, and with a gap at the end, the number of seeks is bounded: the reader
 #     must not decode from the start again for each frame in the gap.
-#   * Matroska (CFR, and VFR with gaps) with two packets damaged by the noise bitstream
-#     filter, which the decoder rejects (AVERROR_INVALIDDATA): the reader must drop them,
-#     and their frame times show the previous frame. With a damaged first GOP, its frames
-#     must fail with an error, and the other frames must decode.
+#   * Damaged packets, which the decoder rejects (AVERROR_INVALIDDATA): H.264 in Matroska
+#     (a damaged P-frame, IDR frame or B-frame; two damaged B-frames in a VFR clip), ProRes
+#     in MOV and MJPEG in AVI (intra-only), with 1 and 8 decoder threads: the reader must
+#     drop them, and their frame times show the previous frame. With a damaged first GOP,
+#     its frames must fail with an error, and the other frames must decode.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -337,56 +338,82 @@ check_ss_copy() {
     "$bin" "$tmp/$name" --tol 3 --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
-# check_damaged NAME DESCRIPTION SETPTS PACKETS FAIL_FRAMES
-# A 40-frame textured ramp at 24 fps in Matroska (GOP 8, fixed B-frames), with the timestamps
-# SETPTS (a setpts expression, in frames; N for CFR), where the packets PACKETS (0-based, in
-# decoding order, e.g. "13 27") are damaged by the noise bitstream filter, so that the decoder
-# rejects them (AVERROR_INVALIDDATA). The reader must drop them and go on decoding: the frame
-# time of a damaged packet becomes a gap, which shows the previous frame (--positions, from the
-# timestamps of the other packets). If FAIL_FRAMES (1-based, e.g. "1,2") is not empty, these
-# frames cannot be decoded at all (e.g. the first GOP is damaged), and must fail with an error
-# (--fail); the timestamps are then not checked.
+# check_damaged NAME DESCRIPTION ENCODER SETPTS PACKETS GAPS CONCEALED FAIL FFMPEG_OUTPUT_ARGS...
+# A 40-frame gray ramp at 24 fps, with the timestamps SETPTS (a setpts expression in frames, or N
+# for CFR), where the packets PACKETS (0-based, in decoding order, e.g. "13 27") are damaged: the
+# noise bitstream filter modifies each of their bytes, so that the decoder rejects them
+# (AVERROR_INVALIDDATA). The reader must drop them and go on decoding, with 1 and with 8 decoder
+# threads (frame threads):
+#   * CFR: the frames GAPS (1-based, e.g. "14,28") of the damaged packets are gaps, which show
+#     the previous frame, with its ramp content (--gaps). The frames CONCEALED (e.g. the GOP of a
+#     damaged reference frame, and the frames before it, which the decoder may output late or not
+#     at all) must decode, but their content may be anything that the decoder gives (--concealed).
+#   * VFR (SETPTS is not N): the frames of the other packets are given by their timestamps
+#     (--positions), and a frame in a gap must be identical to the frame displayed at that time.
+#   * If FAIL (1-based, e.g. "1,2") is not empty, these frames cannot be decoded at all (e.g. the
+#     first GOP is damaged), and must fail with an error (--fail).
 check_damaged() {
-    local name="$1" desc="$2" setpts="$3" packets="$4" fail="$5"
+    local name="$1" desc="$2" encoder="$3" setpts="$4" packets="$5" gaps="$6" concealed="$7" fail="$8"
+    shift 8
     echo "== $desc =="
-    if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
         echo "SKIPPED: no ffprobe CLI"
         return
     fi
-    if ! ffmpeg -y -loglevel error -f lavfi -i "$(texramp)" -vf "trim=end_frame=$NFRAMES,setpts=($setpts)/(24*TB)" -fps_mode passthrough \
-        -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0 -pix_fmt yuv420p "$tmp/clean_$name"; then
+    local vf=()
+    if [ "$setpts" != N ]; then
+        vf=(-vf "trim=end_frame=$NFRAMES,setpts=($setpts)/(24*TB)" -fps_mode passthrough)
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" ${vf[@]+"${vf[@]}"} "$@" "$tmp/clean_$name"; then
         echo "FAIL: could not generate clean_$name"
         rc=1
+        return
+    fi
+    # The noise bitstream filter takes expressions since FFmpeg 5.1.
+    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if(eq(n\,0)\,1\,0)" "$tmp/probe_$name" 2>/dev/null; then
+        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
         return
     fi
     local expr="0" n
     for n in $packets; do
         expr="$expr+eq(n\,$n)"
     done
-    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if($expr\,2\,0)" "$tmp/$name" 2>/dev/null; then
-        echo "SKIPPED: no noise bitstream filter"
+    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if($expr\,1\,0)" "$tmp/$name"; then
+        echo "FAIL: could not damage clean_$name"
+        rc=1
         return
     fi
-    # The frames (Matroska timestamps are in milliseconds) of the packets that are not damaged.
-    local positions
-    positions="$(ffprobe -v error -select_streams v:0 -show_entries packet=pts -of csv=p=0 "$tmp/clean_$name" |
-        awk -v damaged=" $packets " 'index(damaged, " " (NR - 1) " ") == 0 { printf "%d\n", ($1 * 24 + 500) / 1000 }' | sort -n | paste -s -d, -)"
     local args=()
     if [ -n "$fail" ]; then
-        args=(--fail "$fail")
+        args+=(--fail "$fail")
+    fi
+    if [ "$setpts" = N ]; then
+        args+=(--ramp 16,4)
+        if [ -n "$gaps" ]; then
+            args+=(--gaps "$gaps")
+        fi
     else
-        args=(--positions "$positions")
+        # The frames (Matroska timestamps are in milliseconds) of the packets that are not damaged.
+        args+=(--positions "$(ffprobe -v error -select_streams v:0 -show_entries packet=pts -of csv=p=0 "$tmp/clean_$name" |
+            awk -v damaged=" $packets " 'index(damaged, " " (NR - 1) " ") == 0 { printf "%d\n", ($1 * 24 + 500) / 1000 }' | sort -n | paste -s -d, -)")
     fi
-    # shellcheck disable=SC2086
-    # (the decoder errors are not shown, but the harness failures are)
-    if ! "$bin" "$tmp/$name" --tol 3 "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
-        grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
-        rc=1
+    if [ -n "$concealed" ]; then
+        args+=(--concealed "$concealed")
     fi
+    local threads
+    for threads in 1 8; do
+        # (the decoder errors are not shown, but the harness failures are)
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
 }
 
 # check_swapped NAME DESCRIPTION
@@ -486,10 +513,21 @@ check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame be
 check_corrupt ramp_corrupt_long_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a 20-frame gap)" 24 21 1 0 2
 check_corrupt ramp_corrupt_end_gap.mkv "VFR MKV (H.264, 24 fps, corrupted last frame before a 35-frame gap at the end)" 13 0 0 2 2
 check_swapped ramp_swapped.mov "MOV (H.264, 24 fps, broken timestamps: two PTS swapped)"
-check_damaged ramp_damaged.mkv "MKV (H.264, 24 fps, two damaged packets)" N "13 27" ""
-check_damaged ramp_damaged_vfr.mkv "VFR MKV (H.264, 24 fps, gaps, two damaged packets)" \
-    "if(lte(N\,12)\,N\,12+2+2*(N-13))" "13 27" ""
-check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its frames fail)" N "0 1 2 3 4 5 6 7" 1,2,3,4,5,6,7,8
+# Damaged packets (GOP 8: I0 P3 B1 B2 P6 B4 B5 P7 in decoding order, without scene cuts): the damaged
+# frame is a gap, and the frames of its GOP (and the last ones of the previous GOP, which the decoder
+# outputs after the next reference frame) show what the decoder conceals.
+X264_GOP="-c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p"
+check_damaged ramp_damaged_p.mkv "MKV (H.264, 24 fps, damaged P-frame)" libx264 N 12 15 7,8,9,10,11,12,13,14,15,16 "" $X264_GOP
+check_damaged ramp_damaged_idr.mkv "MKV (H.264, 24 fps, damaged IDR frame)" libx264 N 8 9 7,8,9,10,11,12,13,14,15,16 "" $X264_GOP
+check_damaged ramp_damaged_b.mkv "MKV (H.264, 24 fps, damaged B-frame)" libx264 N 18 18 15,16,17,18,19,20,21,22,23,24 "" $X264_GOP
+check_damaged ramp_damaged_vfr.mkv "VFR MKV (H.264, 24 fps, gaps, two damaged B-frames)" libx264 \
+    "if(lte(N\,12)\,N\,12+2+2*(N-13))" "13 27" "" "" "" $X264_GOP
+check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its frames fail)" libx264 N "0 1 2 3 4 5 6 7" "" "" \
+    1,2,3,4,5,6,7,8 $X264_GOP
+# Intra-only codecs: after a seek to the damaged frame, the previous frame must be held too.
+check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
+check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
+    -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 
 # Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
 # cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is

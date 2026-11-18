@@ -167,7 +167,8 @@ private:
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
-        bool _invalidDataSkipped; // a damaged packet was dropped during the current decode()
+        int _invalidDataSkipped; // the error of the last damaged packet dropped during the current decode() (0 if none)
+        std::vector<int64_t> _damagedPts; // the PTS of the damaged packets dropped so far (bounded)
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         SwsContext* _convertCtx;
@@ -225,7 +226,8 @@ private:
             , _avNextFrame(nullptr)
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
-            , _invalidDataSkipped(false)
+            , _invalidDataSkipped(0)
+            , _damagedPts()
             , _nextDecodedPts(AV_NOPTS_VALUE)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
@@ -300,6 +302,11 @@ private:
         static void destroy(Stream* s)
         {
             delete (s);
+        }
+
+        bool isDamagedPts(int64_t pts) const
+        {
+            return std::find(_damagedPts.begin(), _damagedPts.end(), pts) != _damagedPts.end();
         }
 
         static bool hasFrame(const AVFrame* f)
@@ -434,6 +441,7 @@ private:
     unsigned long _seekCount; // number of seeks by decode(), for tests
     int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
     bool _readAtOpen; // the constructor read or sought in the file, after avformat_find_stream_info()
+    bool _damagedPacketWarned; // a warning was logged for a damaged packet
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
