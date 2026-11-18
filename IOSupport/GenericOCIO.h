@@ -183,12 +183,8 @@ public:
     void setValues(const OCIO_NAMESPACE::ConstContextRcPtr& context, const std::string& inputSpace, const std::string& outputSpace);
 #endif
 
-    // Calls inputCheck and outputCheck
-    void refreshInputAndOutputState(double time)
-    {
-        inputCheck(time);
-        outputCheck(time);
-    }
+    // update the choice menus (and their state) from the string params, at time
+    void refreshInputAndOutputState(double time);
 
     // While an object of this class exists, the effect is in an instance changed action (where OFX 1.4 allows
     // setting keys, see paramSetValueAtTime in ofxParam.h): GenericOCIO may then set keys on the colorspace params.
@@ -200,7 +196,10 @@ public:
         explicit InstanceChanged(GenericOCIO* ocio)
             : _ocio(ocio)
         {
-            ++_ocio->_instanceChangedDepth;
+            if (_ocio->_instanceChangedDepth++ == 0) {
+                // a new action: the params may have other expressions
+                _ocio->resetExpressionCache();
+            }
         }
         ~InstanceChanged() { --_ocio->_instanceChangedDepth; }
 
@@ -233,22 +232,26 @@ public:
 
 private:
     void loadConfig();
-    void inputCheck(double time);
-    void outputCheck(double time);
+    void resetExpressionCache();
 #ifdef OFX_IO_USING_OCIO
     // canonicalize a colorspace string param that changed at time, or reset it to a valid colorspace
     void fixColorspaceAtTime(OFX::StringParam* str, double time, bool canonicalize, bool fallback, bool warn);
 #endif
 #if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
-    // update the state and value (or keys) of a choice menu from its string param (initialIndex: see
-    // _inputChoiceInitialIndex)
-    void colorspaceCheck(OFX::StringParam* str, OFX::ChoiceParam* choice, int* initialIndex, double time);
-    // true if the choice menu has the same keys as its string param (see GenericOCIO.cpp)
-    bool choiceMirrorsString(OFX::StringParam* str, OFX::ChoiceParam* choice) const;
-    // give the choice menus the keys of the string params
+    struct Side;
+    // the side of a colorspace param (its string param or its menu), or NULL
+    Side* sideOfParam(const std::string& paramName, bool* isChoice);
+    // update the state and value (or keys) of the menu of a side from its string param
+    void colorspaceCheck(Side& side, double time);
+    // hasExpressionKeys() of the string param or the menu of a side, cached in an instance changed action
+    bool strHasExpression(Side& side);
+    bool choiceHasExpression(Side& side);
+    // true if the menu of a side has the same keys as its string param (see GenericOCIO.cpp)
+    bool choiceMirrorsString(Side& side);
+    // give the menus the keys of the string params
     void syncChoicesFromStrings();
-    // set the string param from its choice menu, after a user edit of the menu at time
-    void changedChoice(OFX::StringParam* str, OFX::ChoiceParam* choice, int initialIndex, double time);
+    // set the string param of a side from its menu, after a user edit of the menu at time
+    void changedChoice(Side& side, double time);
 #endif
 
 #ifdef OFX_IO_USING_OCIO
@@ -286,17 +289,22 @@ private:
 #ifdef OFX_OCIO_CHOICE
     bool _choiceIsOk; //< true if the choice menu contains the right entries
     std::string _choiceFileName; //< the name of the OCIO config file that was used for the choice menu
-    OFX::ChoiceParam* _inputSpaceChoice; //< the input colorspace we're converting from
-    OFX::ChoiceParam* _outputSpaceChoice; //< the output colorspace we're converting to
-    // true once the choice menus have the keys of the string params, if choiceMirrorsString(): they are not saved, so
-    // that after loading a project they have no keys, and they get them at the first instance changed action that
-    // GenericOCIO gets (only there may a plug-in set keys). Not saved either.
+    // The colorspace params of a side (input or output): its string param, which is rendered and saved, and its menu.
+    // The menus are not saved: after loading a project, they have no keys, even if the strings have keys, and they
+    // show the value set outside of an instance changed action (initialIndex): the string's colorspace at time 0, set
+    // by the constructor, or the one guessed from the file name by a writer's createInstance. They get the strings'
+    // keys at the first instance changed action that GenericOCIO gets, the only action where a plug-in may set keys
+    // (_choiceAnimSynced, not saved either). Until then, a menu key with the value initialIndex (e.g. Set Key on the
+    // menu) is not an edit (see changedChoice()).
+    struct Side {
+        OFX::StringParam* str; //< NULL if the effect doesn't have this side
+        OFX::ChoiceParam* choice; //< its menu
+        int initialIndex;
+        int strExpression; //< hasExpressionKeys(str), if known in this instance changed action (else -1)
+        int choiceExpression; //< hasExpressionKeys(choice), likewise
+    };
+    Side _sides[2]; //< input, output
     bool _choiceAnimSynced;
-    // the values of the menus set outside of an instance changed action, e.g. by the constructor (the colorspaces of
-    // the string params at time 0), or by a writer's createInstance (the colorspace guessed from the file name):
-    // until the menus have the keys of the strings, a key with that value is not an edit (see changedChoice())
-    int _inputChoiceInitialIndex;
-    int _outputChoiceInitialIndex;
 #endif
     OFX::StringParam* _contextKey1;
     OFX::StringParam* _contextValue1;
