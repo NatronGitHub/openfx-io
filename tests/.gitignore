@@ -41,3 +41,12 @@
 /oiio_threadpool_test.dSYM/
 /runscript_output_test
 /runscript_output_test.dSYM/
+/exr_read_test
+/exr_read_test.dSYM/
+/exr_read_test_tsan
+/exr_read_test_tsan.dSYM/
+/exr_read_bench
+/exr_read_bench.dSYM/
+/.exr_read/
+/.exr_read_tsan/
+/.exr_bench/

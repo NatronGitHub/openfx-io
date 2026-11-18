@@ -1,0 +1,5 @@
+# ThreadSanitizer suppressions for test-exr-tsan (tests/Makefile)
+# openfx Support library: OFX::Log::indent()/outdent() update a global counter without a lock in every action
+# ("not MP sane at the moment", ofxsLog.cpp); it is only used for the log indentation.
+race:OFX::Log::indent
+race:OFX::Log::outdent

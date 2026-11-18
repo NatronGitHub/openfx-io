@@ -103,8 +103,8 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test runscript_output_test oiio_threadpool_test
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr test-exr-tsan bench-exr clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -156,6 +156,22 @@ ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
+# -pthread: the test uses std::thread
+EXR_READ_SRCS := ../EXR/ReadEXR.cpp $(READER_HOOKS_SRCS)
+EXR_READ_CXXFLAGS := -I../EXR -pthread
+
+exr_read_test: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+# the same, with ThreadSanitizer (data races in the concurrent renders)
+exr_read_test_tsan: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) -fsanitize=thread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+# the same, optimized, for bench-exr (the plug-in is built with -O2 in a release build)
+exr_read_bench: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -O2 $(EXR_READ_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
 runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h ../RunScript/RunScriptOutput.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
 
@@ -163,7 +179,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -204,6 +220,21 @@ test-ocio-cdl: ocio_cdl_test
 test-oiio-threads: oiio_threadpool_test
 	OCIO=$(CURDIR)/test.ocio ./oiio_threadpool_test
 
+# ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders (#123)
+test-exr: exr_read_test
+	rm -rf .exr_read && mkdir -p .exr_read
+	OCIO=$(CURDIR)/test.ocio ./exr_read_test $(CURDIR)/.exr_read
+
+# the same with ThreadSanitizer (needs a compiler that supports -fsanitize=thread)
+test-exr-tsan: exr_read_test_tsan
+	rm -rf .exr_read_tsan && mkdir -p .exr_read_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 suppressions=$(CURDIR)/tsan.supp $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
+
+# ReadEXR's render time on 2048x1556 RGBA half files, ZIP, PIZ and DWAA (EXR_THREADS: OpenEXR's thread count)
+bench-exr: exr_read_bench
+	rm -rf .exr_bench && mkdir -p .exr_bench
+	OCIO=$(CURDIR)/test.ocio ./exr_read_bench --bench $(CURDIR)/.exr_bench
+
 clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
@@ -213,4 +244,5 @@ clean:
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \
+	       exr_read_test exr_read_test.dSYM exr_read_test_tsan exr_read_test_tsan.dSYM exr_read_bench exr_read_bench.dSYM .exr_read .exr_read_tsan .exr_bench \
 	       runscript_win32_test runscript_win32_test.dSYM runscript_output_test runscript_output_test.dSYM
