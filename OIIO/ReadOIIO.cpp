@@ -2160,8 +2160,9 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
 
     getLayers(subimages, &layersMap, 0);
 
-    /// Find the view
-    string viewName = getViewName(view);
+    /// Find the view (getViewName() needs the multi-plane suite V2, a Nuke extension: without it, e.g. in an OFX 1.4
+    /// host, there is a single view, the main one)
+    string viewName = gHostSupportsMultiPlane ? getViewName(view) : string("Main");
     ViewsLayersMap::iterator foundView = layersMap.end();
     for (ViewsLayersMap::iterator it = layersMap.begin(); it != layersMap.end(); ++it) {
         if (caseInsensitiveCompare(it->first, viewName)) {
