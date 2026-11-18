@@ -13,6 +13,8 @@
 # PFM), and a loose one for JPEG and MOV.
 # ReadEXR and ReadOIIO also read EXR files that oiiotool writes with various data and display windows: ReadEXR's images
 # must be the same as ReadOIIO's, with the expected bounds (see below).
+# OCIOColorSpace swaps animated colorspaces: check_report.py checks its parameters' keys and values, and its images,
+# in hostDemo's --report file (see below).
 # A test fails on any load, describe, instance or render error (hostDemo's exit status), on a crash, on an error
 # message of the plug-in (OfxMessageError, OfxMessageFatal), on a timeout, if an output frame of hostDemo is missing,
 # if a writer's file is missing or empty, or if a reader's images differ from its writer's. A reader whose input file
@@ -70,6 +72,7 @@ if [ -z "$PYTHON" ] || ! "$PYTHON" -c 'import sys; sys.exit(sys.version_info[0] 
     exit 1
 fi
 COMPARE=$(native "$SRC/tests/hostdemo/compare.py")
+CHECK_REPORT=$(native "$SRC/tests/hostdemo/check_report.py")
 export OCIO=${OCIO:-$(native "$SRC/tests/test.ocio")}
 OUT=$WORK/out
 FILES=$WORK/files
@@ -121,7 +124,8 @@ frames_ok() {
 # Renders the plug-in; the test is called <name> (logs: out/<name>.log and out/<name>.json). The files before "--"
 # must exist (non-empty) before the render, e.g. a reader's input; the file $WRITTEN, if set, must exist (non-empty)
 # after it; if $COMPARE_WITH is set ("<writer test name> <tolerance> [--movie]"), compare.py must find the same
-# images as the writer's.
+# images as the writer's; if $CHECK is set (check_report.py's checks, separated by spaces), they must pass on the
+# --report file.
 run() {
     local name=$1 id=$2 ctx=$3
     shift 3
@@ -201,6 +205,14 @@ run() {
             why="its images differ from those of $writer"
             cat "$OUT/$name.compare" >> "$log"
         fi
+    elif [ -n "$CHECK" ]; then
+        local checks
+        # (split on spaces and newlines, without pathname expansion of the [[t,v]...] keys)
+        read -r -d '' -a checks <<< "$CHECK"
+        if ! "$PYTHON" "$CHECK_REPORT" "$(native "$OUT/$name.json")" "${checks[@]}" > "$OUT/$name.check" 2>&1; then
+            why="its report fails check_report.py"
+            cat "$OUT/$name.check" >> "$log"
+        fi
     fi
     if [ -n "$why" ]; then
         echo "FAIL $name: $id ($ctx): $why"
@@ -222,7 +234,7 @@ write() {
     local name=$1 id=$2 file=$FILES/$3
     shift 3
     rm -f "$file"
-    WRITTEN=$file COMPARE_WITH="" run "$name" "$id" general -- -s "filename=$(native "$file")" "$@"
+    WRITTEN=$file COMPARE_WITH="" CHECK="" run "$name" "$id" general -- -s "filename=$(native "$file")" "$@"
 }
 
 # read <name> <plug-in id> <file> <writer test name> <tolerance> [hostDemo arguments...]
@@ -231,7 +243,7 @@ write() {
 read_() {
     local name=$1 id=$2 file=$FILES/$3 writer=$4 tol=$5
     shift 5
-    WRITTEN="" COMPARE_WITH="$writer $tol" run "$name" "$id" general "$file" -- -s "filename=$(native "$file")" "$@"
+    WRITTEN="" COMPARE_WITH="$writer $tol" CHECK="" run "$name" "$id" general "$file" -- -s "filename=$(native "$file")" "$@"
 }
 
 P=fr.inria.openfx
@@ -311,7 +323,28 @@ echo "skip ReadOIIO-raw: no RAW input (none can be generated at test time, and r
 # filters, with default parameters, on hostDemo's default input (OCIO: the config in $OCIO)
 WRITTEN=""
 COMPARE_WITH=""
+CHECK=""
 run OCIOColorSpace    $P.OCIOColorSpace    filter
+# OCIOColorSpace's Swap Colorspaces button, with an animated colorspace (#128), in a config where xN is N times the
+# reference (so that x1 -> x2 halves the 0.25 input). The input colorspace menu (ocioInputSpaceIndex) has keys, x2 at
+# t=0 and x4 at t=1; the output colorspace is x1 (the default, scene_linear). After a swap at t=0, the output menu has
+# the input's keys and the input one is x1, without keys. hostDemo doesn't animate strings
+# (kOfxParamHostPropSupportsStringAnimation=0): the colorspace string params, which the render uses, get the values at
+# the time of the swap, so that the output one is x2 (the input's value at t=0, not x4, that of the last edit) and
+# every render is x1 -> x2. Swapping again at t=1 moves the keys back to the input menu, and its string is x4, the
+# value at t=1.
+cp "$SRC/tests/swap.ocio" "$FILES/swap.ocio"
+SWAP="-d float -i Source=solid:0.25,0.25,0.25,1 -s ocioInputSpaceIndex@0=1 -s ocioInputSpaceIndex@1=3"
+SWAPOCIO=$(native "$FILES/swap.ocio")
+# shellcheck disable=SC2086
+OCIO=$SWAPOCIO CHECK="keys:ocioInputSpaceIndex=[] keys:ocioOutputSpaceIndex=[[0,1],[1,3]]
+    value:ocioInputSpace=scene_linear value:ocioOutputSpace=x2 mean@0=0.125,0.125,0.125,1 mean@1=0.125,0.125,0.125,1" \
+    run OCIOColorSpace-swap0  $P.OCIOColorSpace filter "$FILES/swap.ocio" -- $SWAP -s ocioSwapColorspaces@0
+# shellcheck disable=SC2086
+OCIO=$SWAPOCIO CHECK="keys:ocioInputSpaceIndex=[[0,1],[1,3]] keys:ocioOutputSpaceIndex=[]
+    value:ocioInputSpace=x4 value:ocioOutputSpace=scene_linear mean@0=1,1,1,1 mean@1=1,1,1,1" \
+    run OCIOColorSpace-swap01 $P.OCIOColorSpace filter "$FILES/swap.ocio" -- $SWAP -s ocioSwapColorspaces@0 \
+    -s ocioSwapColorspaces@1
 run OCIODisplay       $P.OCIODisplay       filter
 run OCIOCDLTransform  $P.OCIOCDLTransform  filter
 # OCIOFileTransform has no default file (it fails with "FileTransform: empty file path"): an identity 1D LUT

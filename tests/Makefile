@@ -103,8 +103,8 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS)
@@ -151,6 +151,19 @@ endif
 
 ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+# OCIOColorSpace (with the OpenGL sources of ocio_cdl_test) and the reader/writer plug-ins
+OCIO_ANIM_SRCS := ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIOPluginBase.cpp \
+    ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp \
+    ../SupportExt/glad/glad.cpp ../SupportExt/glad/gladegl.cpp ../SupportExt/ofxsOGLUtilities.cpp \
+    $(PLUGIN_SRCS)
+
+ocio_colorspace_anim_test: ocio_colorspace_anim_test.cpp ofx_test_host.h $(OCIO_ANIM_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+# random operations on the same host, checking invariants (it includes ocio_colorspace_anim_test.cpp)
+ocio_anim_fuzz: ocio_anim_fuzz.cpp ocio_colorspace_anim_test.cpp ofx_test_host.h $(OCIO_ANIM_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) ocio_anim_fuzz.cpp $(OCIO_ANIM_SRCS) $(OFX_SUPPORT) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 
 # the OIIO plug-ins, with OIIOResize (which is not in PLUGIN_SRCS: it renders with ImageBufAlgo)
 oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
@@ -223,7 +236,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -260,6 +273,22 @@ test-reader-hooks: reader_hooks_test
 test-ocio-cdl: ocio_cdl_test
 	OCIO=$(CURDIR)/test.ocio ./ocio_cdl_test
 
+# the animated colorspaces of GenericOCIO, in a host that animates strings and choices like Natron (#128)
+# (and a short fuzz run of each plug-in, with fixed seeds; FUZZ_OPS=n for more operations)
+FUZZ_OPS ?= 2000
+test-ocio-anim: ocio_colorspace_anim_test ocio_anim_fuzz
+	OCIO=$(CURDIR)/swap.ocio ./ocio_colorspace_anim_test
+	OCIO=$(CURDIR)/swap.ocio ./ocio_anim_fuzz cs $(FUZZ_OPS) 1
+	OCIO=$(CURDIR)/swap.ocio ./ocio_anim_fuzz writer $(FUZZ_OPS) 2
+	OCIO=$(CURDIR)/swap.ocio ./ocio_anim_fuzz reader $(FUZZ_OPS) 3
+	OCIO=$(CURDIR)/swap.ocio OCIO_ANIM_NOT_NATRON=1 ./ocio_colorspace_anim_test
+	OCIO=$(CURDIR)/swap.ocio OCIO_ANIM_NOT_NATRON=1 ./ocio_anim_fuzz cs $(FUZZ_OPS) 4
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz cs $(FUZZ_OPS) 5
+	# (seeds that found bugs in the review)
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz reader 20000 32
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz cs 50000 77
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz cs 50000 102
+
 # OpenImageIO's thread pool is stopped when the last OIIO plug-in is unloaded, not the first one (#118)
 test-oiio-threads: oiio_threadpool_test
 	OCIO=$(CURDIR)/test.ocio ./oiio_threadpool_test
@@ -293,6 +322,7 @@ clean:
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
+	       ocio_colorspace_anim_test ocio_colorspace_anim_test.dSYM ocio_anim_fuzz ocio_anim_fuzz.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \
 	       exr_read_test exr_read_test.dSYM exr_read_test_tsan exr_read_test_tsan.dSYM exr_read_bench exr_read_bench.dSYM .exr_read .exr_read_tsan .exr_bench \
 	       exr_read_test_tsan_debug exr_read_test_tsan_debug.dSYM reader_hooks_test_tsan_debug reader_hooks_test_tsan_debug.dSYM \

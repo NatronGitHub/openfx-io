@@ -2179,6 +2179,11 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
                                   const string& paramName)
 {
     const double time = args.time;
+#ifdef OFX_IO_USING_OCIO
+    // (GenericOCIO may set keys on the colorspace params, e.g. from changedFilename())
+    GenericOCIO::InstanceChanged ocioInstanceChanged(_ocio.get());
+    bool colorspaceSetByUser = false;
+#endif
 
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
@@ -2354,14 +2359,21 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
             }
         }
 #ifdef OFX_IO_USING_OCIO
-    } else if (((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit)) {
+    } else if (((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit) && !_ocio->isSettingColorspaces()) {
         // set the inputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
-        _inputSpaceSet->setValue(true);
+        // (not when GenericOCIO deletes a key, which Natron reports as a user edit)
+        colorspaceSetByUser = true;
 #endif
     }
 
 #ifdef OFX_IO_USING_OCIO
     _ocio->changedParam(args, paramName);
+    // (after GenericOCIO handled the edit: Natron reports the change of a param before setValue() returns, and after
+    // loading a project, the first instance changed action that GenericOCIO gets gives the menus the keys of the
+    // strings, which would undo the edit of a menu)
+    if (colorspaceSetByUser) {
+        _inputSpaceSet->setValue(true);
+    }
 #endif
 } // GenericReaderPlugin::changedParam
 

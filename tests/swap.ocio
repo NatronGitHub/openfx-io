@@ -1,0 +1,21 @@
+# OpenColorIO config of the tests of animated colorspaces (ocio_colorspace_anim_test, hostdemo/run.sh):
+# xN is N times the reference (x1), so that converting from xN to xM multiplies by N / M.
+ocio_profile_version: 2
+search_path: ""
+strictparsing: false
+roles: {default: x1, reference: x1, scene_linear: x1, data: x1}
+displays:
+  none:
+    - !<View> {name: Raw, colorspace: x1}
+active_displays: [none]
+active_views: [Raw]
+colorspaces:
+  - !<ColorSpace> {name: x1, family: scale, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: x2, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<MatrixTransform> {matrix: [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]}}
+  - !<ColorSpace> {name: x3, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<MatrixTransform> {matrix: [3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 1]}}
+  - !<ColorSpace> {name: x4, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<MatrixTransform> {matrix: [4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1]}}
+# (a colorspace name before the extension of a file name is its colorspace, e.g. out_x2.exr, for the readers' and
+# writers' guess)
+file_rules:
+  - !<Rule> {name: ColorSpaceNamePathSearch}
+  - !<Rule> {name: Default, colorspace: default}
