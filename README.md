@@ -1,7 +1,7 @@
 openfx-io [![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?style=flat-square)](https://github.com/NatronGitHub/openfx-io/blob/master/LICENSE) [![Open Hub](https://www.openhub.net/p/openfx-io/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/openfx-io?ref=Thin+badge) [![CI](https://github.com/NatronGitHub/openfx-io/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/NatronGitHub/openfx-io/actions/workflows/ci.yml)
 =========
 
-A set of Readers/Writers plugins written using the OpenFX standard.
+A set of Readers/Writers plugins written using the [OpenFX](https://openfx.readthedocs.io/) standard.
 
 License
 -------
@@ -41,22 +41,23 @@ to checkout a given tag.
 - [OpenColorIO](https://opencolorio.org) 2.x
 - [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
   [LibRaw](https://www.libraw.org) for the RAW formats
-- [OpenEXR](https://openexr.com) and Imath
-- [FFmpeg](https://ffmpeg.org) 4.0 to 9 (`tests/ffmpeg_syntax_check.sh` checks that the FFmpeg plug-ins
+- [OpenEXR](https://openexr.com) and [Imath](https://github.com/AcademySoftwareFoundation/Imath)
+- [FFmpeg](https://ffmpeg.org) 4.0 to 9 ([`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins
   compile against a given FFmpeg version)
-- libpng
-- [SeExpr](https://github.com/wdas/SeExpr) 2.11, which has the SeExpr 1 API (`SeExpression.h`); SeExpr 3.x
+- [libpng](http://www.libpng.org/pub/png/libpng.html)
+- [SeExpr](https://github.com/wdas/SeExpr) [2.11](https://github.com/wdas/SeExpr/releases/tag/v2.11), which has the SeExpr 1 API (`SeExpression.h`); SeExpr 3.x
   (the SeExpr2 API) does not work
 
 The [CI workflow](.github/workflows/ci.yml) builds and tests the plug-ins on Linux (Ubuntu packages),
-on Windows with MSYS2 UCRT64, and on macOS with Xcode's clang and MacPorts. It is the reference for the
+on Windows with [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/), and on macOS with
+[Xcode](https://developer.apple.com/xcode/)'s clang and [MacPorts](https://www.macports.org). It is the reference for the
 packages to install and the commands to run on each platform.
-Natron 2.6 builds the plug-ins on Rocky Linux 8 with gcc-toolset-14, on macOS 14 and later (arm64), and on
+[Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 8 with gcc-toolset-14, on macOS 14 and later (arm64), and on
 MSYS2 UCRT64.
 
 ## Compiling with CMake
 
-CMake (3.16 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as
+[CMake](https://cmake.org) (3.16 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as
 the Makefiles. It needs an out-of-tree build directory:
 
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
@@ -79,15 +80,15 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `OFX_IO_WITH_<group>` | ON | Build the group if its libraries are found. Groups: `OCIO`, `EXR`, `FFMPEG`, `OIIO`, `LIBRAW` (RAW support in ReadOIIO), `PNG`, `SEEXPR`, `RUNSCRIPT`. |
 | `OFX_IO_REQUIRE_ALL` | OFF | Fail if a group that is not disabled can't be built (for packagers). |
 | `SEEXPR_HOME` | empty (CMake's search paths) | SeExpr 2.11 prefix (`include/SeExpression.h`, `lib/libSeExpr`). |
-| `FFMPEG_PKG_CONFIG_PATH` | empty (pkg-config's search path) | pkg-config directory of the FFmpeg to use, e.g. `/opt/local/libexec/ffmpeg8/lib/pkgconfig` for MacPorts' `ffmpeg8` port, which MacPorts' OpenImageIO links. |
+| `FFMPEG_PKG_CONFIG_PATH` | empty (pkg-config's search path) | pkg-config directory of the FFmpeg to use, e.g. `/opt/local/libexec/ffmpeg8/lib/pkgconfig` for MacPorts' [`ffmpeg8`](https://ports.macports.org/port/ffmpeg8/) port, which MacPorts' OpenImageIO links. |
 | `OFX_CXX_STANDARD` | `CMAKE_CXX_STANDARD`, or 17 | C++ standard of the plug-ins and of the OFX Support library. |
-| `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: `osxDeploy.sh`, like the Makefiles' release builds). |
+| `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: [`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh), like the Makefiles' release builds). |
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
 | `OFX_PLUGIN_RPATH` | empty | Extra install rpath directories of the plug-in (`;`-separated; ignored on Windows). |
-| `OFX_USE_OPENMP` | ON | Link OpenMP when LibRaw's pkg-config file asks for it. |
-| `BUILD_TESTING` | ON | `ctest` runs the tests of `tests/Makefile` (`IO_TESTS_MAKE_ARGS`: extra `make` arguments, e.g. `WITH_LIBRAW=1`). |
+| `OFX_USE_OPENMP` | ON | Link [OpenMP](https://www.openmp.org) when LibRaw's pkg-config file asks for it. |
+| `BUILD_TESTING` | ON | `ctest` runs the tests of [`tests/Makefile`](tests/Makefile) (`IO_TESTS_MAKE_ARGS`: extra `make` arguments, e.g. `WITH_LIBRAW=1`). |
 | `IO_TESTS_CXX` | `CMAKE_CXX_COMPILER` | C++ compiler for `tests/Makefile`. |
-| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's hostDemo; `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, `tests/hostdemo/run.sh`). Needs `BUILD_TESTING`. |
+| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [hostDemo](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples); `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)). Needs `BUILD_TESTING`. |
 
 ## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
 
@@ -107,11 +108,11 @@ Another common option is `BITS=32` for compiling a 32-bits version,
 `BITS=64` for a 64-bits version, and `BITS=Universal` for a universal
 binary (macOS only).
 
-The libraries are found with `pkg-config`. Other useful variables are `SEEXPR_HOME` (the SeExpr 2.11
+The libraries are found with [`pkg-config`](https://www.freedesktop.org/wiki/Software/pkg-config/). Other useful variables are `SEEXPR_HOME` (the SeExpr 2.11
 prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). The Makefiles do not set the
 C++ standard: if the compiler defaults to an older one, pass it in `CXX`, e.g.
 `make CONFIG=release CXX="clang++ -std=c++17"`.
-See the file `Makefile.master` in the toplevel directory for other useful
+See the file [`Makefile.master`](Makefile.master) in the toplevel directory for other useful
 flags/variables.
 
 The compiled plugins are placed in subdirectories named after the
@@ -129,11 +130,11 @@ compiling:
 
 See the [CI workflow](.github/workflows/ci.yml) for the complete package lists and build commands.
 
-- **Linux**: install the development packages of the libraries above from the distribution. On Ubuntu
-  24.04: `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
+- **Linux**: install the development packages of the libraries above from the distribution. On [Ubuntu
+  24.04](https://packages.ubuntu.com/noble/): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
   libpng-dev libwebp-dev libtiff-dev libopenjp2-7-dev libavcodec-dev libavformat-dev libavutil-dev
   libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools` for the tests and hostDemo.
-  Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with `bison` and `flex`) and passes its
+  Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with [`bison`](https://www.gnu.org/software/bison/) and [`flex`](https://github.com/westes/flex)) and passes its
   prefix in `SEEXPR_HOME`.
 - **macOS**: CI uses MacPorts and Xcode's clang (`/usr/bin/clang++`), with `/opt/local/bin` first in
   `PATH` so that MacPorts' `pkg-config` and `cmake` are used:
@@ -141,18 +142,19 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   Link the FFmpeg plug-ins with the FFmpeg that OpenImageIO links
   (`FFMPEG_PKG_CONFIG_PATH=/opt/local/libexec/ffmpeg8/lib/pkgconfig`). If they would link two different
   FFmpeg builds with the same library names, the build stops, because the bundle could only contain one of
-  them. For SeExpr 2.11, install the `seexpr211` port of Natron's MacPorts tree (`tools/MacPorts` in the
-  Natron repository) and use `SEEXPR_HOME=/opt/local`; CI instead builds SeExpr 2.11 from source with that
+  them. For SeExpr 2.11, install the [`seexpr211`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts/graphics/seexpr211) port of
+  Natron's MacPorts tree ([`tools/MacPorts`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts) in the
+  Natron repository, RB-2.6 branch) and use `SEEXPR_HOME=/opt/local`; CI instead builds SeExpr 2.11 from source with that
   port's patches.
-- **MS Windows**: build in an MSYS2 UCRT64 shell, with the `mingw-w64-ucrt-x86_64-` packages of the
-  libraries above. MSYS2 packages SeExpr 2.11 (`mingw-w64-ucrt-x86_64-seexpr`), so `SEEXPR_HOME` is
-  `$MINGW_PREFIX`, as a Windows path for CMake:
+- **MS Windows**: build in an [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/) shell, with the `mingw-w64-ucrt-x86_64-` packages of the
+  libraries above. MSYS2 packages SeExpr 2.11 ([`mingw-w64-ucrt-x86_64-seexpr`](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-seexpr)), so `SEEXPR_HOME` is
+  `$MINGW_PREFIX`, as a Windows path for CMake (with [Ninja](https://ninja-build.org)):
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")"`,
   or `make CONFIG=release SEEXPR_HOME="$MINGW_PREFIX"`.
 
 ## Using Xcode on macOS
 
-In order to use the provided Xcode project file, you should add the
+In order to use the provided Xcode project file ([`IO.xcodeproj`](IO.xcodeproj)), you should add the
 following definitions in Xcode's settings
 (Settings > Locations > Custom Paths):
 - EXR_PATH: path to OpenEXR installation prefix (e.g. /usr/local or /opt/local)
@@ -163,14 +165,14 @@ following definitions in Xcode's settings
 
 ## Testing
 
-The tests in `tests/` link the plug-in sources with a minimal in-process host and need no OFX host
+The tests in [`tests/`](tests) link the plug-in sources with a minimal in-process host and need no OFX host
 application:
 `cd tests; make test`. See [tests/README.md](tests/README.md).
 
-`tools/compare_bundles.sh BUNDLE_A BUNDLE_B` compares two bundles on Linux or macOS, e.g. the `IO.ofx.bundle`
+[`tools/compare_bundles.sh`](tools/compare_bundles.sh) `BUNDLE_A BUNDLE_B` compares two bundles on Linux or macOS, e.g. the `IO.ofx.bundle`
 built by the Makefiles and the one installed by CMake: file list, `Info.plist`, resources, exported
 symbols, linked libraries and rpaths, and the plug-ins each binary loads. It also checks that each bundle
 is self-contained. Run it without arguments for its options. On macOS, configure CMake with
 `-DOFX_DEPLOY_BUNDLES=ON` for this comparison: the Makefiles' release builds deploy the bundle
-(`osxDeploy.sh`), and without that option the bundle installed by CMake is not self-contained, so all
+([`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh)), and without that option the bundle installed by CMake is not self-contained, so all
 its libraries differ.
