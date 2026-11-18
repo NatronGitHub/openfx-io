@@ -332,13 +332,11 @@ getLibRawDemosaicCaps(bool* gpl2,
 // Channels 0 and 1 are reserved for 0 and 1 constants
 #define kXChannelFirst 2
 
-#define kParamChannelOutputLayerHint "This is the layer that will be set to the the color plane. This is relevant only for image formats that can have multiple layers: " \
+#define kParamChannelOutputLayerHint "This is the layer that will be set to the color plane. This is relevant only for image formats that can have multiple layers: " \
                                      "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
 
 #define kParamChannelOutputLayer "outputLayer"
 #define kParamChannelOutputLayerLabel "Output Layer"
-#define kParamChannelOutputLayerHint "This is the layer that will be set to the the color plane. This is relevant only for image formats that can have multiple layers: " \
-                                     "exr, tiff, psd, etc... Note that in Natron you can access other layers with a Shuffle node downstream of this node."
 
 // The string param behind the dynamic choice menu
 #define kParamChannelOutputLayerChoice kParamChannelOutputLayer "Choice"
@@ -3281,14 +3279,12 @@ ReadOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription
                               "\n\n"
-                              "OpenImageIO supports reading/writing the following file formats:\n"
-                              "BMP (*.bmp)\n"
+                              "This plug-in reads the following file formats, if the OpenImageIO library supports them. BMP files are left to ReadMisc (from openfx-arena), GIF files to ReadFFmpeg.\n"
                               "Cineon (*.cin)\n"
                               "Direct Draw Surface (*.dds)\n"
                               "DPX (*.dpx)\n"
                               "Field3D (*.f3d)\n"
                               "FITS (*.fits)\n"
-                              "GIF (*.gif)\n"
                               "HDR/RGBE (*.hdr)\n"
 #if OIIO_VERSION >= 20100
                               "HEIC/HEIF (*.heic *.heif)\n"
