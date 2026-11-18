@@ -252,7 +252,8 @@ and checks after each one that the menus have the keys and values of the strings
 is set outside of an instance changed action, that there is no loop, that the renders follow
 the strings, that ops that add no key add none, and that undoing a swap of keyed sides
 restores them. `make test-ocio-anim` runs 2000 operations on each plug-in, with fixed seeds (and a run with
-`FUZZ_NEAR=1`, with keys and times near frames)
+`FUZZ_NEAR=1`, with keys and times near frames; `FUZZ_STRICT_A=1` doesn't skip params taken for
+expressions because of a hidden key next to keys at 0 and 1)
 (`FUZZ_OPS=n` for more); run `ocio_anim_fuzz cs|writer|reader <ops> <seed>` directly for
 others. By default, the host models Natron 2.6, with NatronGitHub/Natron#1291;
 `OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron before 2.6, without it, which hold
@@ -277,7 +278,7 @@ the pool must keep its `hardware_concurrency() - 1` threads and OIIOResize must 
 (`ImageBufAlgo::resize()`, with the host's 4 CPUs); after the unload of the last one,
 the pool must have 0 threads. It sets `OCIO=test.ocio`.
 
-### 1e2. `test-oiio-edge` — OIIOResize and OIIOText with degenerate inputs
+### 1f2. `test-oiio-edge` — OIIOResize and OIIOText with degenerate inputs
 
 `oiio_edge_test.cpp` links the OIIO plug-ins with `OIIOResize.cpp` and `OIIOText.cpp`, in the Filter context:
 

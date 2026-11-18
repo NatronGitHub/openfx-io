@@ -120,6 +120,7 @@ struct Anim {
     std::map<double, int> i;
     std::function<std::string(double)> expr; // a string param's expression (optional)
     std::function<int(double)> iexpr; // a choice param's expression, or link (optional)
+    std::set<double> user; // the times of the keys that the user set
     size_t size() const { return s.size() + i.size(); }
 };
 std::map<ParamRec*, Anim> gAnim;
@@ -249,6 +250,25 @@ endKeyDerivativeChanges(const Anim& k,
     }
 
     return other->second != it->second;
+}
+
+// likewise for a choice key
+bool
+choiceEndKeyDerivativeChanges(const Anim& k,
+                              double t)
+{
+    if (k.i.size() < 2) {
+        return false;
+    }
+    std::map<double, int>::const_iterator it = k.i.find(t);
+    if (it == k.i.begin()) {
+        return std::next(it)->second != it->second;
+    }
+    if (std::next(it) == k.i.end()) {
+        return std::prev(it)->second != it->second;
+    }
+
+    return false;
 }
 
 // set a string key: 0 = nothing changed, 1 = modified, 2 = added
@@ -618,6 +638,7 @@ aSet(ParamRec* r,
             op.oldI = op.keyAdded ? intAt(r, time) : it->second;
             changed = op.keyAdded || (it->second != v);
             k.i[time] = v;
+            changed = changed || choiceEndKeyDerivativeChanges(k, time);
         } else {
             op.oldI = paramInt(r, 0);
             changed = (op.oldI != v);
@@ -633,7 +654,7 @@ aSet(ParamRec* r,
         // a key that the plug-in adds less than 1e-6 from another key of the param (Natron's OFX key list hides it)
         const std::vector<double> all = allKeyTimes(r);
         for (size_t i = 0; i < all.size(); ++i) {
-            if ((all[i] != time) && (std::fabs(all[i] - time) < 1e-6)) {
+            if ((all[i] != time) && (std::fabs(all[i] - time) < 1e-6) && !k.user.count(all[i])) {
                 ++gNearKeysAdded;
             }
         }
@@ -720,6 +741,10 @@ aGetKeyIndex(OfxParamHandle ph,
     }
     const std::vector<double> times = keyTimes(reinterpret_cast<ParamRec*>(ph));
     *index = -1;
+    if ((direction < 0) && (std::find(times.begin(), times.end(), time) != times.end())) {
+        // (as Natron's getKeyIndex())
+        return kOfxStatFailed;
+    }
     for (size_t i = 0; i < times.size(); ++i) {
         if ((direction == 0) && (std::fabs(times[i] - time) < 1e-6)) {
             // (the first one, as Natron's getKeyIndex())
@@ -929,6 +954,8 @@ userSet(const char* name,
     if (animates(r) && (key || (k.size() > 0))) {
         changed = (k.i.count(gCurrentTime) == 0) || (k.i[gCurrentTime] != v);
         k.i[gCurrentTime] = v;
+        k.user.insert(gCurrentTime);
+        changed = changed || choiceEndKeyDerivativeChanges(k, gCurrentTime);
     } else {
         changed = (paramInt(r, 0) != v);
         setStatic(r, v);
@@ -954,6 +981,7 @@ userSetString(const char* name,
     bool changed;
     if (animates(r) && (key || (k.size() > 0))) {
         changed = (sSetKey(k, gCurrentTime, v) != 0);
+        k.user.insert(gCurrentTime);
     } else {
         changed = (paramString(r) != v);
         setStatic(r, v);
@@ -1004,6 +1032,55 @@ userDeleteKeys(const char* name,
     u.done();
 }
 
+// The motion of the selected keys (times) of a param, clamped as Natron does (DopeSheet::moveSelectedKeysAndNodes(),
+// CurveWidgetPrivate::moveSelectedKeyFrames()): no selected key gets closer than 1 frame to an unselected key, or past
+// it (the motion may then be fractional)
+double
+clampMotion(const std::map<double, int>& keys,
+            const std::vector<double>& selected,
+            double dt)
+{
+    for (size_t i = 0; i < selected.size(); ++i) {
+        for (std::map<double, int>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+            if (std::find(selected.begin(), selected.end(), it->first) != selected.end()) {
+                continue;
+            }
+            if ((dt > 0) && (it->first > selected[i])) {
+                dt = std::min(dt, std::max(0., it->first - selected[i] - 1.));
+            } else if ((dt < 0) && (it->first < selected[i])) {
+                dt = std::max(dt, std::min(0., it->first - selected[i] + 1.));
+            }
+        }
+    }
+
+    return dt;
+}
+
+// Move keys of a menu one by one, in the order of the motion, each reported before the next one moves, at time t, or at
+// its new time if t < 0
+void
+moveKeys(const char* name,
+         std::vector<double> from,
+         double dt,
+         bool reportAtNewTime)
+{
+    Anim& k = gAnim[P(name)];
+    std::sort(from.begin(), from.end());
+    if (dt > 0) {
+        std::reverse(from.begin(), from.end());
+    }
+    for (size_t i = 0; (dt != 0.) && (i < from.size()); ++i) {
+        if (!k.i.count(from[i])) {
+            continue;
+        }
+        const int v = k.i[from[i]];
+        k.i.erase(from[i]);
+        k.i[from[i] + dt] = v;
+        k.user.insert(from[i] + dt);
+        instanceChanged(name, kOfxChangeUserEdited, reportAtNewTime ? from[i] + dt : gCurrentTime);
+    }
+}
+
 // the user moves a key in the curve editor (reported at the current time)
 void
 userMoveKey(const char* name,
@@ -1012,15 +1089,11 @@ userMoveKey(const char* name,
             int maxCalls = 12)
 {
     UserAction u(std::string("move key of ") + name + " in the curve editor" + at(), maxCalls);
-    Anim& k = gAnim[P(name)];
-    const int v = k.i[from];
-    k.i.erase(from);
-    k.i[to] = v;
-    instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
+    moveKeys(name, { from }, clampMotion(gAnim[P(name)].i, { from }, to - from), false);
     u.done();
 }
 
-// the user moves keys in the dope sheet (each reported at its new time)
+// the user moves keys in the dope sheet (by whole frames, each reported at its new time)
 void
 userDopeSheetMoveKeys(const char* name,
                       const std::vector<double>& from,
@@ -1028,19 +1101,7 @@ userDopeSheetMoveKeys(const char* name,
                       int maxCalls = 24)
 {
     UserAction u(std::string("move keys of ") + name + " in the dope sheet", maxCalls);
-    Anim& k = gAnim[P(name)];
-    std::map<double, int> moved;
-    for (size_t i = 0; i < from.size(); ++i) {
-        // (the dope sheet moves keys by whole frames)
-        moved[from[i] + std::round(dt)] = k.i[from[i]];
-        k.i.erase(from[i]);
-    }
-    for (std::map<double, int>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
-        k.i[it->first] = it->second;
-    }
-    for (std::map<double, int>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
-        instanceChanged(name, kOfxChangeUserEdited, it->first);
-    }
+    moveKeys(name, from, clampMotion(gAnim[P(name)].i, from, std::floor(dt + 0.5)), true);
     u.done();
 }
 
@@ -1054,6 +1115,7 @@ userPasteKeys(const char* name,
     Anim& k = gAnim[P(name)];
     for (std::map<double, int>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
         k.i[it->first] = it->second;
+        k.user.insert(it->first);
     }
     instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
@@ -1233,10 +1295,16 @@ newInstance(Plug& plug,
         it->second.ov = Value();
     }
     sAssign(gAnim[P(kIS)], restored.inputKeys, &restored.inputIdx);
+    for (auto& p : restored.inputKeys) {
+        gAnim[P(kIS)].user.insert(p.first);
+    }
     gAnim[P(kIS)].expr = restored.inputExpr;
     gAnim[P(kIC)].i = restored.inputChoiceKeys;
     if (plug.ctx.params.count(kOS)) {
         sAssign(gAnim[P(kOS)], restored.outputKeys, &restored.outputIdx);
+        for (auto& p : restored.outputKeys) {
+            gAnim[P(kOS)].user.insert(p.first);
+        }
     }
     if (!restored.configFile.empty()) {
         setOverrideString(&plug.ctx, kConfigFile, restored.configFile);
@@ -1647,27 +1715,49 @@ testFractionalKeyTimes()
 void
 testNearKeyTimes()
 {
-    std::printf("==== Swap with keys less than 1e-6 apart on the two sides ====\n");
+    if (!OFX::getImageEffectHostDescription()->isNatron) {
+        // (Natron's key lists)
+        return;
+    }
+    std::printf("==== Swap with keys less than 1e-6 apart on the two sides, twice ====\n");
     Restored restored;
     restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
     restored.outputKeys = { { 0., "x3" }, { 10.0000001, "x1" } };
     newInstance(gColorSpace, restored);
     gCurrentTime = 5.;
     userSetString(kKey1, "a");
+    gNearKeysAdded = 0;
     userPress(kSwap);
-    // Natron keeps both keys of the input near 10, but its OFX key list only reports the first one: the other one is
-    // hidden from the plug-in, and the menu doesn't get it
-    checkAnim(kIS, "{0:3,10:3,10:1}");
-    checkAnim(kOS, "{0:2,10:4,10:4}");
-    check(gAnim[P(kIS)].s.count(10.0000001) && gAnim[P(kIS)].s[10.0000001] == "x1", "the input has x1 from t=10.0000001");
+    // (Natron reads strings at frames: the output's key at 10.0000001 is read from frame 11 on, where both sides get
+    // a key, instead of a key that the input's OFX key list would hide)
+    checkSides("{0:3,10:3,11:1}", "{0:2,10:4,11:4}");
+    check(gNearKeysAdded == 0, "the swap adds no key less than 1e-6 from another (%d)", gNearKeysAdded);
     checkRender(10., 3, 4);
     checkRender(11., 1, 4);
+    userPress(kSwap);
+    checkSides("{0:2,10:4,11:4}", "{0:3,10:3,11:1}");
+    checkRender(10., 4, 3);
+    checkRender(11., 4, 1);
+
+    std::printf("==== Deleting a menu key before a hidden key of the string keeps that key ====\n");
+    restored = Restored();
+    restored.inputKeys = { { 0., "x3" }, { 10., "x3" }, { 10.0000001, "x1" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 12.;
+    userSetString(kKey1, "a");
+    checkAnim(kIC, "{0:3,10:3}"); // (the key at 10.0000001 is hidden from the plug-in)
+    checkRender(11., 1, 1);
+    userDeleteKeys(kIC, { 10. });
+    checkSides("{0:3,10:1}", "=1");
+    check(gAnim[P(kIS)].s.count(10.0000001) == 1, "the string's key at 10.0000001 is kept");
+    checkRender(11., 1, 1);
 }
 
 void
 testNonNatronHost()
 {
     std::printf("==== Another host than Natron, which reads string params at the given time: two keys in a frame ====\n");
+    const bool isNatron = OFX::getImageEffectHostDescription()->isNatron;
     OFX::getImageEffectHostDescription()->isNatron = false;
     const bool round = gRoundStringTime;
     gRoundStringTime = false;
@@ -1679,7 +1769,7 @@ testNonNatronHost()
     checkRender(10.4, 3, 1);
     checkRender(10.7, 2, 1);
     gRoundStringTime = round;
-    OFX::getImageEffectHostDescription()->isNatron = true;
+    OFX::getImageEffectHostDescription()->isNatron = isNatron;
 }
 
 void

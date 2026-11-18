@@ -6,6 +6,7 @@
 #include "ocio_colorspace_anim_test.cpp"
 #undef main
 
+#include <limits>
 #include <random>
 
 namespace {
@@ -92,9 +93,21 @@ struct Fuzz {
 Fuzz F;
 // (before a swap) the input and output strings have keys less than 1e-6 apart, or one of them has
 bool gSwapNearKeys = false;
-// (before an op) a param has a key less than 1e-6 after another one, hidden from the plug-in, which may see it after the
-// op (e.g. once the other one is moved), and mirror it
-bool gHiddenKeysBefore = false;
+// (before an op) the number of keys hidden from the plug-in (less than 1e-6 after another one), which it may see after
+// the op (e.g. once the other one is moved), and mirror
+int gHiddenKeysBefore = 0;
+int
+hiddenKeys()
+{
+    int n = 0;
+    for (const char* name : { kIS, kIC, kOS, kOC }) {
+        if (F.plug->ctx.params.count(name)) {
+            n += (int)(allKeyTimes(P(name)).size() - keyTimes(P(name)).size());
+        }
+    }
+
+    return n;
+}
 int gKeysBeforeOp = 0; // (the number of keys before the op)
 
 std::vector<double>
@@ -486,8 +499,8 @@ generate(bool noKeyAdding)
         int n = 1 + F.R(3);
         for (int i = 0; i < n; ++i) {
             // (sometimes at a fractional time, as from a script; with FUZZ_NEAR, often less than 1e-5 from a frame)
-            static const double near[] = { 1e-7, -1e-7, 5e-7, 9.99e-7, 1e-6, 1.001e-6, 1e-5 };
-            const double frac = (std::getenv("FUZZ_NEAR") && F.R(2)) ? near[F.R(7)] : (F.R(4) ? 0. : 0.3);
+            static const double nearOffsets[] = { 1e-7, -1e-7, 5e-7, 9.99e-7, 1e-6, 1.001e-6, 1e-5 };
+            const double frac = (std::getenv("FUZZ_NEAR") && F.R(2)) ? nearOffsets[F.R(7)] : (F.R(4) ? 0. : 0.3);
             o.keys[F.randTime() + frac] = F.R(4);
         }
         break;
@@ -513,8 +526,8 @@ generate(bool noKeyAdding)
     case oTime:
         o.t = F.randTime();
         if (std::getenv("FUZZ_NEAR") && F.R(2)) {
-            static const double near[] = { 1e-7, -1e-7, 5e-7, 9.99e-7, 1e-6, 1.001e-6, 1e-5 };
-            o.t += near[F.R(7)];
+            static const double nearOffsets[] = { 1e-7, -1e-7, 5e-7, 9.99e-7, 1e-6, 1.001e-6, 1e-5 };
+            o.t += nearOffsets[F.R(7)];
         }
         break;
     case oKey1:
@@ -617,11 +630,13 @@ checkInvariants(const Op& o,
             if (ks.s.empty() && entryOf(paramString(s)) < 0) {
                 valid = false;
             }
-            // (a key less than 1e-6 after another one is hidden from the plug-in: a documented limitation)
-            if ((allKeyTimes(s).size() != keyTimes(s).size()) || (allKeyTimes(c).size() != keyTimes(c).size())) {
+            if (!valid) {
                 continue;
             }
-            if (!valid) {
+            // (a param whose reported keys are at 0 and 1, with a hidden key less than 1e-6 from one of them, may be
+            // taken for a param with an expression: a documented limitation, unless FUZZ_STRICT_A is set)
+            const std::vector<double> zeroOne = { 0., 1. };
+            if (!std::getenv("FUZZ_STRICT_A") && (((keyTimes(s) == zeroOne) && (allKeyTimes(s).size() != 2)) || ((keyTimes(c) == zeroOne) && (allKeyTimes(c).size() != 2)))) {
                 continue;
             }
             const std::vector<double> st = keyTimes(s);
@@ -639,6 +654,25 @@ checkInvariants(const Op& o,
             }
             for (double t : samples) {
                 const double ts = t;
+                // (the value at a frame whose last key is hidden from the plug-in, a key less than 1e-6 after another
+                // one, may differ: a documented limitation)
+                bool hidden = false;
+                for (ParamRec* r : { s, c }) {
+                    const std::vector<double> all = allKeyTimes(r);
+                    const std::vector<double> rep = keyTimes(r);
+                    double last = -std::numeric_limits<double>::infinity();
+                    for (double k : all) {
+                        if (k <= t) {
+                            last = k;
+                        }
+                    }
+                    if ((last > -std::numeric_limits<double>::infinity()) && (std::find(rep.begin(), rep.end(), last) == rep.end())) {
+                        hidden = true;
+                    }
+                }
+                if (hidden) {
+                    continue;
+                }
                 if (entryOf(stringAt(s, ts)) != intAt(c, t)) {
                     char b[160];
                     std::snprintf(b, sizeof(b), "a: %s differs from %s at t=%g", F.C(side), F.S(side), t);
@@ -694,7 +728,8 @@ checkInvariants(const Op& o,
     }
     // (f)
     (void)keysAtPhaseStart;
-    if (noKeyPhase && (totalKeys() > gKeysBeforeOp) && !gHiddenKeysBefore) {
+    // (up to the number of keys that the op revealed, which the plug-in mirrors)
+    if (noKeyPhase && (totalKeys() - gKeysBeforeOp > std::max(0, gHiddenKeysBefore - hiddenKeys()))) {
         char b[160];
         std::snprintf(b, sizeof(b), "f: %d keys after an op that adds none (%d at the start of the phase)", totalKeys(), keysAtPhaseStart);
         fail(b);
@@ -716,13 +751,8 @@ trackBefore(const Op& o)
 {
     gNearKeysAdded = 0;
     gSwapNearKeys = false;
-    gHiddenKeysBefore = false;
     gKeysBeforeOp = totalKeys();
-    for (const char* name : { kIS, kIC, kOS, kOC }) {
-        if (F.plug->ctx.params.count(name) && (allKeyTimes(P(name)).size() != keyTimes(P(name)).size())) {
-            gHiddenKeysBefore = true;
-        }
-    }
+    gHiddenKeysBefore = hiddenKeys();
     if ((o.type == oSwap) && F.hasOut) {
         std::vector<double> all = allKeyTimes(P(kIS));
         const std::vector<double> out = allKeyTimes(P(kOS));
@@ -747,7 +777,9 @@ trackBefore(const Op& o)
             gST.clean = true;
             gST.undone = false;
             gST.before = stringsState();
-            gST.both = !gAnim[P(kIS)].s.empty() && F.hasOut && !gAnim[P(kOS)].s.empty() && !gAnim[P(kIS)].expr && !gAnim[P(kOS)].expr;
+            // (a swap of strings with keys less than 1e-6 apart deletes the later key, which undo doesn't restore: a
+            // documented limitation)
+            gST.both = !gAnim[P(kIS)].s.empty() && F.hasOut && !gAnim[P(kOS)].s.empty() && !gAnim[P(kIS)].expr && !gAnim[P(kOS)].expr && !gSwapNearKeys;
         }
     } else if (o.type == oUndo || o.type == oRedo || o.type == oTime) {
         // keep
