@@ -458,6 +458,12 @@ private:
     // The number of frames of the stream that are not displayed
     int64_t getDiscardedFrames(Stream& stream);
 
+    // The largest timestamp in the index of the stream, in AV_TIME_BASE units
+    int64_t getLastIndexTimestamp(Stream& stream);
+
+    // The end of the movie from the last packets of the file, in AV_TIME_BASE units
+    int64_t getMovieEndFromLastPackets();
+
     // Get the video stream duration in frames...
     int64_t getStreamFrames(Stream& stream);
 

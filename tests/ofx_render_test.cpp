@@ -1777,7 +1777,11 @@ int testWriteFFmpegSameFile(const std::string& outFile, int W, int H, int nFrame
         // A unique name, since several test runs may share the machine.
         char tmpTemplate[] = "/tmp/ofx_render_test_i137_XXXXXX.mov";
         const int tmpFd = mkstemps(tmpTemplate, 4);
-        if (tmpFd < 0) { std::printf("  FAIL: mkstemps %s: %s\n", tmpTemplate, std::strerror(errno)); return 1; }
+        if (tmpFd < 0) {
+            std::printf("  FAIL: mkstemps %s: %s\n", tmpTemplate, std::strerror(errno));
+            fs::remove(link, ec);
+            return 1;
+        }
         close(tmpFd);
         const std::string tmp = tmpTemplate;
         WriterParams wp;

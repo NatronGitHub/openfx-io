@@ -286,7 +286,11 @@ jittered (VFR) timestamps. The MPEG-TS clip stresses the non-zero stream start P
 Frame counts (issue #145): an AVCHD-like M2TS (interlaced H.264 at 29.97 fps, with an
 AC3 audio track that starts before the video) must count the frames from the start of
 the video stream; Matroska with a non-zero start time and FLV with B-frames (with and
-without a start time) store a duration that is not counted from the start of the movie;
+without a start time, starting after the audio, and without the duration metadata, as
+written to a pipe) store a duration that is not counted from the start of the movie, while
+a Matroska duration rewritten as a length (as mkvmerge writes split parts, which needs
+`perl`) must not cut the end; NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
+elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
 not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
 still decode at its own frame.

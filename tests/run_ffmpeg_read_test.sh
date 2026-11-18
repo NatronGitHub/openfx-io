@@ -20,7 +20,11 @@
 #     stores timestamps in milliseconds, which are not a whole number of frames, and
 #     Stream::ptsToFrame() must round them to the nearest frame.
 #   * Matroska and FLV (H.264 with B-frames) with a non-zero start time: their duration is
-#     not counted from the start of the movie, but from timestamp 0 (FLV: from the first DTS).
+#     not counted from the start of the movie, but from timestamp 0 (FLV: from the first DTS,
+#     which may be that of the audio). FLV without the duration metadata (as written to a
+#     pipe), and Matroska whose duration is a length (as mkvmerge writes split parts).
+#   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
+#     with B-frames, which has no timestamps.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
 #     timestamps): they are counted in the stream's number of frames, but not displayed.
 #   * AVI (MPEG-4 with B-frames), which has no PTS.
@@ -221,6 +225,40 @@ check_corrupt() {
     "$bin" "$tmp/$name" --tol 3 --positions "$positions" ${seeksarg[@]+"${seeksarg[@]}"} ${FFMPEG_READ_TEST_ARGS:-} 2>/dev/null || rc=1
 }
 
+# check_mkv_length NAME DESCRIPTION
+# A 40-frame ramp in Matroska with a start time of 0.5 s (and a cluster every 100 ms, so that the cues
+# index the whole clip), whose duration is then rewritten as a length (without the start time), as
+# mkvmerge writes split parts: the duration is not the end of the movie, which must not be cut.
+check_mkv_length() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "SKIPPED: no perl"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" $X264 -output_ts_offset 0.5 -cluster_time_limit 100 "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    # The segment duration is an 8-byte float (EBML ID 0x4489), in milliseconds: subtract the start time.
+    if ! perl -e '
+        local $/; open(my $f, "<:raw", $ARGV[0]) or die; my $d = <$f>; close($f);
+        my $i = index($d, "\x44\x89\x88"); die "no 8-byte duration\n" if $i < 0;
+        substr($d, $i + 3, 8) = pack("d>", unpack("d>", substr($d, $i + 3, 8)) - 500);
+        open(my $o, ">:raw", $ARGV[1]) or die; print $o $d; close($o);' "$tmp/clean_$name" "$tmp/$name"; then
+        echo "FAIL: could not rewrite the duration of clean_$name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -271,6 +309,18 @@ check ramp_60.mkv "Matroska (H.264, 60 fps)" libx264 60 $X264
 check ramp_offset.mkv "Matroska (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10.01
 check ramp.flv "FLV (H.264 with B-frames, 24 fps)" libx264 24 $X264
 check ramp_offset.flv "FLV (H.264 with B-frames, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
+# The audio starts first: the FLV duration is counted from its first DTS.
+check ramp_audio_first.flv "FLV (H.264 with B-frames, 24 fps, starting 0.5 s after the AAC audio)" libx264 24 \
+    -map 1:v -map 0:a $X264 -c:a aac -shortest -- -f lavfi -t 3 -i anullsrc=r=48000:cl=mono -itsoffset 0.5
+# Without the duration metadata (as when written to a pipe), the demuxer gives the DTS of the last tag.
+check ramp_nodur.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata)" libx264 24 $X264 -flvflags no_duration_filesize
+check ramp_nodur_offset.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, non-zero start time)" libx264 24 \
+    $X264 -flvflags no_duration_filesize -output_ts_offset 10
+check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, start time 0.5 s, duration written as a length, as mkvmerge does)"
+# NUT has no start time, and its duration is counted from the first PTS.
+check ramp_mpeg4_bf.nut "NUT (MPEG-4 with B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
+# An elementary stream has no timestamps: the last frame is a reference frame without a PTS.
+check ramp_bframes.m2v "MPEG-2 elementary stream (B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
 # An edit list that starts after the first frames (negative timestamps): they are not displayed.
 check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed: negative timestamp)" libx264 24 39 1 \
     $X264 -output_ts_offset -0.041666666666666667

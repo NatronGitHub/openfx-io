@@ -658,25 +658,102 @@ FFmpegFile::probeStreamStart(Stream& stream, int64_t& firstDTS)
     return firstFramePTS;
 } // FFmpegFile::probeStreamStart
 
+// The index entries of a stream (avformat_index_get_entry() appeared in lavf 58.78, FFmpeg 4.4 has 58.76).
+static int
+IndexEntriesCount(AVStream* st)
+{
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 78, 100)
+    return avformat_index_get_entries_count(st);
+#else
+    return st->nb_index_entries;
+#endif
+}
+
+static const AVIndexEntry*
+IndexEntry(AVStream* st, int i)
+{
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 78, 100)
+    return avformat_index_get_entry(st, i);
+#else
+    return &st->index_entries[i];
+#endif
+}
+
 // The number of frames of the stream that are not displayed (marked as discarded in the index, e.g. by an
 // MOV/MP4 edit list).
 int64_t
 FFmpegFile::getDiscardedFrames(Stream& stream)
 {
     int64_t discarded = 0;
-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 78, 100) // avformat_index_get_entry()
-    const int entries = avformat_index_get_entries_count(stream._avstream);
+    const int entries = IndexEntriesCount(stream._avstream);
     for (int i = 0; i < entries; ++i) {
-        const AVIndexEntry* entry = avformat_index_get_entry(stream._avstream, i);
+        const AVIndexEntry* entry = IndexEntry(stream._avstream, i);
         if (entry && (entry->flags & AVINDEX_DISCARD_FRAME)) {
             ++discarded;
         }
     }
-#else
-    (void)stream;
-#endif
 
     return discarded;
+}
+
+// The largest timestamp in the index of the stream (e.g. the MOV/MP4 sample table, the Matroska cues), in
+// AV_TIME_BASE units, or AV_NOPTS_VALUE if the index is empty.
+int64_t
+FFmpegFile::getLastIndexTimestamp(Stream& stream)
+{
+    int64_t last = AV_NOPTS_VALUE;
+    const int entries = IndexEntriesCount(stream._avstream);
+    for (int i = 0; i < entries; ++i) {
+        const AVIndexEntry* entry = IndexEntry(stream._avstream, i);
+        if (entry && !(entry->flags & AVINDEX_DISCARD_FRAME) && (entry->timestamp != int64_t(AV_NOPTS_VALUE)) && ((last == int64_t(AV_NOPTS_VALUE)) || (entry->timestamp > last))) {
+            last = entry->timestamp;
+        }
+    }
+
+    return (last == int64_t(AV_NOPTS_VALUE)) ? last : av_rescale_q(last, stream._avstream->time_base, AV_TIME_BASE_Q);
+}
+
+// The end of the movie (the largest PTS + duration of the packets of all streams), in AV_TIME_BASE units, from
+// the last packets of the file, or AV_NOPTS_VALUE if it cannot be read (e.g. the input is not seekable). A video
+// packet without a duration lasts one frame.
+int64_t
+FFmpegFile::getMovieEndFromLastPackets()
+{
+    if (!_context->pb || !(_context->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        return AV_NOPTS_VALUE;
+    }
+    const int64_t size = avio_size(_context->pb);
+    if (size <= 0) {
+        return AV_NOPTS_VALUE;
+    }
+    int64_t end = AV_NOPTS_VALUE;
+    MyAVPacket avPacket;
+    for (int64_t window = int64_t(1) << 18; end == int64_t(AV_NOPTS_VALUE); window *= 8) {
+        const int64_t pos = (std::max)(int64_t(0), size - window);
+        if (av_seek_frame(_context, -1, pos, AVSEEK_FLAG_BYTE) < 0) {
+            break;
+        }
+        while (av_read_frame(_context, avPacket.pkt()) >= 0) {
+            const AVStream* st = _context->streams[avPacket->stream_index];
+            const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
+            if ((ts != int64_t(AV_NOPTS_VALUE)) && !(avPacket->flags & AV_PKT_FLAG_DISCARD)) {
+                int64_t duration = avPacket->duration;
+                if ((duration <= 0) && (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) && (st->r_frame_rate.num > 0) && (st->r_frame_rate.den > 0)) {
+                    duration = av_rescale_q(1, av_inv_q(st->r_frame_rate), st->time_base);
+                }
+                const int64_t e = av_rescale_q(ts + (std::max)(int64_t(0), duration), st->time_base, AV_TIME_BASE_Q);
+                if ((end == int64_t(AV_NOPTS_VALUE)) || (e > end)) {
+                    end = e;
+                }
+            }
+            av_packet_unref(avPacket.pkt());
+        }
+        if (pos == 0) {
+            break;
+        }
+    }
+
+    return end;
 }
 
 // Get the video stream duration in frames...
@@ -735,17 +812,44 @@ FFmpegFile::getStreamFrames(Stream& stream)
         // start of the movie: Matroska/WebM store the duration of their timeline, which begins at timestamp 0 (e.g.
         // with a start time of 10 s, a 40-frame 24 fps movie has a duration of 11.667 s), and FLV see below.
         const char* formatName = _context->iformat ? _context->iformat->name : "";
-        int64_t movieEnd = _context->duration;
-        if (std::strstr(formatName, "matroska") != nullptr) {
-            // the duration is the end of the movie
-        } else if ((std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0)) {
-            // FLV timestamps are DTS (with a composition time offset for the PTS), and FFmpeg's FLV muxer
-            // stores the duration from the first DTS, which is before the first frame with B-frames
-            movieEnd += av_rescale_q(stream._startDTS, stream._avstream->time_base, AV_TIME_BASE_Q);
-        } else if (_context->start_time != int64_t(AV_NOPTS_VALUE)) {
-            movieEnd += _context->start_time;
-        }
+        const bool isMatroska = std::strstr(formatName, "matroska") != nullptr;
+        const bool isMov = std::strstr(formatName, "mov") != nullptr;
+        const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
         const int64_t videoStart = av_rescale_q(stream._startPTS, stream._avstream->time_base, AV_TIME_BASE_Q);
+        int64_t movieEnd = AV_NOPTS_VALUE;
+        if (isFlv) {
+            // FLV timestamps are DTS (with a composition time offset for the PTS). FFmpeg's FLV muxer stores the
+            // duration from the first DTS of any stream (before the first frame with B-frames, or the start of an
+            // audio track that starts first), and without that metadata (e.g. written to a pipe) the demuxer gives
+            // the DTS of the last tag, counted from 0: read the end of the movie from the last packets instead.
+            movieEnd = getMovieEndFromLastPackets();
+            if (movieEnd == int64_t(AV_NOPTS_VALUE)) {
+                int64_t firstDTS = av_rescale_q(stream._startDTS, stream._avstream->time_base, AV_TIME_BASE_Q);
+                if ((_context->start_time != int64_t(AV_NOPTS_VALUE)) && (_context->start_time < firstDTS)) {
+                    firstDTS = _context->start_time;
+                }
+                movieEnd = _context->duration + firstDTS;
+            }
+        } else if (_context->start_time == int64_t(AV_NOPTS_VALUE)) {
+            // the start is unknown (e.g. NUT with B-frames, whose duration is counted from the first PTS)
+            movieEnd = _context->duration + videoStart;
+        } else {
+            // Matroska: the duration is the end of the movie (from timestamp 0), and other formats count it from
+            // the start. But a muxer may write a length in Matroska while the timestamps do not start at 0 (e.g.
+            // mkvmerge with split parts or --sync), and in MOV/MP4 with an initial empty edit, lavf 58 (FFmpeg 4)
+            // counts the duration from 0: if the index (all the MOV/MP4 samples, the Matroska cues) shows which
+            // one it is, use it. A duration that does not reach the last indexed timestamp is not an end.
+            bool fromZero = isMatroska;
+            if (isMatroska) {
+                // the Matroska demuxer reads the cues at the first seek
+                av_seek_frame(_context, stream._idx, stream._startPTS, AVSEEK_FLAG_BACKWARD);
+            }
+            const int64_t lastIndexed = (isMatroska || isMov) ? getLastIndexTimestamp(stream) : int64_t(AV_NOPTS_VALUE);
+            if (lastIndexed != int64_t(AV_NOPTS_VALUE)) {
+                fromZero = _context->duration > lastIndexed;
+            }
+            movieEnd = fromZero ? _context->duration : (_context->start_time + _context->duration);
+        }
         const int64_t duration = movieEnd - videoStart;
         int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
         frames = (duration > tick) ? ((duration - tick) * stream._fpsNum + divisor - 1) / divisor : 0;
@@ -819,9 +923,27 @@ FFmpegFile::getStreamFrames(Stream& stream)
         // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
         // https://foundry.tpondemand.com/entity/162892
 
+        // A packet without a PTS (a reference frame in an MPEG-2 elementary stream with B-frames, or in AVI) is
+        // displayed at least at its DTS, delayed as the timestamps of the decoded frames (see
+        // getStreamStartTime()), and after the frames that follow it in decoding order until the next reference
+        // frame (B-frames): e.g. the last reference frame is the last frame displayed.
+        const int64_t frameDuration = stream.frameToPts(1) - stream.frameToPts(0);
+        bool refPending = false; // a packet without a PTS was read
         while (av_read_frame(_context, avPacket.pkt()) >= 0) {
-            if (avPacket->stream_index == stream._idx && avPacket->pts != int64_t(AV_NOPTS_VALUE) && avPacket->pts > maxPts)
-                maxPts = avPacket->pts;
+            if (avPacket->stream_index == stream._idx) {
+                int64_t pts = avPacket->pts;
+                if ((pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE))) {
+                    pts = (std::max)(avPacket->dts + (stream._startPTS - stream._startDTS), maxPts + frameDuration);
+                    refPending = true;
+                } else if ((pts != int64_t(AV_NOPTS_VALUE)) && refPending && (pts + frameDuration > maxPts)) {
+                    // the pending reference frame is displayed after this one
+                    maxPts = pts + frameDuration;
+                }
+                if ((pts != int64_t(AV_NOPTS_VALUE)) && (pts > maxPts)) {
+                    maxPts = pts;
+                }
+            }
+            av_packet_unref(avPacket.pkt());
         }
 #if TRACE_FILE_OPEN
         std::cout << "          Start PTS=" << stream._startPTS << ", Max PTS found=" << maxPts << std::endl;
