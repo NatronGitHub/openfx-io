@@ -50,3 +50,10 @@
 /.exr_read/
 /.exr_read_tsan/
 /.exr_bench/
+/exr_read_test_tsan_debug
+/exr_read_test_tsan_debug.dSYM/
+/reader_hooks_test_tsan_debug
+/reader_hooks_test_tsan_debug.dSYM/
+/.exr_read_tsan_debug/
+/.reader_hooks_tsan_debug.still.tst
+/.reader_hooks_tsan_debug.video.tst

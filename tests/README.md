@@ -17,6 +17,7 @@ make test-runscript # RunScript: stderr line splitting (all systems); on MS Wind
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-exr-tsan # the same, built with ThreadSanitizer
+make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
 
@@ -234,6 +235,11 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
 `make test-exr-tsan` builds and runs it with ThreadSanitizer (`-fsanitize=thread`,
 no suppressions). OpenEXR itself is not instrumented, so the race on a shared
 `Imf::InputFile` is found by the image comparison, not by ThreadSanitizer.
+`make test-exr-tsan-debug` builds and runs this test and `test-reader-hooks` (which renders
+from two threads) with `-fsanitize=thread -DDEBUG`, also with `halt_on_error=1` and no
+suppressions (and `abort_on_error=0`: a race exits with an error, without a crash report). `DEBUG` enables the OFX Support library's property validation and logging,
+which run while other threads render: this catches races in the Support library itself, such as
+those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed by openfx #144.
 `make bench-exr` (optimized build) times 5 renders of 2048x1556 RGBA half files with ZIP,
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
@@ -377,7 +383,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
-| `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
+| `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |

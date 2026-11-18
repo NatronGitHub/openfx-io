@@ -103,7 +103,7 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr test-exr-tsan bench-exr clean
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -168,6 +168,17 @@ exr_read_test: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 exr_read_test_tsan: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) -fsanitize=thread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# DEBUG builds of exr_read_test and reader_hooks_test with ThreadSanitizer: -DDEBUG enables the Support
+# library's property validation and logging, which run on the threads that describe/create instances while
+# other threads render (openfx #144: races on PropertySet::_gPropLogging and PropertyDescription::_exists)
+TSAN_DEBUG_CXXFLAGS := -DDEBUG -fsanitize=thread
+
+exr_read_test_tsan_debug: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) $(TSAN_DEBUG_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+reader_hooks_test_tsan_debug: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -pthread $(TSAN_DEBUG_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
 # the same, optimized, for bench-exr (the plug-in is built with -O2 in a release build)
 exr_read_bench: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -O2 $(EXR_READ_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
@@ -230,6 +241,12 @@ test-exr-tsan: exr_read_test_tsan
 	rm -rf .exr_read_tsan && mkdir -p .exr_read_tsan
 	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
 
+# test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer (no suppressions)
+test-exr-tsan-debug: exr_read_test_tsan_debug reader_hooks_test_tsan_debug
+	rm -rf .exr_read_tsan_debug && mkdir -p .exr_read_tsan_debug
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 abort_on_error=0 $(TSAN_OPTIONS)" ./exr_read_test_tsan_debug $(CURDIR)/.exr_read_tsan_debug
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 abort_on_error=0 $(TSAN_OPTIONS)" ./reader_hooks_test_tsan_debug $(CURDIR)/.reader_hooks_tsan_debug
+
 # ReadEXR's render time on 2048x1556 RGBA half files, ZIP, PIZ and DWAA (EXR_THREADS: OpenEXR's thread count)
 bench-exr: exr_read_bench
 	rm -rf .exr_bench && mkdir -p .exr_bench
@@ -245,4 +262,6 @@ clean:
 	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \
 	       exr_read_test exr_read_test.dSYM exr_read_test_tsan exr_read_test_tsan.dSYM exr_read_bench exr_read_bench.dSYM .exr_read .exr_read_tsan .exr_bench \
+	       exr_read_test_tsan_debug exr_read_test_tsan_debug.dSYM reader_hooks_test_tsan_debug reader_hooks_test_tsan_debug.dSYM \
+	       .exr_read_tsan_debug .reader_hooks_tsan_debug.still.tst .reader_hooks_tsan_debug.video.tst \
 	       runscript_win32_test runscript_win32_test.dSYM runscript_output_test runscript_output_test.dSYM
