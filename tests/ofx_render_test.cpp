@@ -1642,6 +1642,48 @@ int testWriteFFmpegX265(const std::string& outFile, int W, int H, int prefCoding
 
 } // namespace
 
+// A Fixed output format whose PAR is 0 (the range of the PAR param starts at 0): the PAR is invalid, and is
+// replaced by 1. Before, the RoD had a width of 0 (the format was multiplied by the PAR), and beginSequenceRender
+// divided by the PAR (0/0 = NaN, converted to int).
+int testWriterFormatPar0()
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    if (!ctx.params.count("formatType") || !ctx.params.count(kNatronParamFormatSize) || !ctx.params.count(kNatronParamFormatPar)) {
+        std::printf("  FAIL: no formatType, %s or %s param\n", kNatronParamFormatSize, kNatronParamFormatPar);
+        return 1;
+    }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, "/tmp/ofx_render_test_par0.mov");
+    setOverrideInt(&ctx, "formatType", 2); // Fixed
+    if (ctx.params.count("clipToRoD")) setOverrideInt(&ctx, "clipToRoD", 0);
+    ctx.params[kNatronParamFormatSize].hasOv = true;
+    ctx.params[kNatronParamFormatSize].ov.i = { 64, 48 };
+    ctx.params[kNatronParamFormatPar].hasOv = true;
+    ctx.params[kNatronParamFormatPar].ov.d = { 0. };
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, 128, 128, 3, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    PropSet a; OfxPropertySetHandle ap = PH(&a);
+    pSetDouble(ap, kOfxPropTime, 0, 1.);
+    double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+    PropSet o;
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), PH(&o));
+    double rod[4] = { -1., -1., -1., -1. };
+    pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
+    std::printf("  status=%d RoD=%g,%g,%g,%g\n", st, rod[0], rod[1], rod[2], rod[3]);
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    if (!ok(st) || rod[0] != 0. || rod[1] != 0. || rod[2] != 64. || rod[3] != 48.) {
+        std::printf("  FAIL: expected the RoD 0,0,64,48 (the PAR of 0 is replaced by 1)\n");
+        return 1;
+    }
+    std::printf("  PASS\n");
+    return 0;
+}
+
 // #137: the file param at a frame may name the open file through another path (a symbolic link, as /tmp
 // and /private/tmp on macOS, "." components, a "file:" url, or another case on Windows): it is encoded.
 // Another file is still an error.
@@ -1974,6 +2016,9 @@ main(int argc, char** argv)
     }
     std::printf("==== WriteFFmpeg, the image gets larger than the movie during the render: it is cropped ====\n");
     failures += testWriteFFmpegRoDChanged(outFile + ".rod.mov", W, H, N, 192, 160);
+
+    std::printf("==== WriteFFmpeg, Fixed output format with a PAR of 0: the PAR is 1 ====\n");
+    failures += testWriterFormatPar0();
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");

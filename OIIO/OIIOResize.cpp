@@ -451,9 +451,10 @@ OIIOResizePlugin::renderInternal(const RenderArguments& /*args*/,
             setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());
         }
     } else {
-        assert(srcSpec.full_width && srcSpec.full_height);
-        float wratio = float(dstSpec.full_width) / float(srcSpec.full_width);
-        float hratio = float(dstSpec.full_height) / float(srcSpec.full_height);
+        // an empty source image gives a ratio of 1 (dividing by its size would give inf or NaN, and a NaN filter
+        // width); ImageBufAlgo::resize() then fails on it
+        float wratio = (srcSpec.full_width > 0) ? float(dstSpec.full_width) / float(srcSpec.full_width) : 1.f;
+        float hratio = (srcSpec.full_height > 0) ? float(dstSpec.full_height) / float(srcSpec.full_height) : 1.f;
         const int num_filters = Filter2D::num_filters();
         /// interpolate using the selected filter
         FilterDesc fd;
