@@ -209,7 +209,8 @@ Natron, and declares `kNatronOfxHostIsNatron` (GenericOCIO then builds the menus
 instance):
 
 * held values and all the keyframe functions; a param with an expression reports keys at 0
-  and 1;
+  and 1; string params are read at `floor(t + 0.5)`, and their keys set at any time
+  (including fractional times);
 * a plug-in's `paramSetValue` on a param with keys sets a key at the current time; the
   plug-in's changes re-enter `kOfxActionInstanceChanged` before they return, only if they
   change the param (`paramDeleteKey` and `paramDeleteAllKeys` as a user edit);

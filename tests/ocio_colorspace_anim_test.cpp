@@ -185,7 +185,8 @@ evaluatesOnChange(ParamRec* r)
 // - KnobGui::setValueAtTime() returns true for a modified key too, so that MultipleKnobEditsUndoCommand records it as
 //   an added key, and its undo removes it.
 bool gNatronExact = false;
-// OfxStringInstance::get(time) reads the value at floor(time + 0.5) (not a bug: Natron's OFX string params)
+// OfxStringInstance::get(time) reads the value at floor(time + 0.5) (not a bug: Natron's OFX string params), but
+// OfxStringInstance::set(time) sets a key at time
 bool gRoundStringTime = true;
 
 template <typename T>
@@ -228,7 +229,9 @@ sSetKey(Anim& k,
 {
     const bool existed = k.s.count(t) > 0;
     if (!gNatronExact) {
-        const bool ch = !existed || (k.s[t] != v);
+        // (with NatronGitHub/Natron#1291, setting a key that has neighbours to its string is a modification: the
+        // derivatives of the curve are compared too)
+        const bool ch = !existed || (k.s[t] != v) || (k.s.size() > 1);
         k.s[t] = v;
         k.sidx[t] = 0;
 
@@ -525,10 +528,6 @@ aSet(ParamRec* r,
     Anim& k = gAnim[r];
     if (!atTime) {
         time = gCurrentTime;
-    }
-    if (isString(r) && gRoundStringTime) {
-        // (Natron's key times are integers, and OfxStringInstance reads and writes at floor(time + 0.5))
-        time = std::floor(time + 0.5);
     }
     const bool key = animates(r) && (atTime || (k.size() > 0));
     UndoOp op = { r, time, key, false, std::string(), 0, std::string(), 0 };
@@ -1546,6 +1545,35 @@ testExpression()
 }
 
 void
+testFractionalKeyTimes()
+{
+    std::printf("==== Keys at fractional times (e.g. from a script): Natron reads strings at floor(t + 0.5) ====\n");
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userSetString(kIS, "x4", true);
+    userPasteKeys(kIC, { { 10.3, 2 } });
+    checkSides("{0:4,10.3:3}", "=1");
+    checkRender(15., 3, 1);
+    checkRender(10., 4, 1);
+
+    std::printf("==== Keys at fractional times, then Swap ====\n");
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userSet(kIC, 1, true);
+    gCurrentTime = 10.;
+    userSet(kIC, 3);
+    userPasteKeys(kIC, { { 2.3, 2 } });
+    gCurrentTime = 5.;
+    userSet(kIC, 0);
+    checkSides("{0:2,2.3:3,5:1,10:4}", "=1");
+    userPress(kSwap);
+    checkSides("{0:1,2.3:1,5:1,10:1}", "{0:2,2.3:3,5:1,10:4}");
+    checkRender(2., 1, 2);
+    checkRender(3., 1, 3);
+    checkRender(10., 1, 4);
+}
+
+void
 testNatronStringKeys()
 {
     std::printf("==== Natron without NatronGitHub/Natron#1291: string keys hold the index of their string ====\n");
@@ -1796,6 +1824,7 @@ main(int, char**)
     testExpression();
     testKeysAt0And1();
     testNatronStringKeys();
+    testFractionalKeyTimes();
     testHostWithoutStringAnimation();
     testHostWithoutChoiceAnimation();
     testNoConfig();

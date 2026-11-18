@@ -479,7 +479,8 @@ generate(bool noKeyAdding)
     case oMenuPaste: {
         int n = 1 + F.R(3);
         for (int i = 0; i < n; ++i) {
-            o.keys[F.randTime()] = F.R(4);
+            // (sometimes at a fractional time, as from a script)
+            o.keys[F.randTime() + (F.R(4) ? 0. : 0.3)] = F.R(4);
         }
         break;
     }
