@@ -224,7 +224,7 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   from 6 threads at once: each render must give the same image as a single-threaded one.
 
 `make test-exr-tsan` builds and runs it with ThreadSanitizer (`-fsanitize=thread`,
-suppressions in `tsan.supp`). OpenEXR itself is not instrumented, so the race on a shared
+no suppressions). OpenEXR itself is not instrumented, so the race on a shared
 `Imf::InputFile` is found by the image comparison, not by ThreadSanitizer.
 `make bench-exr` (optimized build) times 5 renders of 2048x1556 RGBA half files with ZIP,
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
@@ -370,7 +370,6 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
-| `tsan.supp`                 | ThreadSanitizer suppressions for `test-exr-tsan` (the openfx Support library's log indentation). |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |
