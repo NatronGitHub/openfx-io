@@ -605,9 +605,8 @@ checkInvariants(const Op& o,
     if (gKeyWritesOutsideInstanceChanged) {
         fail("b: key written outside an instance changed action");
     }
-    // (g) the plug-in adds no key less than 1e-6 from another key of the param, except in a swap of params that have
-    // keys less than 1e-6 apart
-    if (gNearKeysAdded && !((o.type == oSwap) && gSwapNearKeys)) {
+    // (g) the plug-in adds no key less than 1e-6 from a key of the param that was reported to it
+    if (gNearKeysAdded) {
         fail("g: the plug-in added a key less than 1e-6 from another one");
     }
     // (a)
@@ -901,7 +900,7 @@ printRepro(const Episode& e,
     for (int i = 0; i <= upto; ++i) {
         apply(e.ops[i]);
         std::printf("    %2d %-40s -> %s\n", i, describe(e.ops[i]).c_str(), fullState().c_str());
-        if (std::getenv("FUZZ_TRACE") && (i == upto)) {
+        if (std::getenv("FUZZ_TRACE") && (i + 1 >= upto)) {
             // (the instance changed actions of the last op, and the exact key times)
             for (size_t j = 0; j < gLog.size(); ++j) {
                 std::printf("         %s\n", gLog[j].c_str());
@@ -1000,7 +999,7 @@ main(int argc,
 
     std::error_code ec;
     std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
-    dir /= "rev155f-fuzz." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    dir /= "ocio_anim_fuzz." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     std::filesystem::create_directory(dir, ec);
     gTmpDir = dir.generic_string();
     if (const char* src = std::getenv("FUZZ_EXR")) {

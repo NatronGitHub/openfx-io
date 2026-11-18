@@ -251,10 +251,11 @@ save/load, file names, expressions, time changes) to OCIOColorSpace, WriteOIIO o
 and checks after each one that the menus have the keys and values of the strings, that no key
 is set outside of an instance changed action, that there is no loop, that the renders follow
 the strings, that ops that add no key add none, and that undoing a swap of keyed sides
-restores them. `make test-ocio-anim` runs 2000 operations on each plug-in, with fixed seeds (and a run with
-`FUZZ_NEAR=1`, with keys and times near frames; `FUZZ_STRICT_A=1` doesn't skip params taken for
-expressions because of a hidden key next to keys at 0 and 1)
-(`FUZZ_OPS=n` for more); run `ocio_anim_fuzz cs|writer|reader <ops> <seed>` directly for
+restores them. `make test-ocio-anim` runs 2000 operations on each plug-in with fixed seeds
+(`FUZZ_OPS=n` for more), a run with `FUZZ_NEAR=1` (keys and times near frames), and the seeds
+that found bugs in the review (`FUZZ_NEAR=1`: reader 32, and cs 77 and 102 with 50000 operations).
+`FUZZ_STRICT_A=1` doesn't skip params taken for expressions because of a hidden key next to
+keys at 0 and 1; run `ocio_anim_fuzz cs|writer|reader <ops> <seed>` directly for
 others. By default, the host models Natron 2.6, with NatronGitHub/Natron#1291;
 `OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron before 2.6, without it, which hold
 the index of their string (NatronGitHub/Natron#1290: some invariants then fail, e.g. the undo

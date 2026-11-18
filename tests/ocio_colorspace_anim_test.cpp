@@ -120,7 +120,6 @@ struct Anim {
     std::map<double, int> i;
     std::function<std::string(double)> expr; // a string param's expression (optional)
     std::function<int(double)> iexpr; // a choice param's expression, or link (optional)
-    std::set<double> user; // the times of the keys that the user set
     size_t size() const { return s.size() + i.size(); }
 };
 std::map<ParamRec*, Anim> gAnim;
@@ -613,6 +612,7 @@ aSet(ParamRec* r,
     const bool key = animates(r) && (atTime || (k.size() > 0));
     UndoOp op = { r, time, key, false, std::string(), 0, std::string(), 0 };
     const bool newKey = key && ((isString(r) ? k.s.count(time) : k.i.count(time)) == 0);
+    const std::vector<double> reportedBefore = keyTimes(r); // (the keys that the plug-in could see)
     bool changed = true;
     if (isString(r)) {
         const char* c = va_arg(ap, const char*);
@@ -651,11 +651,14 @@ aSet(ParamRec* r,
         ++gKeyWritesOutsideInstanceChanged;
     }
     if (newKey && (gDepth > 0)) {
-        // a key that the plug-in adds less than 1e-6 from another key of the param (Natron's OFX key list hides it)
-        const std::vector<double> all = allKeyTimes(r);
-        for (size_t i = 0; i < all.size(); ++i) {
-            if ((all[i] != time) && (std::fabs(all[i] - time) < 1e-6) && !k.user.count(all[i])) {
+        // a key that the plug-in adds less than 1e-6 from a key of the param that was reported to it (Natron's OFX key
+        // list then hides one of them; the plug-in can't avoid the keys it doesn't see)
+        for (size_t i = 0; i < reportedBefore.size(); ++i) {
+            if ((reportedBefore[i] != time) && (std::fabs(reportedBefore[i] - time) < 1e-6)) {
                 ++gNearKeysAdded;
+                char buf[256];
+                std::snprintf(buf, sizeof(buf), "NEAR KEY: %s at %.9g, next to %.9g", r->name.c_str(), time, reportedBefore[i]);
+                gLog.push_back(buf);
             }
         }
     }
@@ -954,7 +957,6 @@ userSet(const char* name,
     if (animates(r) && (key || (k.size() > 0))) {
         changed = (k.i.count(gCurrentTime) == 0) || (k.i[gCurrentTime] != v);
         k.i[gCurrentTime] = v;
-        k.user.insert(gCurrentTime);
         changed = changed || choiceEndKeyDerivativeChanges(k, gCurrentTime);
     } else {
         changed = (paramInt(r, 0) != v);
@@ -981,7 +983,6 @@ userSetString(const char* name,
     bool changed;
     if (animates(r) && (key || (k.size() > 0))) {
         changed = (sSetKey(k, gCurrentTime, v) != 0);
-        k.user.insert(gCurrentTime);
     } else {
         changed = (paramString(r) != v);
         setStatic(r, v);
@@ -1076,7 +1077,6 @@ moveKeys(const char* name,
         const int v = k.i[from[i]];
         k.i.erase(from[i]);
         k.i[from[i] + dt] = v;
-        k.user.insert(from[i] + dt);
         instanceChanged(name, kOfxChangeUserEdited, reportAtNewTime ? from[i] + dt : gCurrentTime);
     }
 }
@@ -1089,7 +1089,8 @@ userMoveKey(const char* name,
             int maxCalls = 12)
 {
     UserAction u(std::string("move key of ") + name + " in the curve editor" + at(), maxCalls);
-    moveKeys(name, { from }, clampMotion(gAnim[P(name)].i, { from }, to - from), false);
+    // (the curve editor moves keys by whole frames too)
+    moveKeys(name, { from }, clampMotion(gAnim[P(name)].i, { from }, std::floor(to - from + 0.5)), false);
     u.done();
 }
 
@@ -1115,7 +1116,6 @@ userPasteKeys(const char* name,
     Anim& k = gAnim[P(name)];
     for (std::map<double, int>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
         k.i[it->first] = it->second;
-        k.user.insert(it->first);
     }
     instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
@@ -1295,16 +1295,10 @@ newInstance(Plug& plug,
         it->second.ov = Value();
     }
     sAssign(gAnim[P(kIS)], restored.inputKeys, &restored.inputIdx);
-    for (auto& p : restored.inputKeys) {
-        gAnim[P(kIS)].user.insert(p.first);
-    }
     gAnim[P(kIS)].expr = restored.inputExpr;
     gAnim[P(kIC)].i = restored.inputChoiceKeys;
     if (plug.ctx.params.count(kOS)) {
         sAssign(gAnim[P(kOS)], restored.outputKeys, &restored.outputIdx);
-        for (auto& p : restored.outputKeys) {
-            gAnim[P(kOS)].user.insert(p.first);
-        }
     }
     if (!restored.configFile.empty()) {
         setOverrideString(&plug.ctx, kConfigFile, restored.configFile);

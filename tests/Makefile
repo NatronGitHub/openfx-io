@@ -266,6 +266,10 @@ test-ocio-anim: ocio_colorspace_anim_test ocio_anim_fuzz
 	OCIO=$(CURDIR)/swap.ocio OCIO_ANIM_NOT_NATRON=1 ./ocio_colorspace_anim_test
 	OCIO=$(CURDIR)/swap.ocio OCIO_ANIM_NOT_NATRON=1 ./ocio_anim_fuzz cs $(FUZZ_OPS) 4
 	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz cs $(FUZZ_OPS) 5
+	# (seeds that found bugs in the review)
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz reader 20000 32
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz cs 50000 77
+	OCIO=$(CURDIR)/swap.ocio FUZZ_NEAR=1 ./ocio_anim_fuzz cs 50000 102
 
 # OpenImageIO's thread pool is stopped when the last OIIO plug-in is unloaded, not the first one (#118)
 test-oiio-threads: oiio_threadpool_test
