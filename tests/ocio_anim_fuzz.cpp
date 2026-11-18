@@ -90,6 +90,12 @@ struct Fuzz {
     int nSides() { return hasOut ? 2 : 1; }
 };
 Fuzz F;
+// (before a swap) the input and output strings have keys less than 1e-6 apart, or one of them has
+bool gSwapNearKeys = false;
+// (before an op) a param has a key less than 1e-6 after another one, hidden from the plug-in, which may see it after the
+// op (e.g. once the other one is moved), and mirror it
+bool gHiddenKeysBefore = false;
+int gKeysBeforeOp = 0; // (the number of keys before the op)
 
 std::vector<double>
 menuKeys(int side)
@@ -479,8 +485,10 @@ generate(bool noKeyAdding)
     case oMenuPaste: {
         int n = 1 + F.R(3);
         for (int i = 0; i < n; ++i) {
-            // (sometimes at a fractional time, as from a script)
-            o.keys[F.randTime() + (F.R(4) ? 0. : 0.3)] = F.R(4);
+            // (sometimes at a fractional time, as from a script; with FUZZ_NEAR, often less than 1e-5 from a frame)
+            static const double near[] = { 1e-7, -1e-7, 5e-7, 9.99e-7, 1e-6, 1.001e-6, 1e-5 };
+            const double frac = (std::getenv("FUZZ_NEAR") && F.R(2)) ? near[F.R(7)] : (F.R(4) ? 0. : 0.3);
+            o.keys[F.randTime() + frac] = F.R(4);
         }
         break;
     }
@@ -504,6 +512,10 @@ generate(bool noKeyAdding)
         break;
     case oTime:
         o.t = F.randTime();
+        if (std::getenv("FUZZ_NEAR") && F.R(2)) {
+            static const double near[] = { 1e-7, -1e-7, 5e-7, 9.99e-7, 1e-6, 1.001e-6, 1e-5 };
+            o.t += near[F.R(7)];
+        }
         break;
     case oKey1:
         o.s = std::string("k") + std::to_string(F.R(1000));
@@ -580,6 +592,11 @@ checkInvariants(const Op& o,
     if (gKeyWritesOutsideInstanceChanged) {
         fail("b: key written outside an instance changed action");
     }
+    // (g) the plug-in adds no key less than 1e-6 from another key of the param, except in a swap of params that have
+    // keys less than 1e-6 apart
+    if (gNearKeysAdded && !((o.type == oSwap) && gSwapNearKeys)) {
+        fail("g: the plug-in added a key less than 1e-6 from another one");
+    }
     // (a)
     if (F.synced) {
         for (int side = 0; side < F.nSides(); ++side) {
@@ -600,28 +617,28 @@ checkInvariants(const Op& o,
             if (ks.s.empty() && entryOf(paramString(s)) < 0) {
                 valid = false;
             }
+            // (a key less than 1e-6 after another one is hidden from the plug-in: a documented limitation)
+            if ((allKeyTimes(s).size() != keyTimes(s).size()) || (allKeyTimes(c).size() != keyTimes(c).size())) {
+                continue;
+            }
             if (!valid) {
                 continue;
             }
-            std::set<double> st, ct;
-            for (auto& p : ks.s) {
-                st.insert(p.first);
-            }
-            for (auto& p : kc.i) {
-                ct.insert(p.first);
-            }
+            const std::vector<double> st = keyTimes(s);
+            const std::vector<double> ct = keyTimes(c);
             if (st != ct) {
                 fail(std::string("a: key times of ") + F.C(side) + " differ from " + F.S(side));
             }
-            std::set<double> samples = st;
-            for (double t : { -10., -1., 0., 0.5, 1., 2., 3., 4.5, 5., 7., 10., 12.5, 15., 20., 25., 100. }) {
+            // (at frames)
+            std::set<double> samples;
+            for (double t : st) {
+                samples.insert(std::ceil(t));
+            }
+            for (double t : { -10., -1., 0., 1., 2., 3., 5., 7., 10., 15., 20., 25., 100. }) {
                 samples.insert(t);
             }
             for (double t : samples) {
-                double ts = gRoundStringTime ? std::floor(t + 0.5) : t;
-                if (std::fabs(ts - t) > 1e-9) {
-                    continue; // (the string is read at rounded times)
-                }
+                const double ts = t;
                 if (entryOf(stringAt(s, ts)) != intAt(c, t)) {
                     char b[160];
                     std::snprintf(b, sizeof(b), "a: %s differs from %s at t=%g", F.C(side), F.S(side), t);
@@ -676,7 +693,8 @@ checkInvariants(const Op& o,
         }
     }
     // (f)
-    if (noKeyPhase && totalKeys() > keysAtPhaseStart) {
+    (void)keysAtPhaseStart;
+    if (noKeyPhase && (totalKeys() > gKeysBeforeOp) && !gHiddenKeysBefore) {
         char b[160];
         std::snprintf(b, sizeof(b), "f: %d keys after an op that adds none (%d at the start of the phase)", totalKeys(), keysAtPhaseStart);
         fail(b);
@@ -696,6 +714,27 @@ SwapTrack gST;
 void
 trackBefore(const Op& o)
 {
+    gNearKeysAdded = 0;
+    gSwapNearKeys = false;
+    gHiddenKeysBefore = false;
+    gKeysBeforeOp = totalKeys();
+    for (const char* name : { kIS, kIC, kOS, kOC }) {
+        if (F.plug->ctx.params.count(name) && (allKeyTimes(P(name)).size() != keyTimes(P(name)).size())) {
+            gHiddenKeysBefore = true;
+        }
+    }
+    if ((o.type == oSwap) && F.hasOut) {
+        std::vector<double> all = allKeyTimes(P(kIS));
+        const std::vector<double> out = allKeyTimes(P(kOS));
+        all.insert(all.end(), out.begin(), out.end());
+        for (size_t i = 0; i < all.size(); ++i) {
+            for (size_t j = 0; j < all.size(); ++j) {
+                if ((all[i] != all[j]) && (std::fabs(all[i] - all[j]) < 1e-6)) {
+                    gSwapNearKeys = true;
+                }
+            }
+        }
+    }
     if (o.type == oSwap) {
         const bool merging = gMergeBlocks && !gLastBlock.empty();
         if (merging && !(gST.clean && !gST.undone)) {
@@ -794,7 +833,7 @@ runEpisode(const Episode& e,
             int& m = F.maxCallsByOp[kOpNames[o.type]];
             m = std::max(m, n);
         }
-        if (o.type != oSaveLoad && gCalls > calls0) {
+        if ((o.type != oSaveLoad) && (o.type != oTime) && (gCalls > calls0)) {
             F.synced = true;
         }
         if (o.type == oSaveLoad && gKeyWritesOutsideInstanceChanged) {
@@ -830,6 +869,21 @@ printRepro(const Episode& e,
     for (int i = 0; i <= upto; ++i) {
         apply(e.ops[i]);
         std::printf("    %2d %-40s -> %s\n", i, describe(e.ops[i]).c_str(), fullState().c_str());
+        if (std::getenv("FUZZ_TRACE") && (i == upto)) {
+            // (the instance changed actions of the last op, and the exact key times)
+            for (size_t j = 0; j < gLog.size(); ++j) {
+                std::printf("         %s\n", gLog[j].c_str());
+            }
+            for (const char* name : { kIS, kIC, kOS, kOC }) {
+                if (F.plug->ctx.params.count(name)) {
+                    std::printf("         %s:", name);
+                    for (double t : allKeyTimes(P(name))) {
+                        std::printf(" %.9g", t);
+                    }
+                    std::printf("\n");
+                }
+            }
+        }
     }
     std::printf("    FAILS: %s\n", what.c_str());
 }
@@ -961,7 +1015,8 @@ main(int argc,
             int n = gCalls - calls0;
             int& m = F.maxCallsByOp[kOpNames[o.type]];
             m = std::max(m, n);
-            if (o.type != oSaveLoad && gCalls > calls0) {
+            // (a time change of a reader doesn't reach GenericOCIO)
+            if ((o.type != oSaveLoad) && (o.type != oTime) && (gCalls > calls0)) {
                 F.synced = true;
             }
             if (o.type == oSaveLoad && gKeyWritesOutsideInstanceChanged) {

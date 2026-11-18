@@ -141,6 +141,7 @@ bool gLoop = false;
 std::vector<std::string> gLog; // "name reason time", for the failures
 std::function<void(const char*, const char*, double)> gOnInstanceChanged; // (fuzzer)
 int gKeyWritesOutsideInstanceChanged = 0; // keys set by the plug-in outside of an instance changed action
+int gNearKeysAdded = 0; // keys added by the plug-in less than 1e-6 from another key of the param
 
 bool
 isString(ParamRec* r)
@@ -250,22 +251,6 @@ endKeyDerivativeChanges(const Anim& k,
     return other->second != it->second;
 }
 
-// Natron takes keys less than 1e-6 apart for the same key (NATRON_CURVE_X_SPACING_EPSILON): the time of the key of k
-// that is the same key as a key at t, or t
-template <typename T>
-double
-sameKeyTime(const std::map<double, T>& keys,
-            double t)
-{
-    for (typename std::map<double, T>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-        if (std::fabs(it->first - t) < 1e-6) {
-            return it->first;
-        }
-    }
-
-    return t;
-}
-
 // set a string key: 0 = nothing changed, 1 = modified, 2 = added
 int
 sSetKey(Anim& k,
@@ -369,20 +354,36 @@ removeAnimation(ParamRec* r)
     k.i.clear();
 }
 
-// the key times that the host reports (0 and 1 for a param with an expression)
+// the times of all the keys of a param (Natron keeps them at their exact times)
 std::vector<double>
-keyTimes(ParamRec* r)
+allKeyTimes(ParamRec* r)
 {
     std::vector<double> times;
     const Anim& k = gAnim[r];
-    if (k.expr || k.iexpr) {
-        return { 0., 1. };
-    }
     for (std::map<double, std::string>::const_iterator it = k.s.begin(); it != k.s.end(); ++it) {
         times.push_back(it->first);
     }
     for (std::map<double, int>::const_iterator it = k.i.begin(); it != k.i.end(); ++it) {
         times.push_back(it->first);
+    }
+
+    return times;
+}
+
+// the key times that the host reports (0 and 1 for a param with an expression): Natron's OFX key list
+// (OfxKeyFrames_compare, Engine/OfxParamInstance.cpp) takes keys less than 1e-6 apart for the same key, the first one
+std::vector<double>
+keyTimes(ParamRec* r)
+{
+    if (gAnim[r].expr || gAnim[r].iexpr) {
+        return { 0., 1. };
+    }
+    std::vector<double> times;
+    const std::vector<double> all = allKeyTimes(r);
+    for (size_t i = 0; i < all.size(); ++i) {
+        if (times.empty() || !(std::fabs(all[i] - times.back()) < 1e-6)) {
+            times.push_back(all[i]);
+        }
     }
 
     return times;
@@ -590,10 +591,8 @@ aSet(ParamRec* r,
         time = gCurrentTime;
     }
     const bool key = animates(r) && (atTime || (k.size() > 0));
-    if (key) {
-        time = isString(r) ? sameKeyTime(k.s, time) : sameKeyTime(k.i, time);
-    }
     UndoOp op = { r, time, key, false, std::string(), 0, std::string(), 0 };
+    const bool newKey = key && ((isString(r) ? k.s.count(time) : k.i.count(time)) == 0);
     bool changed = true;
     if (isString(r)) {
         const char* c = va_arg(ap, const char*);
@@ -629,6 +628,15 @@ aSet(ParamRec* r,
     }
     if (key && changed && (gDepth == 0)) {
         ++gKeyWritesOutsideInstanceChanged;
+    }
+    if (newKey && (gDepth > 0)) {
+        // a key that the plug-in adds less than 1e-6 from another key of the param (Natron's OFX key list hides it)
+        const std::vector<double> all = allKeyTimes(r);
+        for (size_t i = 0; i < all.size(); ++i) {
+            if ((all[i] != time) && (std::fabs(all[i] - time) < 1e-6)) {
+                ++gNearKeysAdded;
+            }
+        }
     }
     if ((changed || gNatronExact) && gRecording && evaluatesOnChange(r) && (isString(r) || isChoice(r))) {
         gBlock.push_back(op);
@@ -717,9 +725,9 @@ aGetKeyIndex(OfxParamHandle ph,
             // (the first one, as Natron's getKeyIndex())
             *index = (int)i;
             break;
-        } else if ((direction > 0) && (times[i] > time + 1e-6) && (*index < 0)) {
+        } else if ((direction > 0) && (times[i] > time) && (*index < 0)) {
             *index = (int)i;
-        } else if ((direction < 0) && (times[i] < time - 1e-6)) {
+        } else if ((direction < 0) && (times[i] < time)) {
             *index = (int)i;
         }
     }
@@ -733,12 +741,9 @@ aDeleteKey(OfxParamHandle ph,
            OfxTime time)
 {
     ParamRec* r = reinterpret_cast<ParamRec*>(ph);
-    int index;
-    if (aGetKeyIndex(ph, time, 0, &index) != kOfxStatOK) {
-        return kOfxStatErrBadIndex;
-    }
     Anim& k = gAnim[r];
-    const double t = keyTimes(r)[index];
+    // (Natron's removeKeyFrameWithTime() deletes a key at that exact time, if there is one)
+    const double t = time;
     const size_t n = k.size();
     sErase(k, t);
     k.i.erase(t);
@@ -1010,7 +1015,7 @@ userMoveKey(const char* name,
     Anim& k = gAnim[P(name)];
     const int v = k.i[from];
     k.i.erase(from);
-    k.i[sameKeyTime(k.i, to)] = v;
+    k.i[to] = v;
     instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
 }
@@ -1026,11 +1031,12 @@ userDopeSheetMoveKeys(const char* name,
     Anim& k = gAnim[P(name)];
     std::map<double, int> moved;
     for (size_t i = 0; i < from.size(); ++i) {
-        moved[from[i] + dt] = k.i[from[i]];
+        // (the dope sheet moves keys by whole frames)
+        moved[from[i] + std::round(dt)] = k.i[from[i]];
         k.i.erase(from[i]);
     }
     for (std::map<double, int>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
-        k.i[sameKeyTime(k.i, it->first)] = it->second;
+        k.i[it->first] = it->second;
     }
     for (std::map<double, int>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
         instanceChanged(name, kOfxChangeUserEdited, it->first);
@@ -1047,7 +1053,7 @@ userPasteKeys(const char* name,
     UserAction u(std::string("paste keys of ") + name + at(), maxCalls);
     Anim& k = gAnim[P(name)];
     for (std::map<double, int>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-        k.i[sameKeyTime(k.i, it->first)] = it->second;
+        k.i[it->first] = it->second;
     }
     instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
@@ -1641,20 +1647,21 @@ testFractionalKeyTimes()
 void
 testNearKeyTimes()
 {
-    std::printf("==== Key times less than 1e-6 apart (fractional keys moved in the dope sheet), and swaps ====\n");
-    newInstance(gColorSpace);
-    gCurrentTime = 0.;
-    userPasteKeys(kIC, { { 0.3, 3 }, { 33., 3 } });
+    std::printf("==== Swap with keys less than 1e-6 apart on the two sides ====\n");
+    Restored restored;
+    restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
+    restored.outputKeys = { { 0., "x3" }, { 10.0000001, "x1" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 5.;
+    userSetString(kKey1, "a");
     userPress(kSwap);
-    userMoveKey(kIC, 0.3, -1.7);
-    userDopeSheetMoveKeys(kIC, { -1.7, 33. }, 2.); // (-1.7 + 2 is not exactly 0.3)
-    userPress(kSwap);
-    userMoveKey(kIC, gAnim[P(kIC)].i.begin()->first, -4.7);
-    for (const char* name : { kIS, kIC, kOS, kOC }) {
-        check(gAnim[P(name)].size() <= 3, "%s has no near-duplicate keys: %s", name, anim(name).c_str());
-    }
-    checkAnim(kIC, anim(kIS));
-    checkAnim(kOC, anim(kOS));
+    // Natron keeps both keys of the input near 10, but its OFX key list only reports the first one: the other one is
+    // hidden from the plug-in, and the menu doesn't get it
+    checkAnim(kIS, "{0:3,10:3,10:1}");
+    checkAnim(kOS, "{0:2,10:4,10:4}");
+    check(gAnim[P(kIS)].s.count(10.0000001) && gAnim[P(kIS)].s[10.0000001] == "x1", "the input has x1 from t=10.0000001");
+    checkRender(10., 3, 4);
+    checkRender(11., 1, 4);
 }
 
 void
@@ -1715,10 +1722,13 @@ testKeysNearIntegerTimes()
     checkSides("{5:4,5:3}", "=1");
     checkRender(6., 3, 1);
     checkRender(5., 4, 1);
-    // (a key less than 1e-6 away is the same key, in Natron)
+    // (Natron keeps a key less than 1e-6 after another one, but its OFX key list doesn't report it: the plug-in
+    // doesn't see it, and the string param doesn't get it)
+    gNearKeysAdded = 0;
     userPasteKeys(kIC, { { 5.0000005, 0 } });
-    checkSides("{5:1,5:3}", "=1");
-    check(gAnim[P(kIS)].s.count(5.) == 1, "the string's key at 5 keeps its time");
+    checkAnim(kIS, "{5:4,5:3}");
+    checkAnim(kIC, "{5:4,5:1,5:3}");
+    check(gNearKeysAdded == 0, "the plug-in adds no key less than 1e-6 from another (%d)", gNearKeysAdded);
 
     std::printf("==== After loading a project: a menu edit to the string's colorspace at that time ====\n");
     Restored restored;

@@ -208,8 +208,9 @@ whose parameter suite it replaces with one that animates string and choice param
 Natron, and declares `kNatronOfxHostIsNatron` (GenericOCIO then builds the menus of each
 instance):
 
-* held values and all the keyframe functions; a param with an expression reports keys at 0
-  and 1; string params are read at `floor(t + 0.5)`, and their keys set at any time
+* held values and all the keyframe functions, with keys at their exact times; only the OFX key
+  list reports the first of the keys less than 1e-6 apart, as Natron's does; a param with an
+  expression reports keys at 0 and 1; string params are read at `floor(t + 0.5)`, and their keys set at any time
   (including fractional times);
 * a plug-in's `paramSetValue` on a param with keys sets a key at the current time; the
   plug-in's changes re-enter `kOfxActionInstanceChanged` before they return, only if they
@@ -250,7 +251,8 @@ save/load, file names, expressions, time changes) to OCIOColorSpace, WriteOIIO o
 and checks after each one that the menus have the keys and values of the strings, that no key
 is set outside of an instance changed action, that there is no loop, that the renders follow
 the strings, that ops that add no key add none, and that undoing a swap of keyed sides
-restores them. `make test-ocio-anim` runs 2000 operations on each plug-in, with fixed seeds
+restores them. `make test-ocio-anim` runs 2000 operations on each plug-in, with fixed seeds (and a run with
+`FUZZ_NEAR=1`, with keys and times near frames)
 (`FUZZ_OPS=n` for more); run `ocio_anim_fuzz cs|writer|reader <ops> <seed>` directly for
 others. By default, the host models Natron 2.6, with NatronGitHub/Natron#1291;
 `OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron before 2.6, without it, which hold
