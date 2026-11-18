@@ -20,22 +20,31 @@
  *      OFFSET + STEP * (f - 1), within 0.4 * STEP. This catches a wrong frame as
  *      well as a missing one,
  *   6. optionally (--frames N) checks the number of frames reported by getInfo(),
- *   7. optionally (--positions P0,P1,..., with --ramp) checks a variable frame rate
- *      clip with timestamp gaps: ramp frame i (0-based) is at frame Pi (0-based,
- *      increasing), and a requested frame in a gap must give the frame displayed at
- *      that time, i.e. the last ramp frame at or before it (held until the next
- *      one, or until the end).
+ *   7. optionally (--positions P0,P1,...) checks a variable frame rate clip with
+ *      timestamp gaps: ramp frame i (0-based) is at frame Pi (0-based, increasing),
+ *      and a requested frame in a gap must give the frame displayed at that time,
+ *      i.e. the last ramp frame at or before it (held until the next one, or until
+ *      the end): with --ramp, its content is checked, and in any case a frame in a
+ *      gap must be identical to the held frame, decoded at its own frame,
+ *   8. optionally (--max-seeks N) checks that decoding every frame sequentially seeks at
+ *      most N times (FFmpegFile::getSeekCount()): e.g. a frame held in a long gap must
+ *      not make every frame of the gap decode from the start again,
+ *   9. optionally (--no-seek-check F1,F2,...) does not require that the 1-based frames
+ *      Fi give the same image after a seek as sequentially (they must still decode):
+ *      with broken timestamps, the timestamps the decoder gives may depend on what it
+ *      decoded before (see run_ffmpeg_read_test.sh).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
 #include "FFmpegFile.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -77,7 +86,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -86,6 +95,8 @@ main(int argc, char** argv)
     bool loadNearest = false;
     double rampOffset = 0.0, rampStep = 0.0; // if rampStep > 0, frame f must have signature rampOffset + rampStep * (f - 1)
     int expectedFrames = -1;
+    long maxSeeks = -1;
+    std::vector<int> noSeekCheck; // 1-based frames that may give another image after a seek
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -103,6 +114,14 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--max-seeks" && i + 1 < argc) {
+            maxSeeks = std::atol(argv[++i]);
+        } else if (a == "--no-seek-check" && i + 1 < argc) {
+            std::istringstream is(argv[++i]);
+            std::string item;
+            while (std::getline(is, item, ',')) {
+                noSeekCheck.push_back(std::atoi(item.c_str()));
+            }
         } else if (a == "--positions" && i + 1 < argc) {
             std::istringstream is(argv[++i]);
             std::string item;
@@ -121,8 +140,8 @@ main(int argc, char** argv)
             return 2;
         }
     }
-    if (!positions.empty() && (rampStep <= 0 || positions[0] != 0)) {
-        std::fprintf(stderr, "--positions needs --ramp, and must start at 0\n");
+    if (!positions.empty() && (positions[0] != 0)) {
+        std::fprintf(stderr, "--positions must start at 0\n");
         return 2;
     }
 
@@ -203,6 +222,31 @@ main(int argc, char** argv)
         }
     }
 
+    // Optional: bounded number of seeks for the sequential decode.
+    int seekErrors = 0;
+    const unsigned long seqSeeks = file.getSeekCount();
+    if (verbose || maxSeeks >= 0) {
+        std::printf("  sequential decode: %lu seeks\n", seqSeeks);
+    }
+    if ((maxSeeks >= 0) && (seqSeeks > (unsigned long)maxSeeks)) {
+        std::printf("  SEEKS sequential decode: %lu seeks, expected at most %ld\n", seqSeeks, maxSeeks);
+        ++seekErrors;
+    }
+
+    // Optional: a frame in a timestamp gap must be identical to the held frame, decoded at its
+    // own frame (whatever its content, e.g. if it is corrupt).
+    int holdErrors = 0;
+    if (!positions.empty()) {
+        for (int f = 1; f <= frames; ++f) {
+            const int heldAt = positions[rampDisplayed(f) - 1] + 1; // 1-based frame of the held frame
+            if ((heldAt != f) && (heldAt <= frames) && (seqSig[f] != seqSig[heldAt])) {
+                std::printf("  HOLD frame %d: sig=%.3f, differs from the held frame %d: sig=%.3f\n",
+                            f, seqSig[f], heldAt, seqSig[heldAt]);
+                ++holdErrors;
+            }
+        }
+    }
+
     // Optional: sequential frames must be strictly increasing (generated ramp clips).
     int monotonicViolations = 0;
     if (checkMonotonic) {
@@ -249,7 +293,8 @@ main(int argc, char** argv)
         }
         const double s = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
         const double diff = std::fabs(s - seqSig[f]);
-        if (diff > tol) {
+        const bool seekCheck = std::find(noSeekCheck.begin(), noSeekCheck.end(), f) == noSeekCheck.end();
+        if (seekCheck && (diff > tol)) {
             std::printf("  MISMATCH frame %d: sequential=%.3f seeked=%.3f diff=%.3f (tol=%.3f)\n",
                         f, seqSig[f], s, diff, tol);
             ++mismatches;
@@ -264,10 +309,10 @@ main(int argc, char** argv)
     const auto seekEnd = std::chrono::steady_clock::now();
     const double seekMs = std::chrono::duration<double, std::milli>(seekEnd - seekStart).count();
 
-    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d seekPhaseMs=%.1f\n",
-                order.size(), mismatches, monotonicViolations, contentErrors, seekMs);
+    std::printf("Result: seekChecks=%zu mismatches=%d monotonicViolations=%d contentErrors=%d holdErrors=%d seekErrors=%d seekPhaseMs=%.1f\n",
+                order.size(), mismatches, monotonicViolations, contentErrors, holdErrors, seekErrors, seekMs);
 
-    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0) {
+    if (mismatches != 0 || monotonicViolations != 0 || contentErrors != 0 || holdErrors != 0 || seekErrors != 0) {
         std::printf("FAIL\n");
         return 1;
     }

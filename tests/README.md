@@ -207,9 +207,11 @@ sequential signatures strictly increase. `--ramp OFFSET,STEP` checks that every
 decoded frame f, sequential or seeked, holds the content of that frame
 (OFFSET + STEP * (f - 1)), which catches a wrong frame as well as a missing one,
 `--frames N` checks the number of frames the reader reports, and `--positions
-P0,P1,...` (with `--ramp`) describes a variable frame rate clip with timestamp gaps:
-ramp frame i is at frame Pi, and a frame in a gap must hold the content of the last
-ramp frame at or before it, as players display it.
+P0,P1,...` describes a variable frame rate clip with timestamp gaps: ramp frame i is
+at frame Pi, and a frame in a gap must be identical to the last ramp frame at or
+before it, as players display it (and, with `--ramp`, hold its content).
+`--max-seeks N` checks that decoding every frame sequentially seeks at most N times
+(`FFmpegFile::getSeekCount()`).
 
 `run_ffmpeg_read_test.sh` generates 40-frame gray-ramp clips (frame N luma = 16 + 4*N,
 H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 with a
@@ -219,7 +221,17 @@ jittered (VFR) timestamps. The MPEG-TS clip stresses the non-zero stream start P
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a
-longer audio track makes the movie last longer than its last video frame).
+longer audio track makes the movie last longer than its last video frame). VFR
+Matroska clips have a corrupted frame (8 bytes of slice data overwritten, so that it
+decodes with errors) just before a gap: the gap must show the corrupted frame, as
+decoded at its own frame, rather than fail. With a 20-frame gap after it, and with a
+35-frame gap at the end, the sequential decode must seek only twice (for frame 1, and
+to decode from the start once), not once per frame in the gap. A MOV clip has broken
+timestamps (two PTS swapped with the `setts` bitstream filter): every frame must
+decode, identically after a seek except at the two swapped frame times
+(`--no-seek-check`): there, FFmpeg 8 gives timestamps after a seek that depend on the
+timestamps decoded before, since `avcodec_flush_buffers()` does not reset its
+best_effort_timestamp heuristic.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration

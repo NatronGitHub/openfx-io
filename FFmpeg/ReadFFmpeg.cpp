@@ -440,6 +440,8 @@ ReadFFmpegPlugin::decode(const string& filename,
     // - Error sets a persistent message and fails,
     // - Black throws MissingFrameBlackException: render() fills the output with transparent black,
     // - Previous/Next/Nearest load the nearest frame (see loadNearestFrame()).
+    // A frame inside the movie is not missing, even in a timestamp gap of a variable frame rate
+    // movie: it shows the previous frame, which is displayed at that time (as in players).
     // A frame inside the movie that fails to decode is an error, whatever the option, as an
     // existing file that cannot be read in an image sequence.
     // kParamOnMissingFrame animates: evaluate it at the render time, not at the sequence time.
