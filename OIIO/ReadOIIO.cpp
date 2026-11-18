@@ -3279,7 +3279,7 @@ ReadOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription
                               "\n\n"
-                              "This plug-in reads the following file formats, if the OpenImageIO library supports them. BMP and GIF files are left to other readers (ReadMisc, ReadFFmpeg).\n"
+                              "This plug-in reads the following file formats, if the OpenImageIO library supports them. BMP files are left to ReadMisc (from openfx-arena), GIF files to ReadFFmpeg.\n"
                               "Cineon (*.cin)\n"
                               "Direct Draw Surface (*.dds)\n"
                               "DPX (*.dpx)\n"
