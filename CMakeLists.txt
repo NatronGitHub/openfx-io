@@ -49,7 +49,7 @@ endif()
 foreach(_sub openfx/include SupportExt/ofxsMacros.h IOSupport/SequenceParsing/SequenceParsing.h)
   if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${_sub}")
     message(FATAL_ERROR "\n submodule(s) are missing, please update your repository:\n"
-                        "  > git submodule update -i --recursive\n")
+                        "  > git submodule update --init --recursive\n")
   endif()
 endforeach()
 
