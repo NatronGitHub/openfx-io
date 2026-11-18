@@ -889,6 +889,7 @@ main(int argc,
     }
     gNatronExact = std::getenv("OCIO_ANIM_NATRON_EXACT") != nullptr;
     gRoundStringTime = std::getenv("OCIO_ANIM_NO_ROUND") == nullptr;
+    gEditBlockEndsOnNestedAction = std::getenv("OCIO_ANIM_EDIT_BLOCK_BUG") != nullptr;
     gMergeBlocks = std::getenv("OCIO_ANIM_NO_MERGE") == nullptr;
     F.noExpr = std::getenv("FUZZ_NO_EXPR") != nullptr;
     initHost();

@@ -365,6 +365,13 @@ keyTimes(ParamRec* r)
     return times;
 }
 
+// NatronGitHub/Natron#1335 (optional, OCIO_ANIM_EDIT_BLOCK_BUG): OfxImageEffectInstance::mainEntry() ends the edit
+// block when any action returns, e.g. the instance changed action of the plug-in's first change in the block, so that
+// the block only records that change (the others are not undoable)
+bool gEditBlockEndsOnNestedAction = false;
+bool gRecording = false;
+void endEditBlock();
+
 // kOfxActionInstanceChanged, as the host calls it
 void
 instanceChanged(const char* name,
@@ -401,6 +408,9 @@ instanceChanged(const char* name,
         check(false, "instanceChanged(%s, %s, %g) returns %d", name, reason, t, st);
     }
     --gDepth;
+    if (gEditBlockEndsOnNestedAction && gRecording) {
+        endEditBlock();
+    }
 }
 
 // ---- undo (Gui/KnobUndoCommand.cpp, MultipleKnobEditsUndoCommand)
@@ -414,7 +424,6 @@ struct UndoOp {
     std::string newS; // the new value (for redo)
     int newI;
 };
-bool gRecording = false;
 std::vector<UndoOp> gBlock; // the changes of the current edit block
 std::vector<UndoOp> gLastBlock; // those of the last one: the undo step
 
@@ -446,10 +455,20 @@ aEditBegin(OfxParamSetHandle,
 OfxStatus
 aEditEnd(OfxParamSetHandle)
 {
+    if (gRecording) {
+        endEditBlock();
+    }
+
+    return kOfxStatOK;
+}
+
+void
+endEditBlock()
+{
     gRecording = false;
     gRedoBlock.clear();
     if (gBlock.empty()) {
-        return kOfxStatOK;
+        return;
     }
     bool merge = false;
     if (gMergeBlocks) {
@@ -462,7 +481,7 @@ aEditEnd(OfxParamSetHandle)
     if (!merge) {
         gLastBlock = gBlock;
 
-        return kOfxStatOK;
+        return;
     }
     for (size_t i = 0; i < gBlock.size(); ++i) {
         const UndoOp& v = gBlock[i];
@@ -480,8 +499,6 @@ aEditEnd(OfxParamSetHandle)
             gLastBlock.push_back(v);
         }
     }
-
-    return kOfxStatOK;
 }
 
 // a copy of s that stays valid until 16 more calls (the plug-in copies the value of a string param at once)
@@ -1594,6 +1611,25 @@ testFractionalKeyTimes()
 }
 
 void
+testEditBlockBug()
+{
+    std::printf("==== Natron without NatronGitHub/Natron#1335: the swap's edit block only records its first change ====\n");
+    gEditBlockEndsOnNestedAction = true;
+    Restored restored;
+    restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
+    restored.outputKeys = { };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 5.;
+    userSetString(kOS, "x3");
+    userPress(kSwap);
+    checkSides("{0:3,10:3}", "{0:2,10:4}");
+    userUndo();
+    // (only the first change, the input's key at 0, is undone)
+    checkSides("{0:2,10:3}", "{0:2,10:4}");
+    gEditBlockEndsOnNestedAction = false;
+}
+
+void
 testKeysNearIntegerTimes()
 {
     std::printf("==== A key just after a frame (10.0000001), and one just after the first key ====\n");
@@ -1857,6 +1893,7 @@ main(int, char**)
     }
     gNatronExact = std::getenv("OCIO_ANIM_NATRON_EXACT") != nullptr;
     gRoundStringTime = std::getenv("OCIO_ANIM_NO_ROUND") == nullptr;
+    gEditBlockEndsOnNestedAction = std::getenv("OCIO_ANIM_EDIT_BLOCK_BUG") != nullptr;
     std::printf("Natron-exact string keys: %s, string times rounded: %s\n", gNatronExact ? "yes" : "no", gRoundStringTime ? "yes" : "no");
     initHost();
     // Natron (e.g. GenericOCIO builds the menus of each instance from its config)
@@ -1887,6 +1924,7 @@ main(int, char**)
     testNatronStringKeys();
     testFractionalKeyTimes();
     testKeysNearIntegerTimes();
+    testEditBlockBug();
     testHostWithoutStringAnimation();
     testHostWithoutChoiceAnimation();
     testNoConfig();
