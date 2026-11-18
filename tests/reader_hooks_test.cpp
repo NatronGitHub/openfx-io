@@ -16,6 +16,10 @@
  *    GenericReader halves the image once per level (scalePixelData, buildMipMapLevel).
  *    Before the fix, level 2 or more dereferenced a null temporary buffer.
  *
+ * And getClipPreferences() for an image sequence whose starting time is not its first frame
+ * (issue #147): the PAR must be read from the first file of the sequence, looked up at the
+ * first frame of the sequence (not at the host time of that frame).
+ *
  * Minimal test readers are defined below (a GenericReaderPlugin subclass with the
  * default isOutputFrameVarying(), and a subclass returning true), and are driven
  * through the OFX actions by the in-process host of ofx_test_host.h. decode() records
@@ -88,7 +92,8 @@ struct MipmapContent {
 MipmapContent gMipmapContent; // read by the mipmap test reader instances
 
 // A reader of fake files: "video" files (whose name contains "video") have kVideoRange frames,
-// others are still images. The file only needs to exist.
+// others are still images or image sequences. The file only needs to exist. Files whose name
+// contains "par2" have a pixel aspect ratio of 2.
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
@@ -100,6 +105,8 @@ public:
 
     // what decode() or decodePlane() saw, in call order
     std::vector<DecodeRecord> records;
+    // getFrameBounds() calls: the filename and the time (the sequence time), in call order
+    std::vector<std::pair<std::string, double>> frameBoundsCalls;
     // called from decode(), after recording
     std::function<void()> onDecode;
     // decode() throws (after recording and onDecode)
@@ -173,8 +180,9 @@ private:
         }
     }
 
-    virtual bool getFrameBounds(const std::string& /*filename*/, OfxTime /*time*/, int /*view*/, OfxRectI* bounds, OfxRectI* format, double* par, std::string* /*error*/, int* tile_width, int* tile_height) OVERRIDE FINAL
+    virtual bool getFrameBounds(const std::string& filename, OfxTime time, int /*view*/, OfxRectI* bounds, OfxRectI* format, double* par, std::string* /*error*/, int* tile_width, int* tile_height) OVERRIDE FINAL
     {
+        frameBoundsCalls.push_back({ filename, time });
         if (_content) {
             *bounds = _content->bounds;
         } else {
@@ -183,7 +191,7 @@ private:
             bounds->y2 = kHeight;
         }
         *format = *bounds;
-        *par = 1.;
+        *par = (filename.find("par2") != std::string::npos) ? 2. : 1.;
         *tile_width = *tile_height = 0;
 
         return true;
@@ -368,7 +376,8 @@ struct Reader {
     TestReaderPlugin* plugin = nullptr;
     Clip* out = nullptr;
 
-    bool create(OfxPlugin* plugin_, const std::string& filename)
+    // fileAtTime (optional): the value of the file param at each time, as for an image sequence
+    bool create(OfxPlugin* plugin_, const std::string& filename, std::function<std::string(double)> fileAtTime = nullptr)
     {
         p = plugin_;
         PropSet inArgs;
@@ -379,6 +388,9 @@ struct Reader {
             return false;
         }
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
+        if (fileAtTime) {
+            ctx.params[kOfxImageEffectFileParamName].stringAtTime = fileAtTime;
+        }
         inst.delegate = &ctx;
         setInstanceProps(inst, kWidth, kHeight, kVideoRange.max, kOfxImageEffectContextReader);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
@@ -424,6 +436,19 @@ struct Reader {
         }
         int v = -1;
         pGetInt(PH(&outArgs), kOfxImageEffectFrameVarying, 0, &v);
+
+        return v;
+    }
+
+    // the output PAR set by getClipPreferences, or -1 if it was not set (or getClipPreferences failed)
+    double outputPAR()
+    {
+        PropSet outArgs;
+        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&outArgs)))) {
+            return -1.;
+        }
+        double v = -1.;
+        pGetDouble(PH(&outArgs), "OfxImageClipPropPAR_" kOfxImageEffectOutputClipName, 0, &v);
 
         return v;
     }
@@ -544,6 +569,59 @@ testFrameVarying(OfxPlugin* pDefault, OfxPlugin* pFrameVarying, const std::strin
         } else {
             ++gFailures;
         }
+    }
+}
+
+// 1b. getClipPreferences reads the PAR of the first file of an image sequence, looked up at the
+// first frame of the sequence, when the starting time is not the first frame (issue #147).
+// Before the fix, the file was looked up at the sequence time 101 (the host time of the first
+// frame), which does not exist, so the output PAR was not set.
+void
+testClipPreferencesSequence(OfxPlugin* pDefault, const std::string& prefix)
+{
+    const int kFirst = 1, kLast = 5, kStartingTime = 101;
+    std::printf("==== getClipPreferences(), image sequence %d..%d with PAR 2 and starting time %d (#147) ====\n", kFirst, kLast, kStartingTime);
+    // prefix.par2seq.0001.tst ... prefix.par2seq.0005.tst
+    auto fileAt = [prefix](double t) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), ".par2seq.%04d.tst", (int)std::floor(t + 0.5));
+
+        return prefix + buf;
+    };
+    std::vector<std::string> files;
+    for (int f = kFirst; f <= kLast; ++f) {
+        files.push_back(fileAt(f));
+        std::FILE* fp = std::fopen(files.back().c_str(), "wb");
+        if (!fp) {
+            check(false, "cannot create %s", files.back().c_str());
+
+            return;
+        }
+        std::fclose(fp);
+    }
+    {
+        Reader r;
+        // the host gives the name of the file of each frame at the sequence (file) time, as Natron does
+        if (r.create(pDefault, fileAt(kFirst), fileAt)) {
+            const int first = paramInt(&r.ctx.params["firstFrame"], 0);
+            const int last = paramInt(&r.ctx.params["lastFrame"], 0);
+            check(first == kFirst && last == kLast, "frame range of the sequence = %d..%d (expected %d..%d)", first, last, kFirst, kLast);
+            // the first frame of the sequence is at time 101
+            setParamInt(r.ctx, "startingTime", kStartingTime);
+            setParamInt(r.ctx, "timeOffset", kStartingTime - kFirst);
+            r.plugin->frameBoundsCalls.clear();
+            const double par = r.outputPAR();
+            check(par == 2., "output PAR = %g (expected 2, the PAR of the first file)", par);
+            const auto& calls = r.plugin->frameBoundsCalls;
+            check(calls.size() == 1 && calls[0].first == fileAt(kFirst) && calls[0].second == kFirst,
+                  "getFrameBounds() called once, for the first file at sequence time %d (%zu calls, first: \"%s\" at %g)",
+                  kFirst, calls.size(), calls.empty() ? "" : calls[0].first.c_str(), calls.empty() ? -1. : calls[0].second);
+        } else {
+            ++gFailures;
+        }
+    }
+    for (const std::string& f : files) {
+        std::remove(f.c_str());
     }
 }
 
@@ -1026,6 +1104,7 @@ main(int argc, char** argv)
     }
 
     testFrameVarying(pDefault, pFrameVarying, still, video);
+    testClipPreferencesSequence(pDefault, prefix);
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);

@@ -427,7 +427,8 @@ private:
                             OFX::BitDepthEnum dstBitDepth,
                             int dstRowBytes);
 
-    OfxPointD detectProxyScale(const std::string& originalFileName, const std::string& proxyFileName, OfxTime time);
+    // sequenceTime is the sequence (file) time, passed to getFrameBounds()
+    OfxPointD detectProxyScale(const std::string& originalFileName, const std::string& proxyFileName, OfxTime sequenceTime);
 
     void setSequenceFromFile(const std::string& filename);
 

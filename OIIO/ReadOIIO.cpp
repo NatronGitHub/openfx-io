@@ -774,11 +774,10 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs& args,
         // advanced parameters changed, invalidate the cache entries for the whole sequence
         if (_cache) {
             OfxRangeD range;
-            getTimeDomain(range);
-            string filename;
+            getTimeDomain(range); // the host time domain
             for (int t = (int)range.min; t <= (int)range.max; ++t) {
                 string filename;
-                OfxStatus st = getFilenameAtTime(args.time, &filename);
+                OfxStatus st = getFilenameAtTime(t, &filename); // t is a host time
                 if (st == kOfxStatOK) {
                     _cache->invalidate(ustring(filename));
                 }
