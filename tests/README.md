@@ -15,6 +15,7 @@ make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() 
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
+make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-exr-tsan # the same, built with ThreadSanitizer
 make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
@@ -209,6 +210,21 @@ the pool must keep its `hardware_concurrency() - 1` threads and OIIOResize must 
 (`ImageBufAlgo::resize()`, with the host's 4 CPUs); after the unload of the last one,
 the pool must have 0 threads. It sets `OCIO=test.ocio`.
 
+### 1e2. `test-oiio-edge` — OIIOResize and OIIOText with degenerate inputs
+
+`oiio_edge_test.cpp` links the OIIO plug-ins with `OIIOResize.cpp` and `OIIOText.cpp`, in the Filter context:
+
+* **OIIOResize, empty source**: an empty (0x0) source image resized to 32x32 with the default filter renders black.
+* **OIIOResize, Preserve PAR**: the RoD for a source RoD of +-DBL_MAX (whose size is infinite) is in the range of int
+  (it converted NaN or inf to int); 200x100 into 100x100 gives 100x50.
+* **OIIOResize, infinite source RoD**: when the source clip changes, the Size param is the RoD size clamped to INT_MAX
+  (the subtraction overflowed int).
+* **OIIOText**: a text position of +-DBL_MAX or 1e12 renders (it was converted to int).
+
+The conversions are only detected by UBSan: build it with
+`make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.
+It sets `OCIO=test.ocio`.
+
 ### 1f. `test-exr` — ReadEXR (#123)
 
 `exr_read_test.cpp` writes EXR files with OpenEXR in a scratch directory (`.exr_read`),
@@ -384,6 +400,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
+| `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |

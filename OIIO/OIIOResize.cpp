@@ -24,6 +24,8 @@
 
 #include <algorithm>
 #include <cfloat> // DBL_MAX
+#include <climits> // INT_MAX
+#include <cmath>
 #include <limits>
 
 #include "ofxsMacros.h"
@@ -57,6 +59,20 @@ GCC_DIAG_ON(unused-parameter)
 using namespace OFX;
 
 using std::string;
+
+// A size in pixels, converted to int after clamping it to [0, INT_MAX] (0 for NaN), without undefined behaviour
+static int
+sizeToInt(double v)
+{
+    if (!(v > 0.)) {
+        return 0;
+    }
+    if (!(v < (double)INT_MAX)) {
+        return INT_MAX;
+    }
+
+    return (int)v;
+}
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
@@ -641,7 +657,9 @@ OIIOResizePlugin::changedClip(const InstanceChangedArgs& args,
                 foundFormat = true;
             }
         }
-        _size->setValue((int)srcRod.x2 - srcRod.x1, (int)srcRod.y2 - srcRod.y1);
+        // the RoD may be huge or infinite (kOfxFlagInfiniteMin..Max): its size is clamped to the range of int
+        // (std::trunc(x2) - x1: the same value as before, (int)x2 - x1, for a RoD in the range of int)
+        _size->setValue(sizeToInt(std::trunc(srcRod.x2) - srcRod.x1), sizeToInt(std::trunc(srcRod.y2) - srcRod.y1));
         if (!foundFormat) {
             _type->setValue((int)eResizeTypeSize);
         }
@@ -689,12 +707,14 @@ OIIOResizePlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
             if ((srcH < 1) || (srcW < 1)) {
                 return false;
             }
+            // the sizes are converted to int only within the range of int (srcW or srcH may be infinite for a RoD of
+            // +-DBL_MAX, which gave inf / inf = NaN)
             if ((double)w / srcW < (double)h / srcH) {
                 /// Keep the given width, recompute the height
-                h = (int)(srcH * w / srcW);
+                h = sizeToInt(srcH * w / srcW);
             } else {
                 /// Keep the given height,recompute the width
-                w = (int)(srcW * h / srcH);
+                w = sizeToInt(srcW * h / srcH);
             }
         }
         rod.x1 = 0;

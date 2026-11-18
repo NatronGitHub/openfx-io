@@ -659,7 +659,7 @@ testClipPreferencesPar0(OfxPlugin* pDefault, const std::string& prefix)
 void
 testIOUtility()
 {
-    std::printf("==== IOUtility: getLevelFromScale(), upscalePowerOfTwo(OfxRectD) ====\n");
+    std::printf("==== IOUtility: getLevelFromScale(), upscalePowerOfTwo(OfxRectD), floatToInt() ====\n");
     const struct { double s; unsigned int level; } levels[] = { { 1., 0 }, { 0.5, 1 }, { 0.25, 2 }, { 0.125, 3 }, { 0.3, 2 }, { 2., 0 }, { 0., 0 }, { -0.5, 0 } };
     for (const auto& l : levels) {
         const unsigned int level = getLevelFromScale(l.s);
@@ -672,6 +672,23 @@ testIOUtility()
     check(r3.x1 == -24. && r3.y1 == -12. && r3.x2 == 40. && r3.y2 == 56., "upscalePowerOfTwo(r, 3) = %g,%g,%g,%g (expected -24,-12,40,56)", r3.x1, r3.y1, r3.x2, r3.y2);
     const OfxRectD r0 = upscalePowerOfTwo(r, 0.);
     check(r0.x1 == r.x1 && r0.y1 == r.y1 && r0.x2 == r.x2 && r0.y2 == r.y2, "upscalePowerOfTwo(r, 0) = r");
+
+    // floatToInt() (WriteFFmpeg's 8 and 16 bit conversions): a NaN pixel gives 0, without converting NaN to int
+    // (undefined behaviour, found by -fsanitize=float-cast-overflow); the other values are unchanged. The NaN is
+    // built from its bits in memory (see fillUnwritten()).
+    float nan;
+    fillUnwritten(&nan, 1);
+    const int fromNaN8 = floatToInt<256>(nan);
+    const int fromNaN16 = floatToInt<65536>(nan);
+    check(fromNaN8 == 0 && fromNaN16 == 0, "floatToInt(NaN) = %d, %d (expected 0, 0)", fromNaN8, fromNaN16);
+    const struct { float v; int i8; int i16; } values[] = {
+        { -1.f, 0, 0 }, { 0.f, 0, 0 }, { 0.5f, 128, 32768 }, { 1.f, 255, 65535 }, { 2.f, 255, 65535 }, { 1.f / 255.f, 1, 257 },
+    };
+    for (const auto& v : values) {
+        const int i8 = floatToInt<256>(v.v);
+        const int i16 = floatToInt<65536>(v.v);
+        check(i8 == v.i8 && i16 == v.i16, "floatToInt(%g) = %d, %d (expected %d, %d)", v.v, i8, i16, v.i8, v.i16);
+    }
 }
 
 // 2. getRenderTime() in decode() is the render time; it is restored after render()

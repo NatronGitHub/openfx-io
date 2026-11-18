@@ -111,9 +111,11 @@ template <int numvals>
 int
 floatToInt(float value)
 {
-    if (value <= 0) {
+    // the comparisons are written so that a NaN pixel value (image data may contain NaNs) gives 0 instead of reaching
+    // the conversion to int, which would be undefined behaviour (the result is the same for every other value)
+    if (!(value > 0)) {
         return 0;
-    } else if (value >= 1.) {
+    } else if (!(value < 1.)) {
         return numvals - 1;
     }
 

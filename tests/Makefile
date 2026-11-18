@@ -103,7 +103,7 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-oiio-edge test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -156,6 +156,12 @@ ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# OIIOResize and OIIOText with degenerate inputs (an empty source, huge or infinite RoDs, huge text positions), with
+# the OIIO plug-ins (OIIOGlobal), and OpenGL (OIIOText's interact; OCIO_CDL_LIBS)
+oiio_edge_test: oiio_edge_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp ../OIIO/OIIOText.cpp \
+    ../SupportExt/ofxsOGLTextRenderer.cpp ../SupportExt/ofxsOGLFontData.cpp $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@ $(OCIO_CDL_LIBS)
+
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # -pthread: the test uses std::thread
 EXR_READ_SRCS := ../EXR/ReadEXR.cpp $(READER_HOOKS_SRCS)
@@ -190,7 +196,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-exr
+test: test-ffmpeg test-oiio test-ofx test-render test-layers test-reader-hooks test-ocio-cdl test-runscript test-oiio-threads test-oiio-edge test-exr
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -232,6 +238,9 @@ test-oiio-threads: oiio_threadpool_test
 	OCIO=$(CURDIR)/test.ocio ./oiio_threadpool_test
 
 # ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders (#123)
+test-oiio-edge: oiio_edge_test
+	OCIO=$(CURDIR)/test.ocio ./oiio_edge_test
+
 test-exr: exr_read_test
 	rm -rf .exr_read && mkdir -p .exr_read
 	OCIO=$(CURDIR)/test.ocio ./exr_read_test $(CURDIR)/.exr_read
@@ -261,6 +270,7 @@ clean:
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \
+	       oiio_edge_test oiio_edge_test.dSYM \
 	       exr_read_test exr_read_test.dSYM exr_read_test_tsan exr_read_test_tsan.dSYM exr_read_bench exr_read_bench.dSYM .exr_read .exr_read_tsan .exr_bench \
 	       exr_read_test_tsan_debug exr_read_test_tsan_debug.dSYM reader_hooks_test_tsan_debug reader_hooks_test_tsan_debug.dSYM \
 	       .exr_read_tsan_debug .reader_hooks_tsan_debug.still.tst .reader_hooks_tsan_debug.video.tst \
