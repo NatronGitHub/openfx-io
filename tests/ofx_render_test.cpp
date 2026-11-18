@@ -538,6 +538,50 @@ int testStartTimecodeChangedParam(const std::string& outFile)
     return 0;
 }
 
+// A frame rate of 0 (the range of the FPS param starts at 0): the minimum bitrate tolerance, bitrate / min(fps, 4),
+// was bitrate / 0 = inf, or 0 / 0 = NaN for a bitrate of 0, set as the range of the Bitrate Tolerance param (and
+// converted to int when encoding). It is now bitrate / 4.
+int testBitrateToleranceFps0()
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    if (!ctx.params.count("fps") || !ctx.params.count("bitrateMbps") || !ctx.params.count("bitrateToleranceMbps")) {
+        std::printf("  FAIL: no fps, bitrateMbps or bitrateToleranceMbps param\n");
+        return 1;
+    }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, "/tmp/ofx_render_test_fps0.mov");
+    ctx.params["fps"].hasOv = true;
+    ctx.params["fps"].ov.d = { 0. };
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    int fail = 0;
+    const struct { double bitrate; double expected; } cases[] = { { 0., 0. }, { 10., 2.5 } };
+    for (const auto& c : cases) {
+        ctx.params["bitrateMbps"].hasOv = true;
+        ctx.params["bitrateMbps"].ov.d = { c.bitrate };
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, "fps");
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        double vmin = -1.;
+        pGetDouble(PH(ctx.params["bitrateToleranceMbps"].props), kOfxParamPropMin, 0, &vmin);
+        std::printf("  fps 0, bitrate %g: minimum bitrate tolerance %g (expected %g)\n", c.bitrate, vmin, c.expected);
+        if (!(vmin == c.expected)) { std::printf("  FAIL\n"); ++fail; }
+    }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    if (fail) return 1;
+    std::printf("  PASS\n");
+    return 0;
+}
+
 // Issue #110: with the Format "Default", the format is guessed from the filename param before the first
 // render, e.g. ipod or m4v for a .m4v file, where no tmcd track is written: no 255 fps limit.
 int testStartTimecodeDefaultFormat(const std::string& outFile, bool expectError)
@@ -2001,6 +2045,9 @@ main(int argc, char** argv)
             failures += testWriteFFmpegX265(outFile + ".i136.mp4", W, H, 0, depth, /*alpha=*/true);
         }
     }
+
+    std::printf("==== WriteFFmpeg, frame rate of 0: the minimum bitrate tolerance is bitrate / 4 ====\n");
+    failures += testBitrateToleranceFps0();
 
     std::printf("==== WriteFFmpeg, the file param names the open file through another path (issue #137) ====\n");
     failures += testWriteFFmpegSameFile(outFile + ".i137.mov", W, H, N);
