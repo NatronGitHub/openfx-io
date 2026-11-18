@@ -256,10 +256,13 @@ others. By default, the host models Natron 2.6, with NatronGitHub/Natron#1291;
 `OCIO_ANIM_NATRON_EXACT=1` models the string keys of Natron before 2.6, without it, which hold
 the index of their string (NatronGitHub/Natron#1290: some invariants then fail, e.g. the undo
 of a swap);
-`OCIO_ANIM_EDIT_BLOCK_BUG=1` models Natron without NatronGitHub/Natron#1335, which ends
+`OCIO_ANIM_EDIT_BLOCK_BUG=1` models NatronGitHub/Natron#1335 (Natron without its fix,
+NatronGitHub/Natron#1341), which ends
 an edit block when the instance changed action of its first change returns (so that undoing a
 swap only undoes its first change); `ocio_anim_fuzz scenario 0 0` with `SCEN=main` or
-`SCEN=exact` prints some repros.
+`SCEN=exact` prints some repros. `OCIO_ANIM_NOT_NATRON=1` models another host than Natron (no
+`kNatronOfxHostIsNatron`, string params read at the given time): `make test-ocio-anim` also
+runs the test and a fuzz run so.
 
 ### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118)
 

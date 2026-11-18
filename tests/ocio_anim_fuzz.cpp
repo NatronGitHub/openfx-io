@@ -893,7 +893,12 @@ main(int argc,
     gMergeBlocks = std::getenv("OCIO_ANIM_NO_MERGE") == nullptr;
     F.noExpr = std::getenv("FUZZ_NO_EXPR") != nullptr;
     initHost();
-    pSetInt(PH(&gHostProps), kNatronOfxHostIsNatron, 0, 1);
+    // (OCIO_ANIM_NOT_NATRON: another host, which reads string params at the given time)
+    if (std::getenv("OCIO_ANIM_NOT_NATRON")) {
+        gRoundStringTime = false;
+    } else {
+        pSetInt(PH(&gHostProps), kNatronOfxHostIsNatron, 0, 1);
+    }
     installAnimatedParamSuite();
     if (std::string(argv[1]) == "scenario") {
         load(gColorSpace);

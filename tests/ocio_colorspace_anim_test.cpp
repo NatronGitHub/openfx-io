@@ -178,7 +178,7 @@ evaluatesOnChange(ParamRec* r)
 // gNatronExact (optional, OCIO_ANIM_NATRON_EXACT): model the string keys of Natron before 2.6, without
 // NatronGitHub/Natron#1291, which fixes NatronGitHub/Natron#1290 (Engine/StringAnimationManager.cpp, Curve.cpp,
 // KnobImpl.h); by default, the host models Natron with the fix. Without it:
-// - the curve key of a string param holds the index of its string in the sorted list of string keys, computed when
+// - the curve key of a string param holds its index in the param's keys sorted by time (which indexes their strings), computed when
 //   the key is set: inserting or deleting a key before other keys does not update theirs, which then read another
 //   string (or the last one, if the index is out of range);
 // - setting an existing key whose index is unchanged is "nothing changed" (no kOfxActionInstanceChanged), unless it is
@@ -195,7 +195,8 @@ const T&
 heldValue(const std::map<double, T>& keys,
           double t)
 {
-    typename std::map<double, T>::const_iterator it = keys.upper_bound(t + 1e-9);
+    // (exactly, as Natron's Curve::getValueAt())
+    typename std::map<double, T>::const_iterator it = keys.upper_bound(t);
     if (it == keys.begin()) {
         return it->second;
     }
@@ -232,15 +233,37 @@ endKeyDerivativeChanges(const Anim& k,
     if (k.s.size() < 2) {
         return false;
     }
+    // (with gNatronExact, the curve holds the indices of the strings)
     std::map<double, std::string>::const_iterator it = k.s.find(t);
+    std::map<double, std::string>::const_iterator other;
     if (it == k.s.begin()) {
-        return std::next(it)->second != it->second;
+        other = std::next(it);
+    } else if (std::next(it) == k.s.end()) {
+        other = std::prev(it);
+    } else {
+        return false;
     }
-    if (std::next(it) == k.s.end()) {
-        return std::prev(it)->second != it->second;
+    if (gNatronExact) {
+        return k.sidx.at(other->first) != k.sidx.at(it->first);
     }
 
-    return false;
+    return other->second != it->second;
+}
+
+// Natron takes keys less than 1e-6 apart for the same key (NATRON_CURVE_X_SPACING_EPSILON): the time of the key of k
+// that is the same key as a key at t, or t
+template <typename T>
+double
+sameKeyTime(const std::map<double, T>& keys,
+            double t)
+{
+    for (typename std::map<double, T>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        if (std::fabs(it->first - t) < 1e-6) {
+            return it->first;
+        }
+    }
+
+    return t;
 }
 
 // set a string key: 0 = nothing changed, 1 = modified, 2 = added
@@ -365,7 +388,7 @@ keyTimes(ParamRec* r)
     return times;
 }
 
-// NatronGitHub/Natron#1335 (optional, OCIO_ANIM_EDIT_BLOCK_BUG): OfxImageEffectInstance::mainEntry() ends the edit
+// NatronGitHub/Natron#1335, without its fix NatronGitHub/Natron#1341 (optional, OCIO_ANIM_EDIT_BLOCK_BUG): OfxImageEffectInstance::mainEntry() ends the edit
 // block when any action returns, e.g. the instance changed action of the plug-in's first change in the block, so that
 // the block only records that change (the others are not undoable)
 bool gEditBlockEndsOnNestedAction = false;
@@ -567,6 +590,9 @@ aSet(ParamRec* r,
         time = gCurrentTime;
     }
     const bool key = animates(r) && (atTime || (k.size() > 0));
+    if (key) {
+        time = isString(r) ? sameKeyTime(k.s, time) : sameKeyTime(k.i, time);
+    }
     UndoOp op = { r, time, key, false, std::string(), 0, std::string(), 0 };
     bool changed = true;
     if (isString(r)) {
@@ -688,7 +714,9 @@ aGetKeyIndex(OfxParamHandle ph,
     *index = -1;
     for (size_t i = 0; i < times.size(); ++i) {
         if ((direction == 0) && (std::fabs(times[i] - time) < 1e-6)) {
+            // (the first one, as Natron's getKeyIndex())
             *index = (int)i;
+            break;
         } else if ((direction > 0) && (times[i] > time + 1e-6) && (*index < 0)) {
             *index = (int)i;
         } else if ((direction < 0) && (times[i] < time - 1e-6)) {
@@ -982,7 +1010,7 @@ userMoveKey(const char* name,
     Anim& k = gAnim[P(name)];
     const int v = k.i[from];
     k.i.erase(from);
-    k.i[to] = v;
+    k.i[sameKeyTime(k.i, to)] = v;
     instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
 }
@@ -1002,7 +1030,7 @@ userDopeSheetMoveKeys(const char* name,
         k.i.erase(from[i]);
     }
     for (std::map<double, int>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
-        k.i[it->first] = it->second;
+        k.i[sameKeyTime(k.i, it->first)] = it->second;
     }
     for (std::map<double, int>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
         instanceChanged(name, kOfxChangeUserEdited, it->first);
@@ -1019,7 +1047,7 @@ userPasteKeys(const char* name,
     UserAction u(std::string("paste keys of ") + name + at(), maxCalls);
     Anim& k = gAnim[P(name)];
     for (std::map<double, int>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-        k.i[it->first] = it->second;
+        k.i[sameKeyTime(k.i, it->first)] = it->second;
     }
     instanceChanged(name, kOfxChangeUserEdited, gCurrentTime);
     u.done();
@@ -1075,7 +1103,7 @@ userUndo(int maxCalls = 40)
         Anim& k = gAnim[r];
         bool changed = true;
         if (op.keyAdded) {
-            // Gui/KnobGui10.cpp: removing the last key gives the param its value at the current time
+            // Gui/KnobGui10.cpp: removing the last key gives the param its value at the current time (that of the key)
             if (k.size() == 1) {
                 if (isString(r)) {
                     setStatic(r, stringAt(r, gCurrentTime));
@@ -1463,8 +1491,8 @@ testSwap()
 
     std::printf("==== ... undo ====\n");
     userUndo();
-    // the input's keys are restored; the output, which had no keys, gets its value at the current time when its last
-    // key is removed (x4, the input's colorspace at t=5 before the swap: x1 would be right)
+    // the input's keys are restored; the output, which had no keys, gets the value of its last key when it is removed
+    // (x4, the input's colorspace at t=10, the time of that key, before the swap: x1 would be right)
     checkSides("{0:2,10:4}", "=4");
 
     std::printf("==== Swap again ====\n");
@@ -1517,8 +1545,8 @@ testSwap()
     userPress(kSwap);
     checkSides("{5:3}", "{5:2}");
     userUndo();
-    // the output's key is restored; the input gets its value at the current time when its last key is removed (x3:
-    // x2 would be right)
+    // the output's key is restored; the input gets the value of its last key when it is removed (x3, the output's
+    // colorspace at t=5 before the swap: x2 would be right)
     checkSides("=3", "{5:3}");
 
     std::printf("==== Swap with neither side keyed, then undo ====\n");
@@ -1611,9 +1639,46 @@ testFractionalKeyTimes()
 }
 
 void
+testNearKeyTimes()
+{
+    std::printf("==== Key times less than 1e-6 apart (fractional keys moved in the dope sheet), and swaps ====\n");
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userPasteKeys(kIC, { { 0.3, 3 }, { 33., 3 } });
+    userPress(kSwap);
+    userMoveKey(kIC, 0.3, -1.7);
+    userDopeSheetMoveKeys(kIC, { -1.7, 33. }, 2.); // (-1.7 + 2 is not exactly 0.3)
+    userPress(kSwap);
+    userMoveKey(kIC, gAnim[P(kIC)].i.begin()->first, -4.7);
+    for (const char* name : { kIS, kIC, kOS, kOC }) {
+        check(gAnim[P(name)].size() <= 3, "%s has no near-duplicate keys: %s", name, anim(name).c_str());
+    }
+    checkAnim(kIC, anim(kIS));
+    checkAnim(kOC, anim(kOS));
+}
+
+void
+testNonNatronHost()
+{
+    std::printf("==== Another host than Natron, which reads string params at the given time: two keys in a frame ====\n");
+    OFX::getImageEffectHostDescription()->isNatron = false;
+    const bool round = gRoundStringTime;
+    gRoundStringTime = false;
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userSetString(kIS, "x4", true);
+    userPasteKeys(kIC, { { 10.3, 2 }, { 10.6, 1 } });
+    checkSides("{0:4,10.3:3,10.6:2}", "=1");
+    checkRender(10.4, 3, 1);
+    checkRender(10.7, 2, 1);
+    gRoundStringTime = round;
+    OFX::getImageEffectHostDescription()->isNatron = true;
+}
+
+void
 testEditBlockBug()
 {
-    std::printf("==== Natron without NatronGitHub/Natron#1335: the swap's edit block only records its first change ====\n");
+    std::printf("==== Natron with NatronGitHub/Natron#1335 (without NatronGitHub/Natron#1341): the swap's edit block only records its first change ====\n");
     gEditBlockEndsOnNestedAction = true;
     Restored restored;
     restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
@@ -1632,7 +1697,7 @@ testEditBlockBug()
 void
 testKeysNearIntegerTimes()
 {
-    std::printf("==== A key just after a frame (10.0000001), and one just after the first key ====\n");
+    std::printf("==== A key just after a frame (10.0000001), one just after the first key, and one less than 1e-6 away ====\n");
     newInstance(gColorSpace);
     gCurrentTime = 0.;
     userSetString(kIS, "x4", true);
@@ -1646,10 +1711,14 @@ testKeysNearIntegerTimes()
     newInstance(gColorSpace);
     gCurrentTime = 5.;
     userSetString(kIS, "x4", true);
-    userPasteKeys(kIC, { { 5.0000005, 2 } });
+    userPasteKeys(kIC, { { 5.000002, 2 } });
     checkSides("{5:4,5:3}", "=1");
     checkRender(6., 3, 1);
     checkRender(5., 4, 1);
+    // (a key less than 1e-6 away is the same key, in Natron)
+    userPasteKeys(kIC, { { 5.0000005, 0 } });
+    checkSides("{5:1,5:3}", "=1");
+    check(gAnim[P(kIS)].s.count(5.) == 1, "the string's key at 5 keeps its time");
 
     std::printf("==== After loading a project: a menu edit to the string's colorspace at that time ====\n");
     Restored restored;
@@ -1897,7 +1966,12 @@ main(int, char**)
     std::printf("Natron-exact string keys: %s, string times rounded: %s\n", gNatronExact ? "yes" : "no", gRoundStringTime ? "yes" : "no");
     initHost();
     // Natron (e.g. GenericOCIO builds the menus of each instance from its config)
-    pSetInt(PH(&gHostProps), kNatronOfxHostIsNatron, 0, 1);
+    // (OCIO_ANIM_NOT_NATRON: another host, which reads string params at the given time)
+    if (std::getenv("OCIO_ANIM_NOT_NATRON")) {
+        gRoundStringTime = false;
+    } else {
+        pSetInt(PH(&gHostProps), kNatronOfxHostIsNatron, 0, 1);
+    }
     installAnimatedParamSuite();
     load(gColorSpace);
     load(gWriter);
@@ -1925,6 +1999,8 @@ main(int, char**)
     testFractionalKeyTimes();
     testKeysNearIntegerTimes();
     testEditBlockBug();
+    testNonNatronHost();
+    testNearKeyTimes();
     testHostWithoutStringAnimation();
     testHostWithoutChoiceAnimation();
     testNoConfig();
