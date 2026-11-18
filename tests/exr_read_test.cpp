@@ -44,6 +44,16 @@
 
 namespace {
 
+// The base address of an OpenEXR slice: the address of pixel (0, 0), offset bytes before the start of the buffer,
+// which may be out of the buffer. It is computed as an integer: pointer arithmetic out of an array is undefined
+// behaviour (found by UBSan).
+char*
+sliceBase(const void* buffer,
+          ptrdiff_t offset)
+{
+    return reinterpret_cast<char*>(reinterpret_cast<uintptr_t>(buffer) - (uintptr_t)offset);
+}
+
 int gFailures = 0;
 
 void
@@ -137,7 +147,7 @@ writeExr(const std::string& path, const ExrSpec& s)
             const std::string name(1, s.channels[k]);
             if (s.uintRed && name == "R") {
                 header.channels().insert(name, Imf::Channel(Imf::UINT));
-                fb.insert(name, Imf::Slice(Imf::UINT, (char*)(u.data() - s.data.min.x - (ptrdiff_t)s.data.min.y * w), sizeof(uint32_t), sizeof(uint32_t) * w));
+                fb.insert(name, Imf::Slice(Imf::UINT, sliceBase(u.data(), (ptrdiff_t)(s.data.min.x + (ptrdiff_t)s.data.min.y * w) * (ptrdiff_t)sizeof(uint32_t)), sizeof(uint32_t), sizeof(uint32_t) * w));
                 continue;
             }
             header.channels().insert(name, Imf::Channel(s.type));
@@ -150,7 +160,7 @@ writeExr(const std::string& path, const ExrSpec& s)
                 base = (char*)(f.data() + k);
                 ps = sizeof(float);
             }
-            base -= (ptrdiff_t)(s.data.min.x + (ptrdiff_t)s.data.min.y * w) * nc * ps;
+            base = sliceBase(base, (ptrdiff_t)(s.data.min.x + (ptrdiff_t)s.data.min.y * w) * (ptrdiff_t)(nc * ps));
             fb.insert(name, Imf::Slice(s.type, base, nc * ps, (size_t)w * nc * ps));
         }
         Imf::OutputFile out(path.c_str(), header);
@@ -685,10 +695,10 @@ testLumaChroma(OfxPlugin* p, const std::string& dir)
             }
         }
         Imf::FrameBuffer fb;
-        fb.insert("Y", Imf::Slice(Imf::FLOAT, (char*)(y.data() - data.min.x - (ptrdiff_t)data.min.y * w), sizeof(float), sizeof(float) * w));
+        fb.insert("Y", Imf::Slice(Imf::FLOAT, sliceBase(y.data(), (ptrdiff_t)(data.min.x + (ptrdiff_t)data.min.y * w) * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * w));
         const ptrdiff_t off = data.min.x / 2 + (ptrdiff_t)(data.min.y / 2) * (w / 2);
-        fb.insert("RY", Imf::Slice(Imf::FLOAT, (char*)(ry.data() - off), sizeof(float), sizeof(float) * (w / 2), 2, 2));
-        fb.insert("BY", Imf::Slice(Imf::FLOAT, (char*)(by.data() - off), sizeof(float), sizeof(float) * (w / 2), 2, 2));
+        fb.insert("RY", Imf::Slice(Imf::FLOAT, sliceBase(ry.data(), off * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * (w / 2), 2, 2));
+        fb.insert("BY", Imf::Slice(Imf::FLOAT, sliceBase(by.data(), off * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * (w / 2), 2, 2));
         Imf::OutputFile out(path.c_str(), header);
         out.setFrameBuffer(fb);
         out.writePixels(h);
