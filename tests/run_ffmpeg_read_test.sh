@@ -26,6 +26,9 @@
 #   * MP4 and MOV with B-frames and no edit list (fragmented MP4 with H.264 and HEVC,
 #     -use_editlist 0), whose start time is the B-frame delay, and FLV without the duration
 #     metadata whose audio ends less than a frame after the video.
+#   * The bytes read at open: a 60 s Matroska with a start time, and FLV, also truncated.
+#   * MOV/MP4 stream copies from a non-keyframe, and VFR MP4 with a one-frame gap, which have
+#     fewer samples than frame times.
 #   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
 #     with B-frames, which has no timestamps.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
@@ -286,6 +289,43 @@ check_flv_overhang() {
     "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
+# check_open NAME DESCRIPTION EXPECTED_FRAMES MAX_OPEN_BYTES
+# Opens the existing clip $tmp/NAME: the reader must report EXPECTED_FRAMES frames, and the open must read
+# at most MAX_OPEN_BYTES bytes (e.g. finding the end of the movie must not read the whole file).
+check_open() {
+    local name="$1" desc="$2" expected="$3" maxbytes="$4"
+    echo "== $desc =="
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --frames "$expected" --max-open-bytes "$maxbytes" --open-only ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_ss_copy NAME DESCRIPTION EXPECTED_FRAMES SEEK FFMPEG_OUTPUT_ARGS...
+# A stream copy from SEEK seconds (not a keyframe) of a 100-frame 25 fps H.264 clip with B-frames and
+# audio, for 1.6 s: the copy has a gap in its timestamps (fewer samples than frame times), and the last
+# sample must be counted.
+check_ss_copy() {
+    local name="$1" desc="$2" expected="$3" seek="$4"
+    shift 4
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder aac; then
+        echo "SKIPPED: no libx264 or aac encoder in the ffmpeg CLI"
+        return
+    fi
+    if [ ! -f "$tmp/ss_source.mp4" ] && ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=size=160x120:rate=25 -f lavfi -i sine=sample_rate=48000 \
+        -frames:v 100 -t 4 -c:v libx264 -preset veryfast -g 12 -bf 2 -c:a aac "$tmp/ss_source.mp4"; then
+        echo "FAIL: could not generate ss_source.mp4"
+        rc=1
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -ss "$seek" -i "$tmp/ss_source.mp4" -t 1.6 -c copy "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -380,6 +420,31 @@ check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame be
 check_corrupt ramp_corrupt_long_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a 20-frame gap)" 24 21 1 0 2
 check_corrupt ramp_corrupt_end_gap.mkv "VFR MKV (H.264, 24 fps, corrupted last frame before a 35-frame gap at the end)" 13 0 0 2 2
 check_swapped ramp_swapped.mov "MOV (H.264, 24 fps, broken timestamps: two PTS swapped)"
+
+# Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
+# cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is
+# used, and the tags are not walked back to the start of the file).
+if have_encoder libx264; then
+    if ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -t 60 -c:v libx264 -preset ultrafast -g 48 -output_ts_offset 10 "$tmp/long_offset.mkv" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -t 60 -c:v libx264 -preset ultrafast -g 48 -bf 2 "$tmp/long.flv"; then
+        check_open long_offset.mkv "Matroska (H.264, 24 fps, 60 s, start time 10 s): bytes read at open" 1440 2000000
+        check_open long.flv "FLV (H.264 with B-frames, 24 fps, 60 s): bytes read at open" 1440 2000000
+        size=$(wc -c < "$tmp/long.flv")
+        for cut in 7 377 12345; do
+            head -c $((size - cut)) "$tmp/long.flv" > "$tmp/long_cut$cut.flv"
+            check_open "long_cut$cut.flv" "FLV (H.264 with B-frames, 24 fps, 60 s, truncated by $cut bytes): frame count and bytes read at open" 1440 2000000
+        done
+    else
+        echo "FAIL: could not generate the 60 s clips"
+        rc=1
+    fi
+fi
+# A stream copy from a non-keyframe: fewer samples than frame times.
+check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6
+check_ss_copy ramp_ss_copy.mp4 "MP4 (stream copy from 1.3 s, no edit list)" 53 1.3 -use_editlist 0
+# VFR MP4 with a one-frame gap, in the middle and before the last frame: the last frame must be counted.
+check_vfr ramp_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap)" 41 20 2 1 0 42
+check_vfr ramp_end_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap before the last frame)" 41 39 2 1 0 42
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"

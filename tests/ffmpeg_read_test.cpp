@@ -32,13 +32,16 @@
  *   9. optionally (--no-seek-check F1,F2,...) does not require that the 1-based frames
  *      Fi give the same image after a seek as sequentially (they must still decode):
  *      with broken timestamps, the timestamps the decoder gives may depend on what it
- *      decoded before (see run_ffmpeg_read_test.sh).
+ *      decoded before (see run_ffmpeg_read_test.sh),
+ *  10. optionally (--max-open-bytes N) checks that opening the file read at most N bytes
+ *      (FFmpegFile::getBytesReadAtOpen()), e.g. that finding the end of the movie does not read
+ *      the whole file, and (--open-only) stops after the checks of the opened file.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -86,7 +89,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -96,6 +99,8 @@ main(int argc, char** argv)
     double rampOffset = 0.0, rampStep = 0.0; // if rampStep > 0, frame f must have signature rampOffset + rampStep * (f - 1)
     int expectedFrames = -1;
     long maxSeeks = -1;
+    long long maxOpenBytes = -1;
+    bool openOnly = false;
     std::vector<int> noSeekCheck; // 1-based frames that may give another image after a seek
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
@@ -114,6 +119,10 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--max-open-bytes" && i + 1 < argc) {
+            maxOpenBytes = std::atoll(argv[++i]);
+        } else if (a == "--open-only") {
+            openOnly = true;
         } else if (a == "--max-seeks" && i + 1 < argc) {
             maxSeeks = std::atol(argv[++i]);
         } else if (a == "--no-seek-check" && i + 1 < argc) {
@@ -173,6 +182,17 @@ main(int argc, char** argv)
     if (expectedFrames >= 0 && frames != expectedFrames) {
         std::fprintf(stderr, "FAIL: getInfo reports %d frames, expected %d\n", frames, expectedFrames);
         return 1;
+    }
+    if (verbose || (maxOpenBytes >= 0)) {
+        std::printf("  open read %lld bytes\n", (long long)file.getBytesReadAtOpen());
+    }
+    if ((maxOpenBytes >= 0) && (file.getBytesReadAtOpen() > maxOpenBytes)) {
+        std::fprintf(stderr, "FAIL: opening the file read %lld bytes, expected at most %lld\n", (long long)file.getBytesReadAtOpen(), maxOpenBytes);
+        return 1;
+    }
+    if (openOnly) {
+        std::printf("PASS\n");
+        return 0;
     }
 
     // the content check: the ramp frame displayed at frame f (1-based), and the ramp frame (1-based)

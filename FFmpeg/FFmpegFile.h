@@ -429,6 +429,7 @@ private:
     std::string _errorMsg; // internal decoding error string
     bool _invalidState; // true if the reader is in an invalid state
     unsigned long _seekCount; // number of seeks by decode(), for tests
+    int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
@@ -461,8 +462,8 @@ private:
     // The largest timestamp in the index of the stream, in AV_TIME_BASE units
     int64_t getLastIndexTimestamp(Stream& stream);
 
-    // The end of the movie from the last packets of the file, in AV_TIME_BASE units
-    int64_t getMovieEndFromLastPackets(Stream& stream);
+    // The end of the movie (in AV_TIME_BASE units) and the largest PTS of the video stream, from the last packets
+    bool probeEnd(Stream& stream, int64_t& movieEnd, int64_t& lastVideoPts);
 
     // Get the video stream duration in frames...
     int64_t getStreamFrames(Stream& stream);
@@ -479,6 +480,12 @@ public:
     const std::string& getFilename() const
     {
         return _filename;
+    }
+
+    // The number of bytes read from the file when it was opened (by the constructor), for tests
+    int64_t getBytesReadAtOpen() const
+    {
+        return _bytesReadAtOpen;
     }
 
     // get the internal error string
