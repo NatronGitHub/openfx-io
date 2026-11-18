@@ -682,13 +682,26 @@ namespace {
 // Natron, it is held from a key to the next one, and before the first key it is that of the first key): two params
 // with keys at the same times, with the same values, have the same value at all times.
 
-// (key times are compared exactly: they come from the host, and the keys that GenericOCIO sets have the times of other
-// keys)
+// Natron takes keys less than 1e-6 apart for the same key (NATRON_CURVE_X_SPACING_EPSILON): the index in times of the
+// time that is the same key as a key at t, or -1
+int
+indexOfKeyTime(const std::vector<double>& times,
+               double t)
+{
+    for (size_t i = 0; i < times.size(); ++i) {
+        if (std::fabs(times[i] - t) < 1e-6) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
 bool
 containsTime(const std::vector<double>& times,
              double t)
 {
-    return std::find(times.begin(), times.end(), t) != times.end();
+    return indexOfKeyTime(times, t) >= 0;
 }
 
 template <typename ParamT>
@@ -868,13 +881,13 @@ sameColorspace(const OCIO::ConstConfigRcPtr& config,
 // colorspaces by menu entry. The keys are deleted first, then set in time order: a key that is not in the param or
 // whose colorspace differs, and every key after the first key that is added or deleted, with the string it had (read
 // before any change; a key whose new colorspace is the same keeps its name, e.g. "x1" is not replaced by its role
-// "scene_linear"). In Natron before 2.6 (without NatronGitHub/Natron#1291), a key of a string param holds the index of
-// its string in the sorted list of the param's strings, which is not updated when an earlier key is added or deleted,
-// so that the later keys then have other strings (NatronGitHub/Natron#1290): setting them again, in time order, fixes
-// them. Elsewhere, this gives them their own values. In an edit block (Swap Colorspaces), Natron's undo command records
-// every key that a plug-in sets: from Natron 2.6, a key set to its own string is a modification if it is the first or
-// the last key and its neighbour has another string (the curve's derivatives are compared too), which undo sets back to
-// the same string; without it, such a key is recorded as added, and undo removes it.
+// "scene_linear"). In Natron before 2.6 (without NatronGitHub/Natron#1291), a key of a string param holds its index in
+// the param's keys sorted by time (which indexes their strings), which is not updated when an earlier key is added or
+// deleted, so that the later keys then have other strings (NatronGitHub/Natron#1290): setting them again, in time
+// order, fixes them. Elsewhere, this gives them their own values. In an edit block (Swap Colorspaces), Natron's undo
+// command records every key that a plug-in sets: from Natron 2.6, a key set to its own string is a modification if it
+// is the first or the last key and its neighbour has another string (the curve's derivatives are compared too), which
+// undo sets back to the same string; without it, such a key is recorded as added, and undo removes it.
 void
 applyStringKeys(const OCIO::ConstConfigRcPtr& config,
                 StringParam* str,
@@ -902,14 +915,17 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
     for (size_t i = 0; i < old.keys.size(); ++i) {
         keys[old.keys[i].first] = old.keys[i].second;
     }
+    std::vector<double> oldTimes, targetTimes;
+    for (size_t i = 0; i < old.keys.size(); ++i) {
+        oldTimes.push_back(old.keys[i].first);
+    }
+    for (size_t j = 0; j < target.keys.size(); ++j) {
+        targetTimes.push_back(target.keys[j].first);
+    }
     if (deleteOthers) {
         for (size_t i = old.keys.size(); i > 0; --i) {
             const double t = old.keys[i - 1].first;
-            bool inTarget = false;
-            for (size_t j = 0; j < target.keys.size(); ++j) {
-                inTarget = inTarget || (target.keys[j].first == t);
-            }
-            if (inTarget || (fromMenu && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
+            if (containsTime(targetTimes, t) || (fromMenu && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
                 continue;
             }
             str->deleteKeyAtTime(t);
@@ -919,7 +935,9 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
     }
     std::map<double, string> before = keys;
     for (size_t j = 0; j < target.keys.size(); ++j) {
-        const double t = target.keys[j].first;
+        // (the time of the param's key, if it has the same key)
+        const int i = indexOfKeyTime(oldTimes, target.keys[j].first);
+        const double t = ((i >= 0) && (before.find(oldTimes[i]) != before.end())) ? oldTimes[i] : target.keys[j].first;
         if (before.find(t) == before.end()) {
             firstChange = std::min(firstChange, t);
         }
@@ -945,29 +963,36 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
                    bool animates)
 {
     if (animates && !a.keys.empty()) {
+        // (the menu gets the exact key times of a: its keys at other times, even less than 1e-6 away, are deleted
+        // first)
         std::vector<double> times;
-        const std::vector<double> oldTimes = getKeyTimes(choice);
         for (size_t i = 0; i < a.keys.size(); ++i) {
-            const double t = a.keys[i].first;
-            const int index = colorspaceIndex(config, a.keys[i].second);
-            if (index < 0) {
-                continue;
+            if (colorspaceIndex(config, a.keys[i].second) >= 0) {
+                times.push_back(a.keys[i].first);
             }
-            times.push_back(t);
-            if (containsTime(oldTimes, t)) {
-                int old;
-                choice->getValueAtTime(t, old);
-                if (old == index) {
-                    continue;
-                }
-            }
-            choice->setValueAtTime(t, index);
         }
         if (!times.empty()) {
+            std::vector<double> oldTimes = getKeyTimes(choice);
             for (size_t i = oldTimes.size(); i > 0; --i) {
-                if (!containsTime(times, oldTimes[i - 1])) {
+                if (std::find(times.begin(), times.end(), oldTimes[i - 1]) == times.end()) {
                     choice->deleteKeyAtTime(oldTimes[i - 1]);
                 }
+            }
+            oldTimes = getKeyTimes(choice);
+            for (size_t i = 0; i < a.keys.size(); ++i) {
+                const double t = a.keys[i].first;
+                const int index = colorspaceIndex(config, a.keys[i].second);
+                if (index < 0) {
+                    continue;
+                }
+                if (std::find(oldTimes.begin(), oldTimes.end(), t) != oldTimes.end()) {
+                    int old;
+                    choice->getValueAtTime(t, old);
+                    if (old == index) {
+                        continue;
+                    }
+                }
+                choice->setValueAtTime(t, index);
             }
 
             return;
@@ -1817,20 +1842,21 @@ GenericOCIO::getProcessingColorspacesAtTime(double time,
 // time. No key of the string params is deleted, since Natron's undo doesn't restore the keys that a plug-in deletes: if
 // a side has keys, both sides get keys at the times of the keys of both sides (string and choice values are held from a
 // key to the next one, so that this is the other side's animation), and only the keys that differ are set. In Natron
-// with NatronGitHub/Natron#1335, the undo of the swap's edit block then removes the keys that the swap added and
-// restores those it changed, which restores the animation of a side that had keys (without it, Natron ends the edit
-// block when the instance changed action of the swap's first change returns, so that its undo only undoes that change,
-// e.g. the input's first key, and the swap's other changes are not undoable). That of a side that had no keys is not
-// restored: when undo removes its last key, Natron gives it its value at the current time, i.e. the other side's
-// colorspace at that time (as it was before the swap), not its value before the swap. The menus are not undone either
-// (their edits are not undoable), but they get the keys of the string params again at the next instance changed action
-// of a string param. A string param with an expression (see hasExpressionKeys()) has no real keys: then only the values
-// at the given time are swapped, and a side with an expression is not set (its value is that of the expression). This
-// is only right in Natron 2.6 and later, which have NatronGitHub/Natron#1291 (the fix of NatronGitHub/Natron#1290):
-// before, a key of a string param holds the index of its string in the sorted list of the param's strings, which is not
-// updated when an earlier key is added, so that later keys may then have other strings (applyStringKeys() sets them
-// again), and its undo removes the keys that were changed (and the first and last keys that were set again to their own
-// strings, see applyStringKeys()), not only those that were added, so that the animation is lost.
+// with the fix of NatronGitHub/Natron#1335 (NatronGitHub/Natron#1341), the undo of the swap's edit block then removes
+// the keys that the swap added and restores those it changed, which restores the animation of a side that had keys
+// (without it, e.g. in the current RB-2.6, Natron ends the edit block when the instance changed action of the swap's
+// first change returns, so that its undo only undoes that change, e.g. the input's first key, and the swap's other
+// changes are not undoable). That of a side that had no keys is not restored: when undo removes its last key, Natron
+// gives it the value of that key, i.e. the other side's colorspace (before the swap) at the time of its last key, not
+// its value before the swap. The menus are not undone either (their edits are not undoable), but they get the keys of
+// the string params again at the next instance changed action of a string param. A string param with an expression (see
+// hasExpressionKeys()) has no real keys: then only the values at the given time are swapped, and a side with an
+// expression is not set (its value is that of the expression). This is only right in Natron 2.6 and later, which have
+// NatronGitHub/Natron#1291 (the fix of NatronGitHub/Natron#1290): before, a key of a string param holds its index in
+// the param's keys sorted by time, which is not updated when an earlier key is added, so that later keys may then have
+// other strings (applyStringKeys() sets them again), and its undo removes the keys that were changed (and the first and
+// last keys that were set again to their own strings, see applyStringKeys()), not only those that were added, so that
+// the animation is lost.
 void
 GenericOCIO::swapColorspaces(double time)
 {
