@@ -21,7 +21,7 @@ make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with Thr
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
 
-Requires: a C++14/17 compiler, `pkg-config`, and dev libs for FFmpeg, OpenColorIO,
+Requires: a C++17 compiler, `pkg-config`, and dev libs for FFmpeg, OpenColorIO,
 OpenImageIO (+ `fmt`), plus the `ffmpeg` and `oiiotool` CLIs for the media harnesses.
 
 ## Correction to an earlier assumption
