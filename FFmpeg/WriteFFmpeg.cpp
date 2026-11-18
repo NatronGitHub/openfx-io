@@ -4139,7 +4139,6 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 
     if (!flush) {
         assert(pixelData && bounds);
-        assert(bounds->x1 == _rodPixel.x1 && bounds->x2 == _rodPixel.x2 && bounds->y1 == _rodPixel.y1 && bounds->y2 == _rodPixel.y2);
 
         const bool hasAlpha = alphaEnabled();
         AVPixelFormat pixelFormatNuke;
@@ -4172,22 +4171,42 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
         if (inputFrame_) {
             ret = 0;
             // Convert floating point values to unsigned values.
-            assert(rowBytes && rowBytes >= (int)sizeof(float) * width * pixelDataNComps);
+            // The frames of the movie have the size it was opened with (_rodPixel, the output RoD at
+            // beginSequenceRender), but the image may have other bounds: the output RoD may change during
+            // the render (Natron sets the project format from the first Reader once the render has started).
+            // Only read the part of the image that is in the frame, the rest of the frame is black and
+            // transparent: reading the image as if it had the size of the movie reads out of its buffer.
+            assert(rowBytes && rowBytes >= (int)sizeof(float) * (bounds->x2 - bounds->x1) * pixelDataNComps);
             const int numDestChannels = hasAlpha ? 4 : 3;
+            // the columns of the frame that are in the image
+            const int xBegin = (std::max)(bounds->x1, _rodPixel.x1) - _rodPixel.x1;
+            const int xEnd = (std::min)(bounds->x2, _rodPixel.x2) - _rodPixel.x1;
+            const bool highBitDepth = (avCodecContext->bits_per_raw_sample > 8);
+            const int bytesPerComponent = highBitDepth ? 2 : 1;
+            assert(inputFrame_->linesize[0] >= width * numDestChannels * bytesPerComponent);
 
             for (int y = 0; y < height; ++y) {
-                int srcY = height - 1 - y;
-                const float* src_pixels = (float*)((char*)pixelData + (ptrdiff_t)srcY * (ptrdiff_t)rowBytes);
+                // the frame is top-down, the image bottom-up
+                const int imageY = _rodPixel.y1 + (height - 1 - y);
+                unsigned char* dst_row = inputFrame_->data[0] + (ptrdiff_t)y * inputFrame_->linesize[0];
+                if ((imageY < bounds->y1) || (imageY >= bounds->y2) || (xBegin >= xEnd)) {
+                    std::memset(dst_row, 0, (size_t)width * numDestChannels * bytesPerComponent);
+                    continue;
+                }
+                if ((xBegin > 0) || (xEnd < width)) {
+                    std::memset(dst_row, 0, (size_t)width * numDestChannels * bytesPerComponent);
+                }
+                // the pixel of the image at column _rodPixel.x1 + x is src_pixels[(x - xBegin) * pixelDataNComps]
+                const float* src_pixels = (const float*)((const char*)pixelData + (ptrdiff_t)(imageY - bounds->y1) * (ptrdiff_t)rowBytes) +
+                                          (ptrdiff_t)(_rodPixel.x1 + xBegin - bounds->x1) * pixelDataNComps;
 
-                if (avCodecContext->bits_per_raw_sample > 8) {
+                if (highBitDepth) {
                     assert(pixelFormatNuke == AV_PIX_FMT_RGBA64 || pixelFormatNuke == AV_PIX_FMT_RGB48);
 
-                    // avPicture.linesize is in bytes, but stride is U16 (2 bytes), so divide linesize by 2
-                    assert(inputFrame_->linesize[0] / 2 >= width * numDestChannels);
-                    unsigned short* dst_pixels = reinterpret_cast<unsigned short*>(inputFrame_->data[0]) + y * (inputFrame_->linesize[0] / 2);
+                    unsigned short* dst_pixels = reinterpret_cast<unsigned short*>(dst_row);
 
-                    for (int x = 0; x < width; ++x) {
-                        int srcCol = x * pixelDataNComps;
+                    for (int x = xBegin; x < xEnd; ++x) {
+                        int srcCol = (x - xBegin) * pixelDataNComps;
                         int dstCol = x * numDestChannels;
                         dst_pixels[dstCol + 0] = floatToInt<65536>(src_pixels[srcCol + 0]);
                         dst_pixels[dstCol + 1] = floatToInt<65536>(src_pixels[srcCol + 1]);
@@ -4199,11 +4218,10 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 } else {
                     assert(pixelFormatNuke == AV_PIX_FMT_RGBA || pixelFormatNuke == AV_PIX_FMT_RGB24);
 
-                    assert(inputFrame_->linesize[0] >= width * numDestChannels);
-                    unsigned char* dst_pixels = inputFrame_->data[0] + y * inputFrame_->linesize[0];
+                    unsigned char* dst_pixels = dst_row;
 
-                    for (int x = 0; x < width; ++x) {
-                        int srcCol = x * pixelDataNComps;
+                    for (int x = xBegin; x < xEnd; ++x) {
+                        int srcCol = (x - xBegin) * pixelDataNComps;
                         int dstCol = x * numDestChannels;
                         dst_pixels[dstCol + 0] = floatToInt<256>(src_pixels[srcCol + 0]);
                         dst_pixels[dstCol + 1] = floatToInt<256>(src_pixels[srcCol + 1]);

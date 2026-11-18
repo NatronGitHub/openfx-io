@@ -128,6 +128,14 @@ the real render pipeline, linked directly (no host binary):
   written at a rate close to 120000/1001 (40999/342, as the ffmpeg CLI does), and
   with the Format "Default", the format must be guessed from the filename param
   before the first render (a .m4v file has no 255 fps limit).
+* **WriteFFmpeg, output RoD changed during the render**: from the second frame
+  on, the render window and the source image are smaller (64x32) or larger
+  (192x160) than the movie (128x128, the RoD at `beginSequenceRender`), as when
+  Natron sets the project format from the first Reader once the render has
+  started. The movie must keep its size, with the part of the image that is in
+  the frame, and black elsewhere (ProRes, 16-bit buffer, and MPEG-4, 8-bit).
+  WriteFFmpeg read the image as if it had the size of the movie: out of its
+  buffer when it is smaller (a crash in NatronRenderer).
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
