@@ -35,6 +35,8 @@
 /.render_out.mov.i136.mp4
 /ocio_cdl_test
 /ocio_cdl_test.dSYM/
+/ocio_colorspace_anim_test
+/ocio_colorspace_anim_test.dSYM/
 /runscript_win32_test
 /runscript_win32_test.dSYM/
 /oiio_threadpool_test

@@ -13,6 +13,7 @@ make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
+make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
@@ -199,7 +200,46 @@ The test itself needs OCIO >= 2 (it reads the file back with `Processor::createG
 With OCIO 2, Export used to fail (`GroupTransform::write()` with a nonexistent "CDL"
 format, on an empty group), leaving an empty file. It sets `OCIO=test.ocio`.
 
-### 1e. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118)
+### 1e. `test-ocio-anim` — GenericOCIO's animated colorspaces (#128)
+
+`ocio_colorspace_anim_test.cpp` drives `OCIOColorSpace`, `WriteOIIO` and `ReadOIIO`
+(linked with `PLUGIN_SRCS` and the OpenGL sources of `ocio_cdl_test`) with `ofx_test_host.h`,
+whose parameter suite it replaces with one that animates string and choice params like
+Natron, and declares `kNatronOfxHostIsNatron` (GenericOCIO then builds the menus of each
+instance):
+
+* held values and all the keyframe functions; a param with an expression reports keys at 0
+  and 1;
+* a plug-in's `paramSetValue` on a param with keys sets a key at the current time; the
+  plug-in's changes re-enter `kOfxActionInstanceChanged` before they return, only if they
+  change the param (`paramDeleteKey` and `paramDeleteAllKeys` as a user edit);
+* the user's key edits (set, delete in the curve editor, move in the curve editor or the
+  dope sheet, paste, remove animation, restore default) are reported at the times Natron
+  uses;
+* the plug-in's edit blocks are undone as Natron's `MultipleKnobEditsUndoCommand` does (added
+  keys are removed, changed keys are set back, deleted keys are not restored);
+* loading a project restores the params before `kOfxActionCreateInstance`, and the test
+  checks that the plug-in sets no key outside of an instance changed action.
+
+The config is `swap.ocio` (`OCIO=swap.ocio`), where xN is N times the reference, so that the
+renders tell the colorspaces apart. The test checks the keys of the colorspace string params
+(rendered and saved) and of their menus (which must have the same keys), the renders, and the
+number of instance changed actions of each user action (no loop, no redundant changes):
+
+* keying the input menu, edits at a key or between keys, deleting keys, moving and pasting
+  keys, removing the animation and restoring the default value;
+* the state after loading a project (the strings have keys, the menus have none), then edits
+  of the menu (including Set Key, where the menu shows the colorspace at time 0) or of
+  another param, and a string key deleted where its colorspace is not canonical;
+* Swap Colorspaces with only one side keyed, twice, with both sides keyed, with neither side
+  keyed, after loading a project, and their undo;
+* a string param with an expression; hosts that animate choices but not strings (like
+  hostDemo), or strings but not choices; an instance without a config;
+* WriteOIIO and ReadOIIO: loading a project with keyed colorspaces (no key set in
+  createInstance), a file name with a colorspace on a keyed colorspace (not guessed), and a
+  key deleted by the plug-in (which doesn't mark the colorspace as set by the user).
+
+### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118)
 
 `oiio_threadpool_test.cpp` loads ReadOIIO, WriteOIIO and OIIOResize in the in-process
 host of `ofx_test_host.h`, which share OpenImageIO's default thread pool, as in IO.ofx.
@@ -227,7 +267,7 @@ The conversions are only detected by UBSan: build it with
 `make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.
 It sets `OCIO=test.ocio`.
 
-### 1f. `test-exr` — ReadEXR (#123)
+### 1g. `test-exr` — ReadEXR (#123)
 
 `exr_read_test.cpp` writes EXR files with OpenEXR in a scratch directory (`.exr_read`),
 and reads them with ReadEXR (linked with `GenericReader.cpp` and its dependencies) in
@@ -405,6 +445,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
+| `swap.ocio`                 | OpenColorIO config where xN is N times the reference (`test-ocio-anim`, `hostdemo/run.sh`). |
 | `ofx_entrypoints_test.cpp`  | OFX C-ABI enumeration/identity unit test. |
 | `ffmpeg_read_test.cpp`      | Standalone FFmpeg reader-core harness (links `FFmpegFile.cpp`). |
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
@@ -414,7 +455,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
 | `check_icons.cmake`         | Every plug-in of the CMake build tree's bundle has its icon, `Contents/Resources/<identifier>.png` (ctest `io-icons`). |
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl`. |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim`. |
 
 ## Notes / limitations
 
