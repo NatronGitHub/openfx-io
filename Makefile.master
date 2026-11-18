@@ -8,7 +8,7 @@ PATHTOROOT = $(OFXPATH)/Support
 # to -mmacosx-version-min; without it, the plug-ins would require the SDK's macOS version. Override it with
 # `make MACOSX_DEPLOYMENT_TARGET=...` or in the environment (an empty value also gives 14.0). Ignored on other systems.
 ifeq ($(strip $(MACOSX_DEPLOYMENT_TARGET)),)
-MACOSX_DEPLOYMENT_TARGET := 14.0
+override MACOSX_DEPLOYMENT_TARGET := 14.0
 endif
 
 include $(PATHTOROOT)/Plugins/Makefile.master
