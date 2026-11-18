@@ -40,8 +40,8 @@
 
 cmake_minimum_required(VERSION 3.16...3.31)
 # Minimum macOS version of the plug-ins (Natron 2.6 supports macOS 14 and later); must be set before project().
-# Override it with -DCMAKE_OSX_DEPLOYMENT_TARGET=... or the MACOSX_DEPLOYMENT_TARGET environment variable.
-if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+# Override it with -DCMAKE_OSX_DEPLOYMENT_TARGET=... or the MACOSX_DEPLOYMENT_TARGET environment variable; not set when cross-compiling (same guard as openfx).
+if(CMAKE_HOST_APPLE AND NOT CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_SYSTEM_NAME AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET AND "$ENV{MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")
   set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version of the plug-ins")
 endif()
 project(OpenFXIO CXX)
