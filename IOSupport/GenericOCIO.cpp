@@ -682,26 +682,13 @@ namespace {
 // Natron, it is held from a key to the next one, and before the first key it is that of the first key): two params
 // with keys at the same times, with the same values, have the same value at all times.
 
-// Natron takes keys less than 1e-6 apart for the same key (NATRON_CURVE_X_SPACING_EPSILON): the index in times of the
-// time that is the same key as a key at t, or -1
-int
-indexOfKeyTime(const std::vector<double>& times,
-               double t)
-{
-    for (size_t i = 0; i < times.size(); ++i) {
-        if (std::fabs(times[i] - t) < 1e-6) {
-            return (int)i;
-        }
-    }
-
-    return -1;
-}
-
+// (key times are compared exactly: Natron keeps keys at their exact times, even less than 1e-6 apart, but its OFX key
+// list only reports the first of the keys less than 1e-6 apart, OfxKeyFrames_compare in Engine/OfxParamInstance.cpp)
 bool
 containsTime(const std::vector<double>& times,
              double t)
 {
-    return indexOfKeyTime(times, t) >= 0;
+    return std::find(times.begin(), times.end(), t) != times.end();
 }
 
 template <typename ParamT>
@@ -915,29 +902,80 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
     for (size_t i = 0; i < old.keys.size(); ++i) {
         keys[old.keys[i].first] = old.keys[i].second;
     }
-    std::vector<double> oldTimes, targetTimes;
-    for (size_t i = 0; i < old.keys.size(); ++i) {
-        oldTimes.push_back(old.keys[i].first);
-    }
+    // The time of the param's key that each key of target sets: the key at the same time, else, if deleteOthers is not
+    // set, the nearest key less than 1e-6 away that no other key of target sets (a new key there would be hidden from
+    // GenericOCIO: Natron's OFX key list only reports the first of the keys less than 1e-6 apart), else its own time.
+    // If deleteOthers is set (target is the menu, whose reported keys are at least 1e-6 apart), the param's other keys
+    // are deleted, including those less than 1e-6 from a key of target that have no menu entry.
+    std::vector<double> times(target.keys.size());
+    std::vector<bool> oldUsed(old.keys.size(), false);
+    std::vector<bool> matched(target.keys.size(), false);
     for (size_t j = 0; j < target.keys.size(); ++j) {
-        targetTimes.push_back(target.keys[j].first);
+        times[j] = target.keys[j].first;
+        for (size_t i = 0; i < old.keys.size(); ++i) {
+            if (!oldUsed[i] && (old.keys[i].first == times[j])) {
+                oldUsed[i] = true;
+                matched[j] = true;
+                break;
+            }
+        }
+    }
+    for (size_t j = 0; !deleteOthers && (j < target.keys.size()); ++j) {
+        int nearest = -1;
+        for (size_t i = 0; !matched[j] && (i < old.keys.size()); ++i) {
+            const double d = std::fabs(old.keys[i].first - times[j]);
+            if (!oldUsed[i] && (d < 1e-6) && ((nearest < 0) || (d < std::fabs(old.keys[nearest].first - times[j])))) {
+                nearest = (int)i;
+            }
+        }
+        if (nearest >= 0) {
+            oldUsed[nearest] = true;
+            times[j] = old.keys[nearest].first;
+        }
     }
     if (deleteOthers) {
         for (size_t i = old.keys.size(); i > 0; --i) {
             const double t = old.keys[i - 1].first;
-            if (containsTime(targetTimes, t) || (fromMenu && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
+            bool nearTarget = false;
+            for (size_t j = 0; j < times.size(); ++j) {
+                nearTarget = nearTarget || (std::fabs(times[j] - t) < 1e-6);
+            }
+            if (oldUsed[i - 1] || (fromMenu && !nearTarget && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
                 continue;
             }
             str->deleteKeyAtTime(t);
             keys.erase(t);
             firstChange = std::min(firstChange, t);
         }
+        // (a key less than 1e-6 after a deleted one is then reported: delete it too)
+        for (int pass = 0; pass < 100; ++pass) {
+            const std::vector<std::pair<double, string>> now = getStringKeys(str);
+            bool deleted = false;
+            for (size_t i = now.size(); i > 0; --i) {
+                const double t = now[i - 1].first;
+                if ((keys.find(t) != keys.end()) || containsTime(times, t)) {
+                    continue;
+                }
+                bool nearTarget = false;
+                for (size_t j = 0; j < times.size(); ++j) {
+                    nearTarget = nearTarget || (std::fabs(times[j] - t) < 1e-6);
+                }
+                if (fromMenu && !nearTarget && (colorspaceIndex(config, now[i - 1].second) < 0)) {
+                    keys[t] = now[i - 1].second;
+                    continue;
+                }
+                str->deleteKeyAtTime(t);
+                firstChange = std::min(firstChange, t);
+                deleted = true;
+            }
+            if (!deleted) {
+                break;
+            }
+        }
     }
     std::map<double, string> before = keys;
     for (size_t j = 0; j < target.keys.size(); ++j) {
-        // (the time of the param's key, if it has the same key)
-        const int i = indexOfKeyTime(oldTimes, target.keys[j].first);
-        const double t = ((i >= 0) && (before.find(oldTimes[i]) != before.end())) ? oldTimes[i] : target.keys[j].first;
+        const double t = times[j];
         if (before.find(t) == before.end()) {
             firstChange = std::min(firstChange, t);
         }
@@ -972,13 +1010,22 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
             }
         }
         if (!times.empty()) {
-            std::vector<double> oldTimes = getKeyTimes(choice);
-            for (size_t i = oldTimes.size(); i > 0; --i) {
-                if (std::find(times.begin(), times.end(), oldTimes[i - 1]) == times.end()) {
-                    choice->deleteKeyAtTime(oldTimes[i - 1]);
+            // (a key less than 1e-6 after a deleted one is then reported: delete it too, until the menu has no key at
+            // other times)
+            std::vector<double> oldTimes;
+            for (int pass = 0; pass < 100; ++pass) {
+                oldTimes = getKeyTimes(choice);
+                bool deleted = false;
+                for (size_t i = oldTimes.size(); i > 0; --i) {
+                    if (std::find(times.begin(), times.end(), oldTimes[i - 1]) == times.end()) {
+                        choice->deleteKeyAtTime(oldTimes[i - 1]);
+                        deleted = true;
+                    }
+                }
+                if (!deleted) {
+                    break;
                 }
             }
-            oldTimes = getKeyTimes(choice);
             for (size_t i = 0; i < a.keys.size(); ++i) {
                 const double t = a.keys[i].first;
                 const int index = colorspaceIndex(config, a.keys[i].second);
@@ -1145,8 +1192,10 @@ GenericOCIO::colorspaceCheck(Side& side,
                     side.initialIndex = index;
                 }
             } else if (inInstanceChanged && !choiceHasExpression(side)) {
-                // (setValue() would set a key at the host's current time)
-                choice->setValueAtTime(time, index);
+                // (setValue() would set a key at the host's current time; a key less than 1e-6 from another one would
+                // be hidden from the plug-in, see applyStringKeys(): set the other one)
+                const int k = choice->getKeyIndex(time, eKeySearchNear);
+                choice->setValueAtTime((k >= 0) ? choice->getKeyTime(k) : time, index);
             }
         }
     }
