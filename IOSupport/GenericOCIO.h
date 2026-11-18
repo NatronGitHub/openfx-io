@@ -233,12 +233,10 @@ public:
 private:
     void loadConfig();
     void resetExpressionCache();
-#ifdef OFX_IO_USING_OCIO
-    // canonicalize a colorspace string param that changed at time, or reset it to a valid colorspace
-    void fixColorspaceAtTime(OFX::StringParam* str, double time, bool canonicalize, bool fallback, bool warn);
-#endif
 #if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
     struct Side;
+    // canonicalize the colorspace string param of a side that changed at time, or reset it to a valid colorspace
+    void fixColorspaceAtTime(Side& side, double time, bool canonicalize, bool fallback, bool warn);
     // the side of a colorspace param (its string param or its menu), or NULL
     Side* sideOfParam(const std::string& paramName, bool* isChoice);
     // update the state and value (or keys) of the menu of a side from its string param

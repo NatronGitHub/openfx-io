@@ -781,17 +781,35 @@ struct ColorspaceAnimation {
 
 // The value of a string param's key at time t (or, if t is not a key time, the value it has from time t on). Natron
 // reads a string param at the frame floor(time + 0.5) (OfxStringInstance::get()), but sets keys at any time (e.g.
-// from a script): a key at a fractional time is read at the next frame (it can't be read if another key is before
-// that frame), except the first key, whose value is also that of the param before it.
+// from a script): there, a key at a fractional time is read at the next frame (it can't be read if another key is at
+// or before that frame), except the first key, whose value is also that of the param before it. Other hosts read
+// it at its time.
 string
 stringAtKeyTime(StringParam* str,
                 double t)
 {
-    const bool beforeKeys = (numKeys(str) == 0) || (t <= str->getKeyTime(0) + 1e-6);
+    double readTime = t;
+    if (getImageEffectHostDescription()->isNatron) {
+        const bool beforeKeys = (numKeys(str) == 0) || (t <= str->getKeyTime(0));
+        readTime = beforeKeys ? std::floor(t) : std::ceil(t);
+    }
     string v;
-    str->getValueAtTime(beforeKeys ? std::floor(t + 1e-6) : std::ceil(t - 1e-6), v);
+    str->getValueAtTime(readTime, v);
 
     return v;
+}
+
+// the keys of a string param (time, colorspace), in time order (see stringAtKeyTime())
+std::vector<std::pair<double, string>>
+getStringKeys(StringParam* str)
+{
+    std::vector<std::pair<double, string>> keys;
+    const std::vector<double> times = getKeyTimes(str);
+    for (size_t i = 0; i < times.size(); ++i) {
+        keys.push_back(std::make_pair(times[i], stringAtKeyTime(str, times[i])));
+    }
+
+    return keys;
 }
 
 void
@@ -799,12 +817,8 @@ getStringAnimation(StringParam* str,
                    double time,
                    ColorspaceAnimation& a)
 {
-    a.keys.clear();
     str->getValueAtTime(time, a.value);
-    const std::vector<double> times = getKeyTimes(str);
-    for (size_t i = 0; i < times.size(); ++i) {
-        a.keys.push_back(std::make_pair(times[i], stringAtKeyTime(str, times[i])));
-    }
+    a.keys = getStringKeys(str);
 }
 
 // the colorspaces of the choice's keys and value (those of the menu entries; a key without a menu entry is skipped)
@@ -847,15 +861,19 @@ sameColorspace(const OCIO::ConstConfigRcPtr& config,
     return (index >= 0) && (index == colorspaceIndex(config, b));
 }
 
-// Give the string param the keys of target (time, colorspace), or the colorspace value if target has no keys (it
-// then has no keys). If deleteOthers is set, its keys at other times are deleted, except, if fromMenu is set (target
-// comes from the menu), those whose colorspace has no menu entry (and thus no key in the menu); fromMenu also compares
-// the colorspaces by menu entry. The keys are deleted first, then set in time order: a key that is not in the param
-// or whose colorspace differs, and every key after the first key that is added or deleted. In Natron versions without
-// NatronGitHub/Natron#1291, a key of a string param holds the index of its string in the sorted list of the param's
-// strings, which is not updated when an earlier key is added or deleted, so that the later keys then have other
-// strings (NatronGitHub/Natron#1290): setting them again, in time order, with the strings they had before (read
-// before any change), fixes them. In other hosts, this sets them to their values, which changes nothing.
+// Give the string param the keys of target (time, colorspace), or the colorspace value if target has no keys (it then
+// has no keys). If deleteOthers is set, its keys at other times are deleted, except, if fromMenu is set (target comes
+// from the menu), those whose colorspace has no menu entry (and thus no key in the menu); fromMenu also compares the
+// colorspaces by menu entry. The keys are deleted first, then set in time order: a key that is not in the param or
+// whose colorspace differs, and every key after the first key that is added or deleted, with the string it had (read
+// before any change; a key whose new colorspace is the same keeps its name, e.g. "x1" is not replaced by its role
+// "scene_linear"). In Natron before 2.6 (without NatronGitHub/Natron#1291), a key of a string param holds the index of
+// its string in the sorted list of the param's strings, which is not updated when an earlier key is added or deleted,
+// so that the later keys then have other strings (NatronGitHub/Natron#1290): setting them again, in time order, fixes
+// them. Elsewhere, this gives them their own values. In an edit block (Swap Colorspaces), Natron's undo command records
+// every key that a plug-in sets: from Natron 2.6, a key set to its own string is a modification if it is the first or
+// the last key and its neighbour has another string (the curve's derivatives are compared too), which undo sets back to
+// the same string; without it, such a key is recorded as added, and undo removes it.
 void
 applyStringKeys(const OCIO::ConstConfigRcPtr& config,
                 StringParam* str,
@@ -864,7 +882,7 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
                 bool fromMenu)
 {
     ColorspaceAnimation old;
-    getStringAnimation(str, 0., old);
+    old.keys = getStringKeys(str);
     if (target.keys.empty()) {
         if (!old.keys.empty()) {
             str->deleteAllKeys();
@@ -908,10 +926,11 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
     }
     for (std::map<double, string>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
         std::map<double, string>::const_iterator itOld = before.find(it->first);
-        if ((it->first < firstChange) && (itOld != before.end()) && sameColorspace(config, itOld->second, it->second, fromMenu)) {
+        const bool same = (itOld != before.end()) && sameColorspace(config, itOld->second, it->second, fromMenu);
+        if (same && (it->first < firstChange)) {
             continue;
         }
-        str->setValueAtTime(it->first, it->second);
+        str->setValueAtTime(it->first, same ? itOld->second : it->second);
     }
 }
 
@@ -1360,7 +1379,9 @@ GenericOCIO::changedChoice(Side& side,
         getChoiceAnimation(_config, choice, time, a);
         ColorspaceAnimation target;
         if (a.keys.empty()) {
-            if (index != side.initialIndex) {
+            string old;
+            str->getValueAtTime(time, old);
+            if ((index != side.initialIndex) && (colorspaceIndex(_config, old) != index)) {
                 if (numKeys(str) > 0) {
                     target.keys.push_back(std::make_pair(time, colorspace));
                 } else {
@@ -1404,7 +1425,7 @@ GenericOCIO::changedChoice(Side& side,
 }
 #endif
 
-#ifdef OFX_IO_USING_OCIO
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
 // true if a colorspace string param that changed at time may be canonicalized, or reset to a valid colorspace,
 // at that time: if it has no keys, or a key at that time (else, e.g. after the deletion of a key, reported at the
 // time of the deleted key, this would set a key again)
@@ -1419,13 +1440,14 @@ canFixColorspaceAtTime(StringParam* str,
 // the canonical name of its colorspace; if fallback is set and its colorspace is not in the config, give it the
 // default colorspace (or the first one), with a warning if warn is set.
 void
-GenericOCIO::fixColorspaceAtTime(StringParam* str,
+GenericOCIO::fixColorspaceAtTime(Side& side,
                                  double time,
                                  bool canonicalize,
                                  bool fallback,
                                  bool warn)
 {
-    if (!canFixColorspaceAtTime(str, time) || hasExpressionKeys(str)) {
+    StringParam* str = side.str;
+    if (!canFixColorspaceAtTime(str, time) || strHasExpression(side)) {
         // (the value of a string param with an expression is that of the expression: setting it would add a key)
         return;
     }
@@ -1481,20 +1503,18 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
         _parent->clearPersistentMessage();
         // compute canonical inputSpace and outputSpace before changing the config,
         // if different from inputSpace and outputSpace they must be set to the canonical value after changing ocio config
-        if (_inputSpace) {
-            fixColorspaceAtTime(_inputSpace, args.time, true, false, false);
-        }
-        if (_outputSpace) {
-            fixColorspaceAtTime(_outputSpace, args.time, true, false, false);
+        for (int i = 0; i < 2; ++i) {
+            if (_sides[i].str) {
+                fixColorspaceAtTime(_sides[i], args.time, true, false, false);
+            }
         }
 
         loadConfig(); // re-load the new OCIO config
         // if inputspace or outputspace are not valid in the new config, reset them to "default"
-        if (_inputSpace) {
-            fixColorspaceAtTime(_inputSpace, args.time, false, true, false);
-        }
-        if (_outputSpace) {
-            fixColorspaceAtTime(_outputSpace, args.time, false, true, false);
+        for (int i = 0; i < 2; ++i) {
+            if (_sides[i].str) {
+                fixColorspaceAtTime(_sides[i], args.time, false, true, false);
+            }
         }
         refreshInputAndOutputState(args.time);
 
@@ -1668,7 +1688,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
             SettingColorspaces setting(this);
             if (args.reason == eChangeUserEdit) {
                 // if the colorspace is not a valid one, reset it to the default one (first, canonicalize it)
-                fixColorspaceAtTime(side->str, args.time, true, true, true);
+                fixColorspaceAtTime(*side, args.time, true, true, true);
             }
             colorspaceCheck(*side, args.time);
         } else if (args.reason == eChangeUserEdit) {
@@ -1788,27 +1808,25 @@ GenericOCIO::getProcessingColorspacesAtTime(double time,
 #endif
 }
 
-// Swap the input and output colorspaces: their keys, if they have any, else their values at the given time.
-// The string params, which are rendered and saved, get the colorspaces of the other side. If choiceMirrorsString()
-// (Natron), the choice menus then get the keys of the string params. Else, in a host that doesn't animate strings,
-// only the menus may have keys: they get the keys of the other side's menu, and the string params the other side's
-// colorspace at the given time.
-// No key of the string params is deleted, since Natron's undo doesn't restore the keys that a plug-in deletes:
-// if a side has keys, both sides get keys at the times of the keys of both sides (string and choice values are held
-// from a key to the next one, so that this is the other side's animation), and only the keys that differ are set.
-// Natron's undo (of the swap's edit block) then removes the keys that the swap added and restores those it changed,
-// which restores the animation of a side that had keys. That of a side that had no keys is not restored: when undo
-// removes its last key, Natron gives it its value at the current time, i.e. the other side's colorspace at that
-// time (as it was before the swap), not its value before the swap. The menus are not undone either (their edits are
-// not undoable), but they get the keys of the string params again at the next instance changed action of a string
-// param.
-// A string param with an expression (see hasExpressionKeys()) has no real keys: then only the values at the given
-// time are swapped, and a side with an expression is not set (its value is that of the expression).
-// This is only right in Natron versions with NatronGitHub/Natron#1291, which fixes NatronGitHub/Natron#1290: without
-// it, a key of a string param holds the index of its string in the sorted list of the param's strings, which is not
-// updated when an earlier key is added, so that later keys may then have other strings (the keys are set in time
-// order, which fixes those that are set again, see applyStringKeys()), and its undo also removes the keys that
-// were changed, not only those that were added, so that the animation is lost.
+// Swap the input and output colorspaces: their keys, if they have any, else their values at the given time. The string
+// params, which are rendered and saved, get the colorspaces of the other side. If choiceMirrorsString() (Natron), the
+// choice menus then get the keys of the string params. Else, in a host that doesn't animate strings, only the menus may
+// have keys: they get the keys of the other side's menu, and the string params the other side's colorspace at the given
+// time. No key of the string params is deleted, since Natron's undo doesn't restore the keys that a plug-in deletes: if
+// a side has keys, both sides get keys at the times of the keys of both sides (string and choice values are held from a
+// key to the next one, so that this is the other side's animation), and only the keys that differ are set. Natron's
+// undo (of the swap's edit block) then removes the keys that the swap added and restores those it changed, which
+// restores the animation of a side that had keys. That of a side that had no keys is not restored: when undo removes
+// its last key, Natron gives it its value at the current time, i.e. the other side's colorspace at that time (as it was
+// before the swap), not its value before the swap. The menus are not undone either (their edits are not undoable), but
+// they get the keys of the string params again at the next instance changed action of a string param. A string param
+// with an expression (see hasExpressionKeys()) has no real keys: then only the values at the given time are swapped,
+// and a side with an expression is not set (its value is that of the expression). This is only right in Natron 2.6 and
+// later, which have NatronGitHub/Natron#1291 (the fix of NatronGitHub/Natron#1290): before, a key of a string param
+// holds the index of its string in the sorted list of the param's strings, which is not updated when an earlier key is
+// added, so that later keys may then have other strings (applyStringKeys() sets them again), and its undo removes the
+// keys that were changed (and the first and last keys that were set again to their own strings, see applyStringKeys()),
+// not only those that were added, so that the animation is lost.
 void
 GenericOCIO::swapColorspaces(double time)
 {
