@@ -462,7 +462,7 @@ private:
     int64_t getLastIndexTimestamp(Stream& stream);
 
     // The end of the movie from the last packets of the file, in AV_TIME_BASE units
-    int64_t getMovieEndFromLastPackets();
+    int64_t getMovieEndFromLastPackets(Stream& stream);
 
     // Get the video stream duration in frames...
     int64_t getStreamFrames(Stream& stream);

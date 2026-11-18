@@ -715,21 +715,45 @@ FFmpegFile::getLastIndexTimestamp(Stream& stream)
 
 // The end of the movie (the largest PTS + duration of the packets of all streams), in AV_TIME_BASE units, from
 // the last packets of the file, or AV_NOPTS_VALUE if it cannot be read (e.g. the input is not seekable). A video
-// packet without a duration lasts one frame.
+// packet without a duration lasts one frame. Another stream that ends after the last frame of the video stream
+// (e.g. the last audio packet) only adds the whole frames it covers (the last frame is held until the end of the
+// movie, see demuxAndDecode()): audio that ends a few milliseconds after the video does not add a frame.
 int64_t
-FFmpegFile::getMovieEndFromLastPackets()
+FFmpegFile::getMovieEndFromLastPackets(Stream& stream)
 {
-    if (!_context->pb || !(_context->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+    AVIOContext* pb = _context->pb;
+    if (!pb || !(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
         return AV_NOPTS_VALUE;
     }
-    const int64_t size = avio_size(_context->pb);
+    const int64_t size = avio_size(pb);
     if (size <= 0) {
         return AV_NOPTS_VALUE;
     }
+    const char* formatName = _context->iformat ? _context->iformat->name : "";
+    const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
+    const int64_t frameDuration = av_rescale(AV_TIME_BASE, stream._fpsDen, stream._fpsNum);
     int64_t end = AV_NOPTS_VALUE;
+    int64_t videoEnd = AV_NOPTS_VALUE;
     MyAVPacket avPacket;
     for (int64_t window = int64_t(1) << 18; end == int64_t(AV_NOPTS_VALUE); window *= 8) {
-        const int64_t pos = (std::max)(int64_t(0), size - window);
+        int64_t pos = (std::max)(int64_t(0), size - window);
+        if (isFlv && (pos > 0)) {
+            // Start at a tag: walk back from the end with the size of the previous tag, which follows each tag,
+            // instead of letting the demuxer resync (and log a packet mismatch).
+            const int64_t firstTag = 13; // after the 9-byte header and the first previous tag size
+            int64_t tag = size;
+            while (tag > pos) {
+                if (avio_seek(pb, tag - 4, SEEK_SET) < 0) {
+                    break;
+                }
+                const int64_t previousTagSize = avio_rb32(pb);
+                if ((previousTagSize < 11) || (tag - 4 - previousTagSize < firstTag)) {
+                    break;
+                }
+                tag -= 4 + previousTagSize;
+            }
+            pos = (tag < size) ? tag : pos;
+        }
         if (av_seek_frame(_context, -1, pos, AVSEEK_FLAG_BYTE) < 0) {
             break;
         }
@@ -745,12 +769,19 @@ FFmpegFile::getMovieEndFromLastPackets()
                 if ((end == int64_t(AV_NOPTS_VALUE)) || (e > end)) {
                     end = e;
                 }
+                if ((avPacket->stream_index == stream._idx) && ((videoEnd == int64_t(AV_NOPTS_VALUE)) || (e > videoEnd))) {
+                    videoEnd = e;
+                }
             }
             av_packet_unref(avPacket.pkt());
         }
         if (pos == 0) {
             break;
         }
+    }
+    if ((end != int64_t(AV_NOPTS_VALUE)) && (videoEnd != int64_t(AV_NOPTS_VALUE)) && (end > videoEnd) && (frameDuration > 0)) {
+        // whole frames only (within 1 ms, for the rounding of the timestamps)
+        end = videoEnd + ((end - videoEnd + 1000) / frameDuration) * frameDuration;
     }
 
     return end;
@@ -816,13 +847,19 @@ FFmpegFile::getStreamFrames(Stream& stream)
         const bool isMov = std::strstr(formatName, "mov") != nullptr;
         const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
         const int64_t videoStart = av_rescale_q(stream._startPTS, stream._avstream->time_base, AV_TIME_BASE_Q);
+        // the number of frames from the start of the video stream until a movie end (in AV_TIME_BASE units)
+        auto framesUntil = [&](int64_t end) -> int64_t {
+            const int64_t duration = end - videoStart;
+            const int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
+            return (duration > tick) ? ((duration - tick) * stream._fpsNum + divisor - 1) / divisor : 0;
+        };
         int64_t movieEnd = AV_NOPTS_VALUE;
         if (isFlv) {
             // FLV timestamps are DTS (with a composition time offset for the PTS). FFmpeg's FLV muxer stores the
             // duration from the first DTS of any stream (before the first frame with B-frames, or the start of an
             // audio track that starts first), and without that metadata (e.g. written to a pipe) the demuxer gives
             // the DTS of the last tag, counted from 0: read the end of the movie from the last packets instead.
-            movieEnd = getMovieEndFromLastPackets();
+            movieEnd = getMovieEndFromLastPackets(stream);
             if (movieEnd == int64_t(AV_NOPTS_VALUE)) {
                 int64_t firstDTS = av_rescale_q(stream._startDTS, stream._avstream->time_base, AV_TIME_BASE_Q);
                 if ((_context->start_time != int64_t(AV_NOPTS_VALUE)) && (_context->start_time < firstDTS)) {
@@ -833,26 +870,44 @@ FFmpegFile::getStreamFrames(Stream& stream)
         } else if (_context->start_time == int64_t(AV_NOPTS_VALUE)) {
             // the start is unknown (e.g. NUT with B-frames, whose duration is counted from the first PTS)
             movieEnd = _context->duration + videoStart;
+        } else if (isMatroska) {
+            // Matroska: the duration is the end of the movie (from timestamp 0). But a muxer may write a length
+            // while the timestamps do not start at 0 (e.g. mkvmerge with split parts or --sync): with a start
+            // time, read the end of the movie from the last packets, as for FLV.
+            if (_context->start_time > 0) {
+                movieEnd = getMovieEndFromLastPackets(stream);
+            }
+            if (movieEnd == int64_t(AV_NOPTS_VALUE)) {
+                movieEnd = _context->duration;
+            }
+        } else if (isMov) {
+            // MOV/MP4: the duration is counted from the start. But in MOV/MP4 with an initial empty edit, lavf 58
+            // (FFmpeg 4) counts it from 0. Use the one that gives the number of samples of the stream (minus the
+            // ones that are not displayed), if only one of them does (with B-frames and no edit list, e.g. in
+            // fragmented MP4, the start time is the B-frame delay, and both may).
+            const int64_t streamFrames = (stream._avstream->nb_frames > 0) ? (stream._avstream->nb_frames - getDiscardedFrames(stream)) : 0;
+            const int64_t fromStart = _context->start_time + _context->duration;
+            const int64_t fromZero = _context->duration;
+            const bool startMatches = (streamFrames > 0) && (std::abs(double(framesUntil(fromStart) - streamFrames)) <= 1);
+            const bool zeroMatches = (streamFrames > 0) && (std::abs(double(framesUntil(fromZero) - streamFrames)) <= 1);
+            movieEnd = fromStart;
+            if (zeroMatches && !startMatches) {
+                movieEnd = fromZero;
+            }
+#if LIBAVFORMAT_VERSION_MAJOR < 59
+            else if (!startMatches) {
+                // without the number of samples (fragmented MP4): a duration that does not reach the last
+                // indexed sample is not an end
+                const int64_t lastIndexed = getLastIndexTimestamp(stream);
+                if ((lastIndexed != int64_t(AV_NOPTS_VALUE)) && (fromZero > lastIndexed + av_rescale(AV_TIME_BASE, stream._fpsDen, stream._fpsNum))) {
+                    movieEnd = fromZero;
+                }
+            }
+#endif
         } else {
-            // Matroska: the duration is the end of the movie (from timestamp 0), and other formats count it from
-            // the start. But a muxer may write a length in Matroska while the timestamps do not start at 0 (e.g.
-            // mkvmerge with split parts or --sync), and in MOV/MP4 with an initial empty edit, lavf 58 (FFmpeg 4)
-            // counts the duration from 0: if the index (all the MOV/MP4 samples, the Matroska cues) shows which
-            // one it is, use it. A duration that does not reach the last indexed timestamp is not an end.
-            bool fromZero = isMatroska;
-            if (isMatroska) {
-                // the Matroska demuxer reads the cues at the first seek
-                av_seek_frame(_context, stream._idx, stream._startPTS, AVSEEK_FLAG_BACKWARD);
-            }
-            const int64_t lastIndexed = (isMatroska || isMov) ? getLastIndexTimestamp(stream) : int64_t(AV_NOPTS_VALUE);
-            if (lastIndexed != int64_t(AV_NOPTS_VALUE)) {
-                fromZero = _context->duration > lastIndexed;
-            }
-            movieEnd = fromZero ? _context->duration : (_context->start_time + _context->duration);
+            movieEnd = _context->start_time + _context->duration;
         }
-        const int64_t duration = movieEnd - videoStart;
-        int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
-        frames = (duration > tick) ? ((duration - tick) * stream._fpsNum + divisor - 1) / divisor : 0;
+        frames = framesUntil(movieEnd);
 
         // The above calculation is not reliable, because it seems in some situations (such as rendering out a mov
         // with 5 frames at 24 fps from Nuke) the duration has been rounded up to the nearest millisecond, which

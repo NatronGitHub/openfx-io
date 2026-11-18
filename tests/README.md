@@ -289,7 +289,10 @@ the video stream; Matroska with a non-zero start time and FLV with B-frames (wit
 without a start time, starting after the audio, and without the duration metadata, as
 written to a pipe) store a duration that is not counted from the start of the movie, while
 a Matroska duration rewritten as a length (as mkvmerge writes split parts, which needs
-`perl`) must not cut the end; NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
+`perl`; with GOP 8 and with the default GOP) must not cut the end, and AAC audio ending
+40 ms after the video in an FLV without the duration metadata must not add a frame; MP4
+and MOV with B-frames and no edit list (fragmented MP4 with H.264 and HEVC,
+`-use_editlist 0`) start at the B-frame delay and must keep their last frames; NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
 not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must

@@ -23,6 +23,9 @@
 #     not counted from the start of the movie, but from timestamp 0 (FLV: from the first DTS,
 #     which may be that of the audio). FLV without the duration metadata (as written to a
 #     pipe), and Matroska whose duration is a length (as mkvmerge writes split parts).
+#   * MP4 and MOV with B-frames and no edit list (fragmented MP4 with H.264 and HEVC,
+#     -use_editlist 0), whose start time is the B-frame delay, and FLV without the duration
+#     metadata whose audio ends less than a frame after the video.
 #   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
 #     with B-frames, which has no timestamps.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
@@ -225,12 +228,14 @@ check_corrupt() {
     "$bin" "$tmp/$name" --tol 3 --positions "$positions" ${seeksarg[@]+"${seeksarg[@]}"} ${FFMPEG_READ_TEST_ARGS:-} 2>/dev/null || rc=1
 }
 
-# check_mkv_length NAME DESCRIPTION
-# A 40-frame ramp in Matroska with a start time of 0.5 s (and a cluster every 100 ms, so that the cues
-# index the whole clip), whose duration is then rewritten as a length (without the start time), as
-# mkvmerge writes split parts: the duration is not the end of the movie, which must not be cut.
+# check_mkv_length NAME DESCRIPTION FFMPEG_OUTPUT_ARGS...
+# A 40-frame ramp in Matroska with a start time of 0.5 s (and a cluster every 100 ms), whose duration
+# is then rewritten as a length (without the start time), as mkvmerge writes split parts: the
+# duration is not the end of the movie, which must not be cut (with a long GOP, the cues, which only
+# index keyframes, do not show it).
 check_mkv_length() {
     local name="$1" desc="$2"
+    shift 2
     echo "== $desc =="
     if ! have_encoder libx264; then
         echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
@@ -240,7 +245,7 @@ check_mkv_length() {
         echo "SKIPPED: no perl"
         return
     fi
-    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" $X264 -output_ts_offset 0.5 -cluster_time_limit 100 "$tmp/clean_$name"; then
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" -c:v libx264 -bf 2 -pix_fmt yuv420p "$@" -output_ts_offset 0.5 -cluster_time_limit 100 "$tmp/clean_$name"; then
         echo "FAIL: could not generate clean_$name"
         rc=1
         return
@@ -252,6 +257,28 @@ check_mkv_length() {
         substr($d, $i + 3, 8) = pack("d>", unpack("d>", substr($d, $i + 3, 8)) - 500);
         open(my $o, ">:raw", $ARGV[1]) or die; print $o $d; close($o);' "$tmp/clean_$name" "$tmp/$name"; then
         echo "FAIL: could not rewrite the duration of clean_$name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_flv_overhang NAME DESCRIPTION
+# A 40-frame ramp in FLV without the duration metadata, with an AAC audio track that ends less than a
+# frame after the last video frame: it must not add a frame.
+check_flv_overhang() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder aac; then
+        echo "SKIPPED: no libx264 or aac encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" $X264 "$tmp/video_$name.mkv" ||
+        ! ffmpeg -y -loglevel error -f lavfi -t 1.70 -i anullsrc=r=48000:cl=mono -c:a aac "$tmp/audio_$name.m4a" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/video_$name.mkv" -i "$tmp/audio_$name.m4a" -map 0:v -map 1:a -c copy \
+            -flvflags no_duration_filesize "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
         rc=1
         return
     fi
@@ -316,7 +343,14 @@ check ramp_audio_first.flv "FLV (H.264 with B-frames, 24 fps, starting 0.5 s aft
 check ramp_nodur.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata)" libx264 24 $X264 -flvflags no_duration_filesize
 check ramp_nodur_offset.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, non-zero start time)" libx264 24 \
     $X264 -flvflags no_duration_filesize -output_ts_offset 10
-check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, start time 0.5 s, duration written as a length, as mkvmerge does)"
+check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, GOP 8, start time 0.5 s, duration written as a length, as mkvmerge does)" -g 8
+check_mkv_length ramp_length_gop.mkv "Matroska (H.264, 24 fps, default GOP, start time 0.5 s, duration written as a length)"
+check_flv_overhang ramp_overhang.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, AAC audio ending 40 ms after the video)"
+# MP4/MOV with B-frames and no edit list: the start time is the B-frame delay.
+check ramp_frag.mp4 "Fragmented MP4 (H.264 with B-frames, no edit list)" libx264 24 $X264 -movflags frag_keyframe+empty_moov
+check ramp_noeditlist.mov "MOV (H.264 with B-frames, no edit list)" libx264 24 $X264 -use_editlist 0
+check ramp_hevc_frag.mp4 "Fragmented MP4 (HEVC with B-frames, no edit list)" libx265 24 \
+    -c:v libx265 -x265-params log-level=error:bframes=3:keyint=8 -tag:v hvc1 -pix_fmt yuv420p -movflags frag_keyframe+empty_moov
 # NUT has no start time, and its duration is counted from the first PTS.
 check ramp_mpeg4_bf.nut "NUT (MPEG-4 with B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
 # An elementary stream has no timestamps: the last frame is a reference frame without a PTS.
