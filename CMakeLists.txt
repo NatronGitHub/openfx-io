@@ -39,6 +39,11 @@
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
 cmake_minimum_required(VERSION 3.16...3.31)
+# Minimum macOS version of the plug-ins (Natron 2.6 supports macOS 14 and later); must be set before project().
+# Override it with -DCMAKE_OSX_DEPLOYMENT_TARGET=... or the MACOSX_DEPLOYMENT_TARGET environment variable.
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version of the plug-ins")
+endif()
 project(OpenFXIO CXX)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)

@@ -171,6 +171,9 @@ jobs:
       MACPORTS_PKG_SHA256: 87b2e87ed7adc4aca947b42eb7ff991614cc0edfccb486237f2bbc75f28aae63
       # Compile with the system (Xcode) clang, libraries from MacPorts only.
       CXX: clang++ -std=c++17
+      # Natron 2.6 supports macOS 14 and later (also the default of Makefile.master and CMakeLists.txt). MacPorts'
+      # libraries are built for the runner's macOS: the bundle's dependencies may require a newer one.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
       # MacPorts' OpenImageIO links the ffmpeg8 port: link the plugins (FFMPEG_PKG_CONFIG_PATH, full paths, see
       # Makefile.master) and the tests (PKG_CONFIG_PATH) against the same FFmpeg.
       FFMPEG_PKG_CONFIG_PATH: /opt/local/libexec/ffmpeg8/lib/pkgconfig
