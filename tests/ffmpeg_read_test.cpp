@@ -35,13 +35,19 @@
  *      decoded before (see run_ffmpeg_read_test.sh),
  *  10. optionally (--max-open-bytes N) checks that opening the file read at most N bytes
  *      (FFmpegFile::getBytesReadAtOpen()), e.g. that finding the end of the movie does not read
- *      the whole file, and (--open-only) stops after the checks of the opened file.
+ *      the whole file, and (--open-only) stops after the checks of the opened file,
+ *  11. optionally (--seek-bytes F,N) checks that decoding the 1-based frame F right after the
+ *      open reads at most N bytes (e.g. that the end of the movie found at open does not make
+ *      the seeks decode from the start), and (--max-indexed-frame N) that the index of the stream
+ *      does not reach beyond the 1-based frame N after the open (e.g. that reading the last packets
+ *      to find the end did not add an index entry near the end, which would make the seeks decode
+ *      from near the start, in FLV without a keyframe index).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -89,7 +95,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -101,6 +107,9 @@ main(int argc, char** argv)
     long maxSeeks = -1;
     long long maxOpenBytes = -1;
     bool openOnly = false;
+    int seekBytesFrame = -1;
+    int maxIndexedFrame = -1;
+    long long maxSeekBytes = -1;
     std::vector<int> noSeekCheck; // 1-based frames that may give another image after a seek
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
@@ -121,6 +130,13 @@ main(int argc, char** argv)
             expectedFrames = std::atoi(argv[++i]);
         } else if (a == "--max-open-bytes" && i + 1 < argc) {
             maxOpenBytes = std::atoll(argv[++i]);
+        } else if (a == "--seek-bytes" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%d,%lld", &seekBytesFrame, &maxSeekBytes) != 2) {
+                std::fprintf(stderr, "bad --seek-bytes value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--max-indexed-frame" && i + 1 < argc) {
+            maxIndexedFrame = std::atoi(argv[++i]);
         } else if (a == "--open-only") {
             openOnly = true;
         } else if (a == "--max-seeks" && i + 1 < argc) {
@@ -189,6 +205,29 @@ main(int argc, char** argv)
     if ((maxOpenBytes >= 0) && (file.getBytesReadAtOpen() > maxOpenBytes)) {
         std::fprintf(stderr, "FAIL: opening the file read %lld bytes, expected at most %lld\n", (long long)file.getBytesReadAtOpen(), maxOpenBytes);
         return 1;
+    }
+    if (maxIndexedFrame >= 0) {
+        std::printf("  the index reaches frame %d\n", file.getLastIndexedFrame() + 1);
+        if (file.getLastIndexedFrame() + 1 > maxIndexedFrame) {
+            std::fprintf(stderr, "FAIL: the index reaches frame %d after the open, expected at most %d\n", file.getLastIndexedFrame() + 1, maxIndexedFrame);
+            return 1;
+        }
+    }
+    if (seekBytesFrame >= 1) {
+        std::vector<unsigned char> seekBuf(static_cast<size_t>(w) * h * nComps * sizeOfData);
+        const long long bytes0 = file.getBytesRead();
+        bool ok = false;
+        try {
+            ok = file.decode(nullptr, seekBytesFrame, loadNearest, seekBuf.data());
+        } catch (const std::exception& e) {
+            ok = false;
+        }
+        const long long bytes = file.getBytesRead() - bytes0;
+        std::printf("  decoding frame %d after the open read %lld bytes\n", seekBytesFrame, bytes);
+        if (!ok || (bytes > maxSeekBytes)) {
+            std::fprintf(stderr, "FAIL: decoding frame %d after the open %s, and read %lld bytes, expected at most %lld\n", seekBytesFrame, ok ? "succeeded" : "failed", bytes, maxSeekBytes);
+            return 1;
+        }
     }
     if (openOnly) {
         std::printf("PASS\n");

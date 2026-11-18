@@ -430,6 +430,7 @@ private:
     bool _invalidState; // true if the reader is in an invalid state
     unsigned long _seekCount; // number of seeks by decode(), for tests
     int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
+    bool _readAtOpen; // the constructor read or sought in the file, after avformat_find_stream_info()
 
 #ifdef OFX_IO_MT_FFMPEG
     // internal lock for multithread access
@@ -482,10 +483,19 @@ public:
         return _filename;
     }
 
+    // The frame of the largest timestamp in the index of the selected stream (-1 if none), for tests
+    int getLastIndexedFrame() const;
+
     // The number of bytes read from the file when it was opened (by the constructor), for tests
     int64_t getBytesReadAtOpen() const
     {
         return _bytesReadAtOpen;
+    }
+
+    // The number of bytes read from the file so far, for tests (not thread safe: no decode() must run meanwhile)
+    int64_t getBytesRead() const
+    {
+        return (_context && _context->pb) ? _context->pb->bytes_read : 0;
     }
 
     // get the internal error string

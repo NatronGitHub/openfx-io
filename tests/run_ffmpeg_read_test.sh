@@ -289,14 +289,15 @@ check_flv_overhang() {
     "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
-# check_open NAME DESCRIPTION EXPECTED_FRAMES MAX_OPEN_BYTES
+# check_open NAME DESCRIPTION EXPECTED_FRAMES MAX_OPEN_BYTES [HARNESS_ARGS...]
 # Opens the existing clip $tmp/NAME: the reader must report EXPECTED_FRAMES frames, and the open must read
 # at most MAX_OPEN_BYTES bytes (e.g. finding the end of the movie must not read the whole file).
 check_open() {
     local name="$1" desc="$2" expected="$3" maxbytes="$4"
+    shift 4
     echo "== $desc =="
     # shellcheck disable=SC2086
-    "$bin" "$tmp/$name" --frames "$expected" --max-open-bytes "$maxbytes" --open-only ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    "$bin" "$tmp/$name" --frames "$expected" --max-open-bytes "$maxbytes" --open-only "$@" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
 # check_ss_copy NAME DESCRIPTION EXPECTED_FRAMES SEEK FFMPEG_OUTPUT_ARGS...
@@ -428,7 +429,7 @@ if have_encoder libx264; then
     if ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -t 60 -c:v libx264 -preset ultrafast -g 48 -output_ts_offset 10 "$tmp/long_offset.mkv" &&
         ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -t 60 -c:v libx264 -preset ultrafast -g 48 -bf 2 "$tmp/long.flv"; then
         check_open long_offset.mkv "Matroska (H.264, 24 fps, 60 s, start time 10 s): bytes read at open" 1440 2000000
-        check_open long.flv "FLV (H.264 with B-frames, 24 fps, 60 s): bytes read at open" 1440 2000000
+        check_open long.flv "FLV (H.264 with B-frames, 24 fps, 60 s): bytes read at open, index after the open" 1440 2000000 --max-indexed-frame 720
         size=$(wc -c < "$tmp/long.flv")
         for cut in 7 377 12345; do
             head -c $((size - cut)) "$tmp/long.flv" > "$tmp/long_cut$cut.flv"
