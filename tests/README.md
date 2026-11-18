@@ -240,7 +240,7 @@ number of instance changed actions of each user action (no loop, no redundant ch
   edit after the colorspace was guessed by createInstance, and a key deleted by the plug-in
   (which doesn't mark the colorspace as set by the user);
 * real keys at times 0 and 1 (Natron reads string params at `floor(t + 0.5)`), and a menu with
-  an expression or a link.
+  an expression (e.g. that of Link to).
 
 `ocio_anim_fuzz.cpp` (which includes `ocio_colorspace_anim_test.cpp`) applies random user
 actions (menu and string edits, key deletions and moves, paste, Remove animation, Restore

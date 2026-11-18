@@ -1515,10 +1515,10 @@ testExpression()
     checkAnim(kIC, "=3"); // the expression's value at t=7
     checkRender(7., 3, 1);
     userPress(kSwap);
-    checkAnim(kIS, "{0:2,7:1,10:4}"); // (only the values at t=7 are swapped)
+    checkAnim(kIS, "{0:2,10:4}"); // (only the values at t=7 are swapped, and the side with an expression is not set)
     checkAnim(kOS, "=3"); // the expression's value at t=7
 
-    std::printf("==== A menu with an expression or a link (reported as a user edit) ====\n");
+    std::printf("==== A menu with an expression, e.g. that of Link to (reported as a user edit) ====\n");
     restored = Restored();
     restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
     newInstance(gColorSpace, restored);
@@ -1543,6 +1543,37 @@ testExpression()
     gCurrentTime = 3.;
     userSet(kIC, 0);
     checkAnim(kOC, "{0:2,10:4}"); // (the other menu has the keys of its string)
+}
+
+void
+testNatronStringKeys()
+{
+    std::printf("==== Natron without NatronGitHub/Natron#1291: string keys hold the index of their string ====\n");
+    gNatronExact = true;
+    newInstance(gColorSpace);
+    gCurrentTime = 0.;
+    userSet(kIC, 0, true);
+    gCurrentTime = 10.;
+    userSet(kIC, 1);
+    gCurrentTime = 20.;
+    userSet(kIC, 1);
+    checkSides("{0:1,10:2,20:2}", "=1");
+    // deleting the first key: the later keys must be set again, even the one that reads the right string
+    userDeleteKeys(kIC, { 0. });
+    checkSides("{10:2,20:2}", "=1");
+    userSet(kIC, 2);
+    checkSides("{10:2,20:3}", "=1");
+    checkRender(15., 2, 1);
+
+    std::printf("==== ... a menu edit between keys, after loading a project ====\n");
+    Restored restored;
+    restored.inputKeys = { { 0., "x2" }, { 10., "x4" } };
+    newInstance(gColorSpace, restored);
+    gCurrentTime = 5.;
+    userSet(kIC, 2);
+    checkSides("{0:2,5:3,10:4}", "=1");
+    checkRender(10., 4, 1);
+    gNatronExact = false;
 }
 
 void
@@ -1764,6 +1795,7 @@ main(int, char**)
     testSwap();
     testExpression();
     testKeysAt0And1();
+    testNatronStringKeys();
     testHostWithoutStringAnimation();
     testHostWithoutChoiceAnimation();
     testNoConfig();
