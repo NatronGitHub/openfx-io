@@ -169,6 +169,8 @@ private:
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
         int _invalidDataSkipped; // the error of the last damaged packet dropped during the current decode() (0 if none)
         std::vector<int64_t> _damagedPts; // the PTS of the damaged packets dropped so far (bounded)
+        bool _sentCorruptPacket; // a packet that the demuxer flagged as corrupt (a truncated file) was sent since the last seek
+        bool _tooManyDroppedPackets; // decoding stopped after too many consecutive damaged packets in the current decode()
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         SwsContext* _convertCtx;
@@ -228,6 +230,8 @@ private:
             , _decodingFromStart(false)
             , _invalidDataSkipped(0)
             , _damagedPts()
+            , _sentCorruptPacket(false)
+            , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
@@ -327,6 +331,7 @@ private:
             _heldFrameIsLast = false;
             _decodingFromStart = false;
             _nextDecodedPts = AV_NOPTS_VALUE;
+            _sentCorruptPacket = false;
         }
 
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
@@ -451,6 +456,10 @@ private:
 
     // set reader error
     void setError(const char* msg, const char* prefix = 0);
+
+    // set a decode error, which does not make the file invalid
+    void setDecodeError(const char* msg, const char* prefix = 0);
+    void setDecodeError(const int error, const char* prefix = 0);
 
     // set FFmpeg library error
     void setInternalError(const int error,

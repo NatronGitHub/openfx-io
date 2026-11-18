@@ -44,8 +44,9 @@
  *      from near the start, in FLV without a keyframe index),
  *  12. optionally (--fail F1,F2,...) checks that the 1-based frames Fi fail to decode, with
  *      an error message, sequentially and after a seek (e.g. a damaged first GOP), and
- *      excludes them from the other checks; every other frame must still decode. The error
- *      message is checked on a newly opened file, since FFmpegFile keeps the first one,
+ *      excludes them from the other checks; every other frame must still decode. As in the
+ *      plug-in, a failed frame must not make the file invalid (FFmpegFile::isInvalid()), and it
+ *      must have an error message,
  *  11. optionally (--gaps F1,F2,...) checks a clip where the 1-based frames Fi have no frame
  *      (e.g. their packets were damaged and dropped): as --positions, each one must give
  *      the last frame before it that is not in a gap (with --ramp, the ramp content of
@@ -312,22 +313,16 @@ main(int argc, char** argv)
             ++failErrors;
             return;
         }
-        // FFmpegFile keeps its first error message: check it on a newly opened file
-        FFmpegFile fresh(filename);
-        bool freshOk = false;
-        try {
-            freshOk = fresh.decode(nullptr, f, loadNearest, buf.data());
-        } catch (const std::exception& e) {
-            freshOk = false;
-        }
-        if (freshOk) {
-            std::printf("  FAIL-CHECK %s frame %d decoded in a newly opened file, but must fail\n", phase, f);
+        // As in the plug-in (ReadFFmpeg refuses an invalid file): a frame that fails must not make the
+        // file invalid, and its error message is that of this frame (decode() clears the previous one).
+        if (file.isInvalid()) {
+            std::printf("  FAIL-CHECK %s frame %d failed and made the file invalid: %s\n", phase, f, file.getError().c_str());
             ++failErrors;
-        } else if (fresh.getError().empty()) {
+        } else if (file.getError().empty()) {
             std::printf("  FAIL-CHECK %s frame %d failed without an error message\n", phase, f);
             ++failErrors;
         } else if (verbose) {
-            std::printf("  %s frame %d failed as expected: %s\n", phase, f, fresh.getError().c_str());
+            std::printf("  %s frame %d failed as expected: %s\n", phase, f, file.getError().c_str());
         }
     };
 

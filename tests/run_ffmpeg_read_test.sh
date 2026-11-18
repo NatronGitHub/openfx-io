@@ -55,7 +55,10 @@
 #     (a damaged P-frame, IDR frame or B-frame; two damaged B-frames in a VFR clip), ProRes
 #     in MOV and MJPEG in AVI (intra-only), with 1 and 8 decoder threads: the reader must
 #     drop them, and their frame times show the previous frame. With a damaged first GOP,
-#     its frames must fail with an error, and the other frames must decode.
+#     its frames must fail with an error, and the other frames must decode. AV1 (libdav1d,
+#     which reports damage as AVERROR(ENOMEM) with threads) with two scrambled frames.
+#   * Truncated ProRes and MJPEG in MOV (faststart): the missing frames fail with an error,
+#     sequentially and after a seek.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -338,6 +341,20 @@ check_ss_copy() {
     "$bin" "$tmp/$name" --tol 3 --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
+# noise_takes_expressions: true if the noise bitstream filter takes expressions (FFmpeg 5.1 or later),
+# tried once on a known-good clip
+noise_expressions=""
+noise_takes_expressions() {
+    if [ -z "$noise_expressions" ]; then
+        noise_expressions=no
+        if ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=16x16:r=24" -frames:v 2 -c:v mpeg4 "$tmp/noise_probe.mkv" &&
+            ffmpeg -y -loglevel error -i "$tmp/noise_probe.mkv" -c copy -bsf:v "noise=amount=if(eq(n\,0)\,1\,0)" "$tmp/noise_probe_out.mkv" 2>/dev/null; then
+            noise_expressions=yes
+        fi
+    fi
+    [ "$noise_expressions" = yes ]
+}
+
 # check_damaged NAME DESCRIPTION ENCODER SETPTS PACKETS GAPS CONCEALED FAIL FFMPEG_OUTPUT_ARGS...
 # A 40-frame gray ramp at 24 fps, with the timestamps SETPTS (a setpts expression in frames, or N
 # for CFR), where the packets PACKETS (0-based, in decoding order, e.g. "13 27") are damaged: the
@@ -373,8 +390,7 @@ check_damaged() {
         rc=1
         return
     fi
-    # The noise bitstream filter takes expressions since FFmpeg 5.1.
-    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if(eq(n\,0)\,1\,0)" "$tmp/probe_$name" 2>/dev/null; then
+    if ! noise_takes_expressions; then
         echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
         return
     fi
@@ -409,6 +425,103 @@ check_damaged() {
         # (the decoder errors are not shown, but the harness failures are)
         # shellcheck disable=SC2086
         if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
+# check_damaged_av1 NAME DESCRIPTION ENCODER FFMPEG_OUTPUT_ARGS...
+# A 40-frame ramp in AV1 (Matroska) where the second half of the data of packets 13 and 27 is scrambled
+# (the muxers reject an AV1 packet damaged by the noise bitstream filter, whose OBU headers are broken):
+# libdav1d reports the damage as AVERROR_INVALIDDATA, or with threads as AVERROR(ENOMEM). Every frame
+# must decode, with 1 and 8 decoder threads (the content of the frames that reference a damaged one is
+# not checked).
+check_damaged_av1() {
+    local name="$1" desc="$2" encoder="$3"
+    shift 3
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    local decoders
+    decoders="$(ffmpeg -hide_banner -decoders 2>/dev/null || true)"
+    if ! echo "$decoders" | grep -q " libdav1d "; then
+        echo "SKIPPED: no libdav1d decoder"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI or no perl"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" "$@" "$tmp/clean_$name" 2>/dev/null; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    # ffprobe gives the position of the Matroska block, whose data starts 4 bytes later
+    local ranges
+    ranges=$(ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of csv=p=0 "$tmp/clean_$name" |
+        awk -F, 'NR == 14 || NR == 28 { h = int($1 / 2); print $2 + 4 + h "," $1 - h }' | tr '\n' ' ')
+    # shellcheck disable=SC2086
+    if ! perl -e '
+        local $/; open(my $f, "<:raw", shift) or die; my $d = <$f>; close($f); my $out = shift;
+        for my $r (@ARGV) { my ($pos, $size) = split(/,/, $r);
+            for (my $i = $pos; $i < $pos + $size; ++$i) { substr($d, $i, 1) = chr(((ord(substr($d, $i, 1)) ^ 0x5a) + 0x33 + $i) & 0xff); } }
+        open(my $o, ">:raw", $out) or die; print $o $d; close($o);' "$tmp/clean_$name" "$tmp/$name" $ranges; then
+        echo "FAIL: could not damage clean_$name"
+        rc=1
+        return
+    fi
+    local all="" i threads
+    for ((i = 1; i <= NFRAMES; i++)); do
+        all="${all:+$all,}$i"
+    done
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 --frames "$NFRAMES" --concealed "$all" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
+# check_truncated_intra NAME DESCRIPTION ENCODER FFMPEG_OUTPUT_ARGS...
+# A 48-frame ramp of an intra-only codec in MOV with the index at the start (faststart), truncated in
+# the middle of the packet of frame 16, which the demuxer flags as corrupt: the frames 16 to 48 have no
+# data, and must fail with an error, as for issue #134, without making the file invalid, sequentially
+# and after a seek (in any render order: the seek reads no packet, and the reader decodes from earlier
+# frames), and the frames 1 to 15 must decode, with 1 and 8 decoder threads.
+check_truncated_intra() {
+    local name="$1" desc="$2" encoder="$3"
+    shift 3
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v 48 "$@" -movflags +faststart "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    local pos size
+    read -r size pos < <(ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of csv=p=0 "$tmp/clean_$name" | sed -n 16p | tr ',' ' ')
+    head -c $((pos + size / 2)) "$tmp/clean_$name" > "$tmp/$name"
+    local fail="" i threads
+    for ((i = 16; i <= 48; i++)); do
+        fail="${fail:+$fail,}$i"
+    done
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 --ramp 16,4 --frames 48 --fail "$fail" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
             grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
             echo "(with $threads decoder threads)"
             rc=1
@@ -528,6 +641,10 @@ check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its f
 check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
 check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two damaged frames)" libsvtav1 -c:v libsvtav1 -g 8 -preset 8
+# Truncated intra-only files: the missing frames fail, sequentially and after a seek.
+check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" prores_ks -c:v prores_ks
+check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 
 # Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
 # cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is

@@ -497,7 +497,13 @@ intra-only codecs, the reader decodes from the previous frames). The other frame
 of a damaged H.264 frame (and the last frames of the previous GOP, which the decoder outputs
 after the next reference frame) show what the decoder conceals: they must decode, but their
 content is not checked (`--concealed`). With a damaged first GOP, its frames must fail with
-an error message, checked in a newly opened file (`--fail`), and the other frames must decode.
+an error message, without making the file invalid (`FFmpegFile::isInvalid()`, which makes the
+plug-in refuse every frame), and the other frames must decode (`--fail`). An AV1 clip (libdav1d,
+which reports damage as AVERROR(ENOMEM) with threads; the second half of two packets is
+scrambled with `perl`, since the muxers reject AV1 packets damaged by `noise`) must decode every
+frame. Truncated ProRes and MJPEG in MOV (faststart, cut in frame 16, a packet that the demuxer
+flags as corrupt) must fail for the missing frames, with an error, sequentially and after a
+seek, as for issue #134.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration
