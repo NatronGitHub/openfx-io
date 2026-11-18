@@ -29,20 +29,62 @@ To fetch the latest sources from github, execute the following commands:
 
     git clone https://github.com/NatronGitHub/openfx-io.git
     cd openfx-io
-    git submodule update -i --recursive
+    git submodule update --init --recursive
 
 In order to get a specific tag, corresponding to a source release, do `git tag -l`
 to get the list of tags, and then `git checkout tags/<tag_name>`
 to checkout a given tag.
 
-## Compiling (Unix/Linux/FreeBSD/OS X, using Makefiles)
+## Requirements
 
-On Unix-like systems, the plugins can be compiled by typing in a
-terminal:
+- A C++17 compiler. The plug-ins also compile as C++20.
+- [OpenColorIO](https://opencolorio.org) 2.x
+- [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
+  [LibRaw](https://www.libraw.org) for the RAW formats
+- [OpenEXR](https://openexr.com) and Imath
+- [FFmpeg](https://ffmpeg.org) 4.0 to 9 (`tests/ffmpeg_syntax_check.sh` checks that the FFmpeg plug-ins
+  compile against a given FFmpeg version)
+- libpng
+- [SeExpr](https://github.com/wdas/SeExpr) 2.11, which has the SeExpr 1 API (`SeExpression.h`); SeExpr 3.x
+  (the SeExpr2 API) does not work
+
+The [CI workflow](.github/workflows/ci.yml) builds and tests the plug-ins on Linux (Ubuntu packages),
+on Windows with MSYS2 UCRT64, and on macOS with Xcode's clang and MacPorts. It is the reference for the
+packages to install and the commands to run on each platform.
+Natron 2.6 builds the plug-ins on Rocky Linux 8 with gcc-toolset-14, on macOS 14 and later (arm64), and on
+MSYS2 UCRT64.
+
+## Compiling with CMake
+
+CMake (3.16 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as
+the Makefiles. It needs an out-of-tree build directory:
+
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
+    cmake --build build
+    cmake --install build --prefix /usr     # installs /usr/OFX/Plugins/IO.ofx.bundle
+
+The bundle is also assembled in `build/Plugins/IO.ofx.bundle`. A group of plug-ins is left out when its
+libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
+
+| Option | Default | Description |
+|---|---|---|
+| `OFX_IO_WITH_<group>` | ON | Build the group if its libraries are found. Groups: `OCIO`, `EXR`, `FFMPEG`, `OIIO`, `LIBRAW` (RAW support in ReadOIIO), `PNG`, `SEEXPR`, `RUNSCRIPT`. |
+| `OFX_IO_REQUIRE_ALL` | OFF | Fail if a group that is not disabled can't be built (for packagers). |
+| `SEEXPR_HOME` | empty (CMake's search paths) | SeExpr 2.11 prefix (`include/SeExpression.h`, `lib/libSeExpr`). |
+| `FFMPEG_PKG_CONFIG_PATH` | empty (pkg-config's search path) | pkg-config directory of the FFmpeg to use, e.g. `/opt/local/libexec/ffmpeg8/lib/pkgconfig` for MacPorts' `ffmpeg8` port, which MacPorts' OpenImageIO links. |
+| `OFX_CXX_STANDARD` | `CMAKE_CXX_STANDARD`, or 17 | C++ standard of the plug-ins and of the OFX Support library. |
+| `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: `osxDeploy.sh`, like the Makefiles' release builds). |
+| `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
+| `BUILD_TESTING` | ON | `ctest` runs the tests of `tests/Makefile` (`IO_TESTS_MAKE_ARGS`: extra `make` arguments, e.g. `WITH_LIBRAW=1`). |
+| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's hostDemo; `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, `tests/hostdemo/run.sh`). Needs `BUILD_TESTING`. |
+
+## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
+
+The plugins can be compiled by typing in a terminal:
 - `make [options]` to compile as a single combined plugin (see below
   for valid options).
 - `make nomulti [options]` to compile as separate plugins (useful if
-only a few plugins are is needed, for example). `make` can also be
+only a few plugins are needed, for example). `make` can also be
 executed in any plugin's directory.
 
 The most common options are `CONFIG=release` to compile a release
@@ -52,120 +94,43 @@ symbols.
 
 Another common option is `BITS=32`for compiling a 32-bits version,
 `BITS=64` for a 64-bits version, and `BITS=Universal` for a universal
-binary (OS X only).
+binary (macOS only).
 
-See the file `Makefile.master`in the toplevel directory for other useful
+The libraries are found with `pkg-config`. Other useful variables are `SEEXPR_HOME` (the SeExpr 2.11
+prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). The Makefiles do not set the
+C++ standard: if the compiler defaults to an older one, pass it in `CXX`, e.g.
+`make CONFIG=release CXX="clang++ -std=c++17"`.
+See the file `Makefile.master` in the toplevel directory for other useful
 flags/variables.
 
 The compiled plugins are placed in subdirectories named after the
-configuration, for example Linux-64-realease for a 64-bits Linux
+configuration, for example `Linux-64-release` for a 64-bits Linux
 compilation. In each of these directories, a `*.bundle` directory is
 created, which has to be moved to the proper place
-(`/usr/OFX/Plugins`on Linux, or `/Library/OFX/Plugins`on OS X), using
+(`/usr/OFX/Plugins` on Linux, or `/Library/OFX/Plugins` on macOS), using
 a command like the following, with the *same* options used for
 compiling:
 
 	sudo make install [options]
 
-## Compiling on Ubuntu 12.04 LTS
+## Platform notes
 
-### OpenColorIO
+See the [CI workflow](.github/workflows/ci.yml) for the complete package lists and build commands.
 
-    sudo apt-get install cmake libtinyxml-dev liblcms2-dev libyaml-cpp-dev libboost-dev
-    git clone -b "v1.0.8" https://github.com/imageworks/OpenColorIO.git ocio
-    cd ocio
-    mkdir _build
-    cd _build
-    cmake .. -DCMAKE_INSTALL_PREFIX=/opt/ocio -DCMAKE_BUILD_TYPE=Release -DOCIO_BUILD_JNIGLUE=OFF -DOCIO_BUILD_NUKE=OFF -DOCIO_BUILD_SHARED=ON -DOCIO_BUILD_STATIC=OFF -DOCIO_STATIC_JNIGLUE=OFF -DOCIO_BUILD_TRUELIGHT=OFF -DUSE_EXTERNAL_LCMS=ON -DUSE_EXTERNAL_TINYXML=ON -DUSE_EXTERNAL_YAML=ON -DOCIO_BUILD_APPS=OFF -DOCIO_USE_BOOST_PTR=ON -DOCIO_BUILD_TESTS=OFF -DOCIO_BUILD_PYGLUE=OFF
-    make && sudo make install
-    cd ../..
-    
-### OpenEXR
+- **Linux**: install the development packages of the libraries above from the distribution (e.g. on
+  Ubuntu 24.04, `libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev libpng-dev
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev`). SeExpr 2.11 is usually not packaged: CI
+  builds it from source and passes its prefix in `SEEXPR_HOME`.
+- **macOS**: CI uses MacPorts (`port install pkgconfig cmake openimageio opencolorio openexr libraw ffmpeg8
+  libpng libomp`) and Xcode's clang (`/usr/bin/clang++`). Link the FFmpeg plug-ins with the FFmpeg that
+  OpenImageIO links (`FFMPEG_PKG_CONFIG_PATH=/opt/local/libexec/ffmpeg8/lib/pkgconfig`). If they would link
+  two different FFmpeg builds with the same library names, the build stops, because the bundle could only
+  contain one of them. Natron's
+  MacPorts tree (`tools/MacPorts` in the Natron repository) has a `seexpr211` port for SeExpr 2.11.
+- **MS Windows**: build in an MSYS2 UCRT64 shell, with the `mingw-w64-ucrt-x86_64-` packages of the
+  libraries above, using CMake or the Makefiles.
 
-    sudo apt-get install libopenexr-dev libilmbase-dev
-    
-### OpenImageIO (for some reason, freetype is not recognized)
-
-    sudo apt-get install libopenjpeg-dev libtiff-dev libjpeg-dev libpng-dev libboost-filesystem-dev libboost-regex-dev libboost-thread-dev libboost-system-dev libwebp-dev libfreetype6-dev libssl-dev
-    git clone -b "RB-1.2" git://github.com/OpenImageIO/oiio.git oiio
-    cd oiio
-    make USE_QT=0 USE_TBB=0 USE_PYTHON=0 USE_FIELD3D=0 USE_OPENJPEG=1 USE_OCIO=1 OIIO_BUILD_TESTS=0 OIIO_BUILD_TOOLS=0 OCIO_HOME=/opt/ocio INSTALLDIR=/opt/oiio dist_dir=. cmake
-    sudo make dist_dir=.
-    cd ..
-### FFmpeg
-
-    sudo apt-get install libavcodec-dev libavformat-dev libswscale-dev libavutil-dev
-    
-### Finally
-
-    env PKG_CONFIG_PATH=/opt/oiio/lib/pkgconfig make CONFIG=release
-    
-## Compiling on OS X with macports
-
-Download and install the MacPorts installer that corresponds to your Mac OS X version.
-Download the local portfiles archive on the bottom of [that](http://devernay.free.fr/hacks/openfx/)
- page, named TuttleOFX-OSX-macports.tar.gz .
-Uncompress the portfiles in a directory of your choice. In the following, we suppose you
-uncompressed it in /Users/USER_NAME/Development/dports-dev, but it can be anywhere
-except in the Documents directory, which has special permissions.
-
-Give read/execute permissions to the local repository:
-
-    chmod 755 /Users/USER_NAME/Development/dports-dev
-
-Check that the user `nobody` can read this directory by typing the following command in a Terminal:
-
-    sudo -u nobody ls /Users/USER_NAME/Development/dports-dev
-	 
- If it fails, then try again after having given execution permissions on your home directory
-using the following command:
-
-    chmod o+x /Users/USER_NAME
-	 
- If this still fails, then something is really wrong.
-
-Edit the `sources.conf` file for MacPorts, for example using the nano editor: 
-
-    sudo nano /opt/local/etc/macports/sources.conf
-	
-insert at the beginning of the file the configuration for a local repository 
-(read the comments in the file), by inserting the line 
-
-    file:///Users/USER_NAME/Development/dports-dev
-	
-Save and exit (if you're using nano, this means typing ctrl-X, Y and return).
- 
-Update MacPorts: 
-
-    sudo port selfupdate
-
-Recreate the index in the local repository: 
-
-    cd /Users/USER_NAME/Development/dports-dev; portindex
-	
-(no need to be root for this)
-
-Add the following line to `/opt/local/etc/macports/variants.conf`:
-
-    -x11 +no_x11 +bash_completion +no_gnome +quartz
-	
-(add +universal on OSX 10.5 and 10.6)
-
-* special portfiles:
-  - graphics/openimageio
-  - graphics/opencolorio
-
-* external libraries
-
-    sudo port -v install openexr ffmpeg opencolorio openimageio
-
-Then to compile...
-
-    env PKG_CONFIG_PATH=/opt/local/lib/pkgconfig make CONFIG=release OCIO_HOME=/opt/local
-
-where /opt/local is where the macports tree stores the includes and libs.
-
-## Using Xcode on OSX
+## Using Xcode on macOS
 
 In order to use the provided Xcode project file, you should add the
 following definitions in the Xcode preferences
@@ -176,106 +141,13 @@ following definitions in the Xcode preferences
 - OIIO_PATH: path to OpenImageIO installation prefix (e.g. /usr/local or /opt/local)
 - SEEXPR_PATH: path to SeExpr installation prefix (e.g. /usr/local or /opt/local)
 
-## Compiling on MS Windows
+## Testing
 
-We provide pre-compiled static binaries for dependencies here: [3rdparty_windows_32_and_64bits_msvc2010.zip](https://www.dropbox.com/s/s5yuh9k3kum99jp/3rdparty_windows_32_and_64bits_msvc2010.zip)
+The tests in `tests/` link the plug-in sources with a minimal in-process host and need no OFX host
+application:
+`cd tests; make test`. See [tests/README.md](tests/README.md).
 
-On the other hand if you want to compile them yourself, you can do so :
-
-### OpenColorIO
-
-Clone the repository from github:
-
-    git clone https://github.com/imageworks/OpenColorIO
-	
-See [Compiling-OpenColorIO-static-on-Windows](https://github.com/MrKepzie/Natron/wiki/Compiling-OpenColorIO-static-on-Windows)
-
-### OpenEXR
-
-Clone the repository from github:
-
-    git clone https://github.com/openexr/openexr
-	
-And follow the install instruction in IlmBase/README.win32
-
-### OpenImageIO
-
-Clone the repository from github:
-
-    git clone https://github.com/OpenImageIO/oiio
-	
-Follow the instructions in the INSTALL file of the source distribution.
-When compiling to use the pre-compiled binaries of OpenEXR provided as the version is too
-old to successfully build OpenImageIO. Instead use the version you just compiled before
-and change the include/lib paths in the visual studio project.
-
-### FFmpeg
-
-I can only advice you download the pre-built binaries from [Zeranoe](http://ffmpeg.zeranoe.com/builds/).
-You will need to download the Shared to have the dlls and the Dev to have the .lib files allowing you to link with the dlls.
-Note that on this website you can only get shared versions of the ffmpeg libraries. Only version 4.0 and onwards are supported.
-
-### Boost
-
-You can download pre-built binaries for your visual studio version from [teeks99](http://boost.teeks99.com/)
-
-
-### Note about the external libraries
-
-Please note that all libraries should be compiled as static libraries for the simplicity of the IO.ofx deployment.
-You should have all libraries as static EXCEPT ffmpeg. We will discuss at the end of the README how to deploy so the 
-library loader can find the shared libraries at run time.
-
-### Compile IO.sln
-
-There's a solution file in the repository whose purpose is to help building openfx-io on Windows.
-Note that you might have to make a few changes to the Configuration properties of the project so it can compile on your machine.
-You will need to change all the hardcoded path in the Additional Include directories to the ones on your machine.
-You will have to do the same with Additional Dependencies in the linker options.
-
-Also, some preprocessor definitions are mandatory, most notably:
-
-    OFX_IO_USING_OCIO
-    OFX_IO_USING_LIBRAW
-    OFX_EXTENSIONS_VEGAS
-    OFX_EXTENSIONS_TUTTLE
-    OFX_EXTENSIONS_NUKE
-    OFX_IO_MT_FFMPEG
-    OpenColorIO_STATIC
-    _WINDOWS
-    WIN64 (if you're doing a x64 build)
-    NOMINMAX
-
-Also note that you'll have to set the runtime library (in the Code Generation tab) to Multi-threaded (/MT).
-
-
-Once you compile successfully and you have your bundle, locate the IO.ofx file.
-We assume from now on that the only shared libraries you linked with was ffmpeg (i.e: avcodec.lib, avformat.lib avutil.lib and swscale.lib).
-Make a new file called INRIA.IO.manifest right next to IO.ofx in the bundle (i.e: at this location: IO.ofx.bundle/Content/Win64/INRIA.IO.manifest).
-In this file copy the following lines:
-
-    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-    <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-    <assemblyIdentity name="INRIA.IO" version="1.0.0.0" type="win32" processorArchitecture="amd64"/>
-    <file name="avcodec-56.dll">
-    </file>
-    <file name="avformat-56.dll">
-    </file>
-    <file name="avutil-54.dll">
-    </file>
-    <file name="swscale-3.dll">
-    </file>
-    <file name="swresample-1.dll">
-    </file>
-    </assembly>
-
-Now open the command line tool and navigate to `IO.ofx.bundle/Content/Win64/`
-Execute the following command:
-
-    mt -manifest INRIA.IO.manifest -outputresource:IO.ofx;2
-	
-This will embed the manifest into the `.ofx` file so it can now find at runtime the shared dependencies (i.e: the ffmpeg Dlls).
-
-
-
-
+`tools/compare_bundles.sh BUNDLE_A BUNDLE_B` compares two bundles on Linux or macOS, e.g. the `IO.ofx.bundle`
+built by the Makefiles and the one installed by CMake: file list, `Info.plist`, resources, exported
+symbols, linked libraries and rpaths, and the plug-ins each binary loads. It also checks that each bundle
+is self-contained. Run it without arguments for its options.
