@@ -3279,14 +3279,12 @@ ReadOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription
                               "\n\n"
-                              "OpenImageIO supports reading/writing the following file formats:\n"
-                              "BMP (*.bmp)\n"
+                              "This plug-in reads the following file formats, if the OpenImageIO library supports them. BMP and GIF files are left to other readers (ReadMisc, ReadFFmpeg).\n"
                               "Cineon (*.cin)\n"
                               "Direct Draw Surface (*.dds)\n"
                               "DPX (*.dpx)\n"
                               "Field3D (*.f3d)\n"
                               "FITS (*.fits)\n"
-                              "GIF (*.gif)\n"
                               "HDR/RGBE (*.hdr)\n"
 #if OIIO_VERSION >= 20100
                               "HEIC/HEIF (*.heic *.heif)\n"
