@@ -4,13 +4,13 @@
  *
  *  - render an empty source image (0x0) into a 32x32 output, with the "default" filter: it must not crash (it
  *    segfaulted in ImageBufAlgo::resize()), and the output must be black.
- *  - getRegionOfDefinition, type Size with Preserve PAR, for a source RoD of +-DBL_MAX: the size is
- *    computed in double, and must be converted to int only within the range of int (it converted
- *    NaN or a huge value to int).
+ *  - getRegionOfDefinition, type Size with Preserve PAR, for a source RoD of +-DBL_MAX: the size of the source is
+ *    clamped to INT_MAX, so that the ratios are finite (inf / inf gave NaN, converted to int), and the RoD is the
+ *    expected one.
  *  - the source clip changes (changedClip) with an infinite RoD (kOfxFlagInfinite*): the Size param is set to the
  *    size of the RoD clamped to the range of int (the subtraction overflowed int).
- *  - OIIOText with a position of +-DBL_MAX: the text position is clamped before its conversion to int (the render may
- *    draw nothing, but must not convert an out-of-range value to int).
+ *  - OIIOText with a position of +-DBL_MAX or 1e12: the text position is clamped before its conversion to int, and the
+ *    text is out of the image: the output is the source.
  *
  * Build it with -fsanitize=undefined,float-cast-overflow to check the conversions (see tests/README.md).
  *
@@ -22,6 +22,7 @@
 #include <climits>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -145,12 +146,15 @@ testPreserveParHugeRoD(OfxPlugin* p)
     std::printf("==== getRegionOfDefinition, Size with Preserve PAR, source RoD +-DBL_MAX ====\n");
     const struct {
         double x1, y1, x2, y2;
+        double w, h; // the expected size of the RoD
         const char* label;
     } cases[] = {
-        { -DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX, "+-DBL_MAX" },
-        { 0., 0., DBL_MAX, 10., "0,0,DBL_MAX,10" },
-        { 0., 0., 10., DBL_MAX, "0,0,10,DBL_MAX" },
-        { 0., 0., 200., 100., "0,0,200,100" },
+        // the size of the source, clamped to INT_MAX: a square, 100 x 100
+        { -DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX, 100., 100., "+-DBL_MAX" },
+        // INT_MAX x 10 into 100 x 100: 100 x (10 * 100 / INT_MAX), 0 once converted to int
+        { 0., 0., DBL_MAX, 10., 100., 0., "0,0,DBL_MAX,10" },
+        { 0., 0., 10., DBL_MAX, 0., 100., "0,0,10,DBL_MAX" },
+        { 0., 0., 200., 100., 100., 50., "0,0,200,100" },
     };
     for (const auto& c : cases) {
         Resize r(p);
@@ -174,11 +178,8 @@ testPreserveParHugeRoD(OfxPlugin* p)
         OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(r.inst), PH(&a), PH(&o));
         double rod[4] = { -1., -1., -1., -1. };
         pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
-        // the RoD is 0,0,w,h with 0 <= w, h <= INT_MAX (or the default RoD)
-        const bool valid = (rod[0] == 0. && rod[1] == 0. && rod[2] >= 0. && rod[2] <= (double)INT_MAX && rod[3] >= 0.
-                            && rod[3] <= (double)INT_MAX);
-        const bool expected = (c.x2 != 200.) || (rod[2] == 100. && rod[3] == 50.);
-        check(!ok(st) || (valid && expected), "%s: status %d, RoD %g,%g,%g,%g", c.label, st, rod[0], rod[1], rod[2], rod[3]);
+        check(st == kOfxStatOK && rod[0] == 0. && rod[1] == 0. && rod[2] == c.w && rod[3] == c.h,
+              "%s: status %d, RoD %g,%g,%g,%g (expected 0,0,%g,%g)", c.label, st, rod[0], rod[1], rod[2], rod[3], c.w, c.h);
     }
 }
 
@@ -248,9 +249,18 @@ testTextHugePosition()
         setOverrideString(&ctx, "text", "Hello");
         gPersistentError.clear();
         PropSet a = makeRenderInArgs(1., w, h);
+        float* d = reinterpret_cast<float*>(dst->buffer.data());
+        for (int i = 0; i < w * h * 4; ++i) {
+            d[i] = 0.5f; // not the source
+        }
         OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
-        check(ok(st), "position %g,%g: render = %d%s%s", pos[0], pos[1], st, gPersistentError.empty() ? "" : ", error: ",
-              gPersistentError.c_str());
+        // the text is out of the image: the output is the source (black)
+        int notSource = 0;
+        for (int i = 0; i < w * h * 4; ++i) {
+            notSource += (d[i] != 0.f) ? 1 : 0;
+        }
+        check(ok(st) && notSource == 0, "position %g,%g: render = %d, the output is the source (%d values are not)%s%s",
+              pos[0], pos[1], st, notSource, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
         p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
     }
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);

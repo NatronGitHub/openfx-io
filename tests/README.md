@@ -215,11 +215,12 @@ the pool must have 0 threads. It sets `OCIO=test.ocio`.
 `oiio_edge_test.cpp` links the OIIO plug-ins with `OIIOResize.cpp` and `OIIOText.cpp`, in the Filter context:
 
 * **OIIOResize, empty source**: an empty (0x0) source image resized to 32x32 with the default filter renders black.
-* **OIIOResize, Preserve PAR**: the RoD for a source RoD of +-DBL_MAX (whose size is infinite) is in the range of int
-  (it converted NaN or inf to int); 200x100 into 100x100 gives 100x50.
+* **OIIOResize, Preserve PAR**: the size of a source RoD of +-DBL_MAX (infinite) is clamped to INT_MAX before the
+  ratios (inf / inf was NaN, converted to int): 100x100 for +-DBL_MAX, 100x0 for DBL_MAX x 10; 200x100 into 100x100
+  gives 100x50.
 * **OIIOResize, infinite source RoD**: when the source clip changes, the Size param is the RoD size clamped to INT_MAX
   (the subtraction overflowed int).
-* **OIIOText**: a text position of +-DBL_MAX or 1e12 renders (it was converted to int).
+* **OIIOText**: a text position of +-DBL_MAX or 1e12 renders the source (it was converted to int).
 
 The conversions are only detected by UBSan: build it with
 `make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.

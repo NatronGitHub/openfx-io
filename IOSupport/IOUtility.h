@@ -112,7 +112,9 @@ int
 floatToInt(float value)
 {
     // the comparisons are written so that a NaN pixel value (image data may contain NaNs) gives 0 instead of reaching
-    // the conversion to int, which would be undefined behaviour (the result is the same for every other value)
+    // the conversion to int, which would be undefined behaviour (the result is the same for every other value). This is
+    // best-effort: with -ffinite-math-only (-ffast-math), the compiler may assume that there is no NaN and rewrite the
+    // comparisons, so that a NaN reaches the conversion again.
     if (!(value > 0)) {
         return 0;
     } else if (!(value < 1.)) {

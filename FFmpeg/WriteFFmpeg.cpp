@@ -583,7 +583,8 @@ static const char* kJpegCodecs[] = { "jpeg", "mjpa", "mjpb" };
 static const int kNumJpegCodecs = sizeof(kJpegCodecs) / sizeof(kJpegCodecs[0]);
 
 // A bitrate in Mbit/s (a param, at least 0) in bit/s, as an int64_t (AVCodecContext::bit_rate, rc_max_rate), clamped to
-// [0, INT64_MAX] before the conversion
+// [0, INT_MAX kbit/s] before the conversion: some encoders (e.g. libx264) take the bitrate in kbit/s as an int, and fail
+// ("Invalid argument") above. (On master, the conversion to int overflowed above 2147 Mbit/s.)
 static int64_t
 bitrateToInt64(double mbps)
 {
@@ -591,9 +592,9 @@ bitrateToInt64(double mbps)
     if (!(bps > 0.)) {
         return 0;
     }
-    // 9.2e18 is below INT64_MAX (9.22e18) and exactly representable as a double
-    if (!(bps < 9.2e18)) {
-        return (int64_t)9.2e18;
+    const double maxBps = (double)INT_MAX * 1000.;
+    if (!(bps < maxBps)) {
+        return (int64_t)maxBps;
     }
 
     return (int64_t)bps;
@@ -3302,6 +3303,11 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
                 double fps = _fps->getValue();
                 const double toleranceMin = bitrateToleranceMin(bitrate, fps, kParamBitrateToleranceMax);
                 bitrateTolerance = (std::max)(toleranceMin, bitrateTolerance);
+                // the host may give a value above the declared maximum of the param (or NaN): tol * 1000000 must fit
+                // in an int
+                if (!(bitrateTolerance <= (double)kParamBitrateToleranceMax)) {
+                    bitrateTolerance = kParamBitrateToleranceMax;
+                }
 
                 avCodecContext->bit_rate_tolerance = (int)(bitrateTolerance * 1000000);
             }

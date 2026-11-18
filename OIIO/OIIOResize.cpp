@@ -700,15 +700,16 @@ OIIOResizePlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
         _preservePAR->getValue(preservePar);
         if (preservePar) {
             OfxRectD srcRoD = _srcClip->getRegionOfDefinition(args.time);
-            double srcW = srcRoD.x2 - srcRoD.x1;
-            double srcH = srcRoD.y2 - srcRoD.y1;
+            // the size of a huge RoD (e.g. +-DBL_MAX, whose size is infinite) is clamped to INT_MAX, so that the ratios
+            // below are finite (inf / inf would be NaN); the result is unchanged for any size up to INT_MAX
+            double srcW = (std::min)(srcRoD.x2 - srcRoD.x1, (double)INT_MAX);
+            double srcH = (std::min)(srcRoD.y2 - srcRoD.y1, (double)INT_MAX);
 
             /// Don't crash if we were provided weird RoDs
             if ((srcH < 1) || (srcW < 1)) {
                 return false;
             }
-            // the sizes are converted to int only within the range of int (srcW or srcH may be infinite for a RoD of
-            // +-DBL_MAX, which gave inf / inf = NaN)
+            // the sizes are converted to int only within the range of int
             if ((double)w / srcW < (double)h / srcH) {
                 /// Keep the given width, recompute the height
                 h = sizeToInt(srcH * w / srcW);
