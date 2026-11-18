@@ -503,7 +503,8 @@ which reports damage as AVERROR(ENOMEM) with threads; the second half of two pac
 scrambled with `perl`, since the muxers reject AV1 packets damaged by `noise`) must decode every
 frame. Truncated ProRes and MJPEG in MOV (faststart, cut in frame 16, a packet that the demuxer
 flags as corrupt) must fail for the missing frames, with an error, sequentially and after a
-seek, as for issue #134.
+seek, as for issue #134. An MPEG-TS with a continuity counter error (a packet flagged
+as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration

@@ -59,6 +59,8 @@
 #     which reports damage as AVERROR(ENOMEM) with threads) with two scrambled frames.
 #   * Truncated ProRes and MJPEG in MOV (faststart): the missing frames fail with an error,
 #     sequentially and after a seek.
+#   * MPEG-TS with a continuity counter error (a packet flagged as corrupt, but not at the end
+#     of the file): every frame must decode.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -529,6 +531,64 @@ check_truncated_intra() {
     done
 }
 
+# check_ts_cc NAME DESCRIPTION
+# A 72-frame H.264 MPEG-TS with an MP2 audio track that ends 0.6 s after the video (so that the last frame
+# is held until the end of the movie, 87 frames), and a continuity counter error in the packet of frame
+# 18 (in decoding order), which the demuxer flags as corrupt: it is not a truncated file, and every frame
+# must decode.
+check_ts_cc() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder mp2; then
+        echo "SKIPPED: no libx264 or mp2 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "SKIPPED: no perl"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -frames:v 72 -c:v libx264 -g 12 -bf 2 -pix_fmt yuv420p "$tmp/video_$name.mkv" ||
+        ! ffmpeg -y -loglevel error -f lavfi -t 3.5 -i sine=r=48000 -c:a mp2 "$tmp/audio_$name.mp2" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/video_$name.mkv" -i "$tmp/audio_$name.mp2" -map 0:v -map 1:a -c copy -f mpegts "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    # Change the continuity counter of the second TS packet of the 18th video PES.
+    if ! perl -e '
+        local $/; open(my $f, "<:raw", $ARGV[0]) or die; my $d = <$f>; close($f);
+        my ($vpid, $pes, $done) = (-1, -1, 0);
+        for (my $p = 0; $p + 188 <= length($d) && !$done; $p += 188) {
+            next if ord(substr($d, $p, 1)) != 0x47;
+            my $b1 = ord(substr($d, $p + 1, 1)); my $b3 = ord(substr($d, $p + 3, 1));
+            my $pid = (($b1 & 0x1f) << 8) | ord(substr($d, $p + 2, 1)); my $afc = ($b3 >> 4) & 3;
+            next unless $afc & 1;
+            my $off = $p + 4; $off += 1 + ord(substr($d, $off, 1)) if $afc & 2;
+            if (($b1 & 0x40) && substr($d, $off, 3) eq "\x00\x00\x01") {
+                my $sid = ord(substr($d, $off + 3, 1));
+                $vpid = $pid if $vpid < 0 && $sid >= 0xe0 && $sid <= 0xef;
+                ++$pes if $pid == $vpid;
+            } elsif ($pid == $vpid && $pes == 17) {
+                substr($d, $p + 3, 1) = chr(($b3 & 0xf0) | ((($b3 & 0x0f) + 5) & 0x0f)); $done = 1;
+            }
+        }
+        die "no TS packet changed\n" unless $done;
+        open(my $o, ">:raw", $ARGV[1]) or die; print $o $d; close($o);' "$tmp/clean_$name" "$tmp/$name"; then
+        echo "FAIL: could not damage clean_$name"
+        rc=1
+        return
+    fi
+    local threads
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 --frames 87 ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -641,6 +701,7 @@ check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its f
 check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
 check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_ts_cc ramp_cc_error.ts "MPEG-TS (H.264 and MP2, a continuity counter error in frame 18, not a truncated file)"
 check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two damaged frames)" libsvtav1 -c:v libsvtav1 -g 8 -preset 8
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" prores_ks -c:v prores_ks
