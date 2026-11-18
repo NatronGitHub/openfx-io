@@ -130,7 +130,7 @@ compiling:
 See the [CI workflow](.github/workflows/ci.yml) for the complete package lists and build commands.
 
 - **Linux**: install the development packages of the libraries above from the distribution. On Ubuntu
-  24.04: `cmake libgl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
+  24.04: `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
   libpng-dev libwebp-dev libtiff-dev libopenjp2-7-dev libavcodec-dev libavformat-dev libavutil-dev
   libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools` for the tests and hostDemo.
   Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with `bison` and `flex`) and passes its
