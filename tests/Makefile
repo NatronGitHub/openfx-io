@@ -192,9 +192,12 @@ exr_read_test_ubsan: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SU
 
 .PHONY: test-exr-ubsan clean-exr-ubsan
 clean: clean-exr-ubsan
+# The allocator fills new memory with a pattern (0xAA bytes), so that a read of uninitialized memory gives an
+# invalid value that UBSan reports (e.g. an enum): MallocPreScribble/MallocScribble on macOS, MALLOC_PERTURB_ with
+# glibc (ignored elsewhere).
 test-exr-ubsan: exr_read_test_ubsan
 	rm -rf .exr_read_ubsan && mkdir -p .exr_read_ubsan
-	OCIO=$(CURDIR)/test.ocio ./exr_read_test_ubsan $(CURDIR)/.exr_read_ubsan
+	OCIO=$(CURDIR)/test.ocio MallocPreScribble=1 MallocScribble=1 MALLOC_PERTURB_=170 ./exr_read_test_ubsan $(CURDIR)/.exr_read_ubsan
 clean-exr-ubsan:
 	rm -rf exr_read_test_ubsan exr_read_test_ubsan.dSYM .exr_read_ubsan
 
