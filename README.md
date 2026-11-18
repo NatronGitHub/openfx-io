@@ -103,7 +103,7 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `OFX_IO_REQUIRE_ALL` | OFF | Fail if a group that is not disabled can't be built (for packagers). |
 | `SEEXPR_HOME` | empty (CMake's search paths) | SeExpr 2.11 prefix (`include/SeExpression.h`, `lib/libSeExpr`). |
 | `FFMPEG_PKG_CONFIG_PATH` | empty (pkg-config's search path) | pkg-config directory of the FFmpeg to use, e.g. `/opt/local/libexec/ffmpeg8/lib/pkgconfig` for MacPorts' [`ffmpeg8`](https://ports.macports.org/port/ffmpeg8/) port, which MacPorts' OpenImageIO links. |
-| `CMAKE_OSX_DEPLOYMENT_TARGET` | `14.0` on macOS, unless the `MACOSX_DEPLOYMENT_TARGET` environment variable is set and non-empty; no default when cross-compiling. An existing build directory keeps its cached value: use a new one, or pass `-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0` | Minimum macOS version of the plug-ins ([`CMAKE_OSX_DEPLOYMENT_TARGET`](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_DEPLOYMENT_TARGET.html)). |
+| `CMAKE_OSX_DEPLOYMENT_TARGET` | `14.0` when building natively on macOS, unless the `MACOSX_DEPLOYMENT_TARGET` environment variable is set and non-empty; no default when cross-compiling. An existing build directory keeps its cached value: use a new one, or pass `-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0` | Minimum macOS version of the plug-ins ([`CMAKE_OSX_DEPLOYMENT_TARGET`](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_DEPLOYMENT_TARGET.html)). |
 | `OFX_CXX_STANDARD` | `CMAKE_CXX_STANDARD`, or 17 | C++ standard of the plug-ins and of the OFX Support library. |
 | `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: [`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh), like the Makefiles' release builds). |
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
@@ -172,7 +172,7 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   port's patches.
   The plug-ins target macOS 14.0 (`MACOSX_DEPLOYMENT_TARGET` for the Makefiles and Xcode,
   `CMAKE_OSX_DEPLOYMENT_TARGET` for CMake; see Apple's
-  [minimum deployment target](https://developer.apple.com/documentation/xcode/build-settings-reference)
+  [macOS Deployment Target](https://developer.apple.com/documentation/xcode/build-settings-reference#macOS-Deployment-Target)
   setting), as Natron 2.6 does. MacPorts builds its libraries for the build machine's macOS unless the
   `macosx_deployment_target` option (read by [`macports.tcl`](https://github.com/macports/macports-base/blob/master/src/macports1.0/macports.tcl),
   not documented) is set in [`macports.conf`](https://guide.macports.org/chunked/internals.configuration-files.html):
