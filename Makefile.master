@@ -61,6 +61,14 @@ endif
 endif
 endif
 endif
+# WriteFFmpeg uses std::filesystem: with GCC < 9 (e.g. GCC 8.5, Rocky Linux 8's system compiler), it is in
+# libstdc++fs, not in libstdc++ (https://gcc.gnu.org/gcc-9/changes.html). CXX_GCC_MAJOR is empty for clang.
+CXX_GCC_MAJOR := $(shell echo '__clang__ __GNUC__' | $(CXX) -E -P -x c++ - 2>/dev/null | awk '$$1 == "__clang__" { print $$2; exit }')
+ifneq ($(CXX_GCC_MAJOR),)
+ifeq ($(shell test "$(CXX_GCC_MAJOR)" -lt 9 2>/dev/null && echo yes),yes)
+FFMPEG_LINKFLAGS += -lstdc++fs
+endif
+endif
 # Uncomment the following line to enable multithreaded ffmpeg reading
 FFMPEG_CXXFLAGS += -DOFX_IO_MT_FFMPEG
 

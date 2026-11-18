@@ -55,6 +55,26 @@ packages to install and the commands to run on each platform.
 [Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 8 with gcc-toolset-14, on macOS 14 and later (arm64), and on
 MSYS2 UCRT64.
 
+### Linux runtime requirements
+
+Linux release bundles carry their libraries (OpenImageIO, OpenColorIO, FFmpeg, …) but no system libraries, which
+come from the system:
+
+- [glibc](https://www.gnu.org/software/libc/) 2.28 or later;
+- [libstdc++](https://gcc.gnu.org/onlinedocs/libstdc++/) and `libgcc_s` from [GCC](https://gcc.gnu.org) 8.5 or later;
+- [libgomp](https://gcc.gnu.org/onlinedocs/libgomp/), GCC's [OpenMP](https://www.openmp.org) runtime, when LibRaw
+  uses OpenMP;
+- `libGL` (e.g. [libglvnd](https://gitlab.freedesktop.org/glvnd/libglvnd)).
+
+Release builds target [Rocky Linux](https://rockylinux.org) 8 (glibc 2.28, GCC 8.5). Its system GCC 8.5 is too old: they
+need GCC 9 or later, e.g. [GCC Toolset](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/8/html/developing_c_and_cpp_applications_in_rhel_8/additional-toolsets-for-development_developing-applications)
+(`gcc-toolset-14`), because OpenImageIO 3.x needs
+[GCC 9.3 or later](https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/main/INSTALL.md) and WriteFFmpeg uses
+`std::filesystem`, which is in `libstdc++` only since [GCC 9.1](https://gcc.gnu.org/gcc-9/changes.html) (with GCC 8, the
+CMake build and the Makefiles link `libstdc++fs`). GCC Toolset links the newer parts of the C++ runtime statically, so the
+plug-ins still only need the system's GCC 8.5 `libstdc++`. The Linux bundle built by CI is an Ubuntu 24.04 testing build,
+not a release: it needs the system libraries of Ubuntu 24.04 or later.
+
 ## Compiling with CMake
 
 [CMake](https://cmake.org) (3.16 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as

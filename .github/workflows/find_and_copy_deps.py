@@ -25,20 +25,27 @@ def get_deps_for_binary(binary_path, search_directories):
 
     system_libs_to_skip = []
     if sys.platform == "linux":
-        # System libraries to skip
+        # System libraries to skip: the glibc libraries and the dynamic loader, the GCC runtime (libstdc++,
+        # libgcc_s, libgomp: never bundled, the system's must be used, see "Linux runtime requirements" in
+        # README.md), OpenGL and X11.
         system_libs_to_skip = [
+            "ld-linux",
             "libc.so",
             "libdl.so",
             "libdrm.so",
+            "libgcc_s.so",
+            "libgomp.so",
             "libm.so",
             "libpthread.so",
             "libresolv.so",
+            "librt.so",
             "libselinux.so",
+            "libstdc++.so",
             "libudev.so",
             "libGL.so",
             "libGLX.so",
             "libGLdispatch.so",
-            "libX11.so", 
+            "libX11.so",
             "libXau.so",
             "libXdmcp.so",
             "libXext.so",
@@ -63,7 +70,7 @@ def get_deps_for_binary(binary_path, search_directories):
             if (dep_name == my_name or
                 "/c/windows/system" in ldd_dep_location.lower() or
                 "/c/windows/winsxs/" in ldd_dep_location.lower() or
-                (len(system_libs_to_skip) > 0 and any(lib_name in ldd_dep_location for lib_name in system_libs_to_skip))):
+                any(os.path.basename(ldd_dep_location).startswith(lib_name) for lib_name in system_libs_to_skip)):
                 continue
 
             #print(f"{dep_name} {dep_location}")
