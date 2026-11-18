@@ -841,7 +841,9 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
 // be decoded, and frame nFrames must fail with a persistent error message whatever the option
 // (a frame that is in the movie but fails to decode is not a missing frame).
 // The output image is filled with NaN before each render, and no NaN may remain on success.
-int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFrames, bool rgba, bool truncated = false)
+// With halfScale, the frames are rendered at render scale 0.5: GenericReader::render() decodes into a
+// temporary full-resolution buffer and downscales it (the Black option must also give transparent black there).
+int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFrames, bool rgba, bool truncated = false, bool halfScale = false)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
     if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
@@ -886,10 +888,15 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
     if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
     out->connected = true;
     const int outComps = rgba ? 4 : 3;
-    setupClipImage(out, W, H, rgba ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    const int OW = halfScale ? W / 2 : W, OH = halfScale ? H / 2 : H; // the output image, at the render scale
+    const double scale = halfScale ? 0.5 : 1.;
+    setupClipImage(out, OW, OH, rgba ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    // the clip's RoD is in canonical coordinates (independent of the render scale)
+    double clipRod[4] = { 0., 0., (double)W, (double)H };
+    pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, clipRod);
     { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     float* fp = reinterpret_cast<float*>(out->buffer.data());
-    const size_t npix = (size_t)W * H;
+    const size_t npix = (size_t)OW * OH;
     const size_t nval = npix * outComps;
 
     const struct { const char* name; int option; } options[] = {
@@ -903,7 +910,10 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
         for (int t : frames) {
             for (size_t i = 0; i < nval; ++i) fp[i] = std::nanf("");
             gPersistentError.clear();
-            PropSet a = makeRenderInArgs((double)t, W, H);
+            PropSet a = makeRenderInArgs((double)t, OW, OH);
+            double rs[2] = { scale, scale };
+            pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+            pSetDoubleN(PH(&out->image), kOfxImageEffectPropRenderScale, 2, rs);
             OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
             size_t nNaN = 0;
             double sum = 0, alphaMin = 1e30, alphaMax = -1e30;
@@ -1592,6 +1602,8 @@ main(int argc, char** argv)
     failures += testReadFFmpegMissingFrame(outFile, W, H, N, false);
     std::printf("==== same, RGBA output: Black is transparent black (issue #134) ====\n");
     failures += testReadFFmpegMissingFrame(outFile, W, H, N, true);
+    std::printf("==== same, RGBA output at render scale 0.5 (decoded into a temporary buffer): Black is transparent black (issue #147) ====\n");
+    failures += testReadFFmpegMissingFrame(outFile, W, H, N, true, false, true);
     {
         // a frame inside of the movie that can not be decoded is an error, whatever onMissingFrame
         WriterParams wp;

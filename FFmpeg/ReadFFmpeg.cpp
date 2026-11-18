@@ -447,17 +447,16 @@ ReadFFmpegPlugin::decode(const string& filename,
     // kParamOnMissingFrame animates: evaluate it at the render time, not at the sequence time.
     const MissingEnum missingFrame = getMissingFrame(getRenderTime());
     string error;
+    bool decoded = false;
     try {
-        if (file->decode(this, (int)time, loadNearestFrame(missingFrame), buffer)) {
-            convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
-
-            return;
+        decoded = file->decode(this, (int)time, loadNearestFrame(missingFrame), buffer);
+        if (!decoded) {
+            if (abort()) {
+                // decode() probably exited because plugin was aborted
+                return;
+            }
+            error = file->getError();
         }
-        if (abort()) {
-            // decode() probably exited because plugin was aborted
-            return;
-        }
-        error = file->getError();
     } catch (const FFmpegFile::MissingFrameException& e) {
         // the frame is outside of the stream, and !loadNearestFrame(missingFrame)
         if (missingFrame == eMissingBlack) {
@@ -466,6 +465,13 @@ ReadFFmpegPlugin::decode(const string& filename,
         error = e.what();
     } catch (const std::exception& e) {
         error = e.what();
+    }
+    if (decoded) {
+        // outside of the try block, so that an OFX::Exception::Suite thrown by
+        // convertDepthAndComponents() (e.g. kOfxStatErrMemory) reaches the host as is
+        convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+
+        return;
     }
     if (error.empty()) {
         error = "Cannot decode frame";

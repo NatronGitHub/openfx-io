@@ -6,7 +6,8 @@
  * Interact suites, plus FnOfxImageEffectPlaneSuiteV2, over a generic property bag:
  * param values (definition defaults or host overrides), image clips backed by a pixel
  * buffer, and a few helpers to load/describe a plugin and build action arguments.
- * Param values are not animated: getValueAtTime() ignores the time.
+ * Param values are not animated: getValueAtTime() ignores the time, except for a string
+ * param whose stringAtTime is set (e.g. a file param naming each frame of an image sequence).
  *
  * Everything is in an anonymous namespace: include it in a single translation unit
  * of each test program.
@@ -30,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -60,6 +62,7 @@ struct ParamRec {
     PropSet* props = nullptr; // definition props (holds kOfxParamPropDefault)
     Value ov;                 // host override value (optional)
     bool hasOv = false;
+    std::function<std::string(double)> stringAtTime; // string param: the value returned by getValueAtTime() (optional)
 };
 
 struct Clip {
@@ -203,7 +206,23 @@ OfxStatus prmGetV(OfxParamHandle ph, va_list ap)
     return kOfxStatOK;
 }
 OfxStatus prmGetValue(OfxParamHandle ph, ...) { va_list ap; va_start(ap, ph); OfxStatus s = prmGetV(ph, ap); va_end(ap); return s; }
-OfxStatus prmGetValueAtTime(OfxParamHandle ph, OfxTime time, ...) { va_list ap; va_start(ap, time); OfxStatus s = prmGetV(ph, ap); va_end(ap); return s; }
+OfxStatus prmGetValueAtTime(OfxParamHandle ph, OfxTime time, ...)
+{
+    ParamRec* r = reinterpret_cast<ParamRec*>(ph);
+    va_list ap;
+    va_start(ap, time);
+    OfxStatus s = kOfxStatOK;
+    if (r->type == kOfxParamTypeString && r->stringAtTime) {
+        thread_local std::string value; // valid until the next call in this thread
+        value = r->stringAtTime(time);
+        const char** o = va_arg(ap, const char**);
+        *o = value.c_str();
+    } else {
+        s = prmGetV(ph, ap);
+    }
+    va_end(ap);
+    return s;
+}
 OfxStatus prmGetDerivative(OfxParamHandle, OfxTime, ...) { return kOfxStatErrUnsupported; }
 OfxStatus prmGetIntegral(OfxParamHandle, OfxTime, OfxTime, ...) { return kOfxStatErrUnsupported; }
 OfxStatus prmSetV(OfxParamHandle ph, va_list ap)

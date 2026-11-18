@@ -1748,11 +1748,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
                     remappedComponents = ePixelComponentAlpha;
                 }
             }
-    #ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
             if (isColor) {
                 isOCIOIdentity = _ocio->isIdentity(args.time);
             }
-    #endif
+#endif
 
             PreMultiplicationEnum filePremult = eImageUnPreMultiplied;
             PreMultiplicationEnum outputPremult = eImageUnPreMultiplied;
@@ -1871,10 +1871,10 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
                         // assert(tmpPixelData[0] == 1. && tmpPixelData[1] == 1. && tmpPixelData[2] == 1. && tmpPixelData[3] == 0.5);
                     }
-    #ifdef OFX_IO_USING_OCIO
+#ifdef OFX_IO_USING_OCIO
                     DBG(std::printf("OCIO (tmp in-place)\n"));
                     _ocio->apply(args.time, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, remappedComponents, it->numChans, tmpRowBytes);
-    #endif
+#endif
                 }
 
                 // after the colorspace conversion, which may also modify the alpha channel
@@ -2203,7 +2203,8 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
                 _proxyThreshold->setIsSecretAndDisabled(false);
                 _enableCustomScale->setIsSecretAndDisabled(false);
 
-                OfxPointD scale = detectProxyScale(originalFileName, proxyFile, args.time);
+                // getFrameBounds() takes the sequence time
+                OfxPointD scale = detectProxyScale(originalFileName, proxyFile, sequenceTime);
                 _proxyThreshold->setValue(scale.x, scale.y);
                 _originalProxyScale->setValue(scale.x, scale.y);
             } else {
@@ -2438,14 +2439,17 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
         int startingTime = _startingTime->getValue();
         timeDomainFromSequenceTimeDomain(sequenceTimeDomain, startingTime, &timeDomain);
 
+        // the first argument is the host time (at which animated params are evaluated),
+        // the second one is the sequence (file) time
         string filename;
-        GetFilenameRetCodeEnum e = getFilenameAtSequenceTime(timeDomain.min, timeDomain.min, false, true, &filename);
+        GetFilenameRetCodeEnum e = getFilenameAtSequenceTime(timeDomain.min, sequenceTimeDomain.min, false, true, &filename);
         if (e == eGetFileNameReturnedFullRes) {
             OfxRectI bounds, format;
             double par = 1.;
             string error;
             int tile_width, tile_height;
-            bool success = getFrameBounds(filename, timeDomain.min, /*view=*/0, &bounds, &format, &par, &error, &tile_width, &tile_height);
+            // getFrameBounds() takes the sequence time
+            bool success = getFrameBounds(filename, sequenceTimeDomain.min, /*view=*/0, &bounds, &format, &par, &error, &tile_width, &tile_height);
             if (success) {
                 clipPreferences.setPixelAspectRatio(*_outputClip, par);
                 clipPreferences.setOutputFormat(format);
@@ -2537,16 +2541,16 @@ GenericReaderPlugin::isIdentity(const IsIdentityArguments& args,
 OfxPointD
 GenericReaderPlugin::detectProxyScale(const string& originalFileName,
                                       const string& proxyFileName,
-                                      OfxTime time)
+                                      OfxTime sequenceTime)
 {
     OfxRectI originalBounds, proxyBounds, originalFormat, proxyFormat;
     string error;
     double originalPAR = 1., proxyPAR = 1.;
     int tile_width, tile_height;
-    bool success = getFrameBounds(originalFileName, time, /*view=*/0, &originalBounds, &originalFormat, &originalPAR, &error, &tile_width, &tile_height);
+    bool success = getFrameBounds(originalFileName, sequenceTime, /*view=*/0, &originalBounds, &originalFormat, &originalPAR, &error, &tile_width, &tile_height);
 
     proxyBounds.x1 = proxyBounds.x2 = proxyBounds.y1 = proxyBounds.y2 = 0.f;
-    success = success && getFrameBounds(proxyFileName, time, /*view=*/0, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
+    success = success && getFrameBounds(proxyFileName, sequenceTime, /*view=*/0, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
     OfxPointD ret;
     if (!success || (originalBounds.x1 == originalBounds.x2) || (originalBounds.y1 == originalBounds.y2) || (proxyBounds.x1 == proxyBounds.x2) || (proxyBounds.y1 == proxyBounds.y2)) {
         ret.x = 1.;
