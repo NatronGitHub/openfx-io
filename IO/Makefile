@@ -59,6 +59,8 @@ $(TOP_SRCDIR)/OIIO/fr.inria.openfx.OIIOResize.png \
 $(TOP_SRCDIR)/OIIO/fr.inria.openfx.OIIOResize.svg \
 $(TOP_SRCDIR)/SeExpr/fr.inria.openfx.SeExpr.png \
 $(TOP_SRCDIR)/SeExpr/fr.inria.openfx.SeExpr.svg \
+$(TOP_SRCDIR)/SeExpr/fr.inria.openfx.SeExprSimple.png \
+$(TOP_SRCDIR)/SeExpr/fr.inria.openfx.SeExprSimple.svg \
 $(TOP_SRCDIR)/OIIO/fr.inria.openfx.WriteOIIO.png \
 $(TOP_SRCDIR)/OIIO/fr.inria.openfx.WriteOIIO.svg \
 $(TOP_SRCDIR)/PFM/fr.inria.openfx.ReadPFM.png \

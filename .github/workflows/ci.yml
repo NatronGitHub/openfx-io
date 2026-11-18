@@ -318,12 +318,12 @@ jobs:
           make -j4 CONFIG=debug SEEXPR_HOME="$MINGW_PREFIX" CXX="g++ -std=c++20"
       - name: Tests
         # tests/Makefile, run directly: ctest would run MSYS2's make outside of the MSYS2 shell; ctest only loads
-        # the CMake-built IO.ofx (io-load) and renders every plug-in of the installed bundle with hostDemo
-        # (io-hostdemo, a bash script: the bundle's DLLs are found in $MINGW_PREFIX/bin, on PATH)
+        # the CMake-built IO.ofx (io-load), checks its icons (io-icons) and renders every plug-in of the installed
+        # bundle with hostDemo (io-hostdemo, a bash script: the bundle's DLLs are found in $MINGW_PREFIX/bin, on PATH)
         run: |
           set -eo pipefail
           make -C tests test
-          ctest --test-dir build -R '^io-load$' --output-on-failure
+          ctest --test-dir build -R '^io-(load|icons)$' --output-on-failure
           # (--no-tests=error: fails if there is no io-hostdemo test; IO_HOSTDEMO_STRICT: if the bundle is not
           # installed or lacks a plug-in)
           IO_HOSTDEMO_STRICT=1 ctest --test-dir build -R '^io-hostdemo$' --no-tests=error --output-on-failure
