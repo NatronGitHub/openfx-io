@@ -2932,7 +2932,9 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
     if (specs.size() > 0) {
         *tile_width = specs[0].tile_width;
         *tile_height = specs[0].tile_height;
-        *par = specs[0].get_float_attribute("PixelAspectRatio", 1);
+        const float pixelAspectRatio = specs[0].get_float_attribute("PixelAspectRatio", 1);
+        // a PAR of 0 or less in the file is invalid (the host divides by it)
+        *par = (pixelAspectRatio > 0.f) ? pixelAspectRatio : 1.;
     } else {
         *tile_width = *tile_height = 0;
         *par = 1.;

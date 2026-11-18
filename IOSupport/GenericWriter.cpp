@@ -1883,6 +1883,10 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxRectI* format,
         OfxPointD size = getProjectSize();
         OfxPointD offset = getProjectOffset();
         double projectPar = getProjectPixelAspectRatio();
+        if (projectPar <= 0.) {
+            // invalid (the formula below divides by it)
+            projectPar = 1.;
+        }
         *par = projectPar;
         // the project size and offset are in canonical coordinates (a PAL SD project is 768x576, 720x576 pixels)
         format->x1 = std::floor(offset.x / projectPar + 0.5);
@@ -1900,6 +1904,11 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxRectI* format,
         format->y2 = h;
         break;
     }
+    }
+    // the PAR is divided by (Coords::toPixelEnclosing()): a PAR of 0 or less (the range of the Fixed format's
+    // PAR param starts at 0) is invalid
+    if (*par <= 0.) {
+        *par = 1.;
     }
 } // getSelectedOutputFormat
 

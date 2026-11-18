@@ -18,7 +18,9 @@
  *
  * And getClipPreferences() for an image sequence whose starting time is not its first frame
  * (issue #147): the PAR must be read from the first file of the sequence, looked up at the
- * first frame of the sequence (not at the host time of that frame).
+ * first frame of the sequence (not at the host time of that frame). A file with a PAR of 0
+ * gives an output PAR of 1. getLevelFromScale() and upscalePowerOfTwo() (IOUtility.h) are
+ * checked for degenerate inputs that gave NaN.
  *
  * Minimal test readers are defined below (a GenericReaderPlugin subclass with the
  * default isOutputFrameVarying(), and a subclass returning true), and are driven
@@ -35,6 +37,7 @@
 
 #include "GenericOCIO.h"
 #include "GenericReader.h"
+#include "IOUtility.h"
 #include "ofxsMacros.h"
 
 #include <algorithm>
@@ -93,7 +96,7 @@ MipmapContent gMipmapContent; // read by the mipmap test reader instances
 
 // A reader of fake files: "video" files (whose name contains "video") have kVideoRange frames,
 // others are still images or image sequences. The file only needs to exist. Files whose name
-// contains "par2" have a pixel aspect ratio of 2.
+// contains "par2" have a pixel aspect ratio of 2, and those whose name contains "par0" an invalid pixel aspect ratio of 0.
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
@@ -191,7 +194,7 @@ private:
             bounds->y2 = kHeight;
         }
         *format = *bounds;
-        *par = (filename.find("par2") != std::string::npos) ? 2. : 1.;
+        *par = (filename.find("par2") != std::string::npos) ? 2. : ((filename.find("par0") != std::string::npos) ? 0. : 1.);
         *tile_width = *tile_height = 0;
 
         return true;
@@ -623,6 +626,52 @@ testClipPreferencesSequence(OfxPlugin* pDefault, const std::string& prefix)
     for (const std::string& f : files) {
         std::remove(f.c_str());
     }
+}
+
+// 1c. A PAR of 0 in the file (invalid: the host divides by the PAR) gives an output PAR of 1, not 0.
+void
+testClipPreferencesPar0(OfxPlugin* pDefault, const std::string& prefix)
+{
+    std::printf("==== getClipPreferences(), file with a PAR of 0 ====\n");
+    const std::string file = prefix + ".par0.tst";
+    std::FILE* fp = std::fopen(file.c_str(), "wb");
+    if (!fp) {
+        check(false, "cannot create %s", file.c_str());
+
+        return;
+    }
+    std::fclose(fp);
+    {
+        Reader r;
+        if (r.create(pDefault, file)) {
+            const double par = r.outputPAR();
+            check(par == 1., "output PAR = %g (expected 1, the file's PAR of 0 is invalid)", par);
+        } else {
+            ++gFailures;
+        }
+    }
+    std::remove(file.c_str());
+}
+
+// 1d. IOUtility.h: getLevelFromScale() for an invalid scale (0 or less: std::log() gave -inf or NaN, converted to
+// int), and upscalePowerOfTwo() for an OfxRectD (it raised the coordinates to the power of the level, which was NaN
+// for a negative coordinate).
+void
+testIOUtility()
+{
+    std::printf("==== IOUtility: getLevelFromScale(), upscalePowerOfTwo(OfxRectD) ====\n");
+    const struct { double s; unsigned int level; } levels[] = { { 1., 0 }, { 0.5, 1 }, { 0.25, 2 }, { 0.125, 3 }, { 0.3, 2 }, { 2., 0 }, { 0., 0 }, { -0.5, 0 } };
+    for (const auto& l : levels) {
+        const unsigned int level = getLevelFromScale(l.s);
+        check(level == l.level, "getLevelFromScale(%g) = %u (expected %u)", l.s, level, l.level);
+    }
+    const OfxRectD r = { -3., -1.5, 5., 7. };
+    const OfxRectD r1 = upscalePowerOfTwo(r, 1.);
+    check(r1.x1 == -6. && r1.y1 == -3. && r1.x2 == 10. && r1.y2 == 14., "upscalePowerOfTwo(r, 1) = %g,%g,%g,%g (expected -6,-3,10,14)", r1.x1, r1.y1, r1.x2, r1.y2);
+    const OfxRectD r3 = upscalePowerOfTwo(r, 3.);
+    check(r3.x1 == -24. && r3.y1 == -12. && r3.x2 == 40. && r3.y2 == 56., "upscalePowerOfTwo(r, 3) = %g,%g,%g,%g (expected -24,-12,40,56)", r3.x1, r3.y1, r3.x2, r3.y2);
+    const OfxRectD r0 = upscalePowerOfTwo(r, 0.);
+    check(r0.x1 == r.x1 && r0.y1 == r.y1 && r0.x2 == r.x2 && r0.y2 == r.y2, "upscalePowerOfTwo(r, 0) = r");
 }
 
 // 2. getRenderTime() in decode() is the render time; it is restored after render()
@@ -1105,6 +1154,8 @@ main(int argc, char** argv)
 
     testFrameVarying(pDefault, pFrameVarying, still, video);
     testClipPreferencesSequence(pDefault, prefix);
+    testClipPreferencesPar0(pDefault, prefix);
+    testIOUtility();
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);

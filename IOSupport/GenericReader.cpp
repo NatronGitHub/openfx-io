@@ -2467,7 +2467,8 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
             // getFrameBounds() takes the sequence time
             bool success = getFrameBounds(filename, sequenceTimeDomain.min, /*view=*/0, &bounds, &format, &par, &error, &tile_width, &tile_height);
             if (success) {
-                clipPreferences.setPixelAspectRatio(*_outputClip, par);
+                // the PAR comes from the file: a PAR of 0 or less is invalid (the host divides by it)
+                clipPreferences.setPixelAspectRatio(*_outputClip, (par > 0.) ? par : 1.);
                 clipPreferences.setOutputFormat(format);
             }
 
@@ -2568,6 +2569,13 @@ GenericReaderPlugin::detectProxyScale(const string& originalFileName,
     proxyBounds.x1 = proxyBounds.x2 = proxyBounds.y1 = proxyBounds.y2 = 0.f;
     success = success && getFrameBounds(proxyFileName, sequenceTime, /*view=*/0, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
     OfxPointD ret;
+    // the PARs come from the files: a PAR of 0 or less is invalid
+    if (originalPAR <= 0.) {
+        originalPAR = 1.;
+    }
+    if (proxyPAR <= 0.) {
+        proxyPAR = 1.;
+    }
     if (!success || (originalBounds.x1 == originalBounds.x2) || (originalBounds.y1 == originalBounds.y2) || (proxyBounds.x1 == proxyBounds.x2) || (proxyBounds.y1 == proxyBounds.y2)) {
         ret.x = 1.;
         ret.y = 1.;

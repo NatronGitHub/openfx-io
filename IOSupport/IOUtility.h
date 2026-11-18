@@ -153,10 +153,12 @@ upscalePowerOfTwo(const OfxRectD& r,
         return r;
     }
     OfxRectD ret;
-    ret.x1 = std::pow(r.x1, thisLevel);
-    ret.x2 = std::pow(r.x2, thisLevel);
-    ret.y1 = std::pow(r.y1, thisLevel);
-    ret.y2 = std::pow(r.y2, thisLevel);
+    // multiply by 2^thisLevel (std::pow(r.x1, thisLevel) was NaN for a negative coordinate and a non-integer level)
+    const double scale = std::pow(2., thisLevel);
+    ret.x1 = r.x1 * scale;
+    ret.x2 = r.x2 * scale;
+    ret.y1 = r.y1 * scale;
+    ret.y2 = r.y2 * scale;
 
     return ret;
 }
@@ -337,7 +339,11 @@ getScaleFromMipMapLevel(unsigned int level)
 inline unsigned int
 getLevelFromScale(double s)
 {
-    assert(0. < s && s <= 1.);
+    // a scale of 1 or more is level 0; a scale of 0 or less is invalid (std::log() would give -inf or NaN, which can
+    // not be converted to int): use the full resolution
+    if ((s <= 0.) || (s >= 1.)) {
+        return 0;
+    }
     int retval = -(int)std::floor(std::log(s) / OFXS_LN2 + 0.5);
     assert(retval >= 0);
 
