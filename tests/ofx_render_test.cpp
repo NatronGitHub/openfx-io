@@ -47,6 +47,11 @@
  *     - DNxHD/DNxHR with Output Range = Full/Video: the decoded levels match the range the stream is tagged
  *       with; DNxHR 444 (RGB) is full range; HQX and 444 are 10-bit, and their hints do not say 12 bit
  *
+ *   WriteFFmpeg, output RoD changed during the render:
+ *     - from the second frame on, the image is smaller (or larger) than the movie, as when Natron sets the project
+ *       format from the first Reader once the render has started: the part of the image in the frame is written,
+ *       the rest is black (the image was read as if it had the size of the movie, out of its buffer)
+ *
  *   WriteFFmpeg libx265 pixel format (issue #136):
  *     - with Alpha unchecked and Bit Depth 10 or 12, the pixel format has no alpha, at least the requested
  *       chroma, and the highest bit depth that libx265 supports up to the requested one
@@ -76,6 +81,7 @@ extern "C" {
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -99,6 +105,10 @@ struct WriterParams {
     std::vector<std::pair<std::string, std::string>> choicesAfterCreate;
     std::string renderFile;          // if not empty, the "filename" param from the second frame on (#137)
     bool expectRenderFailure = false; // with renderFile: frames 2..N must fail to render
+    // if renderW > 0: from the second frame on, the render window and the source image are renderW x renderH,
+    // not W x H (the size of the movie, the output RoD at beginSequenceRender), as when Natron changes the
+    // project format during the render
+    int renderW = 0, renderH = 0;
 };
 
 // The index of the first option of a choice param whose label contains the given text, or -1.
@@ -186,18 +196,26 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     }
 
     float* fp = reinterpret_cast<float*>(src->buffer.data());
-    const size_t npix = (size_t)W * H;
+    size_t npix = (size_t)W * H;
+    int rw = W, rh = H; // the render window
     int rfail = 0;
     for (int t = 1; t <= nFrames; ++t) {
         if ((t == 2) && !wp.renderFile.empty()) {
             setOverrideString(&ctx, kOfxImageEffectFileParamName, wp.renderFile);
+        }
+        if ((t == 2) && (wp.renderW > 0)) {
+            rw = wp.renderW;
+            rh = wp.renderH;
+            setupClipImage(src, rw, rh, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+            fp = reinterpret_cast<float*>(src->buffer.data());
+            npix = (size_t)rw * rh;
         }
         for (int view : wp.views) {
             float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
             if (!wp.frameValues.empty()) v = wp.frameValues[(size_t)(t - 1) % wp.frameValues.size()];
             if (view != 0) v = 1.f - v;
             for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
-            PropSet a = makeRenderInArgs((double)t, W, H);
+            PropSet a = makeRenderInArgs((double)t, rw, rh);
             pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
             OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
             if (!ok(st)) { std::printf("  FAIL: render frame %d view %d = %d\n", t, view, st); ++rfail; }
@@ -277,6 +295,106 @@ int probeVideoFrames(const std::string& file, int* nFrames, int* nIFrames)
     avcodec_free_context(&dec);
     avformat_close_input(&fmt);
     return ret;
+}
+
+// Decode the video stream of a file: its size, the bit depth of the decoded pixel format, and the first component
+// (Y', or G for RGB formats) of each decoded frame at the given points (top-down pixel coordinates of the frame).
+int probePixels(const std::string& file, const std::vector<std::pair<int, int>>& points, int* width, int* height,
+                int* depth, std::vector<std::vector<int>>* values)
+{
+    *width = *height = *depth = 0;
+    values->clear();
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, file.c_str(), nullptr, nullptr) < 0) { std::printf("  FAIL: cannot open %s\n", file.c_str()); return 1; }
+    int ret = 1;
+    AVCodecContext* dec = nullptr;
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    const AVCodec* codec = nullptr;
+    int si = -1;
+    if (avformat_find_stream_info(fmt, nullptr) >= 0) {
+        si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+    }
+    if (si >= 0 && codec && (dec = avcodec_alloc_context3(codec)) &&
+        avcodec_parameters_to_context(dec, fmt->streams[si]->codecpar) >= 0 &&
+        avcodec_open2(dec, codec, nullptr) >= 0) {
+        auto drain = [&]() {
+            while (avcodec_receive_frame(dec, frame) >= 0) {
+                const AVPixFmtDescriptor* d = av_pix_fmt_desc_get((AVPixelFormat)frame->format);
+                *width = frame->width;
+                *height = frame->height;
+                *depth = d ? d->comp[0].depth : 0;
+                std::vector<int> v;
+                for (const auto& pt : points) {
+                    const uint8_t* row = frame->data[0] + (ptrdiff_t)pt.second * frame->linesize[0];
+                    v.push_back(d && d->comp[0].depth > 8 ? (int)reinterpret_cast<const uint16_t*>(row)[pt.first] : (int)row[pt.first]);
+                }
+                values->push_back(v);
+                av_frame_unref(frame);
+            }
+        };
+        while (av_read_frame(fmt, pkt) >= 0) {
+            if (pkt->stream_index == si && avcodec_send_packet(dec, pkt) >= 0) drain();
+            av_packet_unref(pkt);
+        }
+        avcodec_send_packet(dec, nullptr);
+        drain();
+        ret = 0;
+    } else {
+        std::printf("  FAIL: cannot decode the video stream of %s\n", file.c_str());
+    }
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    avformat_close_input(&fmt);
+    return ret;
+}
+
+// The output RoD changes during the render (Natron sets the project format from the first Reader once the render
+// has started): from the second frame on, the image is renderW x renderH, the movie W x H (the RoD at
+// beginSequenceRender). WriteFFmpeg read the image as if it were W x H, out of its buffer if it is smaller
+// (a crash in NatronRenderer). The part of the image in the frame must be written, the rest of the frame black.
+int testWriteFFmpegRoDChanged(const std::string& outFile, int W, int H, int nFrames, int renderW, int renderH,
+                              WriterParams wp = WriterParams())
+{
+    wp.renderW = renderW;
+    wp.renderH = renderH;
+    if (testWriteFFmpeg(outFile, W, H, nFrames, wp)) return 1;
+    // a point in the image (bottom-left, the frame is top-down) and, if the image is smaller, one out of it (top-right)
+    const int inX = (std::min)(W, renderW) / 2, inY = H - 1 - (std::min)(H, renderH) / 2;
+    const bool smaller = (renderW < W) && (renderH < H);
+    const int outX = (W + renderW) / 2, outY = (H - renderH) / 2;
+    std::vector<std::pair<int, int>> points = { { inX, inY } };
+    if (smaller) points.push_back({ outX, outY });
+    int w = 0, h = 0, depth = 0;
+    std::vector<std::vector<int>> v;
+    if (probePixels(outFile, points, &w, &h, &depth, &v)) return 1;
+    std::printf("  %dx%d, %d frames, %d bit, Y' in the image / out of it:", w, h, (int)v.size(), depth);
+    for (const auto& f : v) std::printf(" %d/%d", f[0], smaller ? f[1] : -1);
+    std::printf("\n");
+    if ((w != W) || (h != H) || ((int)v.size() != nFrames) || (depth < 8)) { std::printf("  FAIL: expected %d frames of %dx%d\n", nFrames, W, H); return 1; }
+    // ProRes and MPEG-4 are video range: black is 16 in 8 bit; the gray ramp of the source is above it, and increases
+    const int black = 16 << (depth - 8), tolerance = 2 << (depth - 8);
+    int failures = 0;
+    for (int t = 1; t <= nFrames; ++t) {
+        const std::vector<int>& f = v[(size_t)t - 1];
+        if ((f[0] <= black + tolerance) || ((t > 1) && (f[0] <= v[(size_t)t - 2][0]))) {
+            std::printf("  FAIL: frame %d: the image is not the gray ramp\n", t);
+            ++failures;
+        }
+        if (smaller && (t > 1) && std::abs(f[1] - black) > tolerance) {
+            std::printf("  FAIL: frame %d: the frame out of the image is not black\n", t);
+            ++failures;
+        }
+        if (smaller && (t == 1) && std::abs(f[1] - f[0]) > tolerance) {
+            std::printf("  FAIL: frame 1: the image covers the whole frame\n");
+            ++failures;
+        }
+    }
+    std::remove(outFile.c_str());
+    if (failures) return 1;
+    std::printf("  PASS\n");
+    return 0;
 }
 
 // Offset and size of the first top-level QuickTime atom of the given type; offset -1 if not found.
@@ -1844,6 +1962,18 @@ main(int argc, char** argv)
 
     std::printf("==== WriteFFmpeg, the file param names the open file through another path (issue #137) ====\n");
     failures += testWriteFFmpegSameFile(outFile + ".i137.mov", W, H, N);
+
+    std::printf("==== WriteFFmpeg, the image gets smaller than the movie during the render: the rest of the frame is black ====\n");
+    failures += testWriteFFmpegRoDChanged(outFile + ".rod.mov", W, H, N, 64, 32);
+    {
+        // 8-bit RGB intermediate buffer (the one above is 16-bit)
+        WriterParams wp;
+        wp.strings = { { "codecShortName", "mpeg4" } };
+        std::printf("==== same, MPEG-4 (8 bit) ====\n");
+        failures += testWriteFFmpegRoDChanged(outFile + ".rod.mov", W, H, N, 64, 32, wp);
+    }
+    std::printf("==== WriteFFmpeg, the image gets larger than the movie during the render: it is cropped ====\n");
+    failures += testWriteFFmpegRoDChanged(outFile + ".rod.mov", W, H, N, 192, 160);
 
     std::printf("Result: failures=%d\n", failures);
     std::printf(failures == 0 ? "PASS\n" : "FAIL\n");
