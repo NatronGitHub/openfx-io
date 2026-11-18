@@ -41,6 +41,7 @@
  */
 
 #include <algorithm> // std::swap (C++03)
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <utility> // std::swap (C++11)
@@ -57,6 +58,7 @@
 #include <ofxsParam.h>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifdef OFX_IO_USING_OCIO
 #include <OpenColorIO/OpenColorIO.h>
@@ -249,7 +251,9 @@ canonicalizeColorSpace(OCIO::ConstConfigRcPtr config,
 GenericOCIO::GenericOCIO(ImageEffect* parent)
     : _parent(parent)
     , _created(false)
+    , _instanceChangedDepth(0)
 #ifdef OFX_IO_USING_OCIO
+    , _settingColorspaces(false)
     , _ocioConfigFileName()
     , _ocioConfigFile(NULL)
     , _inputSpace(NULL)
@@ -260,6 +264,9 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
     , _choiceFileName()
     , _inputSpaceChoice(NULL)
     , _outputSpaceChoice(NULL)
+    , _choiceAnimSynced(true)
+    , _inputChoiceInitialIndex(-1)
+    , _outputChoiceInitialIndex(-1)
 #endif
     , _contextKey1(NULL)
     , _contextValue1(NULL)
@@ -321,8 +328,21 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
     // setup the GUI
     // setValue() may be called from createInstance, according to
     // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#SettingParams
+    // (this only sets the values of the choice menus: OFX 1.4 only allows setting keys in an instance changed action.
+    // The menus are not saved, so that they have no keys, even if the string params have keys, e.g. in a project
+    // that was just loaded: they get the strings' keys in the first instance changed action that GenericOCIO gets,
+    // see changedParam(), and until then they show the colorspaces at time 0.)
     inputCheck(0.);
     outputCheck(0.);
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+    _choiceAnimSynced = (!_inputSpace || !choiceMirrorsString(_inputSpace) || (_inputSpace->getNumKeys() == 0)) && (!_outputSpace || !choiceMirrorsString(_outputSpace) || (_outputSpace->getNumKeys() == 0));
+    if (_inputSpace) {
+        _inputSpaceChoice->getValue(_inputChoiceInitialIndex);
+    }
+    if (_outputSpace) {
+        _outputSpaceChoice->getValue(_outputChoiceInitialIndex);
+    }
+#endif
     _created = true;
 }
 
@@ -625,51 +645,12 @@ GenericOCIO::isIdentity(double time) const
 void
 GenericOCIO::inputCheck(double time)
 {
-#ifdef OFX_IO_USING_OCIO
-#ifdef OFX_OCIO_CHOICE
-    if (!_config || !_inputSpace) {
-        return;
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+    if (_inputSpace) {
+        colorspaceCheck(_inputSpace, _inputSpaceChoice, time);
     }
-    if (!_choiceIsOk) {
-        // choice menu is dirty, only use the text entry
-#ifdef OFX_OCIO_NOSECRET
-        _inputSpace->setEnabled(true);
-        _inputSpaceChoice->setEnabled(false);
 #else
-        _inputSpace->setIsSecretAndDisabled(false);
-        _inputSpaceChoice->setIsSecretAndDisabled(true);
-#endif
-
-        return;
-    }
-    string inputSpaceName;
-    getInputColorspaceAtTime(time, inputSpaceName);
-    int inputSpaceIndex = _config->getIndexForColorSpace(inputSpaceName.c_str());
-    if (inputSpaceIndex >= 0) {
-        int inputSpaceIndexOld;
-        _inputSpaceChoice->getValueAtTime(time, inputSpaceIndexOld);
-        // avoid an infinite loop on bad hosts (for examples those which don't set args.reason correctly)
-        if (inputSpaceIndexOld != inputSpaceIndex) {
-            _inputSpaceChoice->setValue(inputSpaceIndex);
-        }
-#ifdef OFX_OCIO_NOSECRET
-        _inputSpace->setEnabled(false);
-        _inputSpaceChoice->setEnabled(true);
-#else
-        _inputSpace->setIsSecretAndDisabled(true);
-        _inputSpaceChoice->setIsSecretAndDisabled(false);
-#endif
-    } else {
-        // the input space name is not valid
-#ifdef OFX_OCIO_NOSECRET
-        _inputSpace->setEnabled(true);
-        _inputSpaceChoice->setEnabled(false);
-#else
-        _inputSpace->setIsSecretAndDisabled(false);
-        _inputSpaceChoice->setIsSecretAndDisabled(true);
-#endif
-    }
-#endif
+    (void)time;
 #endif
 }
 
@@ -677,53 +658,361 @@ GenericOCIO::inputCheck(double time)
 void
 GenericOCIO::outputCheck(double time)
 {
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+    if (_outputSpace) {
+        colorspaceCheck(_outputSpace, _outputSpaceChoice, time);
+    }
+#else
+    (void)time;
+#endif
+}
+
 #ifdef OFX_IO_USING_OCIO
-#ifdef OFX_OCIO_CHOICE
-    if (!_config || !_outputSpace) {
+namespace {
+// OFX doesn't say how string and choice params are interpolated, but their value can only depend on their keys (in
+// Natron, it is held from a key to the next one, and before the first key it is that of the first key): two params
+// with keys at the same times, with the same values, have the same value at all times.
+
+bool
+containsTime(const std::vector<double>& times,
+             double t)
+{
+    for (size_t i = 0; i < times.size(); ++i) {
+        if (std::fabs(times[i] - t) < 1e-6) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<double>
+getKeyTimes(ValueParam* p)
+{
+    std::vector<double> times;
+    const unsigned int n = p->getNumKeys();
+    times.reserve(n);
+    for (unsigned int i = 0; i < n; ++i) {
+        times.push_back(p->getKeyTime((int)i));
+    }
+
+    return times;
+}
+
+bool
+hasKeyAtTime(ValueParam* p,
+             double t)
+{
+    return (p->getNumKeys() > 0) && (p->getKeyIndex(t, eKeySearchNear) >= 0);
+}
+
+// Natron reports two keys, at times 0 and 1, for a param that has an expression, whatever its keys (so that a
+// plug-in sees that its value may vary): setting or deleting keys at these times would change the param's real keys.
+// String and choice values are held from a key to the next one: if the value is not that of the key at 0 before
+// time 1, or that of the key at 1 after it, the param has an expression. (An expression that has these values at
+// the times sampled here is not detected.)
+bool
+hasExpressionKeys(StringParam* str)
+{
+    if ((str->getNumKeys() != 2) || (str->getKeyTime(0) != 0.) || (str->getKeyTime(1) != 1.)) {
+        return false;
+    }
+    string v0, v1, v;
+    str->getValueAtTime(0., v0);
+    str->getValueAtTime(1., v1);
+    const double before[] = { -1000., -10., -1., -0.5, 0.25, 0.5, 0.75 };
+    const double after[] = { 1.25, 1.5, 2., 3., 10., 100., 1000. };
+    for (size_t i = 0; i < sizeof(before) / sizeof(before[0]); ++i) {
+        str->getValueAtTime(before[i], v);
+        if (v != v0) {
+            return true;
+        }
+    }
+    for (size_t i = 0; i < sizeof(after) / sizeof(after[0]); ++i) {
+        str->getValueAtTime(after[i], v);
+        if (v != v1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// the index of a colorspace in the choice menu (built from the config), or -1
+int
+colorspaceIndex(const OCIO::ConstConfigRcPtr& config,
+                const string& name)
+{
+    return config->getIndexForColorSpace(name.c_str());
+}
+
+// the colorspace of a menu entry, or "" if there is none
+string
+colorspaceOfIndex(const OCIO::ConstConfigRcPtr& config,
+                  int index)
+{
+    if ((index < 0) || (index >= config->getNumColorSpaces())) {
+        return string();
+    }
+
+    return canonicalizeColorSpace(config, config->getColorSpaceNameByIndex(index));
+}
+
+// The colorspaces of a param, at the time of a change: its keys, if it has any, and its value at that time
+struct ColorspaceAnimation {
+    std::vector<std::pair<double, string>> keys; // (time, colorspace), in time order; empty if not animated
+    string value; // at the time of the change
+};
+
+void
+getStringAnimation(StringParam* str,
+                   double time,
+                   ColorspaceAnimation& a)
+{
+    a.keys.clear();
+    str->getValueAtTime(time, a.value);
+    const std::vector<double> times = getKeyTimes(str);
+    for (size_t i = 0; i < times.size(); ++i) {
+        string v;
+        str->getValueAtTime(times[i], v);
+        a.keys.push_back(std::make_pair(times[i], v));
+    }
+}
+
+// the colorspaces of the choice's keys and value (those of the menu entries; a key without a menu entry is skipped)
+void
+getChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
+                   ChoiceParam* choice,
+                   double time,
+                   ColorspaceAnimation& a)
+{
+    a.keys.clear();
+    int index;
+    choice->getValueAtTime(time, index);
+    a.value = colorspaceOfIndex(config, index);
+    const std::vector<double> times = getKeyTimes(choice);
+    for (size_t i = 0; i < times.size(); ++i) {
+        choice->getValueAtTime(times[i], index);
+        const string v = colorspaceOfIndex(config, index);
+        if (!v.empty()) {
+            a.keys.push_back(std::make_pair(times[i], v));
+        }
+    }
+}
+
+// Give the string param the colorspaces of a: its keys, if it has any and animates is set, else its value. Only the
+// keys that differ are set, and the keys at other times are deleted if deleteOthers is set. If fromMenu is set, a
+// comes from the choice menu, whose entries have canonical names (e.g. the role "scene_linear" for the colorspace
+// "linear"): the colorspaces are compared by menu entry, and the string param's keys that have no menu entry (and
+// thus no choice key) are kept, if a has keys.
+void
+setStringAnimation(const OCIO::ConstConfigRcPtr& config,
+                   StringParam* str,
+                   const ColorspaceAnimation& a,
+                   bool animates,
+                   bool fromMenu,
+                   bool deleteOthers = true)
+{
+    if (animates && !a.keys.empty()) {
+        std::vector<double> times;
+        for (size_t i = 0; i < a.keys.size(); ++i) {
+            const double t = a.keys[i].first;
+            const string& v = a.keys[i].second;
+            times.push_back(t);
+            if (hasKeyAtTime(str, t)) {
+                string old;
+                str->getValueAtTime(t, old);
+                if ((old == v) || (fromMenu && (colorspaceIndex(config, old) >= 0) && (colorspaceIndex(config, old) == colorspaceIndex(config, v)))) {
+                    continue;
+                }
+            }
+            str->setValueAtTime(t, v);
+        }
+        if (!deleteOthers) {
+            return;
+        }
+        const std::vector<double> oldTimes = getKeyTimes(str);
+        for (size_t i = oldTimes.size(); i > 0; --i) {
+            const double t = oldTimes[i - 1];
+            if (containsTime(times, t)) {
+                continue;
+            }
+            if (fromMenu) {
+                string old;
+                str->getValueAtTime(t, old);
+                if (colorspaceIndex(config, old) < 0) {
+                    continue;
+                }
+            }
+            str->deleteKeyAtTime(t);
+        }
+
+        return;
+    }
+    if (str->getNumKeys() > 0) {
+        str->deleteAllKeys();
+    }
+    string old;
+    str->getValue(old);
+    if ((old == a.value) || (fromMenu && (colorspaceIndex(config, old) >= 0) && (colorspaceIndex(config, old) == colorspaceIndex(config, a.value)))) {
+        return;
+    }
+    str->setValue(a.value);
+}
+
+// Give the choice menu the colorspaces of a (see setStringAnimation()). A colorspace that has no menu entry is
+// skipped: colorspaceCheck() then shows the string param instead of the menu.
+void
+setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
+                   ChoiceParam* choice,
+                   const ColorspaceAnimation& a,
+                   bool animates)
+{
+    if (animates && !a.keys.empty()) {
+        std::vector<double> times;
+        for (size_t i = 0; i < a.keys.size(); ++i) {
+            const double t = a.keys[i].first;
+            const int index = colorspaceIndex(config, a.keys[i].second);
+            if (index < 0) {
+                continue;
+            }
+            times.push_back(t);
+            if (hasKeyAtTime(choice, t)) {
+                int old;
+                choice->getValueAtTime(t, old);
+                if (old == index) {
+                    continue;
+                }
+            }
+            choice->setValueAtTime(t, index);
+        }
+        if (!times.empty()) {
+            const std::vector<double> oldTimes = getKeyTimes(choice);
+            for (size_t i = oldTimes.size(); i > 0; --i) {
+                if (!containsTime(times, oldTimes[i - 1])) {
+                    choice->deleteKeyAtTime(oldTimes[i - 1]);
+                }
+            }
+
+            return;
+        }
+    }
+    if (choice->getNumKeys() > 0) {
+        choice->deleteAllKeys();
+    }
+    const int index = colorspaceIndex(config, a.value);
+    if (index < 0) {
+        return;
+    }
+    int old;
+    choice->getValue(old);
+    if (old != index) {
+        choice->setValue(index);
+    }
+}
+} // namespace
+#endif // ifdef OFX_IO_USING_OCIO
+
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+// In a host that animates strings and choices (Natron), the choice menus have the same keys as the string params,
+// with the same colorspaces: the string params are rendered and saved, and the menus show them and are used to edit
+// them. Else, they are not keyed together: in a host that doesn't animate strings, e.g., only the menus can have
+// keys, and the string params get the colorspace of the last edit of a menu.
+// A string param with an expression (see hasExpressionKeys()) is not keyed with its menu.
+bool
+GenericOCIO::choiceMirrorsString(StringParam* str) const
+{
+    const ImageEffectHostDescription* host = getImageEffectHostDescription();
+
+    return _config && _choiceIsOk && host && host->supportsStringAnimation && host->supportsChoiceAnimation && !hasExpressionKeys(str);
+}
+
+// Give the choice menus the keys of the string params, and set _choiceAnimSynced. Only in an instance changed action
+// (see InstanceChanged).
+void
+GenericOCIO::syncChoicesFromStrings()
+{
+    assert(_instanceChangedDepth > 0);
+    SettingColorspaces setting(this);
+    ColorspaceAnimation a;
+    // (without keys, the value at any time is the param's value)
+    if (_inputSpace && choiceMirrorsString(_inputSpace)) {
+        getStringAnimation(_inputSpace, 0., a);
+        setChoiceAnimation(_config, _inputSpaceChoice, a, true);
+    }
+    if (_outputSpace && choiceMirrorsString(_outputSpace)) {
+        getStringAnimation(_outputSpace, 0., a);
+        setChoiceAnimation(_config, _outputSpaceChoice, a, true);
+    }
+    _choiceAnimSynced = true;
+}
+
+// Show the choice menu (and hide the string param) if the string's colorspace at time is in the menu, and set the
+// menu: in an instance changed action (see InstanceChanged), if choiceMirrorsString(), give it the string's keys;
+// else set its value at time (a key if it has keys, only in an instance changed action), only if it differs (to
+// avoid an infinite loop on bad hosts, for examples those which don't set args.reason correctly).
+void
+GenericOCIO::colorspaceCheck(StringParam* str,
+                             ChoiceParam* choice,
+                             double time)
+{
+    if (!_config) {
         return;
     }
     if (!_choiceIsOk) {
         // choice menu is dirty, only use the text entry
 #ifdef OFX_OCIO_NOSECRET
-        _outputSpace->setEnabled(true);
-        _outputSpaceChoice->setEnabled(false);
+        str->setEnabled(true);
+        choice->setEnabled(false);
 #else
-        _outputSpace->setIsSecretAndDisabled(false);
-        _outputSpaceChoice->setIsSecretAndDisabled(true);
+        str->setIsSecretAndDisabled(false);
+        choice->setIsSecretAndDisabled(true);
 #endif
 
         return;
     }
-    string outputSpaceName;
-    getOutputColorspaceAtTime(time, outputSpaceName);
-    int outputSpaceIndex = _config->getIndexForColorSpace(outputSpaceName.c_str());
-    if (outputSpaceIndex >= 0) {
-        int outputSpaceIndexOld;
-        _outputSpaceChoice->getValueAtTime(time, outputSpaceIndexOld);
-        // avoid an infinite loop on bad hosts (for examples those which don't set args.reason correctly)
-        if (outputSpaceIndexOld != outputSpaceIndex) {
-            _outputSpaceChoice->setValue(outputSpaceIndex);
+    string name;
+    str->getValueAtTime(time, name);
+    const int index = colorspaceIndex(_config, name);
+    const bool inInstanceChanged = (_instanceChangedDepth > 0);
+    if (inInstanceChanged && _choiceAnimSynced && choiceMirrorsString(str)) {
+        SettingColorspaces setting(this);
+        ColorspaceAnimation a;
+        getStringAnimation(str, time, a);
+        setChoiceAnimation(_config, choice, a, true);
+    } else if (index >= 0) {
+        int indexOld;
+        choice->getValueAtTime(time, indexOld);
+        if (indexOld != index) {
+            SettingColorspaces setting(this);
+            if (choice->getNumKeys() == 0) {
+                choice->setValue(index);
+            } else if (inInstanceChanged) {
+                // (setValue() would set a key at the host's current time)
+                choice->setValueAtTime(time, index);
+            }
         }
+    }
+    if (index >= 0) {
 #ifdef OFX_OCIO_NOSECRET
-        _outputSpace->setEnabled(false);
-        _outputSpaceChoice->setEnabled(true);
+        str->setEnabled(false);
+        choice->setEnabled(true);
 #else
-        _outputSpace->setIsSecretAndDisabled(true);
-        _outputSpaceChoice->setIsSecretAndDisabled(false);
+        str->setIsSecretAndDisabled(true);
+        choice->setIsSecretAndDisabled(false);
 #endif
     } else {
-        // the output space name is not valid
+        // the colorspace name is not valid
 #ifdef OFX_OCIO_NOSECRET
-        _outputSpace->setEnabled(true);
-        _outputSpaceChoice->setEnabled(false);
+        str->setEnabled(true);
+        choice->setEnabled(false);
 #else
-        _outputSpace->setIsSecretAndDisabled(false);
-        _outputSpaceChoice->setIsSecretAndDisabled(true);
+        str->setIsSecretAndDisabled(false);
+        choice->setIsSecretAndDisabled(true);
 #endif
     }
-#endif
-#endif
 }
+#endif // defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
 
 void
 GenericOCIO::apply(double time,
@@ -900,13 +1189,132 @@ GenericOCIO::apply(double time,
 #endif
 }
 
+#ifdef OFX_IO_USING_OCIO
+// set a colorspace string param at time: a key if it has keys (setValue() would set it at the host's current time)
+static void
+setColorspaceAtTime(StringParam* str,
+                    double time,
+                    const string& colorspace)
+{
+    if ((str->getNumKeys() > 0) && getImageEffectHostDescription()->supportsStringAnimation) {
+        str->setValueAtTime(time, colorspace);
+    } else {
+        str->setValue(colorspace);
+    }
+}
+#endif
+
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+// Set the colorspace string param from its choice menu, after a user edit of the menu at time. The render uses the
+// string param, and only it is saved (the choice is not persistent).
+// If choiceMirrorsString() (Natron), the string param gets all the keys of the menu, or its value if it has none.
+// OFX has no action for the deletion or the move of keys, and Natron reports them as user edits of the param at
+// various times: deleting a key (or several, one by one), at the time of each key; moving keys, at the current time
+// (curve editor) or at the new time of each key (dope sheet); pasting keys, removing the animation, restoring the
+// default value, at the current time. It also sets a key at the current time before reporting a user edit of a
+// param that has keys. So, whatever the edit, the menu's keys are what the user wants, and a menu without keys means
+// that the user removed its animation: the string param's keys are deleted. A key of the string param whose
+// colorspace has no menu entry (and thus no key in the menu) is kept.
+// This needs the menu to have the string's keys before the edit (_choiceAnimSynced). After loading a project, the
+// menus have no keys, and their value is the string's colorspace at time 0 (initialIndex), until an instance changed
+// action that GenericOCIO gets gives them the string's keys (see changedParam()). If the user edits a menu before
+// that, its keys come from that edit: the string param gets them, and keeps its other keys, but a key with the value
+// initialIndex (e.g. Set Key on the menu) gets the string's colorspace at its time, which the menu should have shown;
+// if the menu has no keys, the string param gets the menu's colorspace at time (a key, if it has keys), unless it is
+// initialIndex (e.g. Restore default to that value, or Remove animation).
+// Else, the string param gets the menu's colorspace at time: a key, if it has keys and the host animates strings,
+// else its value.
+void
+GenericOCIO::changedChoice(StringParam* str,
+                           ChoiceParam* choice,
+                           int initialIndex,
+                           double time)
+{
+    int index;
+    choice->getValueAtTime(time, index);
+    const string colorspace = colorspaceOfIndex(_config, index);
+    if (colorspace.empty() || !_choiceIsOk) {
+        return;
+    }
+    SettingColorspaces setting(this);
+    const bool mirror = choiceMirrorsString(str);
+    if (mirror && !_choiceAnimSynced) {
+        ColorspaceAnimation a;
+        getChoiceAnimation(_config, choice, time, a);
+        if (a.keys.empty()) {
+            string old;
+            str->getValueAtTime(time, old);
+            if ((index != initialIndex) && (colorspaceIndex(_config, old) != index)) {
+                setColorspaceAtTime(str, time, colorspace);
+            }
+        }
+        for (size_t i = 0; i < a.keys.size(); ++i) {
+            const double t = a.keys[i].first;
+            string old;
+            str->getValueAtTime(t, old);
+            if (colorspaceIndex(_config, a.keys[i].second) == initialIndex) {
+                // the colorspace that the menu should have shown at that time
+                if (!hasKeyAtTime(str, t)) {
+                    str->setValueAtTime(t, old);
+                }
+            } else if (!hasKeyAtTime(str, t) || (colorspaceIndex(_config, old) != colorspaceIndex(_config, a.keys[i].second))) {
+                str->setValueAtTime(t, a.keys[i].second);
+            }
+        }
+        syncChoicesFromStrings();
+    } else if (mirror) {
+        ColorspaceAnimation a;
+        getChoiceAnimation(_config, choice, time, a);
+        setStringAnimation(_config, str, a, true, true);
+    } else {
+        string old;
+        str->getValueAtTime(time, old);
+        // (the colorspaces are compared by menu entry, to avoid an infinite loop on bad hosts, for examples those
+        // which don't set args.reason correctly)
+        if (colorspaceIndex(_config, old) != index) {
+            setColorspaceAtTime(str, time, colorspace);
+        }
+    }
+    refreshInputAndOutputState(time);
+}
+#endif
+
+#ifdef OFX_IO_USING_OCIO
+// true if a colorspace string param that changed at time may be canonicalized, or reset to a valid colorspace,
+// at that time: if it has no keys, or a key at that time (else, e.g. after the deletion of a key, reported at the
+// time of the deleted key, this would set a key again)
+static bool
+canFixColorspaceAtTime(StringParam* str,
+                       double time)
+{
+    return (str->getNumKeys() == 0) || (str->getKeyIndex(time, eKeySearchNear) >= 0);
+}
+#endif
+
 void
 GenericOCIO::changedParam(const InstanceChangedArgs& args,
                           const string& paramName)
 {
     assert(_created);
+    InstanceChanged instanceChanged(this);
 #ifdef OFX_IO_USING_OCIO
+    if (_settingColorspaces && ((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamOutputSpace)
+#ifdef OFX_OCIO_CHOICE
+                                || (paramName == kOCIOParamInputSpaceChoice) || (paramName == kOCIOParamOutputSpaceChoice)
+#endif
+                                    )) {
+        // GenericOCIO is setting them (see SettingColorspaces)
+        return;
+    }
+#ifdef OFX_OCIO_CHOICE
+    if (!_choiceAnimSynced && (paramName != kOCIOParamInputSpaceChoice) && (paramName != kOCIOParamOutputSpaceChoice)) {
+        // the first instance changed action after loading a project: give the menus the keys of the string params
+        // (changedChoice() does it after an edit of a menu)
+        syncChoicesFromStrings();
+    }
+#endif
     if ((paramName == kOCIOParamConfigFile) && (args.reason != eChangeTime)) {
+        SettingColorspaces setting(this);
         // must clear persistent message, or render() is not called by Nuke after an error
         _parent->clearPersistentMessage();
         // compute canonical inputSpace and outputSpace before changing the config,
@@ -914,15 +1322,15 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
         string inputSpace;
         getInputColorspaceAtTime(args.time, inputSpace);
         string inputSpaceCanonical = canonicalizeColorSpace(_config, inputSpace);
-        if (inputSpaceCanonical != inputSpace) {
-            _inputSpace->setValue(inputSpaceCanonical);
+        if ((inputSpaceCanonical != inputSpace) && canFixColorspaceAtTime(_inputSpace, args.time)) {
+            setColorspaceAtTime(_inputSpace, args.time, inputSpaceCanonical);
         }
         if (_outputSpace) {
             string outputSpace;
             getOutputColorspaceAtTime(args.time, outputSpace);
             string outputSpaceCanonical = canonicalizeColorSpace(_config, outputSpace);
-            if (outputSpaceCanonical != outputSpace) {
-                _outputSpace->setValue(outputSpaceCanonical);
+            if ((outputSpaceCanonical != outputSpace) && canFixColorspaceAtTime(_outputSpace, args.time)) {
+                setColorspaceAtTime(_outputSpace, args.time, outputSpaceCanonical);
             }
         }
 
@@ -932,7 +1340,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
             string inputSpaceName;
             getInputColorspaceAtTime(args.time, inputSpaceName);
             int inputSpaceIndex = _config->getIndexForColorSpace(inputSpaceName.c_str());
-            if (inputSpaceIndex < 0) {
+            if ((inputSpaceIndex < 0) && canFixColorspaceAtTime(_inputSpace, args.time)) {
                 OCIO::ConstColorSpaceRcPtr cs;
                 if (!cs) {
                     cs = _config->getColorSpace(OCIO::ROLE_DEFAULT);
@@ -942,7 +1350,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                     cs = _config->getColorSpace(_config->getColorSpaceNameByIndex(0));
                 }
                 inputSpaceName = cs ? cs->getName() : OCIO::ROLE_DEFAULT;
-                _inputSpace->setValue(inputSpaceName);
+                setColorspaceAtTime(_inputSpace, args.time, inputSpaceName);
             }
         }
         inputCheck(args.time);
@@ -950,7 +1358,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
             string outputSpaceName;
             getOutputColorspaceAtTime(args.time, outputSpaceName);
             int outputSpaceIndex = _config->getIndexForColorSpace(outputSpaceName.c_str());
-            if (outputSpaceIndex < 0) {
+            if ((outputSpaceIndex < 0) && canFixColorspaceAtTime(_outputSpace, args.time)) {
                 OCIO::ConstColorSpaceRcPtr cs;
                 if (!cs) {
                     cs = _config->getColorSpace(OCIO::ROLE_DEFAULT);
@@ -960,7 +1368,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                     cs = _config->getColorSpace(_config->getColorSpaceNameByIndex(0));
                 }
                 outputSpaceName = cs ? cs->getName() : OCIO::ROLE_DEFAULT;
-                _outputSpace->setValue(OCIO::ROLE_DEFAULT);
+                setColorspaceAtTime(_outputSpace, args.time, outputSpaceName);
             }
         }
         outputCheck(args.time);
@@ -1125,14 +1533,15 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
         return;
     } else if (paramName == kOCIOParamInputSpace) {
         assert(_inputSpace);
-        if (args.reason == eChangeUserEdit) {
+        SettingColorspaces setting(this);
+        if ((args.reason == eChangeUserEdit) && canFixColorspaceAtTime(_inputSpace, args.time)) {
             // if the inputspace doesn't correspond to a valid one, reset to default.
             // first, canonicalize.
             string inputSpace;
             getInputColorspaceAtTime(args.time, inputSpace);
             string inputSpaceCanonical = canonicalizeColorSpace(_config, inputSpace);
             if (inputSpaceCanonical != inputSpace) {
-                _inputSpace->setValue(inputSpaceCanonical);
+                setColorspaceAtTime(_inputSpace, args.time, inputSpaceCanonical);
                 inputSpace = inputSpaceCanonical;
             }
             int inputSpaceIndex = _config->getIndexForColorSpace(inputSpace.c_str());
@@ -1149,7 +1558,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                     cs = _config->getColorSpace(_config->getColorSpaceNameByIndex(0));
                 }
                 inputSpace = cs ? cs->getName() : OCIO::ROLE_DEFAULT;
-                _inputSpace->setValue(inputSpace);
+                setColorspaceAtTime(_inputSpace, args.time, inputSpace);
                 inputSpaceIndex = _config->getIndexForColorSpace(inputSpace.c_str());
                 assert(inputSpaceIndex >= 0);
             }
@@ -1159,27 +1568,20 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
 #ifdef OFX_OCIO_CHOICE
     else if ((paramName == kOCIOParamInputSpaceChoice) && (args.reason == eChangeUserEdit)) {
         assert(_inputSpace);
-        int inputSpaceIndex;
-        _inputSpaceChoice->getValueAtTime(args.time, inputSpaceIndex);
-        string inputSpaceOld;
-        getInputColorspaceAtTime(args.time, inputSpaceOld);
-        string inputSpace = canonicalizeColorSpace(_config, _config->getColorSpaceNameByIndex(inputSpaceIndex));
-        // avoid an infinite loop on bad hosts (for examples those which don't set args.reason correctly)
-        if (inputSpace != inputSpaceOld) {
-            _inputSpace->setValue(inputSpace);
-        }
+        changedChoice(_inputSpace, _inputSpaceChoice, _inputChoiceInitialIndex, args.time);
     }
 #endif
     else if (paramName == kOCIOParamOutputSpace) {
         assert(_outputSpace);
-        if (args.reason == eChangeUserEdit) {
+        SettingColorspaces setting(this);
+        if ((args.reason == eChangeUserEdit) && canFixColorspaceAtTime(_outputSpace, args.time)) {
             // if the outputspace doesn't correspond to a valid one, reset to default.
             // first, canonicalize.
             string outputSpace;
             getOutputColorspaceAtTime(args.time, outputSpace);
             string outputSpaceCanonical = canonicalizeColorSpace(_config, outputSpace);
             if (outputSpaceCanonical != outputSpace) {
-                _outputSpace->setValue(outputSpaceCanonical);
+                setColorspaceAtTime(_outputSpace, args.time, outputSpaceCanonical);
                 outputSpace = outputSpaceCanonical;
             }
             int outputSpaceIndex = _config->getIndexForColorSpace(outputSpace.c_str());
@@ -1196,7 +1598,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                     cs = _config->getColorSpace(_config->getColorSpaceNameByIndex(0));
                 }
                 outputSpace = cs ? cs->getName() : OCIO::ROLE_DEFAULT;
-                _outputSpace->setValue(outputSpace);
+                setColorspaceAtTime(_outputSpace, args.time, outputSpace);
                 outputSpaceIndex = _config->getIndexForColorSpace(outputSpace.c_str());
                 assert(outputSpaceIndex >= 0);
             }
@@ -1206,15 +1608,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
 #ifdef OFX_OCIO_CHOICE
     else if ((paramName == kOCIOParamOutputSpaceChoice) && (args.reason == eChangeUserEdit)) {
         assert(_outputSpace);
-        int outputSpaceIndex;
-        _outputSpaceChoice->getValueAtTime(args.time, outputSpaceIndex);
-        string outputSpaceOld;
-        getOutputColorspaceAtTime(args.time, outputSpaceOld);
-        string outputSpace = canonicalizeColorSpace(_config, _config->getColorSpaceNameByIndex(outputSpaceIndex));
-        // avoid an infinite loop on bad hosts (for examples those which don't set args.reason correctly)
-        if (outputSpace != outputSpaceOld) {
-            _outputSpace->setValue(outputSpace);
-        }
+        changedChoice(_outputSpace, _outputSpaceChoice, _outputChoiceInitialIndex, args.time);
     }
 #endif // OFX_OCIO_CHOICE
 
@@ -1285,7 +1679,13 @@ GenericOCIO::setInputColorspace(const char* name)
 {
 #ifdef OFX_IO_USING_OCIO
     assert(_inputSpace);
-    _inputSpace->setValue(name);
+    // (a colorspace that has keys was set by the user: keep it. Also, setValue() would set a key at the host's
+    // current time.)
+    if (_inputSpace->getNumKeys() == 0) {
+        _inputSpace->setValue(name);
+    }
+#else
+    (void)name;
 #endif
 }
 
@@ -1294,7 +1694,13 @@ GenericOCIO::setOutputColorspace(const char* name)
 {
 #ifdef OFX_IO_USING_OCIO
     assert(_outputSpace);
-    _outputSpace->setValue(name);
+    // (a colorspace that has keys was set by the user: keep it. Also, setValue() would set a key at the host's
+    // current time.)
+    if (_outputSpace->getNumKeys() == 0) {
+        _outputSpace->setValue(name);
+    }
+#else
+    (void)name;
 #endif
 }
 
@@ -1317,6 +1723,22 @@ GenericOCIO::getProcessingColorspacesAtTime(double time,
 #endif
 }
 
+// Swap the input and output colorspaces: their keys, if they have any, else their values at the given time.
+// The string params, which are rendered and saved, get the colorspaces of the other side. If choiceMirrorsString()
+// (Natron), the choice menus then get the keys of the string params. Else, in a host that doesn't animate strings,
+// only the menus may have keys: they get the keys of the other side's menu, and the string params the other side's
+// colorspace at the given time.
+// No key of the string params is deleted, since Natron's undo doesn't restore the keys that a plug-in deletes:
+// if a side has keys, both sides get keys at the times of the keys of both sides (string and choice values are held
+// from a key to the next one, so that this is the other side's animation), and only the keys that differ are set.
+// Natron's undo (of the swap's edit block) then removes the keys that the swap added and restores those it changed,
+// which restores the animation of a side that had keys. That of a side that had no keys is not restored: when undo
+// removes its last key, Natron gives it its value at the current time, i.e. the other side's colorspace at that
+// time (as it was before the swap), not its value before the swap. The menus are not undone either (their edits are
+// not undoable), but they get the keys of the string params again at the next instance changed action of a string
+// param.
+// A string param with an expression (see hasExpressionKeys()) has no real keys: then only the values at the given
+// time are swapped.
 void
 GenericOCIO::swapColorspaces(double time)
 {
@@ -1324,10 +1746,61 @@ GenericOCIO::swapColorspaces(double time)
     if (!_inputSpace || !_outputSpace) {
         return;
     }
-    string inputSpace;
-    string outputSpace;
-    getInputColorspaceAtTime(time, inputSpace);
-    getOutputColorspaceAtTime(time, outputSpace);
+    // set first, so that it is still set when the edit block ends (a host may report the changes then)
+    InstanceChanged instanceChanged(this);
+    SettingColorspaces setting(this);
+    const ImageEffectHostDescription* host = getImageEffectHostDescription();
+    const bool stringAnimates = host->supportsStringAnimation;
+    // read both sides before changing any
+    ColorspaceAnimation input;
+    ColorspaceAnimation output;
+    getStringAnimation(_inputSpace, time, input);
+    getStringAnimation(_outputSpace, time, output);
+    const bool expression = hasExpressionKeys(_inputSpace) || hasExpressionKeys(_outputSpace);
+    if (expression) {
+        input.keys.clear();
+        output.keys.clear();
+    } else if (stringAnimates && (!input.keys.empty() || !output.keys.empty())) {
+        // the colorspaces of both sides at the times of the keys of both sides
+        std::vector<double> times;
+        for (size_t i = 0; i < input.keys.size(); ++i) {
+            times.push_back(input.keys[i].first);
+        }
+        for (size_t i = 0; i < output.keys.size(); ++i) {
+            if (!containsTime(times, output.keys[i].first)) {
+                times.push_back(output.keys[i].first);
+            }
+        }
+        std::sort(times.begin(), times.end());
+        input.keys.clear();
+        output.keys.clear();
+        for (size_t i = 0; i < times.size(); ++i) {
+            string v;
+            _inputSpace->getValueAtTime(times[i], v);
+            input.keys.push_back(std::make_pair(times[i], v));
+            _outputSpace->getValueAtTime(times[i], v);
+            output.keys.push_back(std::make_pair(times[i], v));
+        }
+    }
+#ifdef OFX_OCIO_CHOICE
+    // the choice menus are only those of the colorspaces if they were built from the current config
+    const bool hasChoice = _config && _choiceIsOk;
+    const bool mirror = hasChoice && host->supportsStringAnimation && host->supportsChoiceAnimation;
+    ColorspaceAnimation inputChoice;
+    ColorspaceAnimation outputChoice;
+    if (hasChoice && !mirror) {
+        getChoiceAnimation(_config, _inputSpaceChoice, time, inputChoice);
+        getChoiceAnimation(_config, _outputSpaceChoice, time, outputChoice);
+        // the menus may have keys, and not the strings (which have the colorspace of the last edit of a menu): the
+        // strings get the colorspace of the menu at the given time
+        if (input.keys.empty() && !inputChoice.keys.empty()) {
+            input.value = inputChoice.value;
+        }
+        if (output.keys.empty() && !outputChoice.keys.empty()) {
+            output.value = outputChoice.value;
+        }
+    }
+#endif
     // one undoable change (hosts may also skip rendering the intermediate state, where both colorspaces are
     // equal, but OFX edit blocks are only defined for undo). The block is closed even if a setValue() throws,
     // and hosts without edit blocks get no block.
@@ -1355,18 +1828,31 @@ GenericOCIO::swapColorspaces(double time)
             }
         }
     } editBlock(_parent, "Swap Colorspaces");
-    // if a param is animated, set a key at the current time rather than its non-animated value
-    if (_inputSpace->getNumKeys() > 0) {
-        _inputSpace->setValueAtTime(time, outputSpace);
+    if (expression) {
+        setColorspaceAtTime(_inputSpace, time, output.value);
+        setColorspaceAtTime(_outputSpace, time, input.value);
     } else {
-        _inputSpace->setValue(outputSpace);
+        setStringAnimation(_config, _inputSpace, output, stringAnimates, false, false);
+        setStringAnimation(_config, _outputSpace, input, stringAnimates, false, false);
     }
-    if (_outputSpace->getNumKeys() > 0) {
-        _outputSpace->setValueAtTime(time, inputSpace);
-    } else {
-        _outputSpace->setValue(inputSpace);
+#ifdef OFX_OCIO_CHOICE
+    if (mirror) {
+        syncChoicesFromStrings();
+    } else if (hasChoice) {
+        // (a colorspace that is not in the config has no menu entry: colorspaceCheck() then shows the string param)
+        const bool choiceAnimates = host->supportsChoiceAnimation;
+        // a menu without keys gives the other menu the value of its string at that time
+        if (inputChoice.keys.empty()) {
+            inputChoice.value = input.value;
+        }
+        if (outputChoice.keys.empty()) {
+            outputChoice.value = output.value;
+        }
+        setChoiceAnimation(_config, _inputSpaceChoice, outputChoice, choiceAnimates);
+        setChoiceAnimation(_config, _outputSpaceChoice, inputChoice, choiceAnimates);
     }
-    // update the choice menus from the new string values
+#endif
+    // update the state of the choice menus at that time
     refreshInputAndOutputState(time);
 #else
     (void)time;

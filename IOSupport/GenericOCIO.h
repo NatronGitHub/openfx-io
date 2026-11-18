@@ -190,6 +190,38 @@ public:
         outputCheck(time);
     }
 
+    // While an object of this class exists, the effect is in an instance changed action (where OFX 1.4 allows
+    // setting keys, see paramSetValueAtTime in ofxParam.h): GenericOCIO may then set keys on the colorspace params.
+    // changedParam() and swapColorspaces() create one; an effect that calls refreshInputAndOutputState(),
+    // setInputColorspace() or setOutputColorspace() from its own changedParam() must create one there too (outside of
+    // an instance changed action, e.g. in createInstance, GenericOCIO only sets values).
+    class InstanceChanged {
+    public:
+        explicit InstanceChanged(GenericOCIO* ocio)
+            : _ocio(ocio)
+        {
+            ++_ocio->_instanceChangedDepth;
+        }
+        ~InstanceChanged() { --_ocio->_instanceChangedDepth; }
+
+    private:
+        InstanceChanged(const InstanceChanged&);
+        InstanceChanged& operator=(const InstanceChanged&);
+        GenericOCIO* _ocio;
+    };
+
+    // true while GenericOCIO sets the colorspace params: an instance changed action of one of them (Natron reports a
+    // change of a param by a plug-in before the plug-in's call returns, a deleted key as a user edit) is then not a
+    // user edit
+    bool isSettingColorspaces() const
+    {
+#ifdef OFX_IO_USING_OCIO
+        return _settingColorspaces;
+#else
+        return false;
+#endif
+    }
+
 public:
 #ifdef OFX_USE_MULTITHREAD_MUTEX
     typedef OFX::MultiThread::Mutex Mutex;
@@ -203,10 +235,44 @@ private:
     void loadConfig();
     void inputCheck(double time);
     void outputCheck(double time);
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+    // update the state and value (or keys) of a choice menu from its string param
+    void colorspaceCheck(OFX::StringParam* str, OFX::ChoiceParam* choice, double time);
+    // true if the choice menu of str has the same keys as str (see GenericOCIO.cpp)
+    bool choiceMirrorsString(OFX::StringParam* str) const;
+    // give the choice menus the keys of the string params
+    void syncChoicesFromStrings();
+    // set the string param from its choice menu, after a user edit of the menu at time
+    void changedChoice(OFX::StringParam* str, OFX::ChoiceParam* choice, int initialIndex, double time);
+#endif
+
+#ifdef OFX_IO_USING_OCIO
+    // While an object of this class exists, GenericOCIO sets the colorspace params, and changedParam() ignores the
+    // instance changed actions of these params: in Natron, setting, or deleting keys of, a param re-enters
+    // changedParam() before it returns.
+    class SettingColorspaces {
+    public:
+        explicit SettingColorspaces(GenericOCIO* ocio)
+            : _ocio(ocio)
+            , _wasSetting(ocio->_settingColorspaces)
+        {
+            _ocio->_settingColorspaces = true;
+        }
+        ~SettingColorspaces() { _ocio->_settingColorspaces = _wasSetting; }
+
+    private:
+        SettingColorspaces(const SettingColorspaces&);
+        SettingColorspaces& operator=(const SettingColorspaces&);
+        GenericOCIO* _ocio;
+        bool _wasSetting;
+    };
+#endif
 
     OFX::ImageEffect* _parent;
     bool _created;
+    int _instanceChangedDepth; //< see InstanceChanged
 #ifdef OFX_IO_USING_OCIO
+    bool _settingColorspaces; //< see SettingColorspaces
     std::string _ocioConfigFileName;
     OFX::StringParam* _ocioConfigFile; //< filepath of the OCIO config file
     OFX::StringParam* _inputSpace;
@@ -217,6 +283,14 @@ private:
     std::string _choiceFileName; //< the name of the OCIO config file that was used for the choice menu
     OFX::ChoiceParam* _inputSpaceChoice; //< the input colorspace we're converting from
     OFX::ChoiceParam* _outputSpaceChoice; //< the output colorspace we're converting to
+    // true once the choice menus have the keys of the string params, if choiceMirrorsString(): they are not saved, so
+    // that after loading a project they have no keys, and they get them at the first instance changed action that
+    // GenericOCIO gets (only there may a plug-in set keys). Not saved either.
+    bool _choiceAnimSynced;
+    // the values of the menus after the constructor (the colorspaces of the string params at time 0): until the
+    // menus have the keys of the strings, a key with that value is not an edit (see changedChoice())
+    int _inputChoiceInitialIndex;
+    int _outputChoiceInitialIndex;
 #endif
     OFX::StringParam* _contextKey1;
     OFX::StringParam* _contextValue1;

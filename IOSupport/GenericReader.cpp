@@ -2179,6 +2179,10 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
                                   const string& paramName)
 {
     const double time = args.time;
+#ifdef OFX_IO_USING_OCIO
+    // (GenericOCIO may set keys on the colorspace params, e.g. from changedFilename())
+    GenericOCIO::InstanceChanged ocioInstanceChanged(_ocio.get());
+#endif
 
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
@@ -2354,8 +2358,9 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
             }
         }
 #ifdef OFX_IO_USING_OCIO
-    } else if (((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit)) {
+    } else if (((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit) && !_ocio->isSettingColorspaces()) {
         // set the inputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
+        // (not when GenericOCIO deletes a key, which Natron reports as a user edit)
         _inputSpaceSet->setValue(true);
 #endif
     }
