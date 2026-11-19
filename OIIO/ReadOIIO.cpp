@@ -467,7 +467,7 @@ private:
     virtual void decode(const string& filename,
                         OfxTime time,
                         int view,
-                        bool isPlayback,
+                        bool useCacheHint,
                         const OfxRectI& renderWindow,
                         const OfxPointD& renderScale,
                         float* pixelData,
@@ -493,10 +493,10 @@ private:
 
             return;
         }
-        decodePlane(filename, time, view, isPlayback, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponents, pixelComponentCount, rawComps, rowBytes);
+        decodePlane(filename, time, view, useCacheHint, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponents, pixelComponentCount, rawComps, rowBytes);
     }
 
-    virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const string& filename, OfxTime time, int view, bool useCacheHint, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              PixelComponentEnum pixelComponents, PixelComponentEnum remappedComponents,
                              int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
 
@@ -558,12 +558,6 @@ private:
     BooleanParam* _offsetNegativeDispWindow;
     ChoiceParam* _edgePixels;
 
-    // We keep the name of the last file read when not in playback so that
-    // if it changes we can invalidate the last file read from the OIIO cache since it is no longer useful.
-    // The host cache will back it up on most case. The only useful case for the OIIO cache is when there are
-    // multiple threads trying to read the same image.
-    Mutex _lastFileReadNoPlaybackMutex;
-    string _lastFileReadNoPlayback;
     Mutex _outputLayerMenuMutex;
     LayersUnionVect _outputLayerMenu;
 };
@@ -584,8 +578,6 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
     , _availableViews(NULL)
     , _offsetNegativeDispWindow(NULL)
     , _edgePixels(NULL)
-    , _lastFileReadNoPlaybackMutex()
-    , _lastFileReadNoPlayback()
     , _outputLayerMenuMutex()
     , _outputLayerMenu()
 {
@@ -2303,7 +2295,7 @@ void
 ReadOIIOPlugin::decodePlane(const string& filename,
                             OfxTime /*time*/,
                             int view,
-                            bool isPlayback,
+                            bool useCacheHint,
                             const OfxRectI& renderWindow,
                             const OfxPointD& renderScale,
                             float* pixelData,
@@ -2318,9 +2310,11 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     unused(renderScale);
     unused(pixelComponentCount);
 #if OIIO_VERSION >= 10605
-    // Use cache only if not during playback because the OIIO cache eats too much RAM when playing scaline-based EXRs.
+    // Use the cache only for interactive, non-sequential renders (useCacheHint, see decode() in GenericReader.h):
+    // the OIIO cache eats too much RAM when streaming scanline-based EXRs (playback, disk renders).
+    // (_cache only exists in Natron < 2.2, see ReadOIIOPluginFactory::createInstance().)
     // Do not use cache in OIIO 1.5.x because it does not support channel ranges correctly.
-    const bool useCache = _cache && !isPlayback;
+    const bool useCache = _cache && useCacheHint;
 #else
     const bool useCache = false;
 #endif

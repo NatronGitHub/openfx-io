@@ -199,6 +199,19 @@ test-oiio-edge: oiio_edge_test
 clean-oiio-edge:
 	rm -rf oiio_edge_test oiio_edge_test.dSYM
 
+# ReadOIIO reads through OpenImageIO's ImageCache only for interactive, non-sequential renders (render action's
+# InteractiveRenderStatus = 1 and SequentialRenderStatus = 0)
+oiio_cache_test: oiio_cache_test.cpp ofx_test_host.h $(PLUGIN_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+.PHONY: test-oiio-cache clean-oiio-cache
+test: test-oiio-cache
+clean: clean-oiio-cache
+test-oiio-cache: oiio_cache_test
+	OCIO=$(CURDIR)/test.ocio ./oiio_cache_test $(CURDIR)/.oiio_cache
+clean-oiio-cache:
+	rm -rf oiio_cache_test oiio_cache_test.dSYM .oiio_cache.tif
+
 # Every plug-in of IO.ofx (the sources of ../IO/Makefile), in the OFX 1.4-only host of ofx_test_host.h (no suite or
 # property newer than OFX 1.4, no extension, no OfxSetHost), and in the full host: describe, instantiate and render
 # each one. With OpenGL render support, as in ../Makefile.master. The SeExpr plug-ins only if SeExpr 2.11 (the SeExpr 1

@@ -18,6 +18,7 @@ make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host 
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
+make test-oiio-cache # ReadOIIO reads through OIIO's ImageCache only for interactive, non-sequential renders
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-exr-tsan # the same, built with ThreadSanitizer
@@ -308,6 +309,15 @@ the pool must have 0 threads. It sets `OCIO=test.ocio`.
 The conversions are only detected by UBSan: build it with
 `make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.
 It sets `OCIO=test.ocio`.
+
+### 1f2b. `test-oiio-cache` — ReadOIIO's use of the OpenImageIO ImageCache
+
+`oiio_cache_test.cpp` renders a TIFF file with ReadOIIO, with each combination of the render action's
+`kOfxImageEffectPropInteractiveRenderStatus` and `kOfxImageEffectPropSequentialRenderStatus`, and with neither of
+them (an OFX 1.1 host). ReadOIIO must read the pixels through its (shared) ImageCache only when the render is
+interactive and not sequential: the cache's `stat:find_tile_calls` counter must increase only then. ReadOIIO only
+creates the cache in Natron < 2.2, so the host says it is Natron 2.1. `test-reader-hooks` checks the `useCacheHint`
+argument that GenericReader passes to `decode()` and `decodePlane()`. It sets `OCIO=test.ocio`.
 
 ### 1f3. `test-ofx14` — every plug-in in an OFX 1.4-only host
 
@@ -654,11 +664,12 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ofx_test_host.h`           | Minimal in-process OFX host (suites, param values, image clips) shared by the render and reader-hook tests. |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
 | `seexpr_test.cpp`           | SeExpr's frames needed and `cpixel()` domain, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
-| `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
+| `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, and `decode()`'s `useCacheHint`, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
+| `oiio_cache_test.cpp`       | ReadOIIO reads through the OIIO ImageCache only for interactive, non-sequential renders (`test-oiio-cache`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
 | `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |
 | `ofx14_host_test.cpp`       | Every plug-in in an OFX 1.4-only host, and in the full host (`test-ofx14`). |

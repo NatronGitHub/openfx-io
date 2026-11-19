@@ -8,6 +8,9 @@
  *  - getRenderTime(): inside decode(), the time of the render action being processed
  *    (not the sequence/file time passed to decode()), restored when render() returns
  *    or throws, and per thread.
+ *  - the useCacheHint argument of decode() and decodePlane(): true only when the render action has
+ *    kOfxImageEffectPropInteractiveRenderStatus = 1 and kOfxImageEffectPropSequentialRenderStatus = 0,
+ *    false when the host does not set them (OFX 1.1).
  *
  * It also checks the downscaling done by GenericReader for render scales below 1 (issue #104):
  *
@@ -83,6 +86,7 @@ struct DecodeRecord {
     bool plane; // recorded by decodePlane() rather than decode()
     OfxRectI renderWindow; // decode()'s render window
     OfxPointD renderScale; // decode()'s render scale
+    bool useCacheHint; // decode()'s useCacheHint
 };
 
 // The image read by the mipmap test reader: its frame bounds (in full-resolution pixel
@@ -134,23 +138,23 @@ private:
         return true;
     }
 
-    virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
+    virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, bool useCacheHint, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
     {
-        decodeImpl(time, false, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
+        decodeImpl(time, false, useCacheHint, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
     }
 
     // called instead of decode() by multi-planar readers
-    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, bool useCacheHint, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              PixelComponentEnum /*pixelComponents*/, PixelComponentEnum /*remappedComponents*/,
                              int pixelComponentCount, const std::string& /*rawComponents*/, int rowBytes) OVERRIDE FINAL
     {
-        decodeImpl(time, true, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
+        decodeImpl(time, true, useCacheHint, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
     }
 
-    void decodeImpl(OfxTime time, bool plane, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, int pixelComponentCount, int rowBytes)
+    void decodeImpl(OfxTime time, bool plane, bool useCacheHint, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, int pixelComponentCount, int rowBytes)
     {
         const double t = getRenderTime();
-        records.push_back({ t, time, plane, renderWindow, renderScale });
+        records.push_back({ t, time, plane, renderWindow, renderScale, useCacheHint });
         if (_content) {
             // a reader that doesn't support render scale: whatever the render scale, the render
             // window and the pixels are at full resolution, and GenericReader downscales them
@@ -456,7 +460,9 @@ struct Reader {
         return v;
     }
 
-    OfxStatus render(double t)
+    // sequential, interactive: kOfxImageEffectPropSequentialRenderStatus and kOfxImageEffectPropInteractiveRenderStatus,
+    // -1 = not set (a host older than OFX 1.2)
+    OfxStatus render(double t, int sequential = 1, int interactive = 0)
     {
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, t);
@@ -469,6 +475,16 @@ struct Reader {
             return st;
         }
         PropSet r = makeRenderInArgs(t, kWidth, kHeight);
+        if (sequential < 0) {
+            r.props.erase(kOfxImageEffectPropSequentialRenderStatus);
+        } else {
+            pSetInt(PH(&r), kOfxImageEffectPropSequentialRenderStatus, 0, sequential);
+        }
+        if (interactive < 0) {
+            r.props.erase(kOfxImageEffectPropInteractiveRenderStatus);
+        } else {
+            pSetInt(PH(&r), kOfxImageEffectPropInteractiveRenderStatus, 0, interactive);
+        }
 
         return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&r), nullptr);
     }
@@ -796,6 +812,45 @@ testRenderTime(OfxPlugin* pFrameVarying, const std::string& still, const std::st
         check(seen.size() == 3 && seen[2] == 3., "outer decode(): getRenderTime() = %g after the nested render threw (restored)", seen.size() < 3 ? -1. : seen[2]);
         check(std::fabs(outer.outputValue() - pixelValue(3.)) < 1e-6f, "outer output %g = value at 3 (%g)", outer.outputValue(), pixelValue(3.));
         check(TestReaderPlugin::renderTime() == 0., "after the outer render: getRenderTime() = %g (restored to 0)", TestReaderPlugin::renderTime());
+    }
+}
+
+// decode()'s and decodePlane()'s useCacheHint is true only for an interactive, non-sequential render
+// (kOfxImageEffectPropInteractiveRenderStatus = 1 and kOfxImageEffectPropSequentialRenderStatus = 0), and false
+// when the host does not set these OFX 1.2 properties. ReadOIIO uses its OpenImageIO cache only then.
+void
+testUseCacheHint(OfxPlugin* p, OfxPlugin* pMultiPlanar, const std::string& still)
+{
+    std::printf("==== useCacheHint in decode() and decodePlane() ====\n");
+    for (OfxPlugin* plugin : { p, pMultiPlanar }) {
+        const bool multiPlanar = (plugin == pMultiPlanar);
+        Reader r;
+        if (!r.create(plugin, still)) {
+            ++gFailures;
+
+            return;
+        }
+        const struct {
+            int sequential, interactive;
+            bool expected;
+            const char* what;
+        } cases[] = {
+            { 0, 1, true, "interactive (scrubbing, paused viewer)" },
+            { 1, 0, false, "sequential (disk render, sequential playback)" },
+            { 0, 0, false, "neither (out-of-order playback or disk render)" },
+            { 1, 1, false, "both" },
+            { -1, -1, false, "not set (OFX 1.1 host)" },
+            { -1, 1, true, "interactive, sequential status not set (0)" },
+        };
+        for (const auto& c : cases) {
+            r.plugin->records.clear();
+            OfxStatus st = r.render(2., c.sequential, c.interactive);
+            const bool once = ok(st) && r.plugin->records.size() == 1;
+            check(once && r.plugin->records[0].plane == multiPlanar && r.plugin->records[0].useCacheHint == c.expected,
+                  "%s, sequential %d, interactive %d (%s): render = %d, useCacheHint = %d (expected %d)",
+                  multiPlanar ? "decodePlane" : "decode", c.sequential, c.interactive, c.what, st,
+                  once ? (int)r.plugin->records[0].useCacheHint : -1, (int)c.expected);
+        }
     }
 }
 
@@ -1176,6 +1231,7 @@ main(int argc, char** argv)
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);
+    testUseCacheHint(pFrameVarying, pMultiPlanar, still);
     testMipmap(pMipmap, still);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);

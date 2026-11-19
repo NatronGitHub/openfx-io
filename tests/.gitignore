@@ -61,3 +61,6 @@
 /.exr_read_tsan_debug/
 /.reader_hooks_tsan_debug.still.tst
 /.reader_hooks_tsan_debug.video.tst
+/oiio_cache_test
+/oiio_cache_test.dSYM/
+/.oiio_cache.tif

@@ -1612,6 +1612,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
         useProxy = true;
     }
 
+    // See decode() in GenericReader.h: a cache is worth it only for an interactive, non-sequential render.
+    const bool useCacheHint = args.interactiveRenderStatus && !args.sequentialRenderStatus;
+
     string filename;
     GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &filename);
     switch (getFilenameAtSequenceTimeRet) {
@@ -1804,9 +1807,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 DBG(std::printf("decode (to dst)\n"));
 
                 if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
+                    decode(filename, sequenceTime, args.renderView, useCacheHint, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
                 } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, useCacheHint, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
                 }
                 if (opaqueAlpha) {
                     setOpaqueAlpha(renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
@@ -1863,9 +1866,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 DBG(std::printf("decode (to tmp)\n"));
 
                 if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
+                    decode(filename, sequenceTime, args.renderView, useCacheHint, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
                 } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, useCacheHint, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
                 }
 
                 if (abort()) {
@@ -1959,7 +1962,7 @@ void
 GenericReaderPlugin::decode(const string& /*filename*/,
                             OfxTime /*time*/,
                             int /*view*/,
-                            bool /*isPlayback*/,
+                            bool /*useCacheHint*/,
                             const OfxRectI& /*renderWindow*/,
                             const OfxPointD& /*renderScale*/,
                             float* /*pixelData*/,
@@ -1975,7 +1978,7 @@ void
 GenericReaderPlugin::decodePlane(const string& /*filename*/,
                                  OfxTime /*time*/,
                                  int /*view*/,
-                                 bool /*isPlayback*/,
+                                 bool /*useCacheHint*/,
                                  const OfxRectI& /*renderWindow*/,
                                  const OfxPointD& /*renderScale*/,
                                  float* /*pixelData*/,

@@ -295,9 +295,25 @@ private:
      * You can always skip the color-space conversion, but for all linear hosts it would produce either
      * false colors or sub-par performances in the case the end-user has to append a color-space conversion
      * effect her/himself.
+     *
+     * useCacheHint is true if the image is likely to be read again soon, so that a reader may keep it in a
+     * cache of its own (ReadOIIO's OpenImageIO ImageCache). It is true only for an interactive, non-sequential
+     * render: kOfxImageEffectPropInteractiveRenderStatus = 1 and kOfxImageEffectPropSequentialRenderStatus = 0.
+     * From the OFX spec (ofxImageEffect.h):
+     *  - kOfxImageEffectPropInteractiveRenderStatus: "This property is set to 1 on all render calls that have
+     *    been triggered because a user is actively modifying an effect (or up stream effect) in an interactive
+     *    session. This typically means that the effect is not being rendered as a part of a sequence, but as a
+     *    single frame."
+     *  - kOfxImageEffectPropSequentialRenderStatus: "This property is set to indicate whether the effect is
+     *    currently being rendered in frame order on a single effect instance." 1: "the host is currentely
+     *    rendering in a way so that it guarantees sequential rendering."
+     * Interactive renders (scrubbing, a paused viewer, tiles of the same frame) read the same image again;
+     * playback and disk renders stream each frame once, and a cache would only use memory. Neither status
+     * alone tells them apart: a host may play back or render to disk out of order, in parallel (status 0).
+     * Both properties are OFX 1.2: a host that does not set them gives false (no cache).
      **/
-    virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
-    virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+    virtual void decode(const std::string& filename, OfxTime time, int view, bool useCacheHint, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
+    virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool useCacheHint, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              OFX::PixelComponentEnum pixelComponents, OFX::PixelComponentEnum remappedComponents,
                              int pixelComponentCount, const std::string& rawComponents, int rowBytes);
 
