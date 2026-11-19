@@ -233,7 +233,7 @@ const FilterEntry kCodecAllowlist[] = {
     { "r10k", true, UNSAFEQT&& UNSAFEVLC }, // AJA Kono 10-bit RGB - write not supported as not official qt readable without colourshifts.
     { "r210", true, UNSAFEQT&& UNSAFEVLC }, // Uncompressed RGB 10-bit - write not supported as not official qt readable with relevant 3rd party codec without colourshifts.
     // rawvideo: WriteFFmpeg only writes it in a pixel format that the container has a tag for (rawvideoPixelFormats() in
-    // WriteFFmpeg.cpp), e.g. in QuickTime 2vuy, raw (RGB24, ARGB) and b48r, and from FFmpeg 8 v308, v408 and v410.
+    // WriteFFmpeg.cpp), e.g. in QuickTime 2vuy and raw (RGB24, ARGB), and from FFmpeg 8 v308, v408 and v410.
     { "rawvideo", true, true }, // raw video
     { "svq1", true, true }, // Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1
     { "targa", true, true }, // Truevision Targa image.

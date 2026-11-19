@@ -160,19 +160,29 @@ codecPixelFormats(const AVCodec* codec)
 // - QuickTime: only the pixel formats of the mov muxer's rawvideo tag table (mov_pix_fmt_tags, FFmpeg n9.0
 //   libavformat/movenc.c:2052-2075, n8.0 movenc.c:1955-1978, n4.4 movenc.c:1598-1618), which the demuxer maps back to
 //   rawvideo (libavformat/isom_tags.c:32-38 in n9.0): 2vuy (UYVY422, 8-bit 4:2:2), 'raw ' (RGB24, and ARGB for RGBA:
-//   it is QuickTime's k32ARGBPixelFormat, the RGBA, BGRA and ABGR tags are not as widely read) and b48r (RGB48BE), and
-//   from FFmpeg 8 v308 (VYU444), v408 (UYVA) and v410 (V30XLE), which give the same files as the v308, v408 and v410
-//   encoders that FFmpeg 9 removed. These pixel formats were added in libavutil 59.42.100 (doc/APIchanges, 2024-10-08)
-//   and the mov muxer tags them from FFmpeg 8.0 (libavformat 62). There is no 16-bit RGBA: movenc has no b64a tag.
+//   it is QuickTime's k32ARGBPixelFormat, the RGBA, BGRA and ABGR tags are not as widely read), and from FFmpeg 8
+//   v308 (VYU444), v408 (UYVA) and v410 (V30XLE), which give the same files as the v308, v408 and v410 encoders that
+//   FFmpeg 9 removed. These pixel formats were added in libavutil 59.42.100 (doc/APIchanges, 2024-10-08) and the mov
+//   muxer tags them from FFmpeg 8.0 (libavformat 62).
+//   There is no RGB with more than 8 bits: b48r (RGB48BE) is not listed, because AVFoundation (QuickTime Player, macOS
+//   27.2) reads its 16-bit samples byte-swapped (FFmpeg reads them correctly), and movenc has no b64a tag. RGB with
+//   10 to 16 bits gets 8-bit RGB ('raw '), with a warning (rawvideoFallbackMessage()).
 //   Any other pixel format would get the 'raw ' tag and be unreadable (movenc.c:2101-2108 in n9.0).
+//   'raw ' RGB24 rows are padded to an even number of bytes by the muxer (is_unaligned_qt_rgb, movenc.c:8503-8516 and
+//   7686-7692 in n9.0, libavformat/rawutils.c:27-67), but the rawvideo decoder only realigns RGB24 rows to 4 bytes
+//   (rawdec.c:172 and 382-392 in n9.0, 178 and 407-417 in n4.4; the mov demuxer only gives it the depth, from which it
+//   gets the pixel format, mov.c:2871, rawdec.c:77-80), so that with an odd width FFmpeg reads sheared images when
+//   the width is 3 modulo 4, and QuickTime reads none. With an odd width, ARGB (whose rows are never padded) is
+//   written instead (see rawvideoPixelFormatForWidth()).
 // - NUT: the usual planar Y'CbCr and packed RGB formats, which the rawvideo encoder tags with
 //   avcodec_pix_fmt_to_codec_tag() (libavcodec/rawenc.c:42-43, libavcodec/raw_pix_fmt_tags.h in n9.0), which the
 //   NUT muxer keeps (its default rawvideo tag is not 0, libavformat/nut.c:44-50, so mux.c:304-313 does not reset
 //   them), and which the demuxer gives back to the rawvideo decoder.
 //   All the formats of these lists were checked to round-trip exactly with FFmpeg 4.4 and 9.
 // - AVI: BI_RGB (BGR24, BGRA, whose rows the muxer writes bottom-up, libavformat/avienc.c:791-797 in n9.0) and the
-//   Y'CbCr FourCCs of the RIFF table (I420, UYVY, Y42B, libavformat/riff.c:221-255 in n9.0): the muxer resets any
-//   other rawvideo tag to BI_RGB (libavformat/mux.c:304-313 in n9.0), which would make the file unreadable.
+//   Y'CbCr FourCCs of the RIFF table (I420 and UYVY, libavformat/riff.c:221-255 in n9.0): the muxer resets any other
+//   rawvideo tag to BI_RGB (libavformat/mux.c:304-313 in n9.0), which would make the file unreadable. (Y42B, yuv422p,
+//   is not listed: it has the same coding, depth and size as UYVY, which comes first, so it would never be selected.)
 // - Matroska: the same Y'CbCr FourCCs, since the muxer checks the tags against the RIFF table too (mux.c:304-313),
 //   and writes them as the ColourSpace of the V_UNCOMPRESSED codec (libavformat/matroskaenc.c:1922-1925 in n9.0).
 //   Raw RGB, whose tag is reset to BI_RGB, is refused ("Raw RGB is not supported Natively in Matroska",
@@ -192,7 +202,6 @@ rawvideoPixelFormats(const AVOutputFormat* fmt)
 #endif
         AV_PIX_FMT_RGB24, // raw (24 bits)
         AV_PIX_FMT_ARGB, // raw (32 bits)
-        AV_PIX_FMT_RGB48BE, // b48r
         AV_PIX_FMT_NONE
     };
     static const AVPixelFormat nutFormats[] = {
@@ -215,7 +224,6 @@ rawvideoPixelFormats(const AVOutputFormat* fmt)
     static const AVPixelFormat aviFormats[] = {
         AV_PIX_FMT_YUV420P, // I420
         AV_PIX_FMT_UYVY422, // UYVY
-        AV_PIX_FMT_YUV422P, // Y42B
         AV_PIX_FMT_BGR24, // BI_RGB (24 bits)
         AV_PIX_FMT_BGRA, // BI_RGB (32 bits)
         AV_PIX_FMT_NONE
@@ -223,7 +231,6 @@ rawvideoPixelFormats(const AVOutputFormat* fmt)
     static const AVPixelFormat mkvFormats[] = {
         AV_PIX_FMT_YUV420P, // I420
         AV_PIX_FMT_UYVY422, // UYVY
-        AV_PIX_FMT_YUV422P, // Y42B
         AV_PIX_FMT_NONE
     };
     if (!strcmp(fmt->name, "mov")) {
@@ -254,6 +261,108 @@ encoderPixelFormats(const AVCodec* codec,
     return codecPixelFormats(codec);
 }
 
+// The pixel format that rawvideo writes for an image of this width (see rawvideoPixelFormats()): in QuickTime, RGB24
+// with an odd width is replaced by ARGB (opaque if there is no alpha), because the muxer pads the 'raw ' RGB24 rows
+// to an even number of bytes, which neither FFmpeg nor QuickTime reads correctly.
+static AVPixelFormat
+rawvideoPixelFormatForWidth(const AVOutputFormat* fmt,
+                            const AVCodec* codec,
+                            AVPixelFormat pixelFormat,
+                            int width)
+{
+    if (codec && (codec->id == AV_CODEC_ID_RAWVIDEO) && fmt && fmt->name && !strcmp(fmt->name, "mov")
+        && (pixelFormat == AV_PIX_FMT_RGB24) && (width % 2 != 0)) {
+        return AV_PIX_FMT_ARGB;
+    }
+
+    return pixelFormat;
+}
+
+static const char*
+pixelCodingName(FFmpeg::PixelCodingEnum coding)
+{
+    switch (coding) {
+    case FFmpeg::ePixelCodingYUV420:
+        return "Y'CbCr 4:2:0";
+    case FFmpeg::ePixelCodingYUV422:
+        return "Y'CbCr 4:2:2";
+    case FFmpeg::ePixelCodingYUV444:
+        return "Y'CbCr 4:4:4";
+    case FFmpeg::ePixelCodingRGB:
+        return "RGB";
+    case FFmpeg::ePixelCodingXYZ:
+        return "XYZ";
+    default:
+        return "?";
+    }
+}
+
+// rawvideo: the warning shown when the container has no pixel format with the Pref. Pixel Coding, Bit Depth and
+// Alpha (see rawvideoPixelFormats(): e.g. QuickTime has no RGB with more than 8 bits, and Matroska has no 4:4:4 and no
+// alpha), or an empty string.
+static string
+rawvideoFallbackMessage(const AVOutputFormat* fmt,
+                        const AVCodec* codec,
+                        FFmpeg::PixelCodingEnum prefCoding,
+                        int prefBitDepth,
+                        bool prefAlpha,
+                        AVPixelFormat target)
+{
+    const char* name = av_get_pix_fmt_name(target);
+    if (!fmt || !fmt->name || !codec || (codec->id != AV_CODEC_ID_RAWVIDEO) || !name) {
+        return string();
+    }
+    const int depth = FFmpeg::pixelFormatBitDepth(target);
+    const FFmpeg::PixelCodingEnum coding = FFmpeg::pixelFormatCoding(target);
+    const bool alpha = FFmpeg::pixelFormatAlpha(target);
+    if ((depth >= prefBitDepth) && ((int)coding >= (int)prefCoding) && (alpha || !prefAlpha)) {
+        return string();
+    }
+    string msg = string("rawvideo has no pixel format with ") + pixelCodingName(prefCoding) + ", " + std::to_string(prefBitDepth)
+        + " bits" + (prefAlpha ? " and alpha" : "") + " in the " + fmt->name + " container: the " + name + " pixel format ("
+        + pixelCodingName(coding) + ", " + std::to_string(depth) + " bits" + (alpha ? ", with alpha" : "") + ") is written.";
+    if (!strcmp(fmt->name, "mov") && (prefCoding == FFmpeg::ePixelCodingRGB) && (prefBitDepth > 8)) {
+        msg += " (16-bit RGB, b48r, is not written: QuickTime reads it byte-swapped.)";
+    }
+
+    return msg;
+}
+
+// The warning about a project saved with an encoder that this FFmpeg does not have, which checkCodec() replaced by
+// rawvideo (see replaceMissingCodec()), with the pixel format that rawvideo writes in the container fmt (if known).
+static string
+codecReplacedMessage(const string& oldCodec,
+                     const AVOutputFormat* fmt,
+                     AVPixelFormat target)
+{
+    const bool ayuv = (oldCodec == "ayuv");
+    const bool alpha = ayuv || (oldCodec == "v408");
+    // v308, v408 and v410: FFmpeg n8.0 libavcodec/allcodecs.c:354-359 lists them, n9.0 does not.
+    // ayuv: FFmpeg n6.1 libavcodec/allcodecs.c:65-66 lists it, n7.0 does not.
+    string msg = string("The ") + oldCodec + " encoder of this project is not available in this version of FFmpeg (FFmpeg "
+        + (ayuv ? "7" : "9") + " removed it): the codec was replaced by rawvideo, with Pref. Pixel Coding YUV444, Bit Depth "
+        + (oldCodec == "v410" ? "10" : "8") + " and Alpha " + (alpha ? "checked" : "unchecked") + ".";
+    const char* name = av_get_pix_fmt_name(target);
+    if (fmt && fmt->name && name) {
+        const char* tag = nullptr;
+#if (LIBAVFORMAT_VERSION_MAJOR >= 62) && (LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 42, 100))
+        if (!strcmp(fmt->name, "mov")) {
+            tag = (target == AV_PIX_FMT_VYU444) ? "v308" : (target == AV_PIX_FMT_UYVA) ? "v408" : (target == AV_PIX_FMT_V30XLE) ? "v410" : nullptr;
+        }
+#endif
+        msg += string(" In the ") + fmt->name + " container, rawvideo writes the " + name + " pixel format";
+        if (tag) {
+            msg += string(" with the ") + tag + " tag";
+            if (oldCodec == tag) {
+                msg += ", as the " + oldCodec + " encoder did";
+            }
+        }
+        msg += ".";
+    }
+
+    return msg;
+}
+
 
 #define kPluginName "WriteFFmpeg"
 #define kPluginGrouping "Image/Writers"
@@ -274,7 +383,7 @@ encoderPixelFormats(const AVCodec* codec,
     "The recommended Codec/Container configurations for encoding digital intermediates are (see also https://trac.ffmpeg.org/wiki/Encode/VFX):\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         \
     "- ProRes inside QuickTime: all ProRes profiles are 10-bit and are intra-frame (each frame is encoded separately). ProRes 4444 and 4444 XQ can also encode the alpha channel.\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      \
     "- Avid DNxHR inside QuickTime: the codec is intra-frame. DNxHR profiles are resolution-independent and are available with 8-bit or 10-bit depth. The alpha channel cannot be encoded.\n" \
-    "- Uncompressed inside QuickTime: v210 (10-bit 4:2:2), or raw (rawvideo), whose pixel format is selected with the Pref. Pixel Coding, Bit Depth and Alpha params among the ones QuickTime has a tag for: 2vuy (8-bit 4:2:2), raw (8-bit RGB, or ARGB with alpha), b48r (16-bit RGB), and with FFmpeg 8 or later v308 (8-bit 4:4:4), v408 (8-bit 4:4:4:4) and v410 (10-bit 4:4:4), which replace the v308, v408 and v410 encoders that FFmpeg 9 removed. In NUT, rawvideo writes planar Y'CbCr 4:2:0, 4:2:2 or 4:4:4 (8, 10 or 16 bits, with or without alpha) or packed RGB (8 or 16 bits, with or without alpha); in AVI, I420, UYVY, Y42B or BI_RGB (BGR, BGRA); in Matroska, I420, UYVY or Y42B (8-bit Y'CbCr).\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             \
+    "- Uncompressed inside QuickTime: v210 (10-bit 4:2:2, even widths only), or raw (rawvideo), whose pixel format is selected with the Pref. Pixel Coding, Bit Depth and Alpha params among the ones QuickTime has a tag for: 2vuy (8-bit 4:2:2), raw (8-bit RGB, or ARGB with alpha or if the width is odd), and with FFmpeg 8 or later v308 (8-bit 4:4:4), v408 (8-bit 4:4:4:4) and v410 (10-bit 4:4:4), which replace the v308, v408 and v410 encoders that FFmpeg 9 removed. QuickTime has no uncompressed RGB with more than 8 bits that it reads correctly (it reads b48r byte-swapped): 8-bit RGB is written, with a warning. QuickTime Player (AVFoundation) only decodes 2vuy, raw and v410 if the width is a multiple of 8, and does not decode v308 and v408. In NUT, rawvideo writes planar Y'CbCr 4:2:0, 4:2:2 or 4:4:4 (8, 10 or 16 bits, with or without alpha) or packed RGB (8 or 16 bits, with or without alpha); in AVI, I420, UYVY or BI_RGB (BGR, BGRA); in Matroska, I420 or UYVY (8-bit Y'CbCr).\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             \
     "- HEVC (hev1/libx265) inside Matroska, MP4, QuickTime or MPEG-TS and Output Quality set to Lossless or Perceptually Lossless. libx265 supports 8-bit, 10-bit and 12-bit depth (if libx265 was compiled with high bit depth support). Lossless may not be playable in real-time for high resolutions. Set the Encoding Speed to Ultra Fast for faster encoding but worse compression, or Very Slow for best compression.\n" /*"- Photo JPEG inside MP4 (or QuickTime) and Global Quality set to 1: intra-frame and 8-bit. qscale=1 ensure almost lossless encoding.\n"*/ /*"- H.264 (avc1/libx264/libx264rgb) inside MP4 or QuickTime and Output Quality set to Lossless or Perceptually Lossless: 10-bit(*), and can be made intra-frame by setting Keyframe Interval to 1 and Max B-Frames to 0. Lossless may not be playable in real-time for high resolutions. Set the Encoding Speed to Ultra Fast for faster encoding but worse compression, or Very Slow for best compression.\n"*/ /*"\n"*/ /*"(*) The H.264 output may be 8-bit if libx264 was not compiled with 10-bit support. Check the information displayed by clicking on the Show Avail. button.\n"*/ \
     "\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
     "To write videos intended for distribution (as media files or for streaming), the most popular codecs are mp4v (mpeg4 or libxvid), avc1 (libx264), H264 (libopenh264), hev1 (libx265), VP80 (libvpx) and VP90 (libvpx-vp9). The quality of mp4v may be set using the Global Quality parameter (between 1 and 31, 1 being the highest quality), and the quality of avc1, hev1, VP80 and VP90 may be set using the Output Quality parameter. More information can be found at https://trac.ffmpeg.org/wiki#Encoding\n"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  \
@@ -309,6 +418,9 @@ encoderPixelFormats(const AVCodec* codec,
                         "and to transcode the output and mux with audio with a separate tool (such as the ffmpeg or mencoder " \
                         "command-line tools).\n"                                                                               \
                         "The FFmpeg encoder codec name is given between brackets at the end of each codec description.\n"      \
+                        "Uncompressed in QuickTime: v210 needs an even width. QuickTime Player (AVFoundation) only decodes "    \
+                        "rawvideo (2vuy, raw, v410) if the width is a multiple of 8 pixels (v210 pads its rows, so any even "  \
+                        "width works), and does not decode v308 and v408 (FFmpeg reads all of them).\n"                        \
                         "Please refer to the FFmpeg documentation http://ffmpeg.org/ffmpeg-codecs.html for codec options."
 
 // a string param holding the short name of the codec (used to disambiguiate the codec choice when using different versions of FFmpeg)
@@ -1734,6 +1846,13 @@ private:
     bool getStartTimecode(const AVOutputFormat* fmt, string* canonical, string* error) const;
     string getSettingsErrors() const;
     string getSettingsWarnings() const;
+    string encodeWarnings(const AVOutputFormat* fmt,
+                          const AVCodec* videoCodec,
+                          FFmpeg::PixelCodingEnum prefPixelCoding,
+                          int prefBitDepth,
+                          bool prefAlpha,
+                          AVPixelFormat target,
+                          AVPixelFormat alphaFormat) const;
     void updatePersistentMessage();
     bool initCodec(const AVOutputFormat* fmt, AVCodecID& outCodecId, const AVCodec*& outCodec) const;
 
@@ -1813,8 +1932,12 @@ private:
 
     ChoiceParam* _codec;
     StringParam* _codecShortName;
-    // if not empty, the warning that the codec of the project was replaced (see checkCodec())
-    string _codecReplacedMessage;
+    // if not empty, the codec of the project that this FFmpeg does not have, which was replaced by rawvideo (see
+    // checkCodec()): reported in the persistent message until the user chooses a codec
+    string _codecReplaced;
+    // the warnings about the file being written (see encodeWarnings()), shown again at the end of the render, since
+    // GenericWriterPlugin::render() clears the persistent message after each frame
+    string _encodeWarnings;
     ChoiceParam* _crf;
     ChoiceParam* _x26xSpeed;
     DoubleParam* _qscale;
@@ -2426,18 +2549,52 @@ alphaDroppedMessage(const AVCodec* videoCodec,
         + (targetName ? targetName : "?") + " is written.";
 }
 
-// The warnings about the current settings, shown in the persistent message if there is no error: the encoder
-// can not write alpha, although Alpha is checked.
+// The warnings about the file that is written with the pixel format target (one per line, or an empty string): the
+// codec of the project was replaced (codecReplacedMessage()), rawvideo has no pixel format with the Pref. params in
+// this container (rawvideoFallbackMessage()), or the encoder can not write alpha (alphaDroppedMessage(), if
+// alphaFormat, the format with alpha that it lists, is not AV_PIX_FMT_NONE).
+string
+WriteFFmpegPlugin::encodeWarnings(const AVOutputFormat* fmt,
+                                  const AVCodec* videoCodec,
+                                  FFmpeg::PixelCodingEnum prefPixelCoding,
+                                  int prefBitDepth,
+                                  bool prefAlpha,
+                                  AVPixelFormat target,
+                                  AVPixelFormat alphaFormat) const
+{
+    string warnings;
+    if (!_codecReplaced.empty()) {
+        warnings += codecReplacedMessage(_codecReplaced, fmt, target) + "\n";
+    }
+    warnings += rawvideoFallbackMessage(fmt, videoCodec, prefPixelCoding, prefBitDepth, prefAlpha, target);
+    if (!warnings.empty() && (warnings.back() != '\n')) {
+        warnings += "\n";
+    }
+    if (videoCodec && (alphaFormat != AV_PIX_FMT_NONE)) {
+        warnings += alphaDroppedMessage(videoCodec, alphaFormat, target);
+    }
+    if (!warnings.empty() && (warnings.back() == '\n')) {
+        warnings.pop_back();
+    }
+
+    return warnings;
+}
+
+// The warnings about the current settings, shown in the persistent message if there is no error (see
+// encodeWarnings()). They do not depend on the size of the image (beginEncode() knows it).
 string
 WriteFFmpegPlugin::getSettingsWarnings() const
 {
-    // the codec of a saved project that this FFmpeg does not have, and its replacement (see checkCodec())
-    const string replaced = _codecReplacedMessage;
     const AVOutputFormat* fmt = initFormat(/* reportErrors = */ false);
     AVCodecID codecId = AV_CODEC_ID_NONE;
     const AVCodec* videoCodec = nullptr;
-    if (!fmt || !initCodec(fmt, codecId, videoCodec) || !videoCodec || !alphaEnabled()) {
-        return replaced;
+    if (!fmt || !initCodec(fmt, codecId, videoCodec) || !videoCodec) {
+        return encodeWarnings(nullptr, nullptr, FFmpeg::ePixelCodingNone, 0, false, AV_PIX_FMT_NONE, AV_PIX_FMT_NONE);
+    }
+    const bool alpha = alphaEnabled();
+    if (!alpha && _codecReplaced.empty() && (videoCodec->id != AV_CODEC_ID_RAWVIDEO)) {
+        // (no warning)
+        return string();
     }
     FFmpeg::PixelCodingEnum pixelCoding;
     int bitdepth;
@@ -2445,14 +2602,13 @@ WriteFFmpegPlugin::getSettingsWarnings() const
     AVPixelFormat alphaFormat = AV_PIX_FMT_NONE;
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_NONE;
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_NONE;
-    getPixelFormatsFromList(fmt, videoCodec, pixelCoding, bitdepth, true, rgbBufferPixelFormat, alphaFormat);
     bool alphaDropped = false;
-    getPixelFormats(fmt, videoCodec, pixelCoding, bitdepth, true, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
-    if (!alphaDropped) {
-        return replaced;
+    getPixelFormats(fmt, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
+    if (alphaDropped) {
+        getPixelFormatsFromList(fmt, videoCodec, pixelCoding, bitdepth, true, rgbBufferPixelFormat, alphaFormat);
     }
 
-    return (replaced.empty() ? string() : (replaced + "\n")) + alphaDroppedMessage(videoCodec, alphaFormat, targetPixelFormat);
+    return encodeWarnings(fmt, videoCodec, pixelCoding, bitdepth, alpha, targetPixelFormat, alphaFormat);
 }
 
 // The output format. If the Format is "Default", it is guessed from filename, which is the file being
@@ -4807,7 +4963,20 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         return;
     }
 
+    // The v210 encoder needs an even width (FFmpeg n9.0 libavcodec/v210enc.c:56-59, n4.4 v210enc.c:99-102), and fails
+    // in avcodec_open2() with "Invalid argument" otherwise.
+    const int width = rodPixel.x2 - rodPixel.x1;
+    if ((codecId == AV_CODEC_ID_V210) && (width % 2 != 0)) {
+        setPersistentMessage(Message::eMessageError, "", string("The v210 codec needs an even width, and the image is ") + std::to_string(width)
+                             + " pixels wide: crop or pad the image to an even width, or choose another codec.");
+        freeFormat();
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
+
     clearPersistentMessage();
+    _encodeWarnings.clear();
 
     FFmpeg::PixelCodingEnum pixelCoding;
     int bitdepth;
@@ -4818,6 +4987,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_RGB24;
     bool alphaDropped = false;
     getPixelFormats(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
+    // rawvideo RGB24 in QuickTime with an odd width: ARGB (see rawvideoPixelFormatForWidth())
+    targetPixelFormat = rawvideoPixelFormatForWidth(avOutputFormat, videoCodec, targetPixelFormat, width);
     assert(!_streamVideo.stream);
     if (!_streamVideo.stream) {
         addStream(_formatContext, codecId, &videoCodec, &_streamVideo);
@@ -4939,11 +5110,17 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         if (av_dict_count(codecOptionsLeft.get()) > 0) {
             unrecognizedOptions += string(kParamCodecOptionsLabel) + " not applied by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
         }
-        if (alphaDropped) {
+        {
             AVPixelFormat alphaFormat = AV_PIX_FMT_NONE;
-            AVPixelFormat rgbFormat = AV_PIX_FMT_NONE;
-            getPixelFormatsFromList(avOutputFormat, videoCodec, pixelCoding, bitdepth, true, rgbFormat, alphaFormat);
-            setPersistentMessage(Message::eMessageWarning, "", alphaDroppedMessage(videoCodec, alphaFormat, targetPixelFormat));
+            if (alphaDropped) {
+                AVPixelFormat rgbFormat = AV_PIX_FMT_NONE;
+                getPixelFormatsFromList(avOutputFormat, videoCodec, pixelCoding, bitdepth, true, rgbFormat, alphaFormat);
+            }
+            // shown again by endEncode(), since GenericWriterPlugin::render() clears the persistent message
+            _encodeWarnings = encodeWarnings(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, targetPixelFormat, alphaFormat);
+            if (!_encodeWarnings.empty()) {
+                setPersistentMessage(Message::eMessageWarning, "", _encodeWarnings);
+            }
         }
 
         avcodec_parameters_from_context(_streamVideo.stream->codecpar, avCodecContext);
@@ -5459,6 +5636,10 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         setPersistentMessage(Message::eMessageError, "", string("Unable to finalize the file: ") + szError);
         throwSuiteStatusException(kOfxStatFailed);
     }
+    if ((closeError >= 0) && (_error == SUCCESS) && !_encodeWarnings.empty()) {
+        // the warnings of beginEncode(), which GenericWriterPlugin::render() cleared
+        setPersistentMessage(Message::eMessageWarning, "", _encodeWarnings);
+    }
 }
 
 void
@@ -5571,30 +5752,29 @@ WriteFFmpegPlugin::updateBitrateToleranceRange()
 }
 
 // A project saved with the v308, v408, v410 or ayuv encoder, which this FFmpeg does not have (FFmpeg 9 removed them:
-// n8.0 libavcodec/allcodecs.c:354-358 lists v308, v408 and v410, n9.0 does not; ayuv was removed before FFmpeg 8):
-// select rawvideo, with the Pref. params that give the same pixel layout (rawvideoPixelFormats()): from FFmpeg 8, the
-// mov muxer writes it with the same v308, v408 or v410 tag (n8.0 libavformat/movenc.c:1963-1965), which the decoders
-// of all versions read. These encoders only took one pixel format (yuv444p, yuva444p, yuv444p10), so the Pref. params
-// of the project had no effect on them. The replacement is reported as a warning in the persistent message until the
-// user chooses a codec. Returns false if rawvideo is not available either.
+// n8.0 libavcodec/allcodecs.c:354-359 lists v308, v408 and v410, n9.0 does not; FFmpeg 7 removed ayuv, which n6.1
+// allcodecs.c:65-66 lists): select rawvideo, with the Pref. params that give the same pixel layout
+// (rawvideoPixelFormats()): in QuickTime from FFmpeg 8, the mov muxer writes it with the same v308, v408 or v410 tag
+// (n8.0 libavformat/movenc.c:1963-1965), which the decoders of all versions read. In the other containers, rawvideo
+// writes the closest pixel format that the container has (e.g. UYVY for v308 in Matroska, BGRA for v408 in AVI).
+// These encoders only took one pixel format (yuv444p, yuva444p, yuv444p10), so the Pref. params of the project had no
+// effect on them. The replacement is reported as a warning in the persistent message (codecReplacedMessage(), with the
+// pixel format of the current container) until the user chooses a codec. Returns false if rawvideo is not available
+// either.
 bool
 WriteFFmpegPlugin::replaceMissingCodec(const string& codecShortName)
 {
     PrefBitDepthEnum bitDepth;
     bool alpha;
-    const char* pixelFormat;
     if (codecShortName == "v308") {
         bitDepth = ePrefBitDepth8;
         alpha = false;
-        pixelFormat = "VYU444";
     } else if ((codecShortName == "v408") || (codecShortName == "ayuv")) {
         bitDepth = ePrefBitDepth8;
         alpha = true;
-        pixelFormat = "UYVA";
     } else if (codecShortName == "v410") {
         bitDepth = ePrefBitDepth10;
         alpha = false;
-        pixelFormat = "V30XLE";
     } else {
         return false;
     }
@@ -5603,10 +5783,7 @@ WriteFFmpegPlugin::replaceMissingCodec(const string& codecShortName)
     if (it == codecsShortNames.end()) {
         return false;
     }
-    _codecReplacedMessage = string("The ") + codecShortName + " encoder of this project is not available in this version of FFmpeg (FFmpeg 9 removed it): "
-        + "the codec was replaced by rawvideo, with Pref. Pixel Coding YUV444, Bit Depth " + (bitDepth == ePrefBitDepth10 ? "10" : "8")
-        + " and Alpha " + (alpha ? "checked" : "unchecked") + ". In QuickTime, this writes the " + pixelFormat + " pixel format with the same "
-        + (codecShortName == "ayuv" ? string("v408") : codecShortName) + " tag (with FFmpeg 8 or later).";
+    _codecReplaced = codecShortName;
     _codecShortName->setValue(*it);
     _prefPixelCoding->setValue((int)ePrefPixelCodingYUV444);
     _prefBitDepth->setValue((int)bitDepth);
@@ -5645,7 +5822,7 @@ WriteFFmpegPlugin::checkCodec()
             // hide the codec name
             _codecShortName->setIsSecret(true);
         } else if (replaceMissingCodec(codecShortName)) {
-            // the codec was replaced, see _codecReplacedMessage
+            // the codec was replaced, see _codecReplaced
             _codecShortName->setIsSecret(true);
         } else {
             _codecShortName->setIsSecret(false);
@@ -6005,7 +6182,7 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
         _codecShortName->setValue(codecsShortNames[codec]);
         if (args.reason == eChangeUserEdit) {
             // the user chose a codec: the replacement of a missing codec (checkCodec()) is no longer reported
-            _codecReplacedMessage.clear();
+            _codecReplaced.clear();
         }
         updateVisibility();
         updatePixelFormat(); // also reports a codec that the container does not support
