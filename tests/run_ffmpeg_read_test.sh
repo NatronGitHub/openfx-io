@@ -61,8 +61,10 @@
 #     drop them, and their frame times show the previous frame. With a damaged first GOP,
 #     its frames must fail with an error, and the other frames must decode. AV1 (libdav1d,
 #     which reports damage as AVERROR(ENOMEM) with threads) with two scrambled frames.
-#   * Truncated ProRes and MJPEG in MOV (faststart): the missing frames fail with an error,
+#   * Truncated ProRes, MJPEG and v210 in MOV (faststart): the missing frames fail with an error,
 #     sequentially and after a seek.
+#   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
+#     Hap) with damaged packets: the other frames must give the images of the clean file in every order.
 #   * MPEG-TS with a continuity counter error (a packet flagged as corrupt, but not at the end
 #     of the file): every frame must decode.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
@@ -1023,9 +1025,19 @@ check_damaged_gop damaged_intra_h264.mkv "Matroska (all-intra H.264, every other
     "if(eq(mod(n,2),0)*gte(n,20),1,0)" 1 0 6 -preset ultrafast -g 1
 check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
     "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
+# Intra-only codecs found from the codec descriptor (AV_CODEC_PROP_INTRA_ONLY), with packets 10-12 and 30 damaged: the
+# other frames must decode as in the clean file, in any order.
+for intra in "v210 mov -pix_fmt yuv422p10le" "rawvideo avi" "huffyuv avi -pix_fmt yuv422p" "jpeg2000 mkv" "jpegls avi -pix_fmt rgb24" \
+    "hap mov -pix_fmt rgba"; do
+    read -r codec container args <<<"$intra"
+    # shellcheck disable=SC2086
+    check_damaged_ref "damaged_$codec.$container" "Intra-only $codec in $container (packets 10-12 and 30 damaged)" "$codec" 48 \
+        "if(between(n,10,12)+eq(n,30),1,0)" "1-10,14-30,32-48" ${args:-}
+done
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
 check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_truncated_intra ramp_truncated_v210.mov "MOV (v210, faststart, truncated in frame 16)" 16 v210 -c:v v210 -pix_fmt yuv422p10le
 check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 \
     -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p
 

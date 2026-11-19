@@ -1911,6 +1911,32 @@ FFmpegFile::isInvalid() const
     return _invalidState;
 }
 
+// Whether the codec only has keyframes: its descriptor has AV_CODEC_PROP_INTRA_ONLY ("Codec uses only intra
+// compression", libavcodec/codec_desc.h:68-72 in FFmpeg 4.4, 8.0 and 9.0), e.g. ProRes, DNxHD, MJPEG, rawvideo, v210,
+// r210, r10k, HuffYUV, FFVHuff, JPEG-LS, JPEG 2000, Hap, EXR (libavcodec/codec_desc.c), or it is in the list
+// below, which overrides the descriptor: PNG has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:470 in FFmpeg 8.0 and 9.0,
+// 463 in 4.4; animated PNG is AV_CODEC_ID_APNG), but each PNG packet is a complete image. The other codecs of the list
+// have AV_CODEC_PROP_INTRA_ONLY in FFmpeg 4.4 to 9.0: they are kept as they were before the descriptor was used.
+// AVCodecContext::gop_size does not tell: it is "unused" for decoding (libavcodec/avcodec.h:1016-1021 in FFmpeg 9.0,
+// 1000-1005 in 8.0, 726-731 in 4.4), and avcodec_alloc_context3() sets it to 12, its default (the "g" option,
+// libavcodec/options_table.h:96 in 9.0, 95 in 8.0, 88 in 4.4, set for video decoders too by init_context_defaults(),
+// libavcodec/options.c:90-110 in 8.0 and 9.0, 107-126 in 4.4), so the former gop_size == 0 test was never true when
+// decoding.
+// Not CineForm (AV_CODEC_ID_CFHD), whose descriptor has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:1530 in 9.0): it may
+// have inter frames.
+static bool
+IsIntraOnly(const AVCodecContext* ctx)
+{
+    const AVCodecID id = ctx->codec_id;
+    if ((id == AV_CODEC_ID_PRORES) || (id == AV_CODEC_ID_DNXHD) || (id == AV_CODEC_ID_MJPEG) || (id == AV_CODEC_ID_MJPEGB) ||
+        (id == AV_CODEC_ID_PNG) || (id == AV_CODEC_ID_DPX) || (id == AV_CODEC_ID_TARGA) || (id == AV_CODEC_ID_TIFF)) {
+        return true;
+    }
+    const AVCodecDescriptor* desc = avcodec_descriptor_get(id);
+
+    return desc && (desc->props & AV_CODEC_PROP_INTRA_ONLY);
+}
+
 // decode a single frame into the buffer thread safe
 bool
 FFmpegFile::decode(const ImageEffect* /*plugin*/,
@@ -1960,19 +1986,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     bool hasPicture = false;
     AVFrame* avFrameOut = stream->_avFrame;
 
-    // If gop_size == 0 then this is a intra-only encode and we can
-    // assume sequential frame output from the decoder
-    bool isIntraOnly = stream->_codecContext->gop_size ? false : true;
+    // An intra-only codec (see IsIntraOnly()): each frame is decoded from its own packet.
+    bool isIntraOnly = IsIntraOnly(stream->_codecContext);
 
     // A stream whose frames decoded so far without an error are all keyframes (e.g. all-intra H.264, -g 1) is decoded
     // as an intra-only one once damage was found: each frame is then decoded from the previous keyframes (the back-off below,
     // bounded), instead of restarting the decoder at each keyframe and decoding from the start of the file.
     if (stream->allKeyframesAfterDamage()) {
-        isIntraOnly = true;
-    }
-
-    // These codecs may still report a gop_size if incorrectly muxed.
-    if ((stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) || (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) || (stream->_codecContext->codec_id == AV_CODEC_ID_PNG) || (stream->_codecContext->codec_id == AV_CODEC_ID_DPX) || (stream->_codecContext->codec_id == AV_CODEC_ID_TARGA) || (stream->_codecContext->codec_id == AV_CODEC_ID_TIFF)) {
         isIntraOnly = true;
     }
 
@@ -2222,16 +2242,6 @@ IsCleanKeyframe(const AVFrame* f)
     const bool key = f->key_frame != 0;
 #endif
     return key && !(f->flags & AV_FRAME_FLAG_CORRUPT) && !f->decode_error_flags;
-}
-
-// Whether the codec only has keyframes (gop_size 0, or a known intra-only codec that may still report a gop_size if
-// incorrectly muxed)
-static bool
-IsIntraOnly(const AVCodecContext* ctx)
-{
-    const AVCodecID id = ctx->codec_id;
-    return !ctx->gop_size || (id == AV_CODEC_ID_PRORES) || (id == AV_CODEC_ID_DNXHD) || (id == AV_CODEC_ID_MJPEG) || (id == AV_CODEC_ID_MJPEGB) ||
-           (id == AV_CODEC_ID_PNG) || (id == AV_CODEC_ID_DPX) || (id == AV_CODEC_ID_TARGA) || (id == AV_CODEC_ID_TIFF);
 }
 
 // After damage, the decoder is opened again instead of flushed: avcodec_flush_buffers() keeps the parameter sets

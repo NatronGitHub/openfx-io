@@ -547,7 +547,12 @@ the stream ends in damage). In an AVI with MPEG-4 B-frames (the reference frames
 packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. In all-intra H.264
 (`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
 (the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
-order, must read at most 6 times the file. An MPEG-TS with a continuity counter error (a packet flagged
+order, must read at most 6 times the file. Intra-only codecs that the reader finds from the codec descriptor
+(`AV_CODEC_PROP_INTRA_ONLY`; before, only ProRes, DNxHD, MJPEG, PNG, DPX, TGA and TIFF were known):
+v210 in MOV, rawvideo, HuffYUV and JPEG-LS in AVI, JPEG 2000 in Matroska and Hap in MOV, 48 frames
+with packets 10-12 and 30 damaged, must give the clean images for the other frames in every order,
+with 1 and 8 threads, and a truncated v210 MOV (faststart, cut in frame 16) must fail from frame 16, as
+ProRes and MJPEG. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
