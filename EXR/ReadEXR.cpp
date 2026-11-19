@@ -41,7 +41,6 @@
 #include "ofxsMacros.h"
 
 GCC_DIAG_OFF(deprecated)
-#include <IlmThreadPool.h>
 #include <ImathBox.h>
 #include <ImfChannelList.h>
 #include <ImfCompression.h>
@@ -890,8 +889,13 @@ mDeclareReaderPluginFactory(ReadEXRPluginFactory, ;, false);
 void
 ReadEXRPluginFactory::unload()
 {
-    // Kill all threads
-    IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
+    // The header cache is global data, destroyed at unload (kOfxActionUnload): the binary may stay in memory, and be
+    // loaded again later, after the files changed.
+    // OpenEXR's global thread pool is not stopped here: this plug-in never sets its number of threads (the OIIO
+    // plug-ins do, with OpenImageIO's exr_threads attribute, and stop it, see OIIOGlobal.cpp), and stopping it at
+    // each unload, e.g. after a plug-in scan, would leave OpenEXR single-threaded for the rest of the process
+    // (OpenImageIO sets it only when its exr_threads value changes).
+    Exr::FileManager::s_readerManager.clear();
 }
 
 void

@@ -20,6 +20,8 @@ make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in'
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
+make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
+make test-ofx14-scan-asan # the same, built with AddressSanitizer
 make test-exr-tsan # the same, built with ThreadSanitizer
 make test-exr-ubsan # the same, built with UndefinedBehaviorSanitizer
 make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
@@ -357,6 +359,17 @@ to drop), `OFX14_COMPS` and `OFX14_DEPTHS` (the host's components and depths), `
 context), and `--only <plug-in identifier>`. It sets `OCIO=test.ocio`; `make test-ofx14 SEEXPR_HOME=/opt/local` (the
 [`seexpr211`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts/graphics/seexpr211) port of Natron's
 MacPorts tree) includes the SeExpr plug-ins.
+
+`make test-ofx14-scan` runs the OFX 1.4-only and the full hosts with `--scan`: before the tests, every plug-in gets
+Load and Describe, then they all get Unload, as in the plug-in scan of a host that unloads the binary after it (the
+default of openfx's HostSupport since [openfx #174](https://github.com/NatronGitHub/openfx/pull/174), whose hostDemo
+keeps it loaded with `OFX_HOSTDEMO_KEEP_LOADED=1`). Each test then loads, describes and uses its plug-in again, in the
+same process, as a host does when the binary stays in memory (on macOS, a binary with thread-local variables is never
+unmapped): the plug-ins' global state must survive Unload and be initialised again by Load and Describe. After the
+scan, the Support library must have forgotten the host description, and the plug-ins must not have stopped OpenEXR's
+global thread pool, which they did not start. `make test-ofx14-scan-asan` runs the same with
+[AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html). The real unload of the binary (`dlclose`) is
+tested by `io-hostdemo` (CMake, `IO_HOSTDEMO_TESTS`), whose hostDemo unloads it after its scan.
 
 ### 1g. `test-exr` — ReadEXR (#123)
 

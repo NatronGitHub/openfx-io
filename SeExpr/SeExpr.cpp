@@ -4501,24 +4501,32 @@ SeExprPluginFactory<simple>::describeInContext(ImageEffectDescriptor& desc,
     gHostIsNatron = gHostDescription.isNatron;
     bool hostIsNuke = (gHostDescription.hostName.find("nuke") != string::npos || gHostDescription.hostName.find("Nuke") != string::npos);
 
+    // recomputed at each describe: the host description is fetched again after each load
+    // computed in locals and assigned once below, so that a concurrent instance never sees a transient false
+    bool supportsRGBAHost = false;
+    bool supportsRGBHost = false;
+    bool supportsAlphaHost = false;
     for (ImageEffectHostDescription::PixelComponentArray::const_iterator it = getImageEffectHostDescription()->_supportedComponents.begin();
          it != getImageEffectHostDescription()->_supportedComponents.end();
          ++it) {
         switch (*it) {
         case ePixelComponentRGBA:
-            gHostSupportsRGBA = true;
+            supportsRGBAHost = true;
             break;
         case ePixelComponentRGB:
-            gHostSupportsRGB = true;
+            supportsRGBHost = true;
             break;
         case ePixelComponentAlpha:
-            gHostSupportsAlpha = true;
+            supportsAlphaHost = true;
             break;
         default:
             // other components are not supported by this plugin
             break;
         }
     }
+    gHostSupportsRGBA = supportsRGBAHost;
+    gHostSupportsRGB = supportsRGBHost;
+    gHostSupportsAlpha = supportsAlphaHost;
 
     // Source clip only in the filter context
     // create the mandated source clip

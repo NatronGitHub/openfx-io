@@ -634,6 +634,12 @@ split(const string& s,
 void
 ReadFFmpegPluginFactory::load()
 {
+    // global data (kOfxActionLoad): the open files of the instances, destroyed at unload (the binary may stay in
+    // memory, and be loaded again)
+    av_log_set_level(AV_LOG_WARNING);
+    _manager.reset(new FFmpegFileManager);
+    _manager->init();
+
     _extensions.clear();
 #if 0
     // hard-coded extensions list
@@ -963,11 +969,6 @@ ReadFFmpegPluginFactory::describe(ImageEffectDescriptor& desc)
     // FFmpeg 4 is thread-safe, see
     // https://ffmpeg.org/doxygen/4.1/group__lavc__misc.html#ga4e9a0032df8f76cc766846514cebfab7
     desc.setRenderThreadSafety(eRenderFullySafe);
-
-    av_log_set_level(AV_LOG_WARNING);
-
-    _manager.reset(new FFmpegFileManager);
-    _manager->init();
 
     // Thus effect prefers sequential render, but will still give correct results otherwise
     desc.getPropertySet().propSetInt(kOfxImageEffectInstancePropSequentialRender, 2, false);

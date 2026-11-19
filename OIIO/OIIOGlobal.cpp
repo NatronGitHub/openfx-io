@@ -36,9 +36,48 @@ GCC_DIAG_ON(unused-parameter)
 
 OIIO_NAMESPACE_USING
 
+namespace {
+// The unique identifiers of the loaded OIIO plug-ins. Function-local statics: constructed on first use, so that a
+// plug-in loaded during static initialization finds them, and a set rather than a counter, so that the count can
+// neither go negative (an unload without load) nor leak (a plug-in loaded twice).
+std::mutex&
+loadedOIIOPluginsMutex()
+{
+    // never destroyed: a host may unload the plug-ins from its own static destructors or atexit handlers
+    static std::mutex* m = new std::mutex;
+    return *m;
+}
+
+std::set<std::string>&
+loadedOIIOPlugins()
+{
+    static std::set<std::string>* s = new std::set<std::string>;
+    return *s;
+}
+
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+// The number of threads of OpenEXR's global pool when shutdownOIIOThreads() stopped it (0: it did not), restored by
+// initOIIOThreads() after the next load: OpenImageIO only sets it when its exr_threads attribute changes, so it
+// would never start it again. Locked by loadedOIIOPluginsMutex().
+int gExrThreadsToRestore = 0;
+#endif
+} // namespace
+
 void
 initOIIOThreads()
 {
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+    {
+        std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
+        if (gExrThreadsToRestore > 0) {
+            // unless someone else started it since
+            if (IlmThread::ThreadPool::globalThreadPool().numThreads() == 0) {
+                IlmThread::ThreadPool::globalThreadPool().setNumThreads(gExrThreadsToRestore);
+            }
+            gExrThreadsToRestore = 0;
+        }
+    }
+#endif
     // See https://github.com/lgritz/oiio/commit/7f7934fafc127a9f3bc51b6aa5e2e77b1b8a26db
     // We want OpenEXR to use all threads, while we do not want OIIO to use all threads for its image
     // processing functionalities w/o letting the host know about it.
@@ -69,12 +108,20 @@ initOIIOThreads()
 }
 
 // Stop OpenImageIO's thread pool (and, on MS Windows, OpenEXR's): only called by OIIOPluginUnloaded(), once the
-// last OIIO plug-in is unloaded.
+// last OIIO plug-in is unloaded, with loadedOIIOPluginsMutex() locked. If the plug-ins are loaded again (a host may
+// unload the binary after its plug-in scan and load it again when a plug-in is used, and the binary, or
+// OpenImageIO, may stay in memory in between), initOIIOThreads(), called by every OIIO plug-in instance, starts
+// the pools again.
 static void
 shutdownOIIOThreads()
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
     // Kill all threads otherwise when the static global thread pool joins it threads there is a deadlock on Mingw
+    // (initOIIOThreads() restores them if the plug-ins are loaded again)
+    const int exrThreads = IlmThread::ThreadPool::globalThreadPool().numThreads();
+    if (exrThreads > 0) {
+        gExrThreadsToRestore = exrThreads;
+    }
     IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
 
     // TODO: Remove the code in the following #if block once all platforms have been updated to an OpenImageIO
@@ -92,26 +139,6 @@ shutdownOIIOThreads()
     default_thread_pool_shutdown();
 #endif
 }
-
-namespace {
-// The unique identifiers of the loaded OIIO plug-ins. Function-local statics: constructed on first use, so that a
-// plug-in loaded during static initialization finds them, and a set rather than a counter, so that the count can
-// neither go negative (an unload without load) nor leak (a plug-in loaded twice).
-std::mutex&
-loadedOIIOPluginsMutex()
-{
-    // never destroyed: a host may unload the plug-ins from its own static destructors or atexit handlers
-    static std::mutex* m = new std::mutex;
-    return *m;
-}
-
-std::set<std::string>&
-loadedOIIOPlugins()
-{
-    static std::set<std::string>* s = new std::set<std::string>;
-    return *s;
-}
-} // namespace
 
 void
 OIIOPluginLoaded(const std::string& pluginUID)

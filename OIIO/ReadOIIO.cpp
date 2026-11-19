@@ -3256,9 +3256,11 @@ ReadOIIOPluginFactory::unload()
     // get the shared image cache (may be shared with other plugins using OIIO)
 #if OIIO_VERSION >= 30000
     std::shared_ptr<ImageCache> sharedcache = ImageCache::create(true);
-    // purge it
+    // purge it: close its files and free its tiles (destroy() invalidates the shared cache, reset() would not), so
+    // that a later load of this binary (OpenImageIO may stay in memory) does not get the images of files that
+    // changed in between
     // teardown is dangerous if there are other users
-    sharedcache.reset();
+    ImageCache::destroy(sharedcache);
 #else
     ImageCache* sharedcache = ImageCache::create(true);
     // purge it

@@ -28,15 +28,23 @@
  * 1.4, no Message suite V2, no RGB), OFX14_GL=1 (the optional OpenGL render suite), OFX14_SEQSTATUS=0 (the sequential
  * render status), OFX14_NOSUITE, OFX14_COMPS, OFX14_DEPTHS, OFX14_SCALE...
  *
- * Usage: ofx14_host_test [--full] [--only <plug-in identifier>] <work directory>
+ * Usage: ofx14_host_test [--full] [--scan] [--only <plug-in identifier>] <work directory>
  *   --full: the same tests in the full host (the default mode of ofx_test_host.h), for comparison. In that mode, a
  *           plug-in that registers an OverlayInteractV2 (DrawSuite) must also register an OverlayInteractV1.
+ *   --scan: first, the plug-in scan of a host that unloads the binary after it (HostSupport's default since openfx
+ *           #174): every plug-in gets Load and Describe, then they all get Unload, before the tests load, describe
+ *           and use each one again. The binary stays in memory (as on macOS, where a binary with thread-local
+ *           variables is never unmapped): the global state of the plug-ins must survive Unload, and be initialised
+ *           again by Load and Describe. After the scan, the Support library must have forgotten the host
+ *           description, and OpenEXR's global thread pool, which the "host" started, must still have threads.
  *   --only: test only this plug-in (its input file, for a reader, must have been written by an earlier run).
  * Needs $OCIO (tests/test.ocio).
  *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
+
+#include <IlmThreadPool.h>
 
 #include <climits>
 #include <cmath>
@@ -51,6 +59,11 @@
 #endif
 #include <utility>
 #include <vector>
+
+namespace OFX {
+struct ImageEffectHostDescription;
+ImageEffectHostDescription* getImageEffectHostDescription(); // ofxsImageEffect.cpp
+}
 
 namespace {
 
@@ -662,6 +675,55 @@ testPlugin(OfxPlugin* p,
     std::printf("  %s\n", gFailures == failuresBefore ? "PASS" : "FAIL");
 }
 
+// --scan: Load and Describe every plug-in of the binary, then Unload them all (see the top of this file)
+void
+scanPlugins(int n)
+{
+    std::printf("== scan: Load and Describe each plug-in, then Unload them ==\n");
+#ifndef _WIN32
+    // started by the "host" (OpenImageIO may also set its number of threads, when the OIIO plug-ins load it): the
+    // Unload of the plug-ins must not stop it (on MS Windows, the OIIO plug-ins stop OpenEXR's pool at their last
+    // Unload, and start it again in their next instance, see OIIOGlobal.cpp)
+    IlmThread::ThreadPool::globalThreadPool().setNumThreads(2);
+#endif
+    std::vector<std::unique_ptr<Effect>> descs(n);
+    for (int i = 0; i < n; ++i) {
+        OfxPlugin* p = OfxGetPlugin(i);
+        if (!p) {
+            fail("scan: OfxGetPlugin(%d) = NULL", i);
+            continue;
+        }
+        p->setHost(&gOfxHost);
+        OfxStatus st = p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr);
+        if (!ok(st)) {
+            fail("scan: %s: Load = %d", p->pluginIdentifier, st);
+            continue;
+        }
+        descs[i].reset(new Effect);
+        st = p->mainEntry(kOfxActionDescribe, EH(*descs[i]), nullptr, nullptr);
+        if (!ok(st)) fail("scan: %s: Describe = %d", p->pluginIdentifier, st);
+    }
+    if (!OFX::getImageEffectHostDescription()) fail("scan: no host description after Load");
+    for (int i = 0; i < n; ++i) {
+        if (descs[i]) {
+            OfxPlugin* p = OfxGetPlugin(i);
+            OfxStatus st = p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            if (!ok(st)) fail("scan: %s: Unload = %d", p->pluginIdentifier, st);
+        }
+    }
+    std::printf("  %d plug-ins loaded, described and unloaded\n", n);
+    // the Support library forgets the host description at the last Unload (openfx #174)
+    if (OFX::getImageEffectHostDescription()) fail("scan: the Support library kept the host description after the last Unload");
+#ifndef _WIN32
+    const int exrThreads = IlmThread::ThreadPool::globalThreadPool().numThreads();
+    std::printf("  OpenEXR's global thread pool after the scan: %d threads\n", exrThreads);
+    if (exrThreads <= 0) fail("scan: the Unload of the plug-ins stopped OpenEXR's thread pool");
+    IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
+#endif
+    std::string msgs;
+    if (errorMessages(&msgs)) fail("scan: error messages: %s", msgs.c_str());
+}
+
 } // namespace
 
 int
@@ -671,9 +733,15 @@ main(int argc,
     int arg = 1;
     gOfx14Only = true;
     gDefaultUnsetProps = true;
-    if ((arg < argc) && !std::strcmp(argv[arg], "--full")) {
-        gOfx14Only = false;
-        ++arg;
+    bool scan = false;
+    for (; arg < argc; ++arg) {
+        if (!std::strcmp(argv[arg], "--full")) {
+            gOfx14Only = false;
+        } else if (!std::strcmp(argv[arg], "--scan")) {
+            scan = true;
+        } else {
+            break;
+        }
     }
     std::string only;
     if ((arg + 1 < argc) && !std::strcmp(argv[arg], "--only")) {
@@ -681,7 +749,7 @@ main(int argc,
         arg += 2;
     }
     if (arg >= argc) {
-        std::fprintf(stderr, "Usage: %s [--full] <work directory>\n", argv[0]);
+        std::fprintf(stderr, "Usage: %s [--full] [--scan] [--only <plug-in identifier>] <work directory>\n", argv[0]);
         return 2;
     }
     gWork = argv[arg];
@@ -740,6 +808,9 @@ main(int argc,
 
     const int n = OfxGetNumberOfPlugins();
     std::printf("plugins=%d\n", n);
+    if (scan) {
+        scanPlugins(n);
+    }
     std::vector<bool> tested(n, false);
     for (const Spec& s : specs) {
         if (!only.empty() && (only != s.id)) {
