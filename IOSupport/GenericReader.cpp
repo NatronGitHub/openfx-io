@@ -2978,31 +2978,36 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
     gHostIsNatron = (getImageEffectHostDescription()->isNatron);
 
     // recomputed at each describe: the host description is fetched again after each load
-    gHostSupportsRGBA = false;
-    gHostSupportsRGB = false;
-    gHostSupportsXY = false;
-    gHostSupportsAlpha = false;
+    // computed in locals and assigned once below, so that a concurrent instance never sees a transient false
+    bool supportsRGBAHost = false;
+    bool supportsRGBHost = false;
+    bool supportsXYHost = false;
+    bool supportsAlphaHost = false;
     for (ImageEffectHostDescription::PixelComponentArray::const_iterator it = getImageEffectHostDescription()->_supportedComponents.begin();
          it != getImageEffectHostDescription()->_supportedComponents.end();
          ++it) {
         switch (*it) {
         case ePixelComponentRGBA:
-            gHostSupportsRGBA = true;
+            supportsRGBAHost = true;
             break;
         case ePixelComponentRGB:
-            gHostSupportsRGB = true;
+            supportsRGBHost = true;
             break;
         case ePixelComponentXY:
-            gHostSupportsXY = true;
+            supportsXYHost = true;
             break;
         case ePixelComponentAlpha:
-            gHostSupportsAlpha = true;
+            supportsAlphaHost = true;
             break;
         default:
             // other components are not supported by this plugin
             break;
         }
     }
+    gHostSupportsRGBA = supportsRGBAHost;
+    gHostSupportsRGB = supportsRGBHost;
+    gHostSupportsXY = supportsXYHost;
+    gHostSupportsAlpha = supportsAlphaHost;
 
     // make some pages and to things in
     PageParamDescriptor* page = desc.definePageParam("Controls");
