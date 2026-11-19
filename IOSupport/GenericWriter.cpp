@@ -2247,6 +2247,11 @@ void
 GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
                                   const string& paramName)
 {
+#ifdef OFX_IO_USING_OCIO
+    // (GenericOCIO may set keys on the colorspace params, e.g. from outputFileChanged())
+    GenericOCIO::InstanceChanged ocioInstanceChanged(_ocio.get());
+    bool colorspaceSetByUser = false;
+#endif
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
     if (paramName == kParamFrameRange) {
@@ -2319,14 +2324,21 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
         msg += "\n";
         sendMessage(Message::eMessageMessage, "", msg);
 #ifdef OFX_IO_USING_OCIO
-    } else if (((paramName == kOCIOParamOutputSpace) || (paramName == kOCIOParamOutputSpaceChoice)) && (args.reason == eChangeUserEdit)) {
+    } else if (((paramName == kOCIOParamOutputSpace) || (paramName == kOCIOParamOutputSpaceChoice)) && (args.reason == eChangeUserEdit) && !_ocio->isSettingColorspaces()) {
         // set the outputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
-        _outputSpaceSet->setValue(true);
+        // (not when GenericOCIO deletes a key, which Natron reports as a user edit)
+        colorspaceSetByUser = true;
 #endif
     }
 
 #ifdef OFX_IO_USING_OCIO
     _ocio->changedParam(args, paramName);
+    // (after GenericOCIO handled the edit: Natron reports the change of a param before setValue() returns, and after
+    // loading a project, the first instance changed action that GenericOCIO gets gives the menus the keys of the
+    // strings, which would undo the edit of a menu)
+    if (colorspaceSetByUser) {
+        _outputSpaceSet->setValue(true);
+    }
 #endif
 
     MultiPlaneEffect::changedParam(args, paramName);

@@ -101,10 +101,11 @@ OfxStatus pSetDouble(OfxPropertySetHandle h, const char* n, int idx, double v)
 { auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
 OfxStatus pSetInt(OfxPropertySetHandle h, const char* n, int idx, int v)
 { auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
-OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
+// (setting N values sets the dimension of the property to N, e.g. 0 to empty a choice param's options)
+OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
 
 OfxStatus pGetPointer(OfxPropertySetHandle h, const char* n, int idx, void** v)
 { auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
