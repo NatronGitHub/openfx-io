@@ -105,8 +105,14 @@ OfxHost gOfxHost;
 bool gOfx14Only = false;
 
 // Is the property name defined by OFX 1.4?
+// [review] older-host emulation and knobs (env, read by initHost())
+int gOfxLevel = 14;                  // OFX14_LEVEL: 10, 11, 12, 13 or 14
+std::set<std::string> gNoSuites;     // OFX14_NOSUITE: "name Vn" or "name", comma-separated
+std::set<std::string> gExtraUnknown; // names added after gOfxLevel
+double gRS = 1.;                     // OFX14_SCALE
 bool isOfx14Name(const char* n)
 {
+    if (gExtraUnknown.count(n)) return false;
     static const std::set<std::string> names(std::begin(kOfx14Names), std::end(kOfx14Names));
     if (names.count(n)) return true;
     for (const char* prefix : kOfx14ClipPrefixes) {
@@ -365,6 +371,8 @@ std::set<std::string> gFetchedSuites;
 const void* fetchSuite(OfxPropertySetHandle, const char* name, int v)
 {
     gFetchedSuites.insert(std::string(name) + " V" + std::to_string(v));
+    if (gOfx14Only && (gNoSuites.count(name) || gNoSuites.count(std::string(name) + " V" + std::to_string(v)))) return nullptr;
+    if (gOfx14Only && gOfxLevel < 12 && !std::getenv("OFX14_KEEPMSG2") && !std::strcmp(name, kOfxMessageSuite) && v == 2) return nullptr; // V2: OFX 1.2
     if (!std::strcmp(name, kOfxPropertySuite)) return v == 1 ? &gPropSuite : nullptr;
     if (!std::strcmp(name, kOfxImageEffectSuite)) return v == 1 ? &gEffectSuite : nullptr;
     if (!std::strcmp(name, kOfxParameterSuite)) return v == 1 ? &gParamSuite : nullptr;
@@ -377,21 +385,36 @@ const void* fetchSuite(OfxPropertySetHandle, const char* name, int v)
     return nullptr;
 }
 
+inline std::vector<std::string> splitc(const char* e) { std::vector<std::string> r; if (!e) return r; std::string x(e); size_t p = 0; while (p <= x.size()) { size_t q = x.find(',', p); if (q == std::string::npos) q = x.size(); if (q > p) r.push_back(x.substr(p, q - p)); p = q + 1; } return r; }
 void initHost()
 {
+    if (const char* e = std::getenv("OFX14_LEVEL")) gOfxLevel = std::atoi(e);
+    for (auto& x : splitc(std::getenv("OFX14_NOSUITE"))) gNoSuites.insert(x);
+    if (const char* e = std::getenv("OFX14_SCALE")) gRS = std::atof(e);
+    {
+        // from the headers of the upstream release tags (names-OFX_Release_*.txt diffs)
+        const char* a11[] = { "OfxParamPropInteractSize" };
+        const char* a12[] = { "kOfxParamPropUseHostOverlayHandle", "OfxImageComponentRGB", "OfxImageEffectPropInteractiveRenderStatus", "OfxImageEffectPropSequentialRenderStatus", "OfxInteractPropPenViewportPosition", "OfxInteractPropSuggestedColour", "OfxParamPropDefaultCoordinateSystem", "OfxParamPropGroupOpen", "OfxParamPropHasHostOverlayHandle", "OfxParamPropParametricDimension", "OfxParamPropParametricInteractBackground", "OfxParamPropParametricRange", "OfxParamPropParametricUIColour", "OfxParamHostPropSupportsParametricAnimation", "OfxPropAPIVersion", "OfxPropHostOSHandle", "OfxPropIcon", "OfxPropParamSetNeedsSyncing", "OfxPropPluginDescription", "OfxPropVersion", "OfxPropVersionLabel" };
+        const char* a13[] = { "OfxParamStringIsRichTextFormat" };
+        const char* a14[] = { "OfxImageEffectHostPropNativeOrigin", "OfxImageEffectPropRenderQualityDraft" };
+        if (gOfxLevel < 11) for (auto x : a11) gExtraUnknown.insert(x);
+        if (gOfxLevel < 12) for (auto x : a12) gExtraUnknown.insert(x);
+        if (gOfxLevel < 13) for (auto x : a13) gExtraUnknown.insert(x);
+        if (gOfxLevel < 14) for (auto x : a14) gExtraUnknown.insert(x);
+    }
     OfxPropertySetHandle h = PH(&gHostProps);
     pSetString(h, kOfxPropName, 0, "org.openfx-io.tests.renderhost");
     pSetString(h, kOfxPropLabel, 0, "openfx-io render test host");
     pSetInt(h, kOfxImageEffectHostPropIsBackground, 0, 1);
     pSetInt(h, kOfxImageEffectPropSupportsMultipleClipDepths, 0, 1);
     pSetInt(h, kOfxImageEffectPropSupportsMultipleClipPARs, 0, 0);
-    pSetInt(h, kOfxImageEffectPropSupportsTiles, 0, 1);
-    pSetInt(h, kOfxImageEffectPropSupportsMultiResolution, 0, 1);
+    pSetInt(h, kOfxImageEffectPropSupportsTiles, 0, std::getenv("OFX14_NOTILES") ? 0 : 1);
+    pSetInt(h, kOfxImageEffectPropSupportsMultiResolution, 0, std::getenv("OFX14_NOMULTIRES") ? 0 : 1);
     pSetInt(h, kOfxImageEffectPropTemporalClipAccess, 0, 1);
     pSetInt(h, kOfxImageEffectPropSetableFrameRate, 0, 0);
     pSetInt(h, kOfxImageEffectPropSetableFielding, 0, 0);
     // (the OFX 1.4-only host has overlays, so that the plug-ins register their overlay interacts)
-    pSetInt(h, kOfxImageEffectPropSupportsOverlays, 0, gOfx14Only ? 1 : 0);
+    pSetInt(h, kOfxImageEffectPropSupportsOverlays, 0, (gOfx14Only && !std::getenv("OFX14_NOOVERLAYS")) ? 1 : 0);
     pSetInt(h, kOfxPropAPIVersion, 0, 1); pSetInt(h, kOfxPropAPIVersion, 1, 4);
     pSetInt(h, kOfxPropVersion, 0, 1);
     pSetInt(h, kOfxParamHostPropSupportsStringAnimation, 0, 1);
@@ -405,10 +428,13 @@ void initHost()
     pSetInt(h, kOfxParamHostPropPageRowColumnCount, 1, 10);
     const char* ctx[] = { kOfxImageEffectContextGenerator, kOfxImageEffectContextFilter, kOfxImageEffectContextGeneral, kOfxImageEffectContextReader, kOfxImageEffectContextWriter };
     pSetStringN(h, kOfxImageEffectPropSupportedContexts, 5, ctx);
-    const char* comps[] = { kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha };
-    pSetStringN(h, kOfxImageEffectPropSupportedComponents, 3, comps);
-    const char* depths[] = { kOfxBitDepthByte, kOfxBitDepthShort, kOfxBitDepthFloat };
-    pSetStringN(h, kOfxImageEffectPropSupportedPixelDepths, 3, depths);
+    std::vector<std::string> comps = { kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha };
+    if (gOfxLevel < 12) comps = { kOfxImageComponentRGBA, kOfxImageComponentAlpha }; // RGB: OFX 1.2
+    if (const char* e = std::getenv("OFX14_COMPS")) comps = splitc(e);
+    for (size_t k = 0; k < comps.size(); ++k) pSetString(h, kOfxImageEffectPropSupportedComponents, (int)k, comps[k].c_str());
+    std::vector<std::string> depths = { kOfxBitDepthByte, kOfxBitDepthShort, kOfxBitDepthFloat };
+    if (const char* e = std::getenv("OFX14_DEPTHS")) depths = splitc(e);
+    for (size_t k = 0; k < depths.size(); ++k) pSetString(h, kOfxImageEffectPropSupportedPixelDepths, (int)k, depths[k].c_str());
     gOfxHost.host = h;
     gOfxHost.fetchSuite = fetchSuite;
 }
@@ -467,7 +493,7 @@ void setupClipImage(Clip* c, int w, int h, const char* comps, const char* depth,
     pSetString(ip, kOfxImageEffectPropPreMultiplication, 0, premultOpaque ? kOfxImageOpaque : kOfxImagePreMultiplied);
     pSetString(ip, kOfxImagePropField, 0, kOfxImageFieldNone);
     pSetString(ip, kOfxImagePropUniqueIdentifier, 0, "img");
-    double rs[2] = { 1., 1. }; pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
+    double rs[2] = { gRS, gRS }; pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
     pSetDouble(ip, kOfxImagePropPixelAspectRatio, 0, 1.);
     // Clip props mirror the image format.
     OfxPropertySetHandle cp = PH(&c->props);
@@ -503,7 +529,7 @@ PropSet makeRenderInArgs(double t, int w, int h)
     PropSet a;
     OfxPropertySetHandle ap = PH(&a);
     pSetDouble(ap, kOfxPropTime, 0, t);
-    double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+    double rs[2] = { gRS, gRS }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     int win[4] = { 0, 0, w, h }; pSetIntN(ap, kOfxImageEffectPropRenderWindow, 4, win);
     pSetString(ap, kOfxImageEffectPropFieldToRender, 0, kOfxImageFieldNone);
     pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);

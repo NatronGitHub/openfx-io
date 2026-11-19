@@ -4498,7 +4498,10 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                                float pixelAspectRatio,
                                const BeginSequenceRenderArguments& args)
 {
-    if (!args.sequentialRenderStatus || _formatContext || _streamVideo.stream) {
+    // (not args.sequentialRenderStatus: kOfxImageEffectPropSequentialRenderStatus is OFX 1.2, a 1.0 or 1.1 host
+    // doesn't set it, and a host may set it to 0 for a render that is sequential anyway, as WriteFFmpeg requires
+    // with kOfxImageEffectInstancePropSequentialRender)
+    if (_formatContext || _streamVideo.stream) {
         setPersistentMessage(Message::eMessageError, "", "Another render is currently active");
         throwSuiteStatusException(kOfxStatFailed);
 

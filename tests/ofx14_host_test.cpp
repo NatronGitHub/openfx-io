@@ -105,16 +105,38 @@ nComps(const std::string& comps)
 }
 
 // The image of a clip: bounds b (x1, y1, x2, y2), components comps, float.
+double gReqScale = 1.; // requested OFX14_SCALE
+std::string gDepth = kOfxBitDepthFloat; // depth of the current images
+int bpc(const std::string& d) { return d == kOfxBitDepthFloat ? 4 : (d == kOfxBitDepthShort ? 2 : 1); }
+float getV(const std::vector<uint8_t>& buf, size_t i, const std::string& d)
+{
+    if (d == kOfxBitDepthFloat) { float f; std::memcpy(&f, buf.data() + 4 * i, 4); return f; }
+    if (d == kOfxBitDepthShort) { uint16_t v; std::memcpy(&v, buf.data() + 2 * i, 2); return v / 65535.f; }
+    return buf[i] / 255.f;
+}
+void setV(std::vector<uint8_t>& buf, size_t i, const std::string& d, float f)
+{
+    if (d == kOfxBitDepthFloat) { std::memcpy(buf.data() + 4 * i, &f, 4); return; }
+    if (d == kOfxBitDepthShort) { uint16_t v = (uint16_t)std::lround(f * 65535.f); std::memcpy(buf.data() + 2 * i, &v, 2); return; }
+    buf[i] = (uint8_t)std::lround(f * 255.f);
+}
+bool unwrittenV(const std::vector<uint8_t>& buf, size_t i, const std::string& d)
+{
+    if (d == kOfxBitDepthFloat) return isUnwritten(reinterpret_cast<const float*>(buf.data()) + i);
+    if (d == kOfxBitDepthShort) { uint16_t v; std::memcpy(&v, buf.data() + 2 * i, 2); return v == 7; }
+    return buf[i] == 7;
+}
 void
 setupImage(Clip* c,
            const int b[4],
-           const std::string& comps)
+           const std::string& comps,
+           const std::string& depth = gDepth)
 {
     const int w = b[2] - b[0], h = b[3] - b[1];
-    setupClipImage(c, w, h, comps.c_str(), kOfxBitDepthFloat, true);
+    setupClipImage(c, w, h, comps.c_str(), depth.c_str(), true);
     pSetIntN(PH(&c->image), kOfxImagePropBounds, 4, b);
     pSetIntN(PH(&c->image), kOfxImagePropRegionOfDefinition, 4, b);
-    double rod[4] = { (double)b[0], (double)b[1], (double)b[2], (double)b[3] };
+    double rod[4] = { (double)b[0] / gRS, (double)b[1] / gRS, (double)b[2] / gRS, (double)b[3] / gRS };
     pSetDoubleN(PH(&c->props), kOfxImageEffectPropRegionOfDefinition, 4, rod);
     double fr[2] = { 1., 1. };
     pSetDoubleN(PH(&c->props), kOfxImageEffectPropFrameRange, 2, fr);
@@ -125,11 +147,11 @@ fillColour(Clip* c,
            const std::string& comps)
 {
     const int n = nComps(comps);
-    float* p = reinterpret_cast<float*>(c->buffer.data());
-    const size_t npix = c->buffer.size() / (sizeof(float) * n);
+    const std::string d = gDepth;
+    const size_t npix = c->buffer.size() / (bpc(d) * n);
     for (size_t i = 0; i < npix; ++i) {
         for (int k = 0; k < n; ++k) {
-            p[i * n + k] = (n == 1) ? kColour[3] : kColour[k];
+            setV(c->buffer, i * n + k, d, (n == 1) ? kColour[3] : kColour[k]);
         }
     }
 }
@@ -156,7 +178,7 @@ sequenceArgs(double t)
     pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
     pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
     pSetInt(ap, kOfxPropIsInteractive, 0, 0);
-    double rs[2] = { 1., 1. };
+    double rs[2] = { gRS, gRS };
     pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
     pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
@@ -168,7 +190,7 @@ timeArgs(double t)
 {
     PropSet a;
     pSetDouble(PH(&a), kOfxPropTime, 0, t);
-    double rs[2] = { 1., 1. };
+    double rs[2] = { gRS, gRS };
     pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
     return a;
 }
@@ -231,6 +253,63 @@ testOverlay(OfxPluginEntryPoint* entry,
     }
 }
 
+// InstanceChanged on a param (inside Begin/EndInstanceChanged)
+void
+paramChanged(OfxPlugin* p, Effect& inst, const std::string& name, double t)
+{
+    PropSet b; pSetString(PH(&b), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+    OfxStatus st = p->mainEntry(kOfxActionBeginInstanceChanged, EH(inst), PH(&b), nullptr);
+    if (!ok(st) && st != kOfxStatReplyDefault) fail("BeginInstanceChanged = %d", st);
+    PropSet a = timeArgs(t);
+    pSetString(PH(&a), kOfxPropType, 0, kOfxTypeParameter);
+    pSetString(PH(&a), kOfxPropName, 0, name.c_str());
+    pSetString(PH(&a), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+    st = p->mainEntry(kOfxActionInstanceChanged, EH(inst), PH(&a), nullptr);
+    if (!ok(st)) fail("InstanceChanged(%s) = %d", name.c_str(), st);
+    st = p->mainEntry(kOfxActionEndInstanceChanged, EH(inst), PH(&b), nullptr);
+    if (!ok(st)) fail("EndInstanceChanged = %d", st);
+}
+
+const char* gSkipParams = std::getenv("OFX14_SKIPPARAMS"); // comma list
+// Every context: describe, instantiate, InstanceChanged on every param, clip preferences, destroy.
+void
+exerciseContext(OfxPlugin* p, const std::string& c, const std::string& file)
+{
+    Effect ce;
+    PropSet inArgs;
+    pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, c.c_str());
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ce), PH(&inArgs), nullptr);
+    if (!ok(st)) { fail("[%s] DescribeInContext = %d", c.c_str(), st); return; }
+    if (!file.empty()) setOverrideString(&ce, kOfxImageEffectFileParamName, file);
+    const int full[4] = { 0, 0, (int)std::lround(kW * gRS), (int)std::lround(kH * gRS) };
+    for (auto& kv : ce.clips) {
+        kv.second->connected = (kv.first == kOfxImageEffectOutputClipName) || (kv.first == kOfxImageEffectSimpleSourceClipName && c != kOfxImageEffectContextReader);
+        setupImage(kv.second, full, kOfxImageComponentRGBA);
+        fillColour(kv.second, kOfxImageComponentRGBA);
+    }
+    Effect inst;
+    inst.delegate = &ce;
+    setInstanceProps(inst, kW, kH, 1, c.c_str());
+    st = p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr);
+    if (!ok(st)) { fail("[%s] CreateInstance = %d", c.c_str(), st); return; }
+    int nchanged = 0;
+    for (auto& kv : ce.params) {
+        if (kv.second.type == kOfxParamTypePage || kv.second.type == kOfxParamTypeGroup) continue;
+        if (gSkipParams && std::strstr(gSkipParams, kv.first.c_str())) continue;
+        std::string m; (void)errorMessages(&m);
+        paramChanged(p, inst, kv.first, 1.);
+        ++nchanged;
+        m.clear();
+        if (errorMessages(&m)) std::printf("  [%s] note: messages after changing %s: %s\n", c.c_str(), kv.first.c_str(), m.c_str());
+    }
+    PropSet o;
+    st = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&o));
+    if (!ok(st)) fail("[%s] GetClipPreferences = %d", c.c_str(), st);
+    st = p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
+    if (!ok(st)) fail("[%s] DestroyInstance = %d", c.c_str(), st);
+    std::printf("  context %s: instance, %d params changed\n", c.c_str(), nchanged);
+}
+
 // Run the tests of one plug-in.
 void
 testPlugin(OfxPlugin* p,
@@ -263,6 +342,16 @@ testPlugin(OfxPlugin* p,
         p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
         return;
     }
+    {
+        // honour the plug-in's kOfxImageEffectPropSupportsMultiResolution (default 1), unless OFX14_FORCESCALE
+        int mr = 1;
+        auto it = desc.props.props.find(kOfxImageEffectPropSupportsMultiResolution);
+        if (it != desc.props.props.end() && !it->second.i.empty()) mr = it->second.i[0];
+        gRS = (mr || std::getenv("OFX14_FORCESCALE")) ? gReqScale : 1.;
+        if (s.kind == eWriter && std::getenv("OFX14_SCALE_WRITERS1")) gRS = 1.;
+        gDepth = kOfxBitDepthFloat;
+        if (gRS != 1.) std::printf("  render scale %g\n", gRS);
+    }
     std::vector<std::string> contexts;
     {
         auto it = desc.props.props.find(kOfxImageEffectPropSupportedContexts);
@@ -291,6 +380,7 @@ testPlugin(OfxPlugin* p,
         st = p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ce), PH(&inArgs), nullptr);
         if (!ok(st)) fail("DescribeInContext(%s) = %d", c.c_str(), st);
         if (c == wanted) context = c;
+        if (!std::getenv("OFX14_NOCTX")) exerciseContext(p, c, file.empty() ? std::string() : (s.kind == eWriter ? file + ".ctx." + c + file.substr(file.rfind('.')) : file));
     }
     if (context.empty()) {
         fail("no %s context (contexts: %zu)", wanted, contexts.size());
@@ -320,6 +410,12 @@ testPlugin(OfxPlugin* p,
         if (!ctx.params.count(sp.first)) fail("no %s param", sp.first.c_str());
         setOverrideString(&ctx, sp.first.c_str(), expand(sp.second));
     }
+    if (const char* e = std::getenv("OFX14_SETINT")) {
+        for (auto& kv : splitc(e)) {
+            size_t q = kv.find('='); std::string n = kv.substr(0, q);
+            if (ctx.params.count(n)) { setOverrideInt(&ctx, n.c_str(), std::atoi(kv.c_str() + q + 1)); std::printf("  set %s\n", kv.c_str()); }
+        }
+    }
     for (const auto& ip : s.ints) {
         if (!ctx.params.count(ip.first)) fail("no %s param", ip.first.c_str());
         setOverrideInt(&ctx, ip.first.c_str(), ip.second);
@@ -332,7 +428,7 @@ testPlugin(OfxPlugin* p,
         p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
         return;
     }
-    const int full[4] = { 0, 0, kW, kH };
+    const int full[4] = { 0, 0, (int)std::lround(kW * gRS), (int)std::lround(kH * gRS) };
     if (src) {
         src->connected = (s.kind != eReader);
         setupImage(src, full, kOfxImageComponentRGBA);
@@ -353,6 +449,9 @@ testPlugin(OfxPlugin* p,
     if (overlay) {
         testOverlay(overlay, &inst);
     }
+    if (s.kind == eWriter) {
+        paramChanged(p, inst, kOfxImageEffectFileParamName, 1.);
+    }
     if (s.kind == eReader) {
         // the file changed, as when the user sets it: the reader sets up its frame range and format
         PropSet a = timeArgs(1.);
@@ -371,8 +470,17 @@ testPlugin(OfxPlugin* p,
         if (!ok(st)) fail("GetClipPreferences = %d", st);
         outComps = clipPref(o, "OfxImageClipPropComponents", kOfxImageEffectOutputClipName, outComps);
         if (src) srcComps = clipPref(o, "OfxImageClipPropComponents", kOfxImageEffectSimpleSourceClipName, srcComps);
-        const std::string outDepth = clipPref(o, "OfxImageClipPropDepth", kOfxImageEffectOutputClipName, kOfxBitDepthFloat);
-        if (outDepth != kOfxBitDepthFloat) fail("output depth %s (float expected)", outDepth.c_str());
+        std::string hostDepth = kOfxBitDepthFloat;
+        { const char* d0 = nullptr; if (pGetString(PH(&gHostProps), kOfxImageEffectPropSupportedPixelDepths, 0, &d0) == kOfxStatOK && d0) hostDepth = d0; int nd = 0; pGetDimension(PH(&gHostProps), kOfxImageEffectPropSupportedPixelDepths, &nd); for (int k = 0; k < nd; ++k) { const char* dk; pGetString(PH(&gHostProps), kOfxImageEffectPropSupportedPixelDepths, k, &dk); if (!std::strcmp(dk, kOfxBitDepthFloat)) hostDepth = kOfxBitDepthFloat; } }
+        const std::string outDepth = clipPref(o, "OfxImageClipPropDepth", kOfxImageEffectOutputClipName, hostDepth);
+        const std::string srcDepth = src ? clipPref(o, "OfxImageClipPropDepth", kOfxImageEffectSimpleSourceClipName, hostDepth) : outDepth;
+        std::printf("  depths: source %s output %s\n", srcDepth.c_str(), outDepth.c_str());
+        int nd = 0; pGetDimension(PH(&gHostProps), kOfxImageEffectPropSupportedPixelDepths, &nd);
+        bool hostHas = false;
+        for (int k = 0; k < nd; ++k) { const char* dk; pGetString(PH(&gHostProps), kOfxImageEffectPropSupportedPixelDepths, k, &dk); if (outDepth == dk) hostHas = true; }
+        if (!hostHas) fail("output depth %s is not supported by the host", outDepth.c_str());
+        if (srcDepth != outDepth) std::printf("  note: source and output depths differ\n");
+        gDepth = outDepth;
     }
     if (src) {
         setupImage(src, full, srcComps);
@@ -425,10 +533,12 @@ testPlugin(OfxPlugin* p,
     if ((s.kind == eReader) && ((rod[0] != 0) || (rod[1] != 0) || (rod[2] != kW) || (rod[3] != kH))) {
         fail("the reader's RoD is not 0 0 %d %d", kW, kH);
     }
+    const int crod[4] = { rod[0], rod[1], rod[2], rod[3] }; // canonical
+    for (int k = 0; k < 4; ++k) rod[k] = (int)(k < 2 ? std::floor(crod[k] * gRS) : std::ceil(crod[k] * gRS)); // pixel
     setupImage(out, rod, outComps);
     {
         PropSet a = timeArgs(t);
-        double roi[4] = { (double)rod[0], (double)rod[1], (double)rod[2], (double)rod[3] };
+        double roi[4] = { (double)crod[0], (double)crod[1], (double)crod[2], (double)crod[3] };
         pSetDoubleN(PH(&a), kOfxImageEffectPropRegionOfInterest, 4, roi);
         PropSet o;
         st = p->mainEntry(kOfxImageEffectActionGetRegionsOfInterest, EH(inst), PH(&a), PH(&o));
@@ -457,9 +567,9 @@ testPlugin(OfxPlugin* p,
         if (!ok(st)) fail("BeginSequenceRender = %d", st);
     }
     const int on = nComps(outComps);
-    float* op = reinterpret_cast<float*>(out->buffer.data());
     const size_t npix = (size_t)(rod[2] - rod[0]) * (rod[3] - rod[1]);
-    fillUnwritten(op, npix * on);
+    if (gDepth == kOfxBitDepthFloat) fillUnwritten(reinterpret_cast<float*>(out->buffer.data()), npix * on);
+    else for (size_t i = 0; i < npix * on; ++i) { if (gDepth == kOfxBitDepthShort) { uint16_t v = 7; std::memcpy(out->buffer.data() + 2 * i, &v, 2); } else out->buffer[i] = 7; }
     {
         PropSet a = makeRenderInArgs(t, kW, kH);
         int win[4] = { rod[0], rod[1], rod[2], rod[3] };
@@ -479,14 +589,14 @@ testPlugin(OfxPlugin* p,
         double maxDiff = 0.;
         for (size_t i = 0; i < npix; ++i) {
             for (int k = 0; k < on; ++k) {
-                const float* v = op + i * on + k;
-                if (isUnwritten(v)) {
+                if (unwrittenV(out->buffer, i * on + k, gDepth)) {
                     ++unwritten;
                     continue;
                 }
-                sum[k] += *v;
+                const float v = getV(out->buffer, i * on + k, gDepth);
+                sum[k] += v;
                 const float expected = (on == 1) ? kColour[3] : kColour[k];
-                const double d = std::fabs((double)*v - expected);
+                const double d = std::fabs((double)v - expected);
                 if (!(d <= maxDiff)) maxDiff = d; // (NaN: never <=)
             }
         }
@@ -541,6 +651,8 @@ main(int argc,
 #endif
     std::printf("host: %s\n", gOfx14Only ? "OFX 1.4 only (no newer suite or property, no extension)" : "full");
     initHost();
+    gReqScale = gRS;
+    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d\n", gOfxLevel, std::getenv("OFX14_NOSUITE") ? std::getenv("OFX14_NOSUITE") : "-", std::getenv("OFX14_DEPTHS") ? std::getenv("OFX14_DEPTHS") : "all", std::getenv("OFX14_COMPS") ? std::getenv("OFX14_COMPS") : "default", !std::getenv("OFX14_NOTILES"), !std::getenv("OFX14_NOMULTIRES"), gRS, !std::getenv("OFX14_NOOVERLAYS"));
 
     // an identity 1D LUT for OCIOFileTransform (which has no default file)
     {
