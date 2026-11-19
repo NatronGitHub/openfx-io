@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <pthread.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -184,6 +185,21 @@ isNaNArtifact(const char* script)
     }
 
     return false;
+}
+
+// Is the script nested deeper than the cap of the analysis (kStubMaxDepth, 256, in SeExpr.cpp)? Counted on its
+// parentheses (a lower bound of the depth of the parse tree). Its frames are not analyzed: the default range is used
+// for all the inputs, which may be fewer frames than master's (e.g. with the frame range 0,0).
+bool
+isDeeperThanCap(const char* script)
+{
+    int depth = 0, maxDepth = 0;
+    for (const char* c = script; *c; ++c) {
+        depth += (*c == '(') ? 1 : ((*c == ')') ? -1 : 0);
+        maxDepth = (std::max)(maxDepth, depth);
+    }
+
+    return maxDepth > 256;
 }
 
 // The value of the red channel of the output pixel (x, y) after rendering the script at time t, or -1 if the
@@ -427,6 +443,14 @@ main(int /*argc*/,
         { "if (x > 1e6) { c = cpixel(1, frame + 4, x, y); } else { c = cpixel(1, frame, x, y); } c", { 10., 10., 14., 14. } },
         { "cpixel(1, sqrt(frame - 20), x, y)", { 5., 15., 10., 10. } }, // NaN: the default range, as on master
         { "cpixel(1, frame + 2e9, x, y)", { 10., 10., 2000000010., 2000000010. } }, // a finite frame is used as is
+        // getVar() of a local variable (assigned before the call), and of the external frame (in the assignment of f)
+        { "f = frame - 1; g = getVar(\"f\", 0) - 1; cpixel(1, g, x, y)", { 8., 8., 10., 10. } },
+        { "frame = getVar(\"frame\", 0) - 4; cpixel(1, frame, x, y)", { 6., 6., 10., 10. } },
+        // strings as the lexer reads them: \" ends the string if no other quote follows on the line
+        { "a = printf(\"%v\\\", frame); b = frame - 2; cpixel(1, b, x, y)", { 8., 8., 10., 10. } },
+        { "c = printf(\"\\\\\"); f = frame - 3; cpixel(1, f, x, y)", { 7., 7., 10., 10. } },
+        { "c = printf(\"a\\\" = 1\"); f = frame - 3; cpixel(1, f, x, y)", { 7., 7., 10., 10. } }, // an escaped quote
+        { "cpixel(1, frame + pvoronoi([5, 5, 5], 0.5, 0)[0] * 0, x, y)", { 10., 10. } }, // pvoronoi() without fbm
     };
     for (const auto& k : knownScripts) {
         const std::vector<double> r = framesNeeded(p, ctx, inst, k.script, 10.);
@@ -492,6 +516,8 @@ main(int /*argc*/,
             { "s = 1e300; cpixel(1, frame + noise(frame * s), x, y)", { 5., 15., 10., 10. } },
             { "if (frame > 1e6) { a = printf(\"HELLO %f\", frame); } cpixel(1, frame, x, y)", { 10., 10. } },
             { "f = frame # a comment with = and \"a = b\"\n; g = printf(\"x = 1\"); cpixel(1, f - 1 + g, x, y)", { 9., 9., 10., 10. } },
+            // pvoronoi(p, jitter, fbmScale): fbm distortion of a point near 5e8 (int(floor(p)) out of range in vfbm())
+            { "x > 1e6 ? cpixel(1, frame + pvoronoi([5e8, 5e8, 5e8], 0.5, 1)[0], x, y) : 0", { 5., 15., 10., 10. } },
         };
         for (const auto& c : scripts) {
             const std::vector<double> r = framesNeeded(p, ctx, inst, c.script, 10.);
@@ -559,6 +585,55 @@ main(int /*argc*/,
         check(covers(r, { 5., 15., 10., 10. }) && (seconds < 2.), "%s... at 10: %s in %.2f s (expected at least [5,15] [10,10], in less than 2 s)", script.substr(0, 40).c_str(), rangesString(r).c_str(), seconds);
     }
 
+    std::printf("==== getFramesNeeded(): a deep expression (20000 terms) is not analyzed (the stack) ====\n");
+    {
+        std::string script = "cpixel(1, x";
+        for (int i = 0; i < 20000; ++i) {
+            script += " + 1";
+        }
+        script += ", x, y)";
+        const auto start = std::chrono::steady_clock::now();
+        const std::vector<double> r = framesNeeded(p, ctx, inst, script.c_str(), 10.);
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        check(covers(r, { 5., 15., 10., 10. }) && (seconds < 2.), "cpixel(1, x + 1 + 1... (20000 terms) at 10: %s in %.2f s (expected at least [5,15] [10,10], in less than 2 s)", rangesString(r).c_str(), seconds);
+    }
+    std::printf("==== getFramesNeeded(): the depth of the parse tree is capped (256), on a thread with a 512 KB stack ====\n");
+    {
+        // frame + 0 + 0...: a depth of terms + 2 or so; below the cap, the frame is found
+        struct DeepCase {
+            OfxPlugin* p;
+            Effect* ctx;
+            Effect* inst;
+            int terms;
+            std::vector<double> r;
+        };
+        DeepCase cases[2] = { { p, &ctx, &inst, 240, {} }, { p, &ctx, &inst, 300, {} } };
+        for (DeepCase& c : cases) {
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setstacksize(&attr, 512 * 1024);
+            pthread_t thread;
+            const int err = pthread_create(&thread, &attr, [](void* arg) -> void* {
+                DeepCase* d = static_cast<DeepCase*>(arg);
+                std::string script = "cpixel(1, frame";
+                for (int i = 0; i < d->terms; ++i) {
+                    script += " + 0";
+                }
+                script += " - 2, x, y)";
+                d->r = framesNeeded(d->p, *d->ctx, *d->inst, script.c_str(), 10.);
+
+                return nullptr;
+            }, &c);
+            pthread_attr_destroy(&attr);
+            check(err == 0, "pthread_create = %d", err);
+            if (err == 0) {
+                pthread_join(thread, nullptr);
+            }
+        }
+        check(cases[0].r == std::vector<double>({ 8., 8., 10., 10. }), "cpixel(1, frame + 0 + 0... - 2 (240 terms) at 10: %s (expected [8,8] [10,10])", rangesString(cases[0].r).c_str());
+        check(covers(cases[1].r, { 5., 15., 10., 10. }), "cpixel(1, frame + 0 + 0... - 2 (300 terms) at 10: %s (expected at least [5,15] [10,10]: deeper than the cap)", rangesString(cases[1].r).c_str());
+    }
+
     std::printf("==== getFramesNeeded(): unknown and known frames of the same input: the default range and the known frames ====\n");
     {
         const char* script = "cpixel(1, frame + x, x, y) + cpixel(1, frame + 7, x, y)";
@@ -571,6 +646,7 @@ main(int /*argc*/,
         int notCovered = 0;
         int skipped = 0;
         int artifacts = 0;
+        int deep = 0;
         for (const MasterFrames& m : kMasterFrames) {
             ctx.params["frameRange"].ov.i = (m.frameRange == 0) ? std::vector<int>({ 0, 0 }) : std::vector<int>({ -5, 5 });
             const std::vector<double> r = framesNeeded(p, ctx, inst, m.script, m.time);
@@ -584,6 +660,10 @@ main(int /*argc*/,
                 ++artifacts;
                 continue;
             }
+            if (!covers(r, m.ranges) && isDeeperThanCap(m.script) && covers(r, { m.time, m.time })) {
+                ++deep;
+                continue;
+            }
             if (!covers(r, m.ranges)) {
                 ++notCovered;
                 std::printf("  %s (frame range %s) at %g: %s, master %s\n", m.script, (m.frameRange == 0) ? "0,0" : "-5,5", m.time,
@@ -592,8 +672,8 @@ main(int /*argc*/,
         }
         ctx.params["frameRange"].ov.i = { -5, 5 };
         const int n = (int)(sizeof(kMasterFrames) / sizeof(kMasterFrames[0]));
-        check(notCovered == 0, "%d of %d cases have at least the frames of master, %d are documented NaN artifacts (%d skipped: not supported by this SeExpr)",
-              n - skipped - notCovered - artifacts, n - skipped, artifacts, skipped);
+        check(notCovered == 0, "%d of %d cases have at least the frames of master, %d are documented NaN artifacts, %d are deeper than the cap of the analysis (the default range) (%d skipped: not supported by this SeExpr)",
+              n - skipped - notCovered - artifacts - deep, n - skipped, artifacts, deep, skipped);
     }
 
     std::printf("==== getFramesNeeded(): an input index that is not computable: all the inputs use the default range and the computed frames ====\n");

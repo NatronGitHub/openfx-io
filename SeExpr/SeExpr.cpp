@@ -29,6 +29,7 @@
 #include <map>
 #include <limits>
 #include <set>
+#include <utility>
 #include <vector>
 
 //#include <stdio.h> // for snprintf & _snprintf
@@ -1295,8 +1296,10 @@ stubFbmBound(double p,
 // - fbm(p, octaves = 6, lacunarity = 2, gain = 0.5) and the others of the family: p * |lacunarity|^k + 1234...
 //   (the point of each octave) in [-2^29, 2^29];
 // - pnoise(p, period): int(period) at least 1 (it is the divisor of %);
-// - voronoi(p, type, jitter, fbmScale, fbmOctaves, fbmLacunarity, fbmGain): fbmScale 0 (no fbm distortion), and p in
-//   [2, 2^29] (the cells around it, floor(p) - 1, are converted to uint32_t).
+// - voronoi(p, type, jitter, fbmScale, fbmOctaves, fbmLacunarity, fbmGain), cvoronoi() (the same arguments) and
+//   pvoronoi(p, jitter, fbmScale, fbmOctaves, fbmLacunarity, fbmGain) (no type: its fbmScale is the third argument,
+//   whatever its docstring says): fbmScale 0 (no fbm distortion), and p in [2, 2^29] (the cells around it,
+//   floor(p) - 1, are converted to uint32_t).
 static bool
 stubGuardedArgsAreValid(const string& name,
                         const vector<SeVec3d>& args)
@@ -1346,7 +1349,8 @@ stubGuardedArgsAreValid(const string& name,
         return true;
     }
     if ((name == "voronoi") || (name == "cvoronoi") || (name == "pvoronoi")) {
-        if ((args.size() >= 4) && (args[3][0] != 0.)) {
+        const std::size_t fbmScale = (name == "pvoronoi") ? 2 : 3; // SeExprBuiltins.cpp: pvoronoiFn() has no type
+        if ((args.size() > fbmScale) && (args[fbmScale][0] != 0.)) {
             return false; // fbm distortion
         }
         for (int c = 0; c < 3; ++c) {
@@ -1942,6 +1946,8 @@ typedef map<string, StubValues> StubState; // the values of the local variables,
 #define kStubMaxCombinations 1024 // the combinations of the values of the variables of an expression evaluated
 #define kStubMaxIterations 8 // the evaluations of the statements to find the values that the locals keep between pixels
 #define kStubMaxWork 100000. // the maximum of (the number of nodes of the parse tree) * (the number of locals + 1)
+#define kStubMaxDepth 256 // the maximum depth of the parse tree (the analysis is recursive: its stack grows with it)
+#define kStubMaxWalk 1000000. // the maximum of (the sum of the sizes of the subtrees of all the nodes) * (the number of locals + 1)
 
 // The variables assigned in the text of an expression, in order (without '$'), found with the rules of the lexer of
 // SeExpr 2.11 (SeExprParserLex.l): the tokens are skipped up to each variable (VAR, $name or $name::name, or NAME,
@@ -1968,18 +1974,27 @@ stubAssignedVariables(const string& text,
         if (c == '#') {
             // a comment, up to the end of the line, or to a "\n" escape
             ++i;
-            while ((i < n) && (text[i] != '\n') && !((text[i] == '\\') && (i + 1 < n) && (text[i + 1] == 'n'))) {
-                i += ((text[i] == '\\') && (i + 1 < n)) ? 2 : 1;
+            // (\#([^\\\n]|\\[^n\n])*: a backslash followed by n, a newline or nothing ends it)
+            while ((i < n) && (text[i] != '\n')
+                   && !((text[i] == '\\') && ((i + 1 >= n) || (text[i + 1] == 'n') || (text[i + 1] == '\n')))) {
+                i += (text[i] == '\\') ? 2 : 1;
             }
             continue;
         }
         if ((c == '"') || (c == '\'')) {
-            // a string, with escaped quotes, on one line
-            std::size_t k = i + 1;
-            while ((k < n) && (text[k] != c) && (text[k] != '\n')) {
-                k += ((text[k] == '\\') && (k + 1 < n) && (text[k + 1] == c)) ? 2 : 1;
+            // a string on one line (\"(\\\"|[^"\n])*\"): the longest match, which ends at the last quote of the line
+            // before the first one that is not escaped (a quote after a backslash may end the string or be escaped);
+            // no closing quote: the quote is a character token
+            std::size_t end = n;
+            for (std::size_t k = i + 1; (k < n) && (text[k] != '\n'); ++k) {
+                if (text[k] == c) {
+                    end = k;
+                    if (text[k - 1] != '\\') {
+                        break;
+                    }
+                }
             }
-            i = (k < n) ? k + 1 : k;
+            i = (end < n) ? end + 1 : i + 1;
             previous.clear();
             continue;
         }
@@ -2112,12 +2127,31 @@ public:
         while (root->parent()) {
             root = root->parent();
         }
-        std::size_t position = 0;
-        numberNodes(root, &position);
         // the cost of the analysis grows with the size of the expression times the number of local variables (each
-        // if block copies and merges their values, at each evaluation of the statements): above kStubMaxWork, it is not
-        // done, and all the inputs use the default frame range
-        if ((double)position * (double)(_expr.getLocalVars().size() + 1) > kStubMaxWork) {
+        // if block copies and merges their values, at each evaluation of the statements), and with the sizes of the
+        // subtrees (an expression whose value is not known is evaluated again operand by operand: each node is walked
+        // once for each of its ancestors); its stack grows with the depth of the tree, which is measured without
+        // recursion. Above kStubMaxWork, kStubMaxWalk or kStubMaxDepth, it is not done, and all the inputs use the
+        // default frame range.
+        std::size_t nodeCount = 0;
+        std::size_t maxDepth = 0;
+        double walk = 0.;
+        {
+            vector<std::pair<const SeExprNode*, std::size_t> > stack(1, std::make_pair(root, (std::size_t)1));
+            while (!stack.empty() && (maxDepth <= kStubMaxDepth)) {
+                const SeExprNode* node = stack.back().first;
+                const std::size_t depth = stack.back().second;
+                stack.pop_back();
+                ++nodeCount;
+                maxDepth = (std::max)(maxDepth, depth);
+                walk += (double)depth;
+                for (int i = 0; i < node->numChildren(); ++i) {
+                    stack.push_back(std::make_pair(node->child(i), depth + 1));
+                }
+            }
+        }
+        const double localCount = (double)(_expr.getLocalVars().size() + 1);
+        if ((maxDepth > kStubMaxDepth) || ((double)nodeCount * localCount > kStubMaxWork) || (walk * localCount > kStubMaxWalk)) {
             for (int input = 0; input < kSourceClipCount; ++input) {
                 stubAddUnknown(input, _frames, _unknownFrames);
             }
@@ -2127,6 +2161,8 @@ public:
 
             return;
         }
+        std::size_t position = 0;
+        numberNodes(root, &position);
         findAssignmentNames(root);
         // the values of the local variables before the statements: 0, or their values at the end (previous pixels)
         StubState initial;
@@ -2447,19 +2483,21 @@ private:
             }
         }
         if ((name == "getVar") && (n == 2) && func->isStrArg(0)) {
-            // getVar(name, default): the variable, or the default if there is none (all the names are variables here)
+            // getVar(name, default): the variable, or the default if there is none (all the names are variables here).
+            // Its variable node is bound at the prep of the call (GetVarFunc::prep()), like a variable node at that
+            // point: a local variable if it is assigned before, else the external variable.
             const string var = stubVarName(func->getStrArg(0).c_str());
-            if (var == kSeExprCurrentTimeVarName) {
-                map<string, std::size_t>::const_iterator it = _firstAssignmentEnd.find(var);
-                if (!_namesKnown) {
-                    return StubValues();
-                }
-                if ((it == _firstAssignmentEnd.end()) || (_order.find(func)->second < it->second)) {
-                    return StubValues(SeVec3d(_time)); // the external frame variable
-                }
+            if (!_namesKnown) {
+                return StubValues();
+            }
+            map<string, std::size_t>::const_iterator it = _firstAssignmentEnd.find(var);
+            if ((it != _firstAssignmentEnd.end()) && (_order.find(func)->second >= it->second)) {
                 StubState::const_iterator v = state.find(var);
 
-                return (v != state.end()) ? v->second : StubValues();
+                return (v != state.end()) ? v->second : StubValues(); // a local variable
+            }
+            if (var == kSeExprCurrentTimeVarName) {
+                return StubValues(SeVec3d(_time)); // the external frame variable
             }
 
             return StubValues();
