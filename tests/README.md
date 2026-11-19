@@ -482,8 +482,12 @@ to the last frame that ffprobe decodes, with 1 and 8 threads: the leading B-fram
 are before the start time, and not counted, while the frames after it whose reference frames are
 cut are counted (they fail); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
-MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
-not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
+MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
+display the first 2 (negative timestamps), must not count these frames; a 150-frame MPEG-TS and
+M2TS (H.264 with B-frames, AC3 audio) stream-copied with `-output_ts_offset 95440` and `95441`, so
+that their 33-bit timestamps wrap during the clip (libavformat then gives the frames before the wrap
+negative timestamps), must count all 150 frames and give exactly the images of the clean clip in
+every order, with 1 and 8 threads (issue #189: only the MOV/MP4 demuxer has edit-list pre-rolls); AVI (MPEG-4 with B-frames) has no PTS, and every frame must
 still decode at its own frame.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
@@ -556,7 +560,12 @@ the stream ends in damage). In an AVI with MPEG-4 B-frames (the reference frames
 packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. In all-intra H.264
 (`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
 (the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
-order, must read at most 6 times the file. An MPEG-TS with a continuity counter error (a packet flagged
+order, must read at most 6 times the file. Intra-only codecs that the reader finds from the codec descriptor
+(`AV_CODEC_PROP_INTRA_ONLY`; before, only ProRes, DNxHD, MJPEG, PNG, DPX, TGA and TIFF were known):
+v210 in MOV, rawvideo, HuffYUV and JPEG-LS in AVI, JPEG 2000 in Matroska and Hap in MOV, 48 frames
+with packets 10-12 and 30 damaged, must give the clean images for the other frames in every order,
+with 1 and 8 threads, and a truncated v210 MOV (faststart, cut in frame 16) must fail from frame 16, as
+ProRes and MJPEG. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
