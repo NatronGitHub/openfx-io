@@ -435,7 +435,11 @@ P0,P1,...` describes a variable frame rate clip with timestamp gaps: ramp frame 
 at frame Pi, and a frame in a gap must be identical to the last ramp frame at or
 before it, as players display it (and, with `--ramp`, hold its content).
 `--max-seeks N` checks that decoding every frame sequentially seeks at most N times
-(`FFmpegFile::getSeekCount()`).
+(`FFmpegFile::getSeekCount()`). `--matrix N` and `--range N` set the Y'CbCr matrix
+(0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020) and range (0 = Auto, 1 = Video,
+2 = Full) of the conversion to RGB (`FFmpegFile::setColorOverrides()`, the ReadFFmpeg
+"YCbCr Matrix" and "YCbCr Range" params), and `--rgb R,G,B[,TOL]` checks the mean RGB
+of the first and the last frame (0-255 scale, default tolerance 1.5).
 
 `run_ffmpeg_read_test.sh` generates 40-frame gray-ramp clips (frame N luma = 16 + 4*N,
 H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 with a
@@ -550,6 +554,14 @@ Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is
 frame 1, so that every third frame could not be decoded), and the movie duration
 (1667 ms for 40 frames) must not count a 41st frame. Clips whose encoder is missing
 from the `ffmpeg` CLI are skipped. `FFMPEG_READ_TEST_KEEP=dir` keeps the clips.
+Y'CbCr matrix and range (`check_color`): clips of a constant Y'CbCr color (Y' 120, Cb 80,
+Cr 200, written as raw yuv444p bytes with `perl`, in lossless H.264 with the tags in the
+VUI, and in 10-bit FFV1 in Matroska with the tags in the container only), tagged bt709,
+bt470bg, smpte170m, bt2020nc, fcc and smpte240m, in video and full range, and untagged
+(64x48 and 1280x720), must decode to the RGB computed by the script from the Kr and Kb of
+the matrix (ITU-T H.273) and from the range, not with FFmpeg (each clip is first checked to
+decode to the samples it was encoded from): Auto uses the tags, else Rec. 601 below 720
+lines and Rec. 709 from 720 lines, in video range, and `--matrix`/`--range` override them.
 
 Note on the `frameToPts` fix: the harness shows the reader is frame-accurate
 with and without that fix (a mis-targeted seek is recovered by the forward scan in

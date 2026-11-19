@@ -65,6 +65,10 @@
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
 #     two frame times (see check_swapped).
+#   * The Y'CbCr matrix and range of the conversion to RGB (see check_color): a constant Y'CbCr color in
+#     lossless H.264 (tags in the VUI) and 10-bit FFV1 in Matroska (tags in the container), tagged bt709,
+#     bt470bg, smpte170m, bt2020nc, fcc and smpte240m, in video and full range, and untagged (SD and 720p),
+#     and the --matrix and --range overrides: the decoded RGB must be the one computed from the matrix and the range.
 # Clips whose encoder is not available in the ffmpeg CLI are skipped.
 #
 # Environment:
@@ -1098,6 +1102,113 @@ check_ss_copy ramp_ss_copy.mp4 "MP4 (stream copy from 1.3 s, no edit list)" 53 1
 # VFR MP4 with a one-frame gap, in the middle and before the last frame: the last frame must be counted.
 check_vfr ramp_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap)" 41 20 2 1 0 42
 check_vfr ramp_end_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap before the last frame)" 41 39 2 1 0 42
+
+# Y'CbCr matrix and range of the conversion to RGB: clips of a constant Y'CbCr color (written as raw yuv444p
+# bytes, encoded losslessly, and checked to decode to the same bytes), tagged with each matrix and range, or
+# untagged. The expected RGB is computed here from the definition of the matrix (ITU-T H.273: Kr and Kb) and of the
+# range (video: Y' = (Y - 16) / 219, Pb = (Cb - 128) / 224, full: Y' = Y / 255, Pb = (Cb - 128) / 255, scaled by
+# 2^(bits - 8)), not with FFmpeg. Auto uses the tags of the file (AVFrame.colorspace and color_range), else Rec. 601
+# below 720 lines, Rec. 709 from 720 lines, and video range; --matrix and --range override them.
+expected_rgb() {
+    # expected_rgb Y CB CR BITS MATRIX RANGE: R,G,B on a 0-255 scale; MATRIX is 601, 709, 2020, fcc or 240m;
+    # RANGE is tv or pc
+    awk -v y="$1" -v cb="$2" -v cr="$3" -v bits="$4" -v m="$5" -v r="$6" 'BEGIN {
+        if (m == "601") { kr = 0.299; kb = 0.114 } else if (m == "709") { kr = 0.2126; kb = 0.0722 }
+        else if (m == "2020") { kr = 0.2627; kb = 0.0593 } else if (m == "fcc") { kr = 0.30; kb = 0.11 }
+        else if (m == "240m") { kr = 0.212; kb = 0.087 } else { exit 1 }
+        s = 2 ^ (bits - 8)
+        if (r == "tv") { yp = (y - 16 * s) / (219 * s); pb = (cb - 128 * s) / (224 * s); pr = (cr - 128 * s) / (224 * s) }
+        else { yp = y / (255 * s); pb = (cb - 128 * s) / (255 * s); pr = (cr - 128 * s) / (255 * s) }
+        R = yp + 2 * (1 - kr) * pr; B = yp + 2 * (1 - kb) * pb; G = (yp - kr * R - kb * B) / (1 - kr - kb)
+        printf "%.2f,%.2f,%.2f\n", 255 * R, 255 * G, 255 * B
+    }'
+}
+constant_yuv() {
+    # constant_yuv W H N BITS Y CB CR: N frames of raw yuv444p (or yuv444p10le) of a constant color on stdout
+    perl -e 'my ($w, $h, $n, $bits, @v) = @ARGV; my $np = $w * $h;
+        my $f = join("", map { $bits > 8 ? pack("v", $_) x $np : chr($_) x $np } @v); print $f for 1 .. $n' "$@"
+}
+check_color() {
+    # check_color NAME DESC CODEC W H BITS Y CB CR MATRIX RANGE [TAGS -- READER_ARGS]
+    # TAGS are the ffmpeg -colorspace/-color_range/-color_primaries/-color_trc options of the clip (also given to the
+    # rawvideo input, so that ffmpeg does not convert the samples); MATRIX and RANGE are the expected conversion.
+    local name="$1" desc="$2" codec="$3" w="$4" h="$5" bits="$6" y="$7" cb="$8" cr="$9" matrix="${10}" range="${11}"
+    shift 11
+    echo "== $desc =="
+    local tags=() readerargs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        tags+=("$1")
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        shift
+        readerargs=("$@")
+    fi
+    local pixfmt=yuv444p encargs=()
+    if [ "$bits" -gt 8 ]; then
+        pixfmt=yuv444p10le
+    fi
+    case "$codec" in
+    libx264) encargs=(-c:v libx264 -qp 0 -preset ultrafast) ;;
+    ffv1) encargs=(-c:v ffv1) ;;
+    *) encargs=(-c:v "$codec") ;;
+    esac
+    if ! have_encoder "$codec"; then
+        echo "SKIPPED: no $codec encoder in the ffmpeg CLI"
+        return
+    fi
+    constant_yuv "$w" "$h" 3 "$bits" "$y" "$cb" "$cr" >"$tmp/$name.yuv"
+    if ! ffmpeg -y -loglevel error -f rawvideo -pix_fmt "$pixfmt" -s "${w}x$h" -r 24 ${tags[@]+"${tags[@]}"} -i "$tmp/$name.yuv" \
+        "${encargs[@]}" -pix_fmt "$pixfmt" ${tags[@]+"${tags[@]}"} "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # the clip must hold the constant color exactly (lossless, and not converted by ffmpeg)
+    if ! ffmpeg -loglevel error -i "$tmp/$name" -f rawvideo -pix_fmt "$pixfmt" - | cmp -s - "$tmp/$name.yuv"; then
+        echo "FAIL: $name does not decode to the Y'CbCr samples it was encoded from"
+        rc=1
+        return
+    fi
+    ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt,color_space,color_range,color_primaries,color_transfer -of compact=p=0 "$tmp/$name" || true
+    local rgb
+    rgb="$(expected_rgb "$y" "$cb" "$cr" "$bits" "$matrix" "$range")"
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --open-only --rgb "$rgb" ${readerargs[@]+"${readerargs[@]}"} ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    rm -f "$tmp/$name.yuv"
+}
+# A saturated orange: the matrices give R values 6 to 14 levels apart (8 bits), and the ranges differ everywhere.
+CY=120 CB=80 CR=200
+check_color color_untagged_sd.mp4 "Y'CbCr matrix: untagged SD H.264 (Auto: Rec. 601, video range)" libx264 64 48 8 $CY $CB $CR 601 tv
+check_color color_untagged_hd.mp4 "Y'CbCr matrix: untagged 720p H.264 (Auto: Rec. 709, video range)" libx264 1280 720 8 $CY $CB $CR 709 tv
+check_color color_bt709_tv.mp4 "Y'CbCr matrix: SD H.264 tagged bt709, video range" libx264 64 48 8 $CY $CB $CR 709 tv \
+    -colorspace bt709 -color_range tv -color_primaries bt709 -color_trc bt709
+check_color color_bt709_pc.mp4 "Y'CbCr matrix: SD H.264 tagged bt709, full range" libx264 64 48 8 $CY $CB $CR 709 pc \
+    -colorspace bt709 -color_range pc -color_primaries bt709 -color_trc bt709
+check_color color_bt470bg_tv.mp4 "Y'CbCr matrix: 720p H.264 tagged bt470bg, video range" libx264 1280 720 8 $CY $CB $CR 601 tv \
+    -colorspace bt470bg -color_range tv -color_primaries bt470bg -color_trc gamma28
+check_color color_smpte170m_pc.mp4 "Y'CbCr matrix: 720p H.264 tagged smpte170m, full range" libx264 1280 720 8 $CY $CB $CR 601 pc \
+    -colorspace smpte170m -color_range pc -color_primaries smpte170m -color_trc smpte170m
+check_color color_bt2020nc_tv.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, video range" libx264 64 48 8 $CY $CB $CR 2020 tv \
+    -colorspace bt2020nc -color_range tv -color_primaries bt2020 -color_trc bt2020-10
+check_color color_bt2020nc_pc.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, full range" libx264 64 48 8 $CY $CB $CR 2020 pc \
+    -colorspace bt2020nc -color_range pc -color_primaries bt2020 -color_trc bt2020-10
+check_color color_fcc_tv.mp4 "Y'CbCr matrix: SD H.264 tagged fcc, video range" libx264 64 48 8 $CY $CB $CR fcc tv \
+    -colorspace fcc -color_range tv
+check_color color_smpte240m_tv.mp4 "Y'CbCr matrix: SD H.264 tagged smpte240m, video range" libx264 64 48 8 $CY $CB $CR 240m tv \
+    -colorspace smpte240m -color_range tv
+# The tags of the container only (FFV1 has none in its bitstream): Matroska Colour element, 10 bits.
+check_color color_bt2020nc_10bit.mkv "Y'CbCr matrix: SD FFV1 10-bit in Matroska tagged bt2020nc, video range" ffv1 64 48 10 \
+    $((CY * 4)) $((CB * 4)) $((CR * 4)) 2020 tv -colorspace bt2020nc -color_range tv -color_primaries bt2020 -color_trc smpte2084
+check_color color_bt709_pc_10bit.mkv "Y'CbCr matrix: SD FFV1 10-bit in Matroska tagged bt709, full range" ffv1 64 48 10 \
+    $((CY * 4)) $((CB * 4)) $((CR * 4)) 709 pc -colorspace bt709 -color_range pc
+# The params override the tags.
+check_color color_override_untagged.mp4 "Y'CbCr matrix: untagged SD H.264 read as Rec. 2020, full range (params)" libx264 64 48 8 $CY $CB $CR 2020 pc \
+    -- --matrix 3 --range 2
+check_color color_override_bt2020.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, full range, read as Rec. 709, video range (params)" libx264 64 48 8 $CY $CB $CR 709 tv \
+    -colorspace bt2020nc -color_range pc -- --matrix 2 --range 1
+check_color color_override_601.mp4 "Y'CbCr matrix: 720p H.264 tagged bt709, read as Rec. 601 (param), Auto range" libx264 1280 720 8 $CY $CB $CR 601 tv \
+    -colorspace bt709 -color_range tv -- --matrix 1
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"

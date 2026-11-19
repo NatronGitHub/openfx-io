@@ -40,6 +40,7 @@
 #define __STDC_CONSTANT_MACROS // ...or stdint.h wont' define UINT64_C, needed by libavutil
 #endif
 #include "FFmpegFile.h"
+#include "PixelFormat.h"
 // Compat: AVFrame::pkt_duration was renamed to duration in FFmpeg 6 (libavutil 58.2)
 // and removed in FFmpeg 8.
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 2, 100)
@@ -341,24 +342,99 @@ FFmpegFile::isCodecAllowedForWriting(const char* codecName)
     return (allowlistEntry && allowlistEntry->enableWriter);
 }
 
+// The Y'CbCr matrix of the conversion to RGB (the "YCbCr Matrix" param of ReadFFmpeg):
+// - Rec. 601, Rec. 709 or Rec. 2020 if the user chose one,
+// - Auto: the matrix of the frame (AVFrame.colorspace: the decoders give the one of the bitstream, e.g. the H.264/HEVC
+//   VUI or the ProRes frame header, or else the one of the codec context, which avcodec_parameters_to_context()
+//   copied from the container, e.g. the MOV 'colr' atom or the Matroska Colour element: fill_frame_props() in FFmpeg
+//   n9.0 libavcodec/decode.c:575-585, n4.0 libavcodec/decode.c:1717-1724), else the one of the stream
+//   (AVCodecParameters.color_space), else, if neither is a matrix that swscale has (see
+//   FFmpeg::swsColorspaceFromAVColorSpace()), the usual one for the picture size (Rec. 709 from 720 lines, else
+//   Rec. 601; JPEG is always Rec. 601: isRec709Format()), as before the tags were used.
+int
+FFmpegFile::Stream::getSwsColorspace(int frameColorSpace)
+{
+    switch (_colorMatrixOverride) {
+    case FFmpegFile::eColorMatrixRec601:
+        return SWS_CS_ITU601;
+    case FFmpegFile::eColorMatrixRec709:
+        return SWS_CS_ITU709;
+    case FFmpegFile::eColorMatrixRec2020:
+        return SWS_CS_BT2020;
+    default:
+        break;
+    }
+    int colorspace = FFmpeg::swsColorspaceFromAVColorSpace(frameColorSpace);
+    if ((colorspace < 0) && _avstream && _avstream->codecpar) {
+        colorspace = FFmpeg::swsColorspaceFromAVColorSpace(_avstream->codecpar->color_space);
+    }
+    if (colorspace < 0) {
+        colorspace = isRec709Format() ? SWS_CS_ITU709 : SWS_CS_ITU601;
+    }
+
+    return colorspace;
+}
+
+// The source range of the conversion to RGB, as the srcRange argument of sws_setColorspaceDetails() (0 = video
+// range, 16..235 for 8 bits, 1 = full range, 0..255, libswscale/swscale.h): the "YCbCr Range" param of ReadFFmpeg,
+// or Auto: the range of the frame (AVFrame.color_range), or, if it is unspecified, full range for the deprecated
+// YUVJ pixel formats (which are full range, libavutil/pixfmt.h), else video range for Y'CbCr and full range for RGB.
+int
+FFmpegFile::Stream::getSwsSrcRange(AVPixelFormat srcPixelFormat,
+                                   int frameColorRange) const
+{
+    switch (_colorRangeOverride) {
+    case FFmpegFile::eColorRangeVideo:
+        return 0;
+    case FFmpegFile::eColorRangeFull:
+        return 1;
+    default:
+        break;
+    }
+    switch (frameColorRange) {
+    case AVCOL_RANGE_MPEG:
+        return 0;
+    case AVCOL_RANGE_JPEG:
+        return 1;
+    default:
+        break;
+    }
+    switch (srcPixelFormat) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+        return 1;
+    default:
+        break;
+    }
+
+    // If the colour range wasn't specified, set the flag according to
+    // whether the data is YUV or not.
+    return isYUV() ? 0 : 1;
+}
+
 SwsContext*
 FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
                                   int srcWidth,
                                   int srcHeight,
                                   int srcColorRange,
+                                  int srcColorSpace,
                                   AVPixelFormat dstPixelFormat,
                                   int dstWidth,
                                   int dstHeight)
 {
-    // Reset is flagged when the UI colour matrix selection is
-    // modified. This causes a new convert context to be created
-    // that reflects the UI selection. The context is also rebuilt if any of the
-    // source/destination parameters it was created for have changed since.
+    // The Y'CbCr matrix and range of the conversion, from the tags of the frame and the params: if they change, the
+    // context is rebuilt
+    const int swsColorspace = getSwsColorspace(srcColorSpace);
+    const int srcRange = getSwsSrcRange(srcPixelFormat, srcColorRange);
+    // The context is also rebuilt if any of the source/destination parameters it was created for have changed since.
     const bool paramsChanged = _convertCtx
         && (_convertCtxSrcPixelFormat != srcPixelFormat
             || _convertCtxSrcWidth != srcWidth
             || _convertCtxSrcHeight != srcHeight
-            || _convertCtxSrcColorRange != srcColorRange
+            || _convertCtxSrcRange != srcRange
+            || _convertCtxSwsColorspace != swsColorspace
             || _convertCtxDstPixelFormat != dstPixelFormat
             || _convertCtxDstWidth != dstWidth
             || _convertCtxDstHeight != dstHeight);
@@ -376,38 +452,27 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
         _convertCtxSrcPixelFormat = srcPixelFormat;
         _convertCtxSrcWidth = srcWidth;
         _convertCtxSrcHeight = srcHeight;
-        _convertCtxSrcColorRange = srcColorRange;
+        _convertCtxSrcRange = srcRange;
+        _convertCtxSwsColorspace = swsColorspace;
         _convertCtxDstPixelFormat = dstPixelFormat;
         _convertCtxDstWidth = dstWidth;
         _convertCtxDstHeight = dstHeight;
 
         // Preventing deprecated pixel format used error messages, see:
         // https://libav.org/doxygen/master/pixfmt_8h.html#a9a8e335cf3be472042bc9f0cf80cd4c5
-        // This manually sets them to the new versions of equivalent types.
+        // This manually sets them to the new versions of equivalent types (their full range is in srcRange).
         switch (srcPixelFormat) {
         case AV_PIX_FMT_YUVJ420P:
             srcPixelFormat = AV_PIX_FMT_YUV420P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         case AV_PIX_FMT_YUVJ422P:
             srcPixelFormat = AV_PIX_FMT_YUV422P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         case AV_PIX_FMT_YUVJ444P:
             srcPixelFormat = AV_PIX_FMT_YUV444P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         case AV_PIX_FMT_YUVJ440P:
             srcPixelFormat = AV_PIX_FMT_YUV440P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         default:
             break;
@@ -419,42 +484,12 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
 
         // Set up the SoftWareScaler to convert colorspaces correctly.
         // Colorspace conversion makes no sense for RGB->RGB conversions
-        if (!isYUV()) {
+        if (!_convertCtx || !isYUV()) {
             return _convertCtx;
         }
 
-        int colorspace = isRec709Format() ? SWS_CS_ITU709 : SWS_CS_ITU601;
-        // Optional color space override
-        if (_colorMatrixTypeOverride > 0) {
-            if (_colorMatrixTypeOverride == 1) {
-                colorspace = SWS_CS_ITU709;
-            } else {
-                colorspace = SWS_CS_ITU601;
-            }
-        }
-
-        // sws_setColorspaceDetails takes a flag indicating the white-black range of the input:
-        //     0  -  mpeg, 16..235
-        //     1  -  jpeg,  0..255
-        int srcRange;
-        // Set this flag according to the color_range reported by the codec context.
-        switch (srcColorRange) {
-        case AVCOL_RANGE_MPEG:
-            srcRange = 0;
-            break;
-        case AVCOL_RANGE_JPEG:
-            srcRange = 1;
-            break;
-        case AVCOL_RANGE_UNSPECIFIED:
-        default:
-            // If the colour range wasn't specified, set the flag according to
-            // whether the data is YUV or not.
-            srcRange = isYUV() ? 0 : 1;
-            break;
-        }
-
         int result = sws_setColorspaceDetails(_convertCtx,
-                                              sws_getCoefficients(colorspace), // inv_table
+                                              sws_getCoefficients(swsColorspace), // inv_table
                                               srcRange, // srcRange -flag indicating the white-black range of the input (1=jpeg / 0=mpeg) 0 = 16..235, 1 = 0..255
                                               sws_getCoefficients(SWS_CS_DEFAULT), // table
                                               1, // dstRange - 0 = 16..235, 1 = 0..255
@@ -463,6 +498,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
                                               1 << 16); // saturation fixed point, with 1<<16 meaning no change);
 
         assert(result != -1);
+        (void)result;
     }
 
     return _convertCtx;
@@ -1715,6 +1751,16 @@ FFmpegFile::setSelectedStream(int streamIndex)
     }
 }
 
+std::string
+FFmpegFile::getColorspaceMetadata() const
+{
+    // the metadata of the format (WriteFFmpeg writes it there): its keys are not case sensitive (av_dict_get()
+    // without AV_DICT_MATCH_CASE), e.g. Matroska tags are upper case
+    const AVDictionaryEntry* t = (_context && _context->metadata) ? av_dict_get(_context->metadata, kMetaKeyColorspace, nullptr, 0) : nullptr;
+
+    return (t && t->value) ? std::string(t->value) : std::string();
+}
+
 const char*
 FFmpegFile::getColorspace() const
 {
@@ -2884,6 +2930,7 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
         avFrameIn->width,
         avFrameIn->height,
         avFrameIn->color_range,
+        avFrameIn->colorspace,
         dstPixFmt,
         avFrameOut->width,
         avFrameOut->height);
