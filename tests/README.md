@@ -13,6 +13,7 @@ make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
+make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
@@ -201,6 +202,15 @@ The test itself needs OCIO >= 2 (it reads the file back with `Processor::createG
 
 With OCIO 2, Export used to fail (`GroupTransform::write()` with a nonexistent "CDL"
 format, on an empty group), leaving an empty file. It sets `OCIO=test.ocio`.
+
+### 1d2. `test-ocio-filetransform` — OCIOFileTransform's CCC Id param, with AddressSanitizer
+
+`ocio_filetransform_test.cpp`, built with `-fsanitize=address` (not with MinGW), creates an OCIOFileTransform
+instance (whose file name is empty) and changes the file name: the CCC Id param must be shown for a `.cdl`, `.cc` or
+`.ccc` file only (the extension after the last `.`, in any case), not for `cc` or `x.icc`. `updateCCCId()` compared the end of the file name with the extensions with `std::equal` on the reversed
+strings, which read before the start of a file name shorter than the extension, as the default, empty, one (an ASan
+stack-buffer-underflow). With libstdc++ (Linux), ASan doesn't see that read, which stays inside the
+`std::string` object (its short-string buffer): only libc++ (macOS) catches the old bug. It sets `OCIO=test.ocio`.
 
 ### 1e. `test-ocio-anim` — GenericOCIO's animated colorspaces (#128)
 
@@ -551,6 +561,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
+| `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |

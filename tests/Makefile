@@ -152,6 +152,21 @@ endif
 ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 
+# OCIOFileTransform's CCC Id param, with AddressSanitizer (an out-of-bounds read of the file name), with the OpenGL
+# sources of ocio_cdl_test. No ASan with MinGW (MS Windows), which doesn't have it. (Added to test and clean here.)
+OCIO_FT_SRCS := ../OCIO/OCIOFileTransform.cpp $(filter-out ../OCIO/OCIOCDLTransform.cpp,$(OCIO_CDL_SRCS))
+OCIO_FT_ASAN := $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer)
+ocio_filetransform_test: ocio_filetransform_test.cpp ofx_test_host.h $(OCIO_FT_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(OCIO_FT_ASAN) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+.PHONY: test-ocio-filetransform clean-ocio-filetransform
+test: test-ocio-filetransform
+clean: clean-ocio-filetransform
+test-ocio-filetransform: ocio_filetransform_test
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" ./ocio_filetransform_test
+clean-ocio-filetransform:
+	rm -rf ocio_filetransform_test ocio_filetransform_test.dSYM
+
 # OCIOColorSpace (with the OpenGL sources of ocio_cdl_test) and the reader/writer plug-ins
 OCIO_ANIM_SRCS := ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIOPluginBase.cpp \
     ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp \
