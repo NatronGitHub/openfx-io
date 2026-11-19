@@ -1093,7 +1093,7 @@ ReadPNGPlugin::decode(const string& filename,
                       float* pixelData,
                       const OfxRectI& bounds,
                       PixelComponentEnum pixelComponents,
-                      int /*pixelComponentCount*/,
+                      int pixelComponentCount,
                       int rowBytes)
 {
     if ((pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentXY) && (pixelComponents != ePixelComponentAlpha)) {
@@ -1121,8 +1121,6 @@ ReadPNGPlugin::decode(const string& filename,
     int colorType;
     double par;
     getPNGInfo(png, info, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-
-    assert(renderWindow.x1 >= x1 && renderWindow.y1 >= y1 && renderWindow.x2 <= x1 + width && renderWindow.y2 <= y1 + height);
 
     std::size_t pngRowBytes = nChannels * width;
     if (bitdepth == eBitDepthUShort) {
@@ -1197,7 +1195,16 @@ ReadPNGPlugin::decode(const string& filename,
         return;
     }
 
-    convertDepthAndComponents(tmpData, renderWindow, renderScale, srcBounds, srcComponents, bitdepth, pngRowBytes, pixelData, bounds, pixelComponents, rowBytes);
+    // The render window may be any part of bounds, and may not be in srcBounds if the file changed since
+    // getFrameBounds(): black out of the file's bounds.
+    OfxRectI window;
+    const bool inFile = intersectWindow(renderWindow, srcBounds, &window);
+    if (!sameWindow(window, renderWindow)) {
+        fillWithBlack(renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
+    }
+    if (inFile) {
+        convertDepthAndComponents(tmpData, window, renderScale, srcBounds, srcComponents, bitdepth, pngRowBytes, pixelData, bounds, pixelComponents, rowBytes);
+    }
 } // ReadPNGPlugin::decode
 
 bool

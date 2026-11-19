@@ -106,6 +106,9 @@ private:
     virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
+    // the render window is out of the cached frame bounds: read the header again (the file may have changed)
+    virtual bool refreshFrameBounds(const string& filename, OfxTime time, int view) OVERRIDE FINAL;
+
     /**
      * @brief Called when the input image/video file changed.
      *
@@ -505,8 +508,9 @@ public:
     // The information about a file: reads its header if it is not cached yet (throws if it can not be read)
     File get(const string& filename);
 
-    // Inserts or replaces the information about a file, from a header that was just read
-    void update(const string& filename, const File& file);
+    // Inserts or replaces the information about a file, from a header that was just read. Returns true if the
+    // cache changed.
+    bool update(const string& filename, const File& file);
 
     // Empties the cache
     void clear();
@@ -536,7 +540,7 @@ FileManager::get(const string& filename)
     return _files.insert(make_pair(filename, file)).first->second;
 }
 
-void
+bool
 FileManager::update(const string& filename,
                     const File& file)
 {
@@ -544,9 +548,15 @@ FileManager::update(const string& filename,
     FilesMap::iterator it = _files.find(filename);
     if (it == _files.end()) {
         _files.insert(make_pair(filename, file));
+
+        return true;
     } else if (it->second != file) {
         it->second = file;
+
+        return true;
     }
+
+    return false;
 }
 
 void
@@ -883,6 +893,23 @@ ReadEXRPlugin::getFrameBounds(const string& filename,
     *tile_width = *tile_height = 0;
 
     return true;
+}
+
+bool
+ReadEXRPlugin::refreshFrameBounds(const string& filename,
+                                  OfxTime /*time*/,
+                                  int /*view*/)
+{
+    // e.g. the file was rewritten with other windows, then reverted to the header that the host got the RoD from,
+    // while the cache still has the other one (the cache is updated by decode(), when it reads the file)
+    try {
+        Exr::InputFile in(filename);
+
+        return Exr::FileManager::s_readerManager.update(filename, Exr::File(in.get().header()));
+    } catch (const std::exception&) {
+        // getFrameBounds() or decode() report the error
+        return false;
+    }
 }
 
 mDeclareReaderPluginFactory(ReadEXRPluginFactory, ;, false);

@@ -19,6 +19,7 @@ make test-runscript # RunScript: stderr line splitting (all systems); on MS Wind
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
+make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
 make test-ofx14-scan-asan # the same, built with AddressSanitizer
@@ -390,6 +391,9 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   with the RoD the host got before the rewrite, at scale 1 (straight into the output image,
   and through GenericReader's buffer) and 1/2: the whole render window is written, black
   out of the new frame bounds.
+* **a reverted file**: rewritten with a smaller data window and rendered (the header cache
+  then has the new header), then reverted to the first header, whose RoD the host still has:
+  the render is the first image, not cropped to the cached data window (#163).
 * **a truncated file**: the render must fail, with an error message.
 * **concurrent renders**: 6 instances render 2 files (3 instances per file) 8 times each
   from 6 threads at once: each render must give the same image as a single-threaded one.
@@ -405,6 +409,26 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 `make bench-exr` (optimized build) times 5 renders of 2048x1556 RGBA half files with ZIP,
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
+
+### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163)
+
+`reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (RGB, RGBA), and scanline
+and tiled EXR with a data window smaller than the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM;
+8-bit RGB and RGBA PNG for ReadPNG (only if `pkg-config` finds libpng). It is built with
+[AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS Windows), and the output image is
+between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush against one of them:
+
+* **render scale 1/2**: GenericReader decodes a full-resolution window into its buffer: decode() gets a render scale
+  of 1 (ReadOIIO and ReadPFM assert it, #160).
+* **narrow render windows**: a few columns, a few rows, a box, a pixel, the edges, at scale 1 and 1/2, in an output
+  image of the RoD (and, for ReadOIIO, which supports tiles, of the window): only the window is written, with the
+  pixels of the render of the whole RoD, which are the file's at scale 1 (#163).
+* **a rewritten file**: smaller or larger, rendered with the RoD the host got before: only the window is written.
+* **concurrent renders** of narrow windows by 4 instances while another thread replaces the file by smaller and
+  larger ones: only the windows are written.
+
+`READER_WINDOW_ONLY=text` runs only the tests whose title contains `text`. `test-render` also renders narrow windows
+of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 
 ### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
 
@@ -671,6 +695,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
+| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, render scale 1/2, rewritten files, with ASan and guard pages. |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
 | `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |

@@ -1074,13 +1074,14 @@ testMipmap(OfxPlugin* pMipmap, const std::string& still)
                     check(rod.x1 == frame.x1 && rod.y1 == frame.y1 && rod.x2 == frame.x2 && rod.y2 == frame.y2 && bounds.x1 == ob.x1 && bounds.y1 == ob.y1 && bounds.x2 == ob.x2 && bounds.y2 == ob.y2,
                           "%s: RoD (%g,%g)-(%g,%g) (canonical coordinates), output bounds (%d,%d)-(%d,%d)",
                           what, rod.x1, rod.y1, rod.x2, rod.y2, bounds.x1, bounds.y1, bounds.x2, bounds.y2);
-                    // decode() was asked for the full-resolution pixels of the render window
+                    // decode() was asked for the full-resolution pixels of the render window, at render scale 1 (its
+                    // window is at full resolution, #160)
                     const OfxRectI fullRes = { (std::max)(rw.x1 * pot, frame.x1), (std::max)(rw.y1 * pot, frame.y1),
                                                (std::min)(rw.x2 * pot, frame.x2), (std::min)(rw.y2 * pot, frame.y2) };
-                    const bool decodeOk = r.plugin->records.size() == 1 && r.plugin->records[0].renderScale.x == 1. / pot && r.plugin->records[0].renderScale.y == 1. / pot
+                    const bool decodeOk = r.plugin->records.size() == 1 && r.plugin->records[0].renderScale.x == 1. && r.plugin->records[0].renderScale.y == 1.
                         && r.plugin->records[0].renderWindow.x1 == fullRes.x1 && r.plugin->records[0].renderWindow.y1 == fullRes.y1
                         && r.plugin->records[0].renderWindow.x2 == fullRes.x2 && r.plugin->records[0].renderWindow.y2 == fullRes.y2;
-                    check(decodeOk, "%s: decode() called once, for the full-resolution window (%d,%d)-(%d,%d)", what, fullRes.x1, fullRes.y1, fullRes.x2, fullRes.y2);
+                    check(decodeOk, "%s: decode() called once, for the full-resolution window (%d,%d)-(%d,%d), at scale 1", what, fullRes.x1, fullRes.y1, fullRes.x2, fullRes.y2);
 
                     int badRef = 0, badBox = 0, badOutside = 0, nBoxes = 0;
                     for (int y = ob.y1; y < ob.y2; ++y) {

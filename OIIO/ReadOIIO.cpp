@@ -2507,12 +2507,28 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     specBounds.y2 = spec.full_y + spec.full_height - spec.y;
 
     // Where to write the data in the buffer, everything outside of that is black
-    // It depends on the extra padding we added in getFrameBounds
+    // It depends on the extra padding we added in getFrameBounds.
+    // The render window may be any part of bounds (e.g. a few columns or rows), and may not be in the data window if
+    // the file changed since getFrameBounds().
     OfxRectI renderWindowUnPadded;
-    renderWindowUnPadded.x1 = (std::max)(renderWindow.x1, specBounds.x1);
-    renderWindowUnPadded.y1 = (std::max)(renderWindow.y1, specBounds.y1);
-    renderWindowUnPadded.x2 = (std::min)(renderWindow.x2, specBounds.x2);
-    renderWindowUnPadded.y2 = (std::min)(renderWindow.y2, specBounds.y2);
+    const bool inData = intersectWindow(renderWindow, specBounds, &renderWindowUnPadded);
+
+    const int pixelBytes = numChannels * getComponentBytes(eBitDepthFloat);
+    const int xStride = pixelBytes;
+    const int yStride = -rowBytes;
+
+    // Byte offset to the first pixel of the render window
+    const size_t renderWindowDataOffset = (size_t)(renderWindow.y1 - bounds.y1) * rowBytes + (size_t)(renderWindow.x1 - bounds.x1) * pixelBytes;
+
+    if (!inData) {
+        // nothing to read
+        char* yptr = (char*)pixelData + renderWindowDataOffset;
+        for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
+            std::memset(yptr, 0, (size_t)pixelBytes * (renderWindow.x2 - renderWindow.x1));
+        }
+
+        return;
+    }
 
     // The renderWindowUnPadded must be contained in the original render Window
     assert(renderWindowUnPadded.x1 >= renderWindow.x1 && renderWindowUnPadded.x2 <= renderWindow.x2 && renderWindowUnPadded.y1 >= renderWindow.y1 && renderWindowUnPadded.y2 <= renderWindow.y2);
@@ -2528,42 +2544,21 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     // Invert what was done in getframebound
     yend = spec.full_height + spec.full_y - renderWindowUnPadded.y1;
     ybegin = spec.full_height + spec.full_y - renderWindowUnPadded.y2;
-
-    const int pixelBytes = numChannels * getComponentBytes(eBitDepthFloat);
-    const int xStride = pixelBytes;
-    const int yStride = -rowBytes;
+    // (in the data window)
+    assert(spec.x <= xbegin && xbegin < xend && xend <= spec.x + spec.width);
+    assert(spec.y <= ybegin && ybegin < yend && yend <= spec.y + spec.height);
 
     // Pixel offset to the start of the render window first line
     size_t bottomScanLineDataStartOffset = (size_t)(renderWindowUnPadded.y1 - bounds.y1) * rowBytes + (size_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes;
     // Pixel offset to the start of the last line of the render window
     size_t topScanLineDataStartOffset = (size_t)(renderWindowUnPadded.y2 - 1 - bounds.y1) * rowBytes + (size_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes; // offset for line y2-1
 
-    // Clear scanlines out of data window to black
-    // Usually the ImageCache does it for us, but here we may use the API directly
-    if (!(_cache && useCache)) {
-        float* topScanLineDataStartPtr = (float*)((char*)pixelData + topScanLineDataStartOffset);
-        char* yptr = (char*)topScanLineDataStartPtr;
-        for (int y = ybegin; y < yend; ++y, yptr += -rowBytes) {
-            if ((y < spec.y) || (y >= (spec.y + spec.height))) {
-                std::memset(yptr, 0, pixelBytes * (xend - xbegin));
-                continue;
-            }
-            if (xbegin < spec.x) {
-                std::memset(yptr, 0, pixelBytes * (spec.x - xbegin));
-            }
-            if (xend > spec.x + spec.width) {
-                std::memset(yptr + spec.width * pixelBytes, 0, pixelBytes * (xend - (spec.x + spec.width)));
-            }
-        }
-    }
-
-    if (renderWindowUnPadded.x1 > renderWindow.x1 || renderWindowUnPadded.y1 > renderWindow.y1 || renderWindowUnPadded.x2 < renderWindow.x2 || renderWindowUnPadded.y2 < renderWindow.y2) {
+    if (!sameWindow(renderWindowUnPadded, renderWindow)) {
         // Clear any padding we added outside of renderWindowUnPadded to black
         // Clear scanlines out of data window to black
         assert(bounds.y1 <= renderWindow.y1 && bounds.x1 <= renderWindow.x1);
         assert(bounds.y2 >= renderWindow.y2 && bounds.x2 >= renderWindow.x2);
-        size_t dataOffset = (size_t)(renderWindow.y1 - bounds.y1) * rowBytes + (size_t)(renderWindow.x1 - bounds.x1) * pixelBytes;
-        char* yptr = (char*)pixelData + dataOffset;
+        char* yptr = (char*)pixelData + renderWindowDataOffset;
         for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
             if ((y < renderWindowUnPadded.y1) || (y >= renderWindowUnPadded.y2)) {
                 memset(yptr, 0, pixelBytes * (renderWindow.x2 - renderWindow.x1));
@@ -2586,10 +2581,11 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         bool duplicate = false;
         for (std::size_t j = 0; !duplicate && j < i; ++j) {
             if (channels[i] == channels[j]) {
-                char* yptr = (char*)((float*)((char*)pixelData + dataOffset));
-                for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
+                // (the channel j was read in renderWindowUnPadded, and is black elsewhere)
+                char* yptr = (char*)pixelData + bottomScanLineDataStartOffset;
+                for (int y = renderWindowUnPadded.y1; y < renderWindowUnPadded.y2; ++y, yptr += rowBytes) {
                     float* xptr = (float*)yptr;
-                    for (int x = renderWindow.x1; x < renderWindow.x2; ++x, xptr += numChannels) {
+                    for (int x = renderWindowUnPadded.x1; x < renderWindowUnPadded.x2; ++x, xptr += numChannels) {
                         xptr[i] = xptr[j];
                     }
                 }
@@ -2602,11 +2598,11 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         }
 
         if (channels[i] < kXChannelFirst) {
-            // fill channel with constant value
+            // fill channel with constant value, in the data window (everything outside of it is black)
             char* lineStart = (char*)pixelData + bottomScanLineDataStartOffset;
-            for (int y = renderWindow.y1; y < renderWindow.y2; ++y, lineStart += rowBytes) {
+            for (int y = renderWindowUnPadded.y1; y < renderWindowUnPadded.y2; ++y, lineStart += rowBytes) {
                 float* cur = (float*)lineStart;
-                for (int x = renderWindow.x1; x < renderWindow.x2; ++x, cur += numChannels) {
+                for (int x = renderWindowUnPadded.x1; x < renderWindowUnPadded.x2; ++x, cur += numChannels) {
                     cur[i] = float(channels[i]);
                 }
             }
@@ -2655,8 +2651,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 }
             }
             if (!gotPixels) { // !useCache
-                assert(kSupportsTiles || (!kSupportsTiles && (renderWindow.x2 - renderWindow.x1) == spec.width && (renderWindow.y2 - renderWindow.y1) == spec.height));
-
                 // We clamp to the valid scanlines portion.
                 int ybeginClamped = (std::min)((std::max)(spec.y, ybegin), spec.y + spec.height);
                 int yendClamped = (std::min)((std::max)(spec.y, yend), spec.y + spec.height);
@@ -2665,8 +2659,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
                 // Do not call valid_tile_range because a tiled file can only be read with read_tiles with OpenImageIO.
                 // Otherwise it will give the following error: called OpenEXRInput::read_native_scanlines without an open file
-                if (spec.tile_width == 0) {
-                    // Read by scanlines
+                if ((spec.tile_width == 0) && (xbeginClamped == spec.x) && (xendClamped == spec.x + spec.width)) {
+                    // Read by scanlines: read_scanlines() reads whole lines of the data window, here as wide as the
+                    // render window
 
                     if (!img->read_scanlines(subImageIndex, 0, ybeginClamped, // y begin
                                              yendClamped, // y end
@@ -2681,6 +2676,33 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                         throwSuiteStatusException(kOfxStatFailed);
 
                         return;
+                    }
+                } else if (spec.tile_width == 0) {
+                    // Read by scanlines, the render window is narrower than the data window: read_scanlines() reads
+                    // whole lines, so read blocks of lines into a buffer, and copy the render window part of them.
+                    const int nch = chend - chbegin;
+                    const std::size_t lineFloats = (std::size_t)spec.width * nch;
+                    const int kBlockLines = 256;
+                    const int blockLines = (std::min)(kBlockLines, yendClamped - ybeginClamped);
+                    vector<float> lines(lineFloats * blockLines);
+                    char* dstLine = (char*)topScanLineDataStartPtr; // the line ybeginClamped (the top line)
+                    for (int yb = ybeginClamped; yb < yendClamped; yb += blockLines) {
+                        const int ye = (std::min)(yb + blockLines, yendClamped);
+                        if (!img->read_scanlines(subImageIndex, 0, yb, ye, zbegin, chbegin, chend, TypeDesc::FLOAT, &lines.front(), AutoStride, AutoStride)) {
+                            setPersistentMessage(Message::eMessageError, "", img->geterror());
+                            throwSuiteStatusException(kOfxStatFailed);
+
+                            return;
+                        }
+                        for (int y = yb; y < ye; ++y, dstLine -= rowBytes) {
+                            const float* srcPtr = &lines.front() + (std::size_t)(y - yb) * lineFloats + (std::size_t)(xbeginClamped - spec.x) * nch;
+                            float* dstPtr = (float*)dstLine;
+                            for (int x = xbeginClamped; x < xendClamped; ++x, srcPtr += nch, dstPtr += numChannels) {
+                                for (int c = 0; c < nch; ++c) {
+                                    dstPtr[c] = srcPtr[c];
+                                }
+                            }
+                        }
                     }
                 } else {
                     // If the region to read is not a multiple of tile size we must provide a buffer
@@ -2789,7 +2811,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                                      srcPtr += (chend - chbegin),
                                      dstPtr += numChannels) {
                                 for (int c = 0; c < (chend - chbegin); ++c) {
-                                    assert(!OFX::IsNaN(srcPtr[c])); // Check for NaNs
                                     dstPtr[c] = srcPtr[c];
                                 }
                             }

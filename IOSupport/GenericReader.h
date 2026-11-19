@@ -26,6 +26,7 @@
 #define Io_GenericReader_h
 
 #include "IOUtility.h"
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <ofxsImageEffect.h>
@@ -195,6 +196,53 @@ protected:
         std::string rawComps;
     };
 
+    /**
+     * @brief The part of renderWindow that is in fileBounds (for decode() and decodePlane(), the bounds of the image
+     * in the file that they opened). Returns false if it is empty (*window is then (0,0,0,0)).
+     **/
+    static bool intersectWindow(const OfxRectI& renderWindow,
+                                const OfxRectI& fileBounds,
+                                OfxRectI* window)
+    {
+        window->x1 = (std::max)(renderWindow.x1, fileBounds.x1);
+        window->y1 = (std::max)(renderWindow.y1, fileBounds.y1);
+        window->x2 = (std::min)(renderWindow.x2, fileBounds.x2);
+        window->y2 = (std::min)(renderWindow.y2, fileBounds.y2);
+        if ((window->x1 >= window->x2) || (window->y1 >= window->y2)) {
+            window->x1 = window->y1 = window->x2 = window->y2 = 0;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    static bool sameWindow(const OfxRectI& a,
+                           const OfxRectI& b)
+    {
+        return (a.x1 == b.x1) && (a.y1 == b.y1) && (a.x2 == b.x2) && (a.y2 == b.y2);
+    }
+
+    /**
+     * @brief Fills the renderWindow part of dstPixelData (whose bounds are dstBounds) with transparent black.
+     * decode() and decodePlane() may use it for the part of their render window that is not in the file, e.g.
+     * after the file changed since getFrameBounds() was called.
+     **/
+    void fillWithBlack(const OfxRectI& renderWindow,
+                       const OfxPointD& renderScale,
+                       void* dstPixelData,
+                       const OfxRectI& dstBounds,
+                       OFX::PixelComponentEnum dstPixelComponents,
+                       int dstPixelComponentCount,
+                       OFX::BitDepthEnum dstBitDepth,
+                       int dstRowBytes);
+
+    /**
+     * @brief Converts the renderWindow part of srcPixelData to dstPixelData (float).
+     * srcPixelData is top-down: its first row is the top row of srcBounds (y = srcBounds.y2 - 1), and its first
+     * pixel in a row is at x = srcBounds.x1. dstPixelData is bottom-up, with bounds dstBounds. renderWindow must be
+     * in srcBounds and in dstBounds.
+     **/
     void convertDepthAndComponents(const void* srcPixelData,
                                    const OfxRectI& renderWindow,
                                    const OfxPointD& renderScale,
@@ -284,6 +332,17 @@ private:
      */
     virtual bool isTileOrientationTopDown() const { return true; }
 
+    /**
+     * @brief Called by render() when the render window is out of the frame bounds that getFrameBounds() returned
+     * (this happens when the file changed since the host got the RoD). A reader that caches the frame bounds (e.g.
+     * ReadEXR, from the file headers) reads them again from the file, updates its cache, and returns true if they
+     * changed: render() then calls getFrameBounds() again, instead of cropping the render window to old frame
+     * bounds. The default does nothing, and returns false.
+     **/
+    virtual bool refreshFrameBounds(const std::string& /*filename*/,
+                                    OfxTime /*time*/,
+                                    int /*view*/) { return false; }
+
     virtual bool getFrameRate(const std::string& /*filename*/,
                               double* /*fps*/) const { return false; }
 
@@ -295,6 +354,11 @@ private:
      * You can always skip the color-space conversion, but for all linear hosts it would produce either
      * false colors or sub-par performances in the case the end-user has to append a color-space conversion
      * effect her/himself.
+     *
+     * renderWindow and bounds are in the pixel coordinates of the file (proxy or not), at full resolution:
+     * render() scales the image to the render scale itself, so renderScale is always (1,1). renderWindow may be any
+     * part of bounds (e.g. a tile, a few columns or a few rows, or the RoD that the host got before the file changed):
+     * decode() must only write in renderWindow, and fill the part of renderWindow that is not in the file with black.
      **/
     virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
     virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
@@ -387,15 +451,6 @@ private:
                         OFX::BitDepthEnum dstPixelDepth,
                         const OfxRectI& dstBounds,
                         int dstRowBytes);
-
-    void fillWithBlack(const OfxRectI& renderWindow,
-                       const OfxPointD& renderScale,
-                       void* dstPixelData,
-                       const OfxRectI& dstBounds,
-                       OFX::PixelComponentEnum dstPixelComponents,
-                       int dstPixelComponentCount,
-                       OFX::BitDepthEnum dstBitDepth,
-                       int dstRowBytes);
 
     void premultPixelData(const OfxRectI& renderWindow,
                           const OfxPointD& renderScale,

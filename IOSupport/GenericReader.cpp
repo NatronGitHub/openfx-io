@@ -1716,7 +1716,20 @@ GenericReaderPlugin::render(const RenderArguments& args)
     // the file, e.g. ReadEXR): the part of the render window out of the new frame bounds is black.
     OfxRectI renderWindow = args.renderWindow;
     {
-        const OfxRectI frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        OfxRectI frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        if (((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2))
+            && refreshFrameBounds(filename, sequenceTime, args.renderView)) {
+            // the reader's cached frame bounds were older than the file (e.g. the file reverted to the header that
+            // the host got the RoD from): get the new ones
+            success = getFrameBounds(filename, sequenceTime, args.renderView, &frameBounds, &format, &par, &error, &tile_width, &tile_height);
+            if (!success) {
+                setPersistentMessage(Message::eMessageError, "", error);
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        }
         if ((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2)) {
             for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
                 fillWithBlack(args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, firstDepth, it->rowBytes);
@@ -1736,6 +1749,10 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
     // See below: we round the render window to the tile size
     renderWindowNotRounded = renderWindowFullRes;
+
+    // decode() and decodePlane() get a window in the pixel coordinates of the file, at full resolution (the
+    // downscaling to the render scale, if any, is done below by scalePixelData()): their render scale is 1.
+    const OfxPointD fileScale = { 1., 1. };
 
     try {
         for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -1804,9 +1821,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 DBG(std::printf("decode (to dst)\n"));
 
                 if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
+                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
                 } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
                 }
                 if (opaqueAlpha) {
                     setOpaqueAlpha(renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
@@ -1863,9 +1880,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 DBG(std::printf("decode (to tmp)\n"));
 
                 if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
+                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
                 } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, args.renderScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
                 }
 
                 if (abort()) {
@@ -2652,17 +2669,20 @@ public:
                 break;
             }
 
-            int srcY = _dstBounds.y2 - dsty - 1;
-            float* dst_pixels = (float*)((char*)_dstPixelData + (size_t)_dstBufferRowBytes * (dsty - _dstBounds.y1))
-                + (_dstBounds.x1 * nDstComp);
-            const SRCPIX* src_pixels = (const SRCPIX*)((const char*)_srcPixelData + (size_t)_srcBufferRowBytes * (srcY - _srcBufferBounds.y1))
-                + (_srcBufferBounds.x1 * nSrcComp);
+            // the source is top-down: its first row is y = _srcBufferBounds.y2 - 1
+            assert(_srcBufferBounds.y1 <= dsty && dsty < _srcBufferBounds.y2 && _dstBounds.y1 <= dsty && dsty < _dstBounds.y2);
+            assert(_srcBufferBounds.x1 <= procWindow.x1 && procWindow.x2 <= _srcBufferBounds.x2);
+            assert(_dstBounds.x1 <= procWindow.x1 && procWindow.x2 <= _dstBounds.x2);
+            const int srcRow = _srcBufferBounds.y2 - 1 - dsty;
+            // the first pixel of the row in each buffer (at x = bounds.x1)
+            float* dst_pixels = (float*)((char*)_dstPixelData + (size_t)_dstBufferRowBytes * (size_t)(dsty - _dstBounds.y1));
+            const SRCPIX* src_pixels = (const SRCPIX*)((const char*)_srcPixelData + (size_t)_srcBufferRowBytes * (size_t)srcRow);
 
             assert(dst_pixels && src_pixels);
 
             for (int x = procWindow.x1; x < procWindow.x2; ++x) {
-                int srcCol = x * nSrcComp;
-                int dstCol = x * nDstComp;
+                const size_t srcCol = (size_t)(x - _srcBufferBounds.x1) * nSrcComp;
+                const size_t dstCol = (size_t)(x - _dstBounds.x1) * nDstComp;
 
                 switch (nSrcComp) {
                 case 1:

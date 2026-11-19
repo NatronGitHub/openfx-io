@@ -9,7 +9,8 @@
  *  - a render window narrower than the data window (in blocks of lines), render scale 1/2, and a file rewritten
  *    with other windows (the header cache is updated by the next render, or emptied by the purge caches action),
  *    including renders with the RoD the host got before the rewrite (GenericReader then fills with black the part
- *    of the render window out of the new frame bounds)
+ *    of the render window out of the new frame bounds), and a file reverted to the header that the host got the
+ *    RoD from, while the cache has another one (the header is read again, the render is not cropped)
  *  - a truncated file: the render fails, with an error message (it used to succeed with rows left unwritten)
  *  - concurrent renders (ReadEXR is kOfxImageEffectRenderFullySafe): several instances render the same file
  *    and another one from several threads at once, and each must get the same image as a single render. Build
@@ -635,6 +636,54 @@ testRewriteCachedRoD(OfxPlugin* p, const std::string& dir, bool unpremult)
     check(nan == 0 && notBlack == 0, "no unwritten value (%d NaN), black out of the new frame bounds (%d not black)", nan, notBlack);
 }
 
+// The file is rewritten with a smaller data window, rendered (which updates the header cache), then reverted to the
+// first header, which the host still has the RoD of (#163): GenericReader asks ReadEXR to read the header again
+// (refreshFrameBounds()) when the render window is out of the cached frame bounds, and the render is the first image,
+// not cropped to the cached data window.
+void
+testRevert(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== file rewritten, rendered, then reverted: the host's RoD is the first one ====\n");
+    const std::string path = dir + "/revert.exr";
+    ExrSpec a, b;
+    a.display = a.data = box(0, 0, 63, 47);
+    b.display = box(0, 0, 63, 47);
+    b.data = box(20, 10, 30, 20);
+    Reader r;
+    if (!writeExr(path, a) || !r.create(p, path) || !ok(r.prepare())) {
+        check(false, "first file");
+
+        return;
+    }
+    checkRoD(r, { 0, 0, 64, 48 });
+    const OfxRectI rod = r.img;
+    // the file changes: this render reads the new header, and updates the cache
+    if (!writeExr(path, b)) {
+        ++gFailures;
+
+        return;
+    }
+    r.setImage(rod, 1.);
+    gPersistentError.clear();
+    OfxStatus st = r.render(rod);
+    check(ok(st) && gPersistentError.empty(), "render of the second file = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    check(wrongPixels(r, b, rod) == 0, "the second file's pixels");
+    // the file reverts to the first header (the host keeps the first RoD): the first image, not cropped
+    if (!writeExr(path, a)) {
+        ++gFailures;
+
+        return;
+    }
+    for (int k = 0; k < 2; ++k) {
+        r.setImage(rod, 1.);
+        gPersistentError.clear();
+        st = r.render(rod);
+        check(ok(st) && gPersistentError.empty(), "render %d of the reverted file = %d%s%s", k + 1, st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+        const int bad = wrongPixels(r, a, rod);
+        check(bad == 0, "render %d: the first file's pixels (%d wrong)", k + 1, bad);
+    }
+}
+
 // A render window narrower than a data window of more lines than a block of decode()'s buffer (256 lines): the
 // lines are read in blocks.
 void
@@ -981,6 +1030,7 @@ main(int argc, char** argv)
     testRewrite(p, dir);
     testRewriteCachedRoD(p, dir, false);
     testRewriteCachedRoD(p, dir, true);
+    testRevert(p, dir);
     testWindowBlocks(p, dir);
     testTruncated(p, dir);
     testThreads(p, dir);
