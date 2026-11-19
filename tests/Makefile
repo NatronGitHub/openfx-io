@@ -252,6 +252,27 @@ test-ofx14: ofx14_host_test
 clean-ofx14:
 	rm -rf ofx14_host_test ofx14_host_test.dSYM .ofx14 .ofx14-11 .ofx14-gl .ofx14full
 
+# The same tests after a plug-in scan (--scan: Load and Describe every plug-in, then Unload them all, as a host that
+# unloads the binary after its scan, HostSupport's default since openfx #174), in the OFX 1.4-only host and in the
+# full host; then the same with AddressSanitizer (not on MS Windows).
+OFX14_ASAN := -fsanitize=address -fno-omit-frame-pointer
+ofx14_host_test_asan: ofx14_host_test.cpp ofx_test_host.h ofx14_names.h $(OFX14_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OFX14_CXXFLAGS) $(OFX14_ASAN) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OFX14_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+.PHONY: test-ofx14-scan test-ofx14-scan-asan clean-ofx14-scan
+test: test-ofx14-scan
+clean: clean-ofx14-scan
+test-ofx14-scan: ofx14_host_test
+	rm -rf .ofx14scan .ofx14scanfull
+	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test --scan $(CURDIR)/.ofx14scan
+	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test --full --scan $(CURDIR)/.ofx14scanfull
+test-ofx14-scan-asan: ofx14_host_test_asan
+	rm -rf .ofx14scanasan .ofx14scanasanfull
+	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test_asan --scan $(CURDIR)/.ofx14scanasan
+	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test_asan --full --scan $(CURDIR)/.ofx14scanasanfull
+clean-ofx14-scan:
+	rm -rf ofx14_host_test_asan ofx14_host_test_asan.dSYM .ofx14scan .ofx14scanfull .ofx14scanasan .ofx14scanasanfull
+
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # -pthread: the test uses std::thread
 EXR_READ_SRCS := ../EXR/ReadEXR.cpp $(READER_HOOKS_SRCS)
