@@ -428,6 +428,7 @@ private:
     // reader error state
     std::string _errorMsg; // internal decoding error string
     bool _invalidState; // true if the reader is in an invalid state
+    bool _sawFrameWithoutTimestamp = false; // a frame could not be placed during the current decode()
     unsigned long _seekCount; // number of seeks by decode(), for tests
     int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
     bool _readAtOpen; // the constructor read or sought in the file, after avformat_find_stream_info()
