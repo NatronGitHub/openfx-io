@@ -572,7 +572,7 @@ OIIOTextPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setSupportsMultiResolution(kSupportsMultiResolution); // may be switch to true later? don't forget to reduce font size too
     desc.setRenderThreadSafety(kRenderThreadSafety);
 
-    desc.setOverlayInteractDescriptor(new PositionOverlayDescriptor<PositionInteractParam>);
+    ofxsSetOverlayInteractDescriptorV2(desc, new PositionOverlayDescriptorV2<PositionInteractParam>);
 
     desc.setIsDeprecated(true); // this effect was superseeded by the text plugin in openfx-arena
 }

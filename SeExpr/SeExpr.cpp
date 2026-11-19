@@ -4428,8 +4428,9 @@ SeExprInteract::keyUp(const KeyArgs& args)
     return RectangleInteract::keyUp(args);
 }
 
-class SeExprOverlayDescriptor
-    : public DefaultEffectOverlayDescriptor<SeExprOverlayDescriptor, SeExprInteract> {
+// Draws with the DrawSuite when the host provides it, as RectangleOverlayDescriptorV2.
+class SeExprOverlayDescriptorV2
+    : public DefaultEffectOverlayDescriptorV2<SeExprOverlayDescriptorV2, SeExprInteract> {
 };
 
 // mDeclarePluginFactory(SeExprPluginFactory, {ofxsThreadSuiteCheck();}, {});
@@ -4487,7 +4488,7 @@ SeExprPluginFactory<simple>::describe(ImageEffectDescriptor& desc)
     desc.setRenderTwiceAlways(false);
     desc.setSupportsMultipleClipPARs(false);
 
-    desc.setOverlayInteractDescriptor(new SeExprOverlayDescriptor);
+    ofxsSetOverlayInteractDescriptorV2(desc, new SeExprOverlayDescriptorV2);
 } // >::describe
 
 template <bool simple>

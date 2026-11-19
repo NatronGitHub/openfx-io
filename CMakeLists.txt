@@ -102,7 +102,7 @@ endforeach()
 # silently building a bundle without it
 option(OFX_IO_REQUIRE_ALL "Fail if the libraries of a plug-in group that is not disabled (OFX_IO_WITH_<group>) are not found" OFF)
 
-# Makefile.master links -lGL (Linux, FreeBSD), -framework OpenGL, -lopengl32: the legacy libGL, not GLVND's
+# Makefile.master links -lGL (Linux, FreeBSD), -weak_framework OpenGL, -lopengl32: the legacy libGL, not GLVND's
 # libOpenGL + libGLX
 if(NOT DEFINED OpenGL_GL_PREFERENCE)
   set(OpenGL_GL_PREFERENCE LEGACY)
@@ -333,7 +333,17 @@ endif()
 foreach(_g SEEXPR OCIO EXR FFMPEG OIIO PNG RUNSCRIPT)
   set(_io_src_${_g} "")
 endforeach()
-target_link_libraries(IO PRIVATE OpenGL::GL) # as Makefile.master, also without the OpenGL sources
+# OpenGL, also without the OpenGL sources, linked as openfx's Makefile.master does (openfx#171): weak-linked on
+# macOS (-weak_framework OpenGL; also weak if OpenGL::GL adds -framework OpenGL), and --as-needed on ELF
+# platforms (-Wl,--as-needed -lGL), so that the bundle loads on a machine without OpenGL when it makes no OpenGL
+# call. LINK_OPTIONS come before the libraries on the link line: --as-needed applies to all of the IO target's
+# shared libraries, as with the default of many Linux distributions' toolchains.
+target_link_libraries(IO PRIVATE OpenGL::GL)
+if(APPLE)
+  target_link_options(IO PRIVATE "LINKER:-weak_framework,OpenGL")
+elseif(UNIX)
+  target_link_options(IO PRIVATE "LINKER:--as-needed")
+endif()
 io_resources(
   PFM/fr.inria.openfx.ReadPFM.png PFM/fr.inria.openfx.ReadPFM.svg
   PFM/fr.inria.openfx.WritePFM.png PFM/fr.inria.openfx.WritePFM.svg)
@@ -604,7 +614,10 @@ if(BUILD_TESTING)
         list(APPEND _io_env "DYLD_LIBRARY_PATH=" "DYLD_FALLBACK_LIBRARY_PATH=" "DYLD_FRAMEWORK_PATH=" "LD_LIBRARY_PATH=")
       endif()
       # TIMEOUT: more than run.sh's HOSTDEMO_TOTAL_TIMEOUT (600 s), so that it reports what hung
-      set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}")
+      # RESOURCE_LOCK: io-hostdemo and io-hostdemo-ofx14 render every plug-in of the same bundle, each of them
+      # loads the machine: not at the same time under ctest -j
+      set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}"
+                           RESOURCE_LOCK openfx-io-hostdemo)
       # io-hostdemo-ofx14: the same tests in hostDemo --ofx14, a host that implements only OFX 1.4 (its host
       # properties and suites, no OfxSetHost, no StrChoice or Bytes params, one view)
       add_test(NAME io-hostdemo-ofx14
@@ -612,7 +625,7 @@ if(BUILD_TESTING)
                        "${_io_installed_bundle}" "$<TARGET_FILE:io_verify_plugin_loads>"
                        "${CMAKE_CURRENT_BINARY_DIR}/hostdemo-ofx14")
       set_tests_properties(io-hostdemo-ofx14 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
-                           ENVIRONMENT "${_io_env};HOSTDEMO_ARGS=--ofx14")
+                           ENVIRONMENT "${_io_env};HOSTDEMO_ARGS=--ofx14" RESOURCE_LOCK openfx-io-hostdemo)
     endif()
   endif()
 
