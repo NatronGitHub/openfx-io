@@ -175,6 +175,15 @@ private:
         bool _reachedEnd; // the last demuxAndDecode() drained the decoder at the end of the file, without a frame to hold
         bool _drainedEarly; // the decoder was drained after too many damaged packets: decoding further needs a seek
         bool _damagedSinceKeyframe; // a damaged packet was dropped since the last restart of the decoder
+        bool _damageSeen; // a damaged packet was dropped in this file (seeks then use _openKeyframes)
+        bool _damagedSinceOpen; // a damaged packet was dropped since the decoder was opened (see flushDecoder())
+        bool _singleThreaded; // long-GOP codecs: damage was found with frame threads, the decoder now has 1 thread
+        bool _restartSingleThread; // the decoder must be opened again with 1 thread, before decoding further
+        std::vector<int64_t> _openKeyframes; // the timestamps of the keyframes of the index at open (sorted)
+        std::vector<AVIndexEntry> _openKeyframeEntries; // the same index entries
+        std::vector<int64_t> _recentPts; // the PTS of the last packets sent (as many as the frame threads)
+        bool _tainted; // long-GOP codecs: damage was found since the last restart of the decoder (see taint())
+        std::vector<int64_t> _taintedPts; // the PTS of the packets sent since the damage (see taint())
         int _lastDamagedFrame; // the largest frame of the damaged packets found by the current decode() (-1 if none)
         int _requestDroppedPackets; // the packets dropped by all the attempts of the current decode()
         bool _noTimestamps; // the current decode() found a decoded frame without a timestamp, and stopped
@@ -248,6 +257,15 @@ private:
             , _reachedEnd(false)
             , _drainedEarly(false)
             , _damagedSinceKeyframe(false)
+            , _damageSeen(false)
+            , _damagedSinceOpen(false)
+            , _singleThreaded(false)
+            , _restartSingleThread(false)
+            , _openKeyframes()
+            , _openKeyframeEntries()
+            , _recentPts()
+            , _tainted(false)
+            , _taintedPts()
             , _lastDamagedFrame(-1)
             , _requestDroppedPackets(0)
             , _noTimestamps(false)
@@ -369,6 +387,76 @@ private:
             ranges.push_back(std::make_pair(lo, hi));
             std::sort(ranges.begin(), ranges.end());
             _damagedRanges.swap(ranges);
+        }
+
+        // Long-GOP codecs: after damage, the frames of the packets sent from the damaged one until the decoder
+        // restarts at a keyframe (see demuxAndDecode()) are not used, since they may reference a damaged frame.
+        // As FFmpeg's own H.264 decoder does after a flush (h264dec.c:471, frame_recovered = 0), where frames are
+        // only output once "recovered" by an IDR frame or a recovery point (libavcodec/h264_slice.c:1374-1384,
+        // 1665-1681, h264dec.c:927-929 in FFmpeg 9.0.2, with AV_CODEC_FLAG_OUTPUT_CORRUPT and AV_CODEC_FLAG2_SHOW_ALL
+        // off, their defaults, libavcodec/options_table.h:56): without a flush, frame_recovered stays set, and
+        // the decoder outputs the frames that reference the damage as if they were good. With frame threads, the error of a packet
+        // comes with up to thread_count packets sent after it: these are taken as damaged too.
+        void taint()
+        {
+            if (!_tainted) {
+                _tainted = true;
+                for (int64_t pts : _recentPts) {
+                    addTaintedPts(pts);
+                }
+            }
+        }
+
+        void addTaintedPts(int64_t pts)
+        {
+            if ((pts != int64_t(AV_NOPTS_VALUE)) && !isTaintedPts(pts)) {
+                if (_taintedPts.size() >= 4096) {
+                    _taintedPts.erase(_taintedPts.begin());
+                }
+                _taintedPts.push_back(pts);
+            }
+        }
+
+        bool isTaintedPts(int64_t pts) const
+        {
+            return std::find(_taintedPts.begin(), _taintedPts.end(), pts) != _taintedPts.end();
+        }
+
+        void clearTaint()
+        {
+            _tainted = false;
+            _taintedPts.clear();
+            _recentPts.clear();
+        }
+
+        // a packet is sent to the decoder (window: the number of packets that may be decoded at once)
+        void packetSent(int64_t pts, int window)
+        {
+            if (pts == int64_t(AV_NOPTS_VALUE)) {
+                return;
+            }
+            while ((int)_recentPts.size() >= window) {
+                _recentPts.erase(_recentPts.begin());
+            }
+            _recentPts.push_back(pts);
+            if (_tainted) {
+                addTaintedPts(pts);
+            }
+        }
+
+        // A keyframe where the decoder may restart after damage: a keyframe of the index at open (by its
+        // timestamp: the index has the PTS of a Matroska block, the DTS of an MP4 sample), or without an index, a
+        // packet with the keyframe flag.
+        bool isRealKeyframe(const AVPacket* pkt) const
+        {
+            if (!(pkt->flags & AV_PKT_FLAG_KEY)) {
+                return false;
+            }
+            if (_openKeyframes.empty()) {
+                return true;
+            }
+            return ((pkt->pts != int64_t(AV_NOPTS_VALUE)) && std::binary_search(_openKeyframes.begin(), _openKeyframes.end(), pkt->pts)) ||
+                   ((pkt->dts != int64_t(AV_NOPTS_VALUE)) && std::binary_search(_openKeyframes.begin(), _openKeyframes.end(), pkt->dts));
         }
 
         bool isDamagedPts(int64_t pts) const
@@ -764,6 +852,8 @@ public:
     static bool isCodecAllowedForWriting(const char* name);
 
 private:
+    // flush the decoder, or open it again after damage
+    void flushDecoder(Stream* stream);
     bool seekToFrame(int64_t frame, int seekFlags);
 
     // damagedFrom: intra-only, the first frame of the frames up to the requested one known to be damaged (-1 if none)

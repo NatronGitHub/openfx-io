@@ -681,10 +681,13 @@ check_damaged_gop() {
 # check_damaged_mkv_run NAME DESCRIPTION FROM TO REFERENCE_FRAMES
 # A 12 s H.264 Matroska clip (testsrc2, 320x240, 25 fps, GOP 100 with B-frames: keyframes at packets 0, 100 and
 # 200) where 200 bytes at offset 8 of the video packets FROM to TO (0-based, in decoding order) are overwritten
-# with random bytes (perl, seeded): the damage desynchronises the Matroska blocks (e.g. keyframe flags on
-# damaged packets). The 1-based REFERENCE_FRAMES (e.g. "1-48,101-300"), which do not depend on the damaged
+# with random bytes (perl, seeded): the damage also hits the Matroska block headers (e.g. keyframe flags on
+# damaged packets, which the demuxer adds to the index), and damaged packets are parsed as H.264 parameter sets.
+# The 1-based REFERENCE_FRAMES (e.g. "1-48,101-300"), which do not depend on the damaged
 # packets, must give exactly the images of the clean file, sequentially, in reverse order, in a random order,
-# and with frame 120 then frame 1 in a newly opened file, with 1 and 8 decoder threads (--reference).
+# with frame 120 then frame 1 in a newly opened file, and each frame in its own newly opened file, with 1 and 8
+# decoder threads (--reference): these are the frames that the reader decoded before #158 (it failed at the
+# first damaged packet), which must not fail or change.
 check_damaged_mkv_run() {
     local name="$1" desc="$2" from="$3" to="$4" frames="$5"
     echo "== $desc =="
@@ -697,7 +700,7 @@ check_damaged_mkv_run() {
         return
     fi
     if [ ! -f "$tmp/clean_g100.mkv" ] &&
-        ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25,format=yuv420p -t 12 -c:v libx264 -g 100 -keyint_min 100 \
+        ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25,format=yuv420p -t 12 -threads 4 -c:v libx264 -g 100 -keyint_min 100 \
             -sc_threshold 0 -bf 2 -b:v 600k "$tmp/clean_g100.mkv"; then
         echo "FAIL: could not generate clean_g100.mkv"
         rc=1
@@ -707,7 +710,7 @@ check_damaged_mkv_run() {
     ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of compact=p=0 "$tmp/clean_g100.mkv" > "$tmp/$name.packets"
     if ! perl -e '
         my ($file, $list, $from, $to) = @ARGV;
-        srand(1);
+        srand(4);
         open(my $l, "<", $list) or die;
         my @p;
         while (<$l>) { my ($size) = /size=(\d+)/; my ($pos) = /pos=(\d+)/; push @p, [$pos, $size]; }
@@ -883,6 +886,7 @@ check_damaged_long ramp_damaged_run65.mov "MOV (ProRes, 300 frames, packets 10-7
 check_damaged_mkv_run damaged_g100_50_99.mkv "Matroska (H.264, GOP 100, B-frames, packets 50-99 damaged)" 50 99 "1-48,101-300"
 check_damaged_mkv_run damaged_g100_50_113.mkv "Matroska (H.264, GOP 100, B-frames, packets 50-113 damaged)" 50 113 "1-48,201-300"
 check_damaged_mkv_run damaged_g100_80_119.mkv "Matroska (H.264, GOP 100, B-frames, packets 80-119 damaged)" 80 119 "1-78,201-300"
+check_damaged_mkv_run damaged_g100_120_190.mkv "Matroska (H.264, GOP 100, B-frames, packets 120-190 damaged)" 120 190 "1-118,201-300"
 check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
     "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.

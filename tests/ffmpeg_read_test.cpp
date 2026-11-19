@@ -67,7 +67,8 @@
  *  18. optionally (--reference CLEAN --reference-frames F1,F2,...) only checks that the 1-based
  *      frames Fi give exactly the image of the same frame of the file CLEAN (e.g. the undamaged
  *      file), whatever the other frames give: every frame is decoded sequentially, in reverse
- *      order, in a random order, and in the --order frames, each in a newly opened file
+ *      order, in a random order, and in the --order frames, each in a newly opened file, and each
+ *      frame in its own newly opened file
  *      (e.g. the intact GOPs of a damaged file must decode as in the clean file, in any order).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
@@ -87,6 +88,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -303,6 +305,17 @@ main(int argc, char** argv)
 
     // --reference: the --reference-frames must be exactly those of the clean file, in every order.
     if (!referenceFile.empty()) {
+        if (!mustFail.empty() || !gaps.empty() || !concealed.empty() || !fresh.empty() || !positions.empty() || (rampStep > 0) ||
+            (maxSeqBytes >= 0) || (maxReverseBytes >= 0) || checkMonotonic) {
+            std::fprintf(stderr, "--reference only checks the --reference-frames (with --order): it cannot be combined with the other checks\n");
+            return 2;
+        }
+        for (int f : renderOrder) {
+            if ((f < 1) || (f > frames)) {
+                std::fprintf(stderr, "--order: frame %d is not in 1..%d\n", f, frames);
+                return 2;
+            }
+        }
         const size_t refBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
         std::vector<unsigned char> refBuf(refBytes);
         std::vector<std::vector<unsigned char>> ref(frames + 1);
@@ -333,14 +346,18 @@ main(int argc, char** argv)
         if (!renderOrder.empty()) {
             orders.push_back(std::make_pair(std::string("--order"), renderOrder));
         }
+        orders.push_back(std::make_pair(std::string("reopen"), all)); // each frame in its own newly opened file
         int refErrors = 0;
         for (const auto& o : orders) {
-            FFmpegFile file(filename);
+            std::unique_ptr<FFmpegFile> file(new FFmpegFile(filename));
             for (int f : o.second) {
+                if ((o.first == "reopen") && (f > 1)) {
+                    file.reset(new FFmpegFile(filename));
+                }
                 bool ok = false;
                 std::memset(refBuf.data(), 0, refBytes);
                 try {
-                    ok = file.decode(nullptr, f, loadNearest, refBuf.data());
+                    ok = file->decode(nullptr, f, loadNearest, refBuf.data());
                 } catch (const std::exception& e) {
                     ok = false;
                 }
