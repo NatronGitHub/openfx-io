@@ -1816,8 +1816,11 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
         std::printf("  FAIL: Y'CbCr is not tagged video range\n");
         ++failures;
     }
-    // the matrix that the writer converts with (BT.601 in SD), in the 'colr' atom or the Matroska Colour element
-    if (yuv && (s.space != AVCOL_SPC_SMPTE170M) && ((std::string(c.ext) == "mkv") || (std::string(c.ext) == "mov"))) {
+    // the matrix that the writer converts with (BT.601 in SD), in the 'colr' atom or the Matroska Colour element.
+    // Not for the v308 and v410 encoders (FFmpeg < 9), whose files must stay as on master, which does not set
+    // their matrix: the mov muxer writes the unspecified one (FFmpeg n6.1 libavformat/movenc.c:2164).
+    const bool oldEncoder = (s.codec == "v308") || (s.codec == "v408") || (s.codec == "v410");
+    if (yuv && !oldEncoder && (s.space != AVCOL_SPC_SMPTE170M) && ((std::string(c.ext) == "mkv") || (std::string(c.ext) == "mov"))) {
         std::printf("  FAIL: Y'CbCr is not tagged with the BT.601 (SMPTE 170M) matrix\n");
         ++failures;
     }
@@ -2371,8 +2374,9 @@ main(int argc, char** argv)
         cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: v410", "mov", "rawvideo", 1, 2, false, "rawvideo", "v410", "v30xle", yuv10Tol,
                           "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
 #else
-        cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: 2vuy", "mov", "rawvideo", 1, 2, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol,
-                          "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
+        // (values on no grid, in 8 bits: plus the 8-bit rounding, 0.5/255)
+        cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: 2vuy", "mov", "rawvideo", 1, 2, false, "rawvideo", "2vuy", "uyvy422",
+                          yuv422Tol + 0.5 / 255., "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
 #endif
 
         // Odd widths (63x47)

@@ -4358,9 +4358,21 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
     int width = (_rodPixel.x2 - _rodPixel.x1);
     int height = (_rodPixel.y2 - _rodPixel.y1);
     if (!_convertCtx) {
+        int swsFlags = (width == avCodecContext->width && height == avCodecContext->height) ? SWS_POINT : SWS_BICUBIC;
+        if (width % 2 != 0) {
+            // Before FFmpeg 8, swscale computes the chroma of RGB input from pairs of pixels (rgb24ToUV_half_c() and
+            // the like, FFmpeg n6.1 libswscale/input.c:938-955) when the output is horizontally subsampled, also at
+            // an odd width (n6.1 libswscale/utils.c:1493-1512), so that the last chroma sample reads a pixel past
+            // the end of the row: the last column of 4:2:2 and 4:2:0 output is wrong (by up to 85/255 in the tests).
+            // FFmpeg 8 disables this at an odd width (FFmpeg commit 2f95bc3cb3, "swscale/utils: disable
+            // full_chr_h_input optimization for odd width", ticket #11265; n8.0 utils.c:1331), which is what
+            // SWS_FULL_CHR_H_INP does: it is not used otherwise (n9.0 libswscale/utils.c:1380), so this changes
+            // nothing from FFmpeg 8 on, and nothing at an even width.
+            swsFlags |= SWS_FULL_CHR_H_INP;
+        }
         _convertCtx = sws_getContext(width, height, srcPixelFormat, // from
                                      avCodecContext->width, avCodecContext->height, dstPixelFormat, // to
-                                     (width == avCodecContext->width && height == avCodecContext->height) ? SWS_POINT : SWS_BICUBIC, nullptr, nullptr, nullptr);
+                                     swsFlags, nullptr, nullptr, nullptr);
         if (!_convertCtx) {
             return -1;
         }
