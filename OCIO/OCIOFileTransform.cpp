@@ -808,29 +808,17 @@ OCIOFileTransformPlugin::isIdentity(const IsIdentityArguments& args,
     return false;
 }
 
-// Does s end with suffix? (std::equal on the reversed strings alone reads before the start of s when s is shorter)
-static bool
-endsWith(const string& s,
-         const string& suffix)
-{
-    return (s.size() >= suffix.size()) && std::equal(suffix.rbegin(), suffix.rend(), s.rbegin());
-}
-
 void
 OCIOFileTransformPlugin::updateCCCId()
 {
-    // Convoluted equiv to pysting::endswith(m_file, ".ccc")
+    // The CCC Id selects a correction of a .cdl, .cc or .ccc file (OCIO's FileTransform: "Load the CDL from the src
+    // .cdl, .cc, or .ccc file"). The extension is the part after the last '.', in lowercase.
     // TODO: Could this be queried from the processor?
     string srcstring;
 
     _file->getValue(srcstring);
-    const string cccext = "ccc";
-    const string ccext = "cc";
-    if ( endsWith(srcstring, cccext) || endsWith(srcstring, ccext) ) {
-        _cccid->setIsSecretAndDisabled(false);
-    } else {
-        _cccid->setIsSecretAndDisabled(true);
-    }
+    const string ext = extension(srcstring);
+    _cccid->setIsSecretAndDisabled( !( (ext == "cc") || (ext == "ccc") || (ext == "cdl") ) );
 }
 
 void
@@ -839,7 +827,7 @@ OCIOFileTransformPlugin::changedParam(const InstanceChangedArgs& args,
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
-    // Only show the cccid knob when loading a .cc/.ccc file. Set
+    // Only show the cccid knob when loading a .cdl/.cc/.ccc file. Set
     // hidden state when the src is changed, or the node properties
     // are shown
     if (paramName == kParamFile) {

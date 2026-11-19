@@ -2,12 +2,17 @@
  * ocio_filetransform_test — OCIOFileTransform's CCC Id param (OCIO/OCIOFileTransform.cpp), built with AddressSanitizer
  * (tests/Makefile: test-ocio-filetransform).
  *
- * The CCC Id param is shown only for a .cc or .ccc file. updateCCCId() compared the end of the file name with "ccc"
+ * The CCC Id param is shown only for a .cdl, .cc or .ccc file. updateCCCId() compared the end of the file name with "ccc"
  * and "cc" by std::equal on the reversed strings, which reads before the start of a file name shorter than the
  * extension: the default file name is empty, so every new instance did (an ASan stack-buffer-underflow, or a heap
  * one for a longer std::string).
  * Create an instance (empty file name), then change the file name to names shorter than, as long as, and longer than
- * the extensions: the CCC Id param must be shown for "x.cc", "x.ccc", "cc" and "ccc" only.
+ * the extensions: the CCC Id param must be shown for the .cdl, .cc and .ccc files only (the extension after the last
+ * '.', in any case, as OCIO's FileTransform: "Load the CDL from the src .cdl, .cc, or .ccc file"), not for "cc",
+ * "ccc" or "x.icc".
+ * On libstdc++ (Linux), the read before an empty or short std::string stays in the string object itself (its
+ * short-string buffer follows its pointer and size), which ASan doesn't report: there, only libc++ (macOS) catches the
+ * old bug. The test still checks which files show the param.
  *
  * The plug-in is linked directly and driven through the OFX actions by the in-process host of ofx_test_host.h.
  * Usage: ocio_filetransform_test   (needs $OCIO, see tests/Makefile)
@@ -92,8 +97,9 @@ main(int, char**)
         const char* file;
         bool shown;
     } cases[] = {
-        { "", false }, { "a", false }, { "c", false }, { "cc", true }, { "ccc", true }, { "x.cc", true },
-        { "x.ccc", true }, { "x.cube", false }, { "x.3dl", false }, { "a/b/lut.csp", false },
+        { "", false }, { "a", false }, { "c", false }, { "cc", false }, { "ccc", false }, { "x.cc", true },
+        { "x.ccc", true }, { "x.cdl", true }, { "x.CCC", true }, { "x.Cc", true }, { "x.icc", false }, { "xcc", false },
+        { "x.cube", false }, { "x.3dl", false }, { "a/b/lut.csp", false },
     };
     for (const auto& c : cases) {
         setOverrideString(&ctx, kParamFile, c.file);
