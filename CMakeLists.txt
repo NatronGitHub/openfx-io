@@ -35,7 +35,7 @@
 #                           PNG SEEXPR RUNSCRIPT
 #   OFX_IO_REQUIRE_ALL      fail if a group that is not disabled can't be built (default OFF; for packagers)
 #   IO_HOSTDEMO_TESTS       build openfx's hostDemo; ctest renders every plug-in of the installed bundle with it
-#                           (io-hostdemo, tests/hostdemo/run.sh)
+#                           (io-hostdemo, tests/hostdemo/run.sh), and again with hostDemo --ofx14 (io-hostdemo-ofx14)
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
 cmake_minimum_required(VERSION 3.16...3.31)
@@ -605,6 +605,14 @@ if(BUILD_TESTING)
       endif()
       # TIMEOUT: more than run.sh's HOSTDEMO_TOTAL_TIMEOUT (600 s), so that it reports what hung
       set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}")
+      # io-hostdemo-ofx14: the same tests in hostDemo --ofx14, a host that implements only OFX 1.4 (its host
+      # properties and suites, no OfxSetHost, no StrChoice or Bytes params, one view)
+      add_test(NAME io-hostdemo-ofx14
+               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "$<TARGET_FILE:hostDemo>"
+                       "${_io_installed_bundle}" "$<TARGET_FILE:io_verify_plugin_loads>"
+                       "${CMAKE_CURRENT_BINARY_DIR}/hostdemo-ofx14")
+      set_tests_properties(io-hostdemo-ofx14 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
+                           ENVIRONMENT "${_io_env};HOSTDEMO_ARGS=--ofx14")
     endif()
   endif()
 
