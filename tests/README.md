@@ -135,6 +135,19 @@ the real render pipeline, linked directly (no host binary):
   written at a rate close to 120000/1001 (40999/342, as the ffmpeg CLI does), and
   with the Format "Default", the format must be guessed from the filename param
   before the first render (a .m4v file has no 255 fps limit).
+* **WriteFFmpeg color tags and Y'CbCr matrix, ReadFFmpeg round trip**: encode a
+  constant color (0.8, 0.3, 0.1) with H.264 (libx264, MP4/MOV/Matroska), ProRes 4444
+  and 422 HQ, and QuickTime Animation (qtrle, RGB), with the OCIO output colorspaces
+  rec709, Rec2020, sRGB and Gamma2.2 of `test.ocio`, in SD (128x96) and 720p. The stream
+  must keep the primaries and transfer function of the OCIO colorspace (ProRes: only
+  the transfer functions of SMPTE RDD 36, so sRGB is unspecified there, and the frame
+  header must have the same codes as the stream), its Y'CbCr matrix must be BT.2020 NCL
+  with the BT.2020 primaries, else BT.709 in HD and SMPTE 170M in SD, and `gbr` (RGB) for
+  qtrle; the Y' that libavcodec decodes must be the one of that matrix
+  (Y' = Kr R + (1 - Kr - Kb) G + Kb B, video range), and ReadFFmpeg (Auto matrix and
+  range) must decode the color back within 0.01. In Matroska, the OCIO output
+  colorspace must be in the `uk.co.thefoundry.Colorspace` metadata, and ReadFFmpeg
+  must use it as its File Colorspace.
 * **WriteFFmpeg, output RoD changed during the render**: from the second frame
   on, the render window and the source image are smaller (64x32) or larger
   (192x160) than the movie (128x128, the RoD at `beginSequenceRender`), as when

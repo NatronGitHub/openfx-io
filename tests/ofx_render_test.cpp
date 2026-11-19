@@ -47,6 +47,15 @@
  *     - DNxHD/DNxHR with Output Range = Full/Video: the decoded levels match the range the stream is tagged
  *       with; DNxHR 444 (RGB) is full range; HQX and 444 are 10-bit, and their hints do not say 12 bit
  *
+ *   WriteFFmpeg color tags and Y'CbCr matrix, and the ReadFFmpeg round trip:
+ *     - encode a constant color with H.264 (libx264), ProRes 4444 and QuickTime Animation (qtrle, RGB), with the OCIO
+ *       output colorspaces rec709 and Rec2020 of test.ocio: the stream keeps the primaries and transfer function of
+ *       the OCIO colorspace (ProRes: only the transfer functions of SMPTE RDD 36), its Y'CbCr matrix is BT.2020 with the
+ *       BT.2020 primaries, else BT.709 in HD and SMPTE 170M in SD, and RGB (gbr) for RGB codecs; the Y' that FFmpeg
+ *       decodes is the one of that matrix; ReadFFmpeg (Auto matrix and range) decodes the color back
+ *     - Matroska: the OCIO output colorspace is written in the uk.co.thefoundry.Colorspace metadata, and ReadFFmpeg
+ *       uses it as its File Colorspace
+ *
  *   WriteFFmpeg, output RoD changed during the render:
  *     - from the second frame on, the image is smaller (or larger) than the movie, as when Natron sets the project
  *       format from the first Reader once the render has started: the part of the image in the frame is written,
@@ -102,6 +111,7 @@ struct WriterParams {
     double inputPar = 1.;            // the PAR of the source clip
     bool expectBeginFailure = false; // beginSequenceRender must fail (and nothing is rendered)
     bool constantImage = false;      // render the same mid-gray image for every frame instead of a ramp
+    std::vector<float> color;        // if it has 3 values, render this constant RGB color for every frame (view 0)
     std::vector<float> frameValues;  // if not empty, the gray level of frame t is frameValues[t - 1] (instead of a ramp)
     bool expectNoFile = false;       // with expectBeginFailure: the output file must not be created
     double fps = 0.;                 // if > 0, the value of the "fps" param
@@ -110,6 +120,9 @@ struct WriterParams {
     // choice params set after the instance is created (which sets e.g. the format from the file
     // extension), as the param and the text of the label of the option
     std::vector<std::pair<std::string, std::string>> choicesAfterCreate;
+    // string params set after the instance is created (e.g. the OCIO output colorspace, which the writer sets from
+    // the file extension)
+    std::vector<std::pair<std::string, std::string>> stringsAfterCreate;
     std::string renderFile;          // if not empty, the "filename" param from the second frame on (#137)
     bool expectRenderFailure = false; // with renderFile: frames 2..N must fail to render
     // if renderW > 0: from the second frame on, the render window and the source image are renderW x renderH,
@@ -168,6 +181,9 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         const int i = choiceIndex(ctx, cp.first.c_str(), cp.second.c_str());
         if (i < 0) { std::printf("  FAIL: no option \"%s\" in param %s\n", cp.second.c_str(), cp.first.c_str()); return 1; }
         setOverrideInt(&ctx, cp.first.c_str(), i);
+    }
+    for (const auto& sp : wp.stringsAfterCreate) {
+        setOverrideString(&ctx, sp.first.c_str(), sp.second);
     }
 
     Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
@@ -230,7 +246,13 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
             if (!wp.frameValues.empty()) v = wp.frameValues[(size_t)(t - 1) % wp.frameValues.size()];
             if (view != 0) v = 1.f - v;
-            for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
+            const bool colored = (wp.color.size() == 3) && (view == 0);
+            for (size_t i = 0; i < npix; ++i) {
+                fp[i * 4 + 0] = colored ? wp.color[0] : v;
+                fp[i * 4 + 1] = colored ? wp.color[1] : v;
+                fp[i * 4 + 2] = colored ? wp.color[2] : v;
+                fp[i * 4 + 3] = 1.f;
+            }
             PropSet a = makeRenderInArgs((double)t, rw, rh);
             pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
             OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
@@ -1594,6 +1616,123 @@ int testWriteFFmpegColor(const std::string& outFile, int W, int H, WriterParams 
     return failures;
 }
 
+// Decode frame 1 of a movie with ReadFFmpeg (default params: Auto Y'CbCr matrix and range): the mean of each
+// component, and the File Colorspace that ReadFFmpeg guessed (its ocioInputSpace param).
+int readFFmpegMeanRGB(const std::string& inFile, int W, int H, double rgb[3], std::string* fileColorspace)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, inFile);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, 1, kOfxImageEffectContextReader);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    {
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    }
+    if (fileColorspace) {
+        auto it = ctx.params.find("ocioInputSpace");
+        *fileColorspace = (it != ctx.params.end() && it->second.hasOv && !it->second.ov.s.empty()) ? it->second.ov.s[0] : std::string();
+    }
+    Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+    if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
+    out->connected = true;
+    setupClipImage(out, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    PropSet a = makeRenderInArgs(1., W, H);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    const float* fp = reinterpret_cast<const float*>(out->buffer.data());
+    const size_t npix = (size_t)W * H;
+    for (int c = 0; c < 3; ++c) {
+        double sum = 0.;
+        for (size_t i = 0; i < npix; ++i) sum += fp[i * 3 + c];
+        rgb[c] = sum / (double)npix;
+    }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    if (!ok(st)) { std::printf("  FAIL: ReadFFmpeg render = %d\n", st); return 1; }
+    return 0;
+}
+
+// The color metadata of the format of a movie (as ffprobe -show_format shows it), or an empty string.
+std::string formatColorspaceMetadata(const std::string& file)
+{
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, file.c_str(), nullptr, nullptr) < 0) return std::string();
+    const AVDictionaryEntry* t = av_dict_get(fmt->metadata, "uk.co.thefoundry.Colorspace", nullptr, 0);
+    std::string v = (t && t->value) ? t->value : "";
+    avformat_close_input(&fmt);
+    return v;
+}
+
+// Encode a constant color, check the color tags of the stream and the Y' it decodes to (computed from the Y'CbCr
+// matrix of ITU-T H.273: Y' = Kr R + (1 - Kr - Kb) G + Kb B, in video range), and decode it back with ReadFFmpeg.
+struct ColorRoundTrip {
+    const char* label;
+    const char* codec;    // codecShortName
+    const char* ext;
+    const char* ocioOut;  // OCIO output colorspace of the writer
+    int W, H;
+    int space, primaries, trc; // expected tags (-1: not checked)
+    bool proResHeader;    // the ProRes frame header must have the same tags
+    double kr, kb;        // the matrix of the decoded Y' (kr < 0: RGB, not checked)
+    int bits;             // the bit depth of the decoded Y'
+    const char* fileColorspace; // if not null, the File Colorspace that ReadFFmpeg must guess
+};
+
+int testWriteFFmpegColorRoundTrip(const std::string& outFile, const ColorRoundTrip& c)
+{
+    const float color[3] = { 0.8f, 0.3f, 0.1f };
+    WriterParams wp;
+    wp.strings = { { "codecShortName", c.codec } };
+    wp.stringsAfterCreate = { { "ocioOutputSpace", c.ocioOut } };
+    wp.color.assign(color, color + 3);
+    const std::string file = outFile + c.ext;
+    if (testWriteFFmpeg(file, c.W, c.H, 2, wp)) return 1;
+    int failures = 0;
+    auto check = [&](bool cond, const std::string& what) {
+        if (!cond) { std::printf("  FAIL: %s\n", what.c_str()); ++failures; }
+    };
+    StreamInfo s;
+    if (probeStream(file, &s)) return 1;
+    if (c.space >= 0) check(s.space == c.space, std::string("color_space must be ") + av_color_space_name((AVColorSpace)c.space));
+    if (c.primaries >= 0) check(s.primaries == c.primaries, std::string("color_primaries must be ") + av_color_primaries_name((AVColorPrimaries)c.primaries));
+    if (c.trc >= 0) check(s.trc == c.trc, std::string("color_transfer must be ") + av_color_transfer_name((AVColorTransferCharacteristic)c.trc));
+    if (c.proResHeader) {
+        int pr = -1, tr = -1, mx = -1;
+        const bool found = proResFrameHeaderColors(file, &pr, &tr, &mx);
+        std::printf("  ProRes frame header: color_primaries %d, transfer_characteristic %d, matrix_coefficients %d\n", pr, tr, mx);
+        check(found && pr == c.primaries && tr == c.trc && mx == c.space, "the ProRes frame header must have the tags of the stream");
+    }
+    if (c.kr >= 0.) {
+        const double y = c.kr * color[0] + (1. - c.kr - c.kb) * color[1] + c.kb * color[2];
+        const int expected = (int)std::lround((16. + 219. * y) * (double)(1 << (c.bits - 8)));
+        const int tolerance = 1 << (c.bits - 8);
+        std::printf("  decoded Y' %d, expected %d +-%d (Kr %.4f, Kb %.4f)\n", s.center.empty() ? -1 : s.center[0], expected, tolerance, c.kr, c.kb);
+        check(!s.center.empty() && std::abs(s.center[0] - expected) <= tolerance, "the decoded Y' must be the one of the Y'CbCr matrix");
+    }
+    double rgb[3] = { -1., -1., -1. };
+    std::string fileColorspace;
+    if (readFFmpegMeanRGB(file, c.W, c.H, rgb, &fileColorspace)) return failures + 1;
+    std::printf("  ReadFFmpeg: mean RGB %.4f %.4f %.4f (encoded %.4f %.4f %.4f), File Colorspace \"%s\", metadata \"%s\"\n", rgb[0], rgb[1], rgb[2],
+                color[0], color[1], color[2], fileColorspace.c_str(), formatColorspaceMetadata(file).c_str());
+    for (int i = 0; i < 3; ++i) check(std::fabs(rgb[i] - color[i]) <= 0.01, "ReadFFmpeg must decode the encoded color");
+    if (c.fileColorspace) {
+        check(formatColorspaceMetadata(file) == c.fileColorspace, std::string("the uk.co.thefoundry.Colorspace metadata must be ") + c.fileColorspace);
+        check(fileColorspace == c.fileColorspace, std::string("the File Colorspace of ReadFFmpeg must be ") + c.fileColorspace);
+    }
+    std::printf(failures ? "  FAIL (color round trip)\n" : "  PASS (color round trip)\n");
+    return failures;
+}
+
 // Issue #135: FFmpeg's dnxhd encoder writes the DNxHR HQX and 444 profiles in 10 bit (yuv422p10, and
 // yuv444p10 or gbrp10), so their option labels and hints must not say 12 bit.
 int testDNxHDProfileHints()
@@ -2003,6 +2142,8 @@ main(int argc, char** argv)
     {
         // #135: ProRes 4444 and 4444 XQ are Y'CbCr 4:4:4 (SMPTE RDD 36), like the 422 profiles: they must be
         // tagged with the Y'CbCr matrix they were converted with (SD: SMPTE 170M), and are in limited range.
+        // The primaries are those of the OCIO output colorspace (the default, rec709 in test.ocio), not those of
+        // SD video (SMPTE C).
         // FFmpeg's prores decoder decodes the 4444 profiles to 12 bit, and the 422 profiles to 10 bit.
         const struct { const char* fourcc; const char* pixFmt; int bits; } cases[] = {
             { "ap4h", "yuv444p12le", 12 }, { "ap4x", "yuv444p12le", 12 }, { "apch", "yuv422p10le", 10 },
@@ -2016,7 +2157,7 @@ main(int argc, char** argv)
             e.pixFmt = c.pixFmt;
             e.bitsPerRawSample = c.bits;
             e.space = AVCOL_SPC_SMPTE170M;
-            e.primaries = AVCOL_PRI_SMPTE170M;
+            e.primaries = AVCOL_PRI_BT709;
             e.trc = AVCOL_TRC_BT709;
             e.rangeNotFull = true;
             e.proResHeader = true;
@@ -2068,6 +2209,32 @@ main(int argc, char** argv)
         for (int depth = 0; depth < 3; ++depth) {
             std::printf("==== WriteFFmpeg libx265 YUV420, %d bit, alpha: encodes (issue #136) ====\n", depth == 0 ? 8 : (depth == 1 ? 10 : 12));
             failures += testWriteFFmpegX265(outFile + ".i136.mp4", W, H, 0, depth, /*alpha=*/true);
+        }
+    }
+
+    {
+        // The color tags and Y'CbCr matrix of WriteFFmpeg, and the ReadFFmpeg round trip (Auto matrix and range)
+        const double k709[2] = { 0.2126, 0.0722 }, k601[2] = { 0.299, 0.114 }, k2020[2] = { 0.2627, 0.0593 };
+        const ColorRoundTrip cases[] = {
+            { "H.264, SD, rec709", "libx264", ".mp4", "rec709", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_BT709, false, k601[0], k601[1], 8, nullptr },
+            { "H.264, 720p, rec709", "libx264", ".mp4", "rec709", 1280, 720, AVCOL_SPC_BT709, AVCOL_PRI_BT709, AVCOL_TRC_BT709, false, k709[0], k709[1], 8, nullptr },
+            { "H.264, SD, Rec2020", "libx264", ".mov", "Rec2020", 128, 96, AVCOL_SPC_BT2020_NCL, AVCOL_PRI_BT2020, AVCOL_TRC_BT2020_12, false, k2020[0], k2020[1], 8, nullptr },
+            { "H.264, SD, sRGB", "libx264", ".mp4", "sRGB", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, k601[0], k601[1], 8, nullptr },
+            { "ProRes 4444, SD, Rec2020", "prores_ksap4h", ".mov", "Rec2020", 128, 96, AVCOL_SPC_BT2020_NCL, AVCOL_PRI_BT2020, AVCOL_TRC_BT709, true, k2020[0], k2020[1], 12, nullptr },
+            { "ProRes 422 HQ, 720p, rec709", "prores_ksapch", ".mov", "rec709", 1280, 720, AVCOL_SPC_BT709, AVCOL_PRI_BT709, AVCOL_TRC_BT709, true, k709[0], k709[1], 10, nullptr },
+            { "ProRes 422 HQ, SD, sRGB (unspecified transfer function in ProRes)", "prores_ksapch", ".mov", "sRGB", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_UNSPECIFIED, true, k601[0], k601[1], 10, nullptr },
+            { "QuickTime Animation (RGB), sRGB", "qtrle", ".mov", "sRGB", 128, 96, AVCOL_SPC_RGB, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, -1., -1., 8, nullptr },
+            { "H.264 in Matroska, SD, sRGB: colorspace metadata", "libx264", ".mkv", "sRGB", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, k601[0], k601[1], 8, "sRGB" },
+            { "H.264 in Matroska, SD, Gamma2.2: colorspace metadata", "libx264", ".mkv", "Gamma2.2", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_GAMMA22, false, k601[0], k601[1], 8, "Gamma2.2" },
+        };
+        for (const auto& c : cases) {
+            std::printf("==== WriteFFmpeg + ReadFFmpeg %s: color tags and Y'CbCr matrix ====\n", c.label);
+            const std::string encoder = (std::string(c.codec).rfind("prores_ks", 0) == 0) ? std::string("prores_ks") : std::string(c.codec);
+            if (!avcodec_find_encoder_by_name(encoder.c_str())) {
+                std::printf("  SKIP: no %s encoder\n", c.codec);
+                continue;
+            }
+            failures += testWriteFFmpegColorRoundTrip(outFile + ".color", c);
         }
     }
 
