@@ -829,12 +829,17 @@ check_frame_threads() {
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
         return
     fi
-    local src="testsrc=s=256x160:r=24,format=yuv420p,geq=lum='lum(X,Y)+2*N':cb='cb(X,Y)':cr='cr(X,Y)',format=$pixfmt"
-    if ! ffmpeg -y -loglevel error -f lavfi -i "$src" -frames:v 48 -c:v "$encoder" -g 12 "$@" -pass 1 -passlogfile "$tmp/$name.pass" -f null - ||
-        ! ffmpeg -y -loglevel error -f lavfi -i "$src" -frames:v 48 -c:v "$encoder" -g 12 "$@" -pass 2 -passlogfile "$tmp/$name.pass" "$tmp/$name" ||
-        ! ffmpeg -y -loglevel error -threads 1 -i "$tmp/$name" "${refargs[@]}" "$ref"; then
-        echo "FAIL: could not generate $name"
-        rc=1
+    # 48 frames from the source duration (d=2), not -frames:v 48: with an output frame limit, the ffmpeg 6.1 CLI
+    # flushes the encoder twice (when the limit is reached, and again in enc_flush()), and writes the pass-1 stats
+    # twice, so libvpx rejects pass 2 ("rc_twopass_stats_in missing EOS stats packet").
+    local src="testsrc=s=256x160:r=24:d=2,format=yuv420p,geq=lum='lum(X,Y)+2*N':cb='cb(X,Y)':cr='cr(X,Y)',format=$pixfmt"
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$src" -c:v "$encoder" -g 12 "$@" -pass 1 -passlogfile "$tmp/$name.pass" -f null - ||
+        ! ffmpeg -y -loglevel error -f lavfi -i "$src" -c:v "$encoder" -g 12 "$@" -pass 2 -passlogfile "$tmp/$name.pass" "$tmp/$name"; then
+        echo "SKIPPED: the ffmpeg CLI could not encode $name with $encoder in 2 passes"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -threads 1 -i "$tmp/$name" "${refargs[@]}" "$ref"; then
+        echo "SKIPPED: the ffmpeg CLI could not make the lossless copy of $name (${refargs[*]})"
         return
     fi
     if [ "$encoder" = libvpx-vp9 ]; then
