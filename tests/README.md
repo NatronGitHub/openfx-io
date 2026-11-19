@@ -538,7 +538,9 @@ the file. With only the flags byte of the block headers of the packets 80-119 da
 turn on lacing: blocks are lost or merged), frames 1-80, 101 and 201-300 must give the clean images
 in every order. In a 400-frame H.264 Matroska clip with a GOP of 5 and B-frames, with every
 keyframe from packet 20 damaged (the decoder then outputs frames whose best_effort_timestamp is the
-DTS of a later packet), frames 1-18 must give the clean images in every order. In all-intra H.264
+DTS of a later packet), frames 1-18 must give the clean images in every order (the others fail:
+the stream ends in damage). In an AVI with MPEG-4 B-frames (the reference frames have no PTS) with
+packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. In all-intra H.264
 (`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
 (the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
 order, must read at most 6 times the file. An MPEG-TS with a continuity counter error (a packet flagged

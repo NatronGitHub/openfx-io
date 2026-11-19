@@ -173,11 +173,14 @@ private:
         int _firstOutputFrame; // the first frame decoded by the last demuxAndDecode() (-1 if none)
         int _firstFrameAfter; // the first frame after the requested one decoded by the last demuxAndDecode() (-1 if none)
         bool _reachedEnd; // the last demuxAndDecode() drained the decoder at the end of the file, without a frame to hold
+        bool _endTainted; // the last demuxAndDecode() reached the end of the file while tainted (see demuxAndDecode())
         bool _drainedEarly; // the decoder was drained after too many damaged packets: decoding further needs a seek
         bool _damageSeen; // a damaged packet was dropped in this file (see seekToFrame())
         bool _damagedSinceOpen; // a damaged packet was dropped since the decoder was opened (see flushDecoder())
         bool _singleThreaded; // long-GOP codecs: damage was found with frame threads, the decoder now has 1 thread
         int64_t _keyFrames; // the keyframes decoded without an error
+        int64_t _packetsWithoutPts; // the video packets sent without a PTS (see positionTaint())
+        bool _awaitRestartFrame; // position taint: the next decoded frame is the frame of the restart keyframe
         int64_t _nonKeyFrames; // the other frames decoded without an error
         bool _restartSingleThread; // the decoder must be opened again with 1 thread, before decoding further
         int64_t _restartPts; // the PTS of the keyframe where the decoder restarted, until it decodes (AV_NOPTS_VALUE if none)
@@ -258,11 +261,14 @@ private:
             , _firstOutputFrame(-1)
             , _firstFrameAfter(-1)
             , _reachedEnd(false)
+            , _endTainted(false)
             , _drainedEarly(false)
             , _damageSeen(false)
             , _damagedSinceOpen(false)
             , _singleThreaded(false)
             , _keyFrames(0)
+            , _packetsWithoutPts(0)
+            , _awaitRestartFrame(false)
             , _nonKeyFrames(0)
             , _restartSingleThread(false)
             , _restartPts(AV_NOPTS_VALUE)
@@ -403,8 +409,15 @@ private:
         // off, their defaults, libavcodec/options_table.h:56): without a flush, frame_recovered stays set, and
         // the decoder outputs the frames that reference the damage as if they were good. With frame threads, the error of a packet
         // comes with up to thread_count packets sent after it: these are taken as damaged too.
+        // Some packets have no PTS (e.g. AVI): the taint is by position, not by timestamp (see demuxAndDecode())
+        bool positionTaint() const
+        {
+            return _packetsWithoutPts > 0;
+        }
+
         void taint()
         {
+            _awaitRestartFrame = false; // damage after the restart keyframe
             if (_restartPts != int64_t(AV_NOPTS_VALUE)) {
                 verifyRestart(false); // damage before the restart keyframe was verified
             }
@@ -438,10 +451,13 @@ private:
             _restartPts = AV_NOPTS_VALUE;
         }
 
-        // damage was found in a stream whose frames decoded without an error are all keyframes (see decode())
+        // damage was found in a stream whose frames decoded without an error are all keyframes (see decode()), at least
+        // kMinKeyframesAllIntra of them (a long-GOP stream damaged after its first keyframes may only have decoded
+        // keyframes cleanly so far)
+        static const int kMinKeyframesAllIntra = 16;
         bool allKeyframesAfterDamage() const
         {
-            return _damageSeen && (_nonKeyFrames == 0) && (_keyFrames >= 2);
+            return _damageSeen && (_nonKeyFrames == 0) && (_keyFrames >= kMinKeyframesAllIntra);
         }
 
         bool isCandidatePts(int64_t pts) const
@@ -476,6 +492,7 @@ private:
             _recentPts.clear();
             _restartPts = AV_NOPTS_VALUE;
             _verifyNextPacket = false;
+            _awaitRestartFrame = false;
             _candidatePts.clear();
         }
 
@@ -483,6 +500,7 @@ private:
         void packetSent(int64_t pts, int window, bool key)
         {
             if (pts == int64_t(AV_NOPTS_VALUE)) {
+                ++_packetsWithoutPts;
                 return;
             }
             while ((int)_recentPts.size() >= window) {
@@ -647,7 +665,6 @@ private:
     // reader error state
     std::string _errorMsg; // internal decoding error string
     bool _invalidState; // true if the reader is in an invalid state
-    bool _sawFrameWithoutTimestamp = false; // a frame could not be placed during the current decode()
     unsigned long _seekCount; // number of seeks by decode(), for tests
     int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
     bool _readAtOpen; // the constructor read or sought in the file, after avformat_find_stream_info()
