@@ -899,6 +899,7 @@ void
 WritePNGPluginFactory::unload()
 {
     delete gLutManager;
+    gLutManager = NULL;
 }
 
 /** @brief The basic describe function, passed a plugin descriptor */

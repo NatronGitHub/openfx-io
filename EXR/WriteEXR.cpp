@@ -28,7 +28,6 @@
 #include "ofxsMacros.h"
 
 GCC_DIAG_OFF(deprecated)
-#include <IlmThreadPool.h>
 #include <ImathBox.h>
 #include <ImfArray.h>
 #include <ImfChannelList.h>
@@ -310,19 +309,13 @@ WriteEXRPlugin::onOutputFileChanged(const string& /*filename*/,
     }
 }
 
-mDeclareWriterPluginFactory(WriteEXRPluginFactory, ;, false);
+// unload: OpenEXR's global thread pool is not stopped (see ReadEXRPluginFactory::unload())
+mDeclareWriterPluginFactory(WriteEXRPluginFactory, {}, false);
 void
 WriteEXRPluginFactory::load()
 {
     _extensions.clear();
     _extensions.push_back("exr");
-}
-
-void
-WriteEXRPluginFactory::unload()
-{
-    // Kill all threads
-    IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
 }
 
 /** @brief The basic describe function, passed a plugin descriptor */

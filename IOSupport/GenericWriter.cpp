@@ -2632,9 +2632,7 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
                                     bool supportsDisplayWindow)
 {
     gHostIsNatron = (getImageEffectHostDescription()->isNatron);
-    if (gHostIsNatron) {
-        gHostIsNatronVersion3OrGreater = getImageEffectHostDescription()->versionMajor >= 3;
-    }
+    gHostIsNatronVersion3OrGreater = gHostIsNatron && getImageEffectHostDescription()->versionMajor >= 3;
 
     // create the mandated source clip
     ClipDescriptor* srcClip = desc.defineClip(kOfxImageEffectSimpleSourceClipName);

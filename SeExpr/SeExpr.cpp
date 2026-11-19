@@ -4501,6 +4501,10 @@ SeExprPluginFactory<simple>::describeInContext(ImageEffectDescriptor& desc,
     gHostIsNatron = gHostDescription.isNatron;
     bool hostIsNuke = (gHostDescription.hostName.find("nuke") != string::npos || gHostDescription.hostName.find("Nuke") != string::npos);
 
+    // recomputed at each describe: the host description is fetched again after each load
+    gHostSupportsRGBA = false;
+    gHostSupportsRGB = false;
+    gHostSupportsAlpha = false;
     for (ImageEffectHostDescription::PixelComponentArray::const_iterator it = getImageEffectHostDescription()->_supportedComponents.begin();
          it != getImageEffectHostDescription()->_supportedComponents.end();
          ++it) {

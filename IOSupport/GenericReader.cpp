@@ -2977,6 +2977,11 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
 {
     gHostIsNatron = (getImageEffectHostDescription()->isNatron);
 
+    // recomputed at each describe: the host description is fetched again after each load
+    gHostSupportsRGBA = false;
+    gHostSupportsRGB = false;
+    gHostSupportsXY = false;
+    gHostSupportsAlpha = false;
     for (ImageEffectHostDescription::PixelComponentArray::const_iterator it = getImageEffectHostDescription()->_supportedComponents.begin();
          it != getImageEffectHostDescription()->_supportedComponents.end();
          ++it) {
