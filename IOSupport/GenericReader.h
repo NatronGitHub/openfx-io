@@ -335,10 +335,10 @@ private:
     /**
      * @brief Called by render() when the part of the render window that is in the RoD the host got (the output
      * clip's) is out of the frame bounds that getFrameBounds() returned (this happens when the file changed since
-     * the host got the RoD; a render window larger than the RoD, e.g. a display window, does not call it). A reader that caches the frame bounds (e.g.
-     * ReadEXR, from the file headers) reads them again from the file, updates its cache, and returns true if they
-     * changed: render() then calls getFrameBounds() again, instead of cropping the render window to old frame
-     * bounds. The default does nothing, and returns false.
+     * the host got the RoD; a render window larger than the RoD, e.g. a display window, does not call it). A reader
+     * that caches the frame bounds (e.g. ReadEXR, from the file headers) reads them again from the file, updates its
+     * cache, and returns true if they changed: render() then calls getFrameBounds() again, instead of cropping the
+     * render window to old frame bounds. The default does nothing, and returns false.
      **/
     virtual bool refreshFrameBounds(const std::string& /*filename*/,
                                     OfxTime /*time*/,

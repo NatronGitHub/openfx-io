@@ -200,6 +200,9 @@ private:
         }
         *format = *bounds;
         *par = (filename.find("par2") != std::string::npos) ? 2. : ((filename.find("par0") != std::string::npos) ? 0. : 1.);
+        if (filename.find("par40_33") != std::string::npos) {
+            *par = 40. / 33.;
+        }
         *tile_width = *tile_height = 0;
 
         return true;
@@ -557,6 +560,14 @@ struct Reader {
     // clipRoD (in canonical coordinates, PAR = 1), without getRegionOfDefinition (as a host that cached the RoD)
     OfxStatus renderWithRoD(const OfxRectI& clipRoD, const OfxRectI& bounds, const OfxRectI& renderWindow)
     {
+        const OfxRectD r = { (double)clipRoD.x1, (double)clipRoD.y1, (double)clipRoD.x2, (double)clipRoD.y2 };
+
+        return renderWithRoD(r, 1., bounds, renderWindow);
+    }
+
+    // the same, with a RoD in canonical coordinates and a PAR
+    OfxStatus renderWithRoD(const OfxRectD& clipRoD, double par, const OfxRectI& bounds, const OfxRectI& renderWindow)
+    {
         double rs[2] = { 1., 1. };
         const int w = bounds.x2 - bounds.x1;
         const int h = bounds.y2 - bounds.y1;
@@ -569,8 +580,10 @@ struct Reader {
         pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, b);
         pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
         pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
-        double r[4] = { (double)clipRoD.x1, (double)clipRoD.y1, (double)clipRoD.x2, (double)clipRoD.y2 };
+        double r[4] = { clipRoD.x1, clipRoD.y1, clipRoD.x2, clipRoD.y2 };
         pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, r);
+        pSetDouble(PH(&out->props), kOfxImagePropPixelAspectRatio, 0, par);
+        pSetDouble(ip, kOfxImagePropPixelAspectRatio, 0, par);
         PropSet ra = makeRenderInArgs(1., 0, 0);
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
         int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
@@ -1014,6 +1027,54 @@ testRefreshFrameBounds(OfxPlugin* pTiles, const std::string& still)
     check(ok(st) && r.plugin->refreshCalls == 0, "render window in the frame bounds: refreshFrameBounds() not called (%d calls)", r.plugin->refreshCalls);
 }
 
+// The same, with a PAR of 40/33 and a width of 1920: the RoD that getRegionOfDefinition() returns, x * PAR, converted
+// back to pixels (x' / PAR) is not exactly 1920 (1920.0000000000002, so 1921 pixels): an up-to-date RoD, rendered
+// whole by the host, must not call refreshFrameBounds() (it read the file again for each render)
+void
+testRefreshFrameBoundsPar(OfxPlugin* pTiles, const std::string& prefix)
+{
+    std::printf("==== refreshFrameBounds(): not for an up-to-date RoD at a PAR of 40/33 ====\n");
+    const std::string file = prefix + ".par40_33.tst";
+    if (std::FILE* fp = std::fopen(file.c_str(), "wb")) {
+        std::fclose(fp);
+    }
+    gMipmapContent.bounds = { 0, 0, 1920, 1080 };
+    gMipmapContent.value = [](int x, int y, int c) -> float { return (float)(x + 2 * y + c); };
+    {
+        Reader r;
+        if (!r.create(pTiles, file)) {
+            ++gFailures;
+            std::remove(file.c_str());
+
+            return;
+        }
+        // the RoD, as the host gets it (with the PAR of the output clip, that getClipPreferences() set)
+        pSetDouble(PH(&r.out->props), kOfxImagePropPixelAspectRatio, 0, 40. / 33.);
+        double rs[2] = { 1., 1. };
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        OfxStatus st = r.p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(r.inst), PH(&a), PH(&o));
+        double rd[4] = { 0., 0., 0., 0. };
+        pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rd);
+        check(ok(st) && rd[2] == 1920. * (40. / 33.), "getRegionOfDefinition = %d, x2 = %.17g", st, rd[2]);
+        const OfxRectD rod = { rd[0], rd[1], rd[2], rd[3] };
+        // the host converts it to pixels (x2 = ceil(2327.2727272727275 / (40 / 33)) = 1921) for the output image
+        // and the render window (a reader that supports tiles: the image may be larger than the frame bounds)
+        const OfxRectI bounds = { (int)std::floor(rd[0] / (40. / 33.)), (int)std::floor(rd[1]), (int)std::ceil(rd[2] / (40. / 33.)), (int)std::ceil(rd[3]) };
+        check(bounds.x2 == 1921, "the host's RoD in pixels: x2 = %d (1921)", bounds.x2);
+        r.plugin->refreshCalls = 0;
+        for (const OfxRectI& w : { bounds, OfxRectI{ 1900, 0, bounds.x2, 1080 }, OfxRectI{ 0, 1070, bounds.x2, 1080 } }) {
+            st = r.renderWithRoD(rod, 40. / 33., bounds, w);
+            check(ok(st), "render window %d,%d,%d,%d = %d", w.x1, w.y1, w.x2, w.y2, st);
+        }
+        check(r.plugin->refreshCalls == 0, "up-to-date RoD at a PAR of 40/33: refreshFrameBounds() not called (%d calls)", r.plugin->refreshCalls);
+    }
+    std::remove(file.c_str());
+}
+
 // 3. downscaling by GenericReader for a reader that doesn't support render scale (issue #104)
 
 // floor(a / 2^l) and ceil(a / 2^l)
@@ -1269,6 +1330,7 @@ main(int argc, char** argv)
     testDecodePlane(pMultiPlanar, still, video);
     testMipmap(pMipmap, still);
     testRefreshFrameBounds(pTiles, still);
+    testRefreshFrameBoundsPar(pTiles, prefix);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pFrameVarying->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);

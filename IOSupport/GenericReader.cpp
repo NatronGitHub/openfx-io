@@ -1724,8 +1724,17 @@ GenericReaderPlugin::render(const RenderArguments& args)
         // file is not read again for each render.
         OfxRectI hostWindow = renderWindow;
         {
+            // The RoD is bounds.x1 * par... (getRegionOfDefinition()): x * par / par is not always x (e.g. 1920 at a
+            // PAR of 40/33 gives 1920.0000000000002), so shrink it by much less than a pixel before converting it,
+            // so that an up-to-date RoD is never one pixel larger than the frame bounds (a stale one is at least one
+            // pixel larger)
+            OfxRectD hostRoDCanonical = _outputClip->getRegionOfDefinition(args.time);
+            hostRoDCanonical.x1 += 1e-6 * (1. + std::fabs(hostRoDCanonical.x1));
+            hostRoDCanonical.y1 += 1e-6 * (1. + std::fabs(hostRoDCanonical.y1));
+            hostRoDCanonical.x2 -= 1e-6 * (1. + std::fabs(hostRoDCanonical.x2));
+            hostRoDCanonical.y2 -= 1e-6 * (1. + std::fabs(hostRoDCanonical.y2));
             OfxRectI hostRoD;
-            Coords::toPixelEnclosing(_outputClip->getRegionOfDefinition(args.time), args.renderScale, _outputClip->getPixelAspectRatio(), &hostRoD);
+            Coords::toPixelEnclosing(hostRoDCanonical, args.renderScale, _outputClip->getPixelAspectRatio(), &hostRoD);
             if (!intersectWindow(renderWindow, hostRoD, &hostWindow)) {
                 hostWindow = frameWindow; // (nothing to refresh)
             }

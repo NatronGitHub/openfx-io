@@ -29,8 +29,9 @@
  *    image's render (#163). ReadOIIO supports tiles: also with an output image that is the render window only.
  *    (ReadOIIO reads with OpenImageIO's ImageInput: its ImageCache is only used in Natron < 2.2.)
  *  - the files: ReadOIIO, float TIFF (grey, RGB, RGBA), scanline and tiled EXR with a data window smaller than the
- *    display window, and an EXR whose data window has a negative origin and extends past the display window; ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA PNG. At scale 1, the whole
- *    image is the file's pixels (premultiplied by GenericReader for the RGBA files, read as unpremultiplied).
+ *    display window, and an EXR whose data window has a negative origin and extends past the display window;
+ *    ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA PNG. At scale 1, the whole image is
+ *    the file's pixels (premultiplied by GenericReader for the RGBA files, read as unpremultiplied).
  *  - a file rewritten with a smaller or larger image, rendered with the RoD that the host got before (decode() then
  *    gets a render window that is not the file's): only the window is written
  *  - concurrent renders while another thread replaces the file by smaller and larger ones (#163): only the
