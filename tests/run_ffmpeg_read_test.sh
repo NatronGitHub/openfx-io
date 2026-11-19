@@ -33,8 +33,12 @@
 #     middle of a GOP (1 and 8 decoder threads): the end read from their last packets.
 #   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
 #     with B-frames, which has no timestamps.
-#   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
-#     timestamps): they are counted in the stream's number of frames, but not displayed.
+#   * MP4 with an edit list that does not display the first 1 or 3 frames, and MOV with one that does
+#     not display the first 2 (negative timestamps): they are counted in the stream's number of frames,
+#     but not displayed.
+#   * MPEG-TS and M2TS whose 33-bit timestamps wrap during the clip (#189): libavformat gives the frames
+#     before the wrap negative timestamps, and they must be counted and displayed (only MOV/MP4 edit lists
+#     have a pre-roll that is not displayed).
 #   * AVI (MPEG-4 with B-frames), which has no PTS.
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
@@ -57,8 +61,10 @@
 #     drop them, and their frame times show the previous frame. With a damaged first GOP,
 #     its frames must fail with an error, and the other frames must decode. AV1 (libdav1d,
 #     which reports damage as AVERROR(ENOMEM) with threads) with two scrambled frames.
-#   * Truncated ProRes and MJPEG in MOV (faststart): the missing frames fail with an error,
+#   * Truncated ProRes, MJPEG and v210 in MOV (faststart): the missing frames fail with an error,
 #     sequentially and after a seek.
+#   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
+#     Hap) with damaged packets: the other frames must give the images of the clean file in every order.
 #   * MPEG-TS with a continuity counter error (a packet flagged as corrupt, but not at the end
 #     of the file): every frame must decode.
 #   * Clean VP9 (WebM and Matroska, 8 and 10 bits, with and without alt-ref frames) and AV1, with 1, 4 and 8
@@ -861,6 +867,52 @@ check_frame_threads() {
     done
 }
 
+# check_ts_wrap NAME DESCRIPTION RATE OFFSET FFMPEG_OUTPUT_ARGS...
+# A 150-frame clip (testsrc2, 320x240, at RATE fps, H.264 with B-frames, and a sine audio track in AC3) in MPEG-TS
+# (FFMPEG_OUTPUT_ARGS, e.g. -mpegts_m2ts_mode 1 for M2TS), stream-copied with -output_ts_offset OFFSET (in seconds),
+# so that its 33-bit timestamps wrap (at 2^33 / 90000 = 95443.7 s) during the clip: libavformat then makes the
+# timestamps before the wrap negative, and the start time too (update_wrap_reference(), libavformat/demux.c). Every
+# frame must be counted (#189: they were counted from the first frame after the wrap, and the frames before it were
+# lost), and give exactly the image of the clean file (before the stream copy), in every order, with 1 and 8 decoder
+# threads (--reference).
+check_ts_wrap() {
+    local name="$1" desc="$2" rate="$3" offset="$4" list start threads
+    shift 4
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder ac3; then
+        echo "SKIPPED: no libx264 or ac3 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "testsrc2=s=320x240:r=$rate" -f lavfi -i sine=r=48000 -frames:v 150 \
+        -c:v libx264 -g 25 -bf 2 -pix_fmt yuv420p -c:a ac3 -shortest -f mpegts "$@" "$tmp/clean_$name" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -map 0 -c copy -output_ts_offset "$offset" -f mpegts "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # the start time must be negative, i.e. the timestamps wrap in the clip
+    start="$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$tmp/$name")"
+    if [[ "$start" != -* ]]; then
+        echo "FAIL: $name: the video start time is $start, the timestamps do not wrap"
+        rc=1
+        return
+    fi
+    list="$(seq -s, 1 150)"
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames 150 --reference "$tmp/clean_$name" --reference-frames "$list" \
+            ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -924,6 +976,10 @@ check ramp_low_rate.flv "FLV (H.264, 0.5 fps, AAC audio)" libx264 0.5 \
 check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, GOP 8, start time 0.5 s, duration written as a length, as mkvmerge does)" -g 8
 check_mkv_length ramp_length_gop.mkv "Matroska (H.264, 24 fps, default GOP, start time 0.5 s, duration written as a length)"
 check_flv_overhang ramp_overhang.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, AAC audio ending 40 ms after the video)"
+# MPEG-TS and M2TS whose 33-bit timestamps wrap during the clip (#189): the frames before the wrap have negative
+# timestamps, and must be counted and displayed.
+check_ts_wrap ts_pcrwrap.ts "MPEG-TS (H.264 with B-frames, 25 fps, the timestamps wrap during the clip)" 25 95440
+check_ts_wrap m2ts_wrap.m2ts "M2TS (H.264 with B-frames, 29.97 fps, the timestamps wrap during the clip)" 30000/1001 95441 -mpegts_m2ts_mode 1
 # MP4/MOV with B-frames and no edit list: the start time is the B-frame delay.
 check ramp_frag.mp4 "Fragmented MP4 (H.264 with B-frames, no edit list)" libx264 24 $X264 -movflags frag_keyframe+empty_moov
 check ramp_noeditlist.mov "MOV (H.264 with B-frames, no edit list)" libx264 24 $X264 -use_editlist 0
@@ -938,6 +994,8 @@ check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed
     $X264 -output_ts_offset -0.041666666666666667
 check_frames ramp_preroll3.mp4 "MP4 (H.264, edit list, first 3 frames not displayed: negative timestamps)" libx264 24 37 3 \
     $X264 -output_ts_offset -0.125
+check_frames ramp_preroll2.mov "MOV (H.264, edit list, first 2 frames not displayed: negative timestamps)" libx264 24 38 2 \
+    $X264 -output_ts_offset -0.083333333333333333
 # AVI has no PTS: the decoder gives the frames the DTS of the packet after which they are output.
 check ramp_bframes.avi "AVI (MPEG-4 with B-frames, no PTS)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
 check ramp_prores_24.mkv "Matroska (ProRes, 24 fps)" prores_ks 24 -c:v prores_ks
@@ -1031,9 +1089,19 @@ check_damaged_gop damaged_intra_h264.mkv "Matroska (all-intra H.264, every other
     "if(eq(mod(n,2),0)*gte(n,20),1,0)" 1 0 6 -preset ultrafast -g 1
 check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
     "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
+# Intra-only codecs found from the codec descriptor (AV_CODEC_PROP_INTRA_ONLY), with packets 10-12 and 30 damaged: the
+# other frames must decode as in the clean file, in any order.
+for intra in "v210 mov -pix_fmt yuv422p10le" "rawvideo avi" "huffyuv avi -pix_fmt yuv422p" "jpeg2000 mkv" "jpegls avi -pix_fmt rgb24" \
+    "hap mov -pix_fmt rgba"; do
+    read -r codec container args <<<"$intra"
+    # shellcheck disable=SC2086
+    check_damaged_ref "damaged_$codec.$container" "Intra-only $codec in $container (packets 10-12 and 30 damaged)" "$codec" 48 \
+        "if(between(n,10,12)+eq(n,30),1,0)" "1-10,14-30,32-48" ${args:-}
+done
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
 check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_truncated_intra ramp_truncated_v210.mov "MOV (v210, faststart, truncated in frame 16)" 16 v210 -c:v v210 -pix_fmt yuv422p10le
 check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 \
     -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p
 
