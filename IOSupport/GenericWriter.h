@@ -368,8 +368,9 @@ namespace IO {
         // kOfxImageClipPropFormat)
         void getSelectedOutputFormat(OfxTime time, int view, OfxRectI* format, double* par);
 
-        // the bounds of the host's time line, or without the (optional) TimeLine suite, the frame range of the input
-        void getTimeLineBounds(double* first, double* last);
+        // the bounds of the host's time line, or without the (optional) TimeLine suite, the frame range of the input;
+        // false (no bounds) without the TimeLine suite and an input
+        bool getTimeLineBounds(double* first, double* last);
 
         void refreshRGBAParamsFromOutputComponents();
 

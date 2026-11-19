@@ -26,6 +26,8 @@
 
 #include <algorithm>
 #include <cfloat> // DBL_MAX
+#include <climits> // INT_MAX
+#include <cstdint> // uint64_t
 #include <cstring> // memset
 #include <locale>
 #include <sstream>
@@ -2073,20 +2075,54 @@ GenericWriterPlugin::encodePart(void* /*user_data*/,
     /// Does nothing
 }
 
-void
+bool
 GenericWriterPlugin::getTimeLineBounds(double* first,
                                        double* last)
 {
     // the TimeLine suite is optional ("This is an optional suite in the Image Effect API", ofxTimeLine.h): without
-    // it, the bounds are the frame range of the input, or of the output (OFX 1.0 clip properties)
+    // it, the bounds are the frame range of the input (an OFX 1.0 clip property). Not the output's: the host derives
+    // it from the writer's time domain.
     if (getImageEffectHostDescription()->supportsTimeLineSuite) {
         timeLineGetBounds(*first, *last);
 
-        return;
+        return true;
     }
-    const OfxRangeD r = (_inputClip && _inputClip->isConnected()) ? _inputClip->getFrameRange() : _outputClip->getFrameRange();
+    if ( !_inputClip || !_inputClip->isConnected() ) {
+        return false;
+    }
+    const OfxRangeD r = _inputClip->getFrameRange();
     *first = r.min;
     *last = r.max;
+
+    return true;
+}
+
+// A frame number as an int. The bounds of the frame range may be infinite ("infinite if there are no non optional
+// input clips", kOfxImageEffectPropFrameRange) or NaN: they are clamped to +-INT_MAX/2, and a NaN, tested on its bits
+// (which works even if the compiler assumes that there are no NaNs), gives 0.
+static int
+frameToInt(double frame)
+{
+    uint64_t bits;
+    std::memcpy(&bits, &frame, sizeof(bits));
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__("" : "+r"(bits)); // an optimization barrier: the compiler can't know the bits
+#else
+    volatile uint64_t volatileBits = bits;
+    bits = volatileBits;
+#endif
+    if ( (bits & 0x7fffffffffffffffULL) > 0x7ff0000000000000ULL ) {
+        return 0; // NaN
+    }
+    const int kMax = INT_MAX / 2;
+    if (frame <= -kMax) {
+        return -kMax;
+    }
+    if (frame >= kMax) {
+        return kMax;
+    }
+
+    return (int)frame;
 }
 
 bool
@@ -2099,9 +2135,8 @@ GenericWriterPlugin::getTimeDomain(OfxRangeD& range)
         /// let the default be applied
         return false;
     } else if (choice == 1) {
-        getTimeLineBounds(&range.min, &range.max);
-
-        return true;
+        // (without the TimeLine suite and an input, the default applies)
+        return getTimeLineBounds(&range.min, &range.max);
     } else {
         int first;
         _firstFrame->getValue(first);
@@ -2312,22 +2347,22 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
     if (paramName == kParamFrameRange) {
         int choice;
         double first, last;
-        getTimeLineBounds(&first, &last);
+        const bool hasBounds = getTimeLineBounds(&first, &last);
         _frameRange->getValue(choice);
         if (choice == 2) {
             _firstFrame->setIsSecretAndDisabled(false);
             int curFirstFrame;
             _firstFrame->getValue(curFirstFrame);
             // if first-frame has never been set by the user, set it
-            if ((first != curFirstFrame) && (curFirstFrame == 0)) {
-                _firstFrame->setValue((int)first);
+            if ( hasBounds && (curFirstFrame == 0) && (frameToInt(first) != curFirstFrame) ) {
+                _firstFrame->setValue( frameToInt(first) );
             }
             _lastFrame->setIsSecretAndDisabled(false);
             int curLastFrame;
             _lastFrame->getValue(curLastFrame);
             // if last-frame has never been set by the user, set it
-            if ((last != curLastFrame) && (curLastFrame == 0)) {
-                _lastFrame->setValue((int)last);
+            if ( hasBounds && (curLastFrame == 0) && (frameToInt(last) != curLastFrame) ) {
+                _lastFrame->setValue( frameToInt(last) );
             }
         } else {
             _firstFrame->setIsSecretAndDisabled(true);

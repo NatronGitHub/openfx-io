@@ -38,6 +38,7 @@
  */
 #include "ofx_test_host.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -466,6 +467,26 @@ testPlugin(OfxPlugin* p,
     }
     if (s.kind == eWriter) {
         paramChanged(p, inst, kOfxImageEffectFileParamName, 1.);
+        // the Manual frame range starts at the time line bounds, here the input's frame range, which may be infinite
+        // ("infinite if there are no non optional input clips"): the first and last frames are clamped to +-INT_MAX/2
+        // (a conversion of infinity to int is undefined behaviour)
+        if (src && ctx.params.count("frameRange") && ctx.params.count("firstFrame") && ctx.params.count("lastFrame")) {
+            const double inf[2] = { -HUGE_VAL, HUGE_VAL };
+            pSetDoubleN(PH(&src->props), kOfxImageEffectPropFrameRange, 2, inf);
+            setOverrideInt(&ctx, "frameRange", 2);
+            paramChanged(p, inst, "frameRange", 1.);
+            const int first = paramInt(&ctx.params["firstFrame"], 0), last = paramInt(&ctx.params["lastFrame"], 0);
+            std::printf("  Manual frame range from an infinite input range: %d..%d\n", first, last);
+            if ((first != -INT_MAX / 2) || (last != INT_MAX / 2)) {
+                fail("first and last frames %d..%d, not -INT_MAX/2..INT_MAX/2", first, last);
+            }
+            setOverrideInt(&ctx, "frameRange", 1);
+            setOverrideInt(&ctx, "firstFrame", 0);
+            setOverrideInt(&ctx, "lastFrame", 0);
+            paramChanged(p, inst, "frameRange", 1.);
+            const double fr[2] = { 1., gLastFrame };
+            pSetDoubleN(PH(&src->props), kOfxImageEffectPropFrameRange, 2, fr);
+        }
     }
     if (s.kind == eReader) {
         // the file changed, as when the user sets it: the reader sets up its frame range and format

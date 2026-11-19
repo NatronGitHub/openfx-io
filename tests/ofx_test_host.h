@@ -109,13 +109,13 @@ OfxHost gOfxHost;
 // OFX 1.4-only host mode (see the top of this file). Set it before initHost().
 bool gOfx14Only = false;
 
-// Is the property name defined by OFX 1.4?
-// [review] older-host emulation and knobs (env, read by initHost())
+// Older hosts and other host variants, from the environment (read by initHost(), see tests/README.md):
 int gOfxLevel = 14;                  // OFX14_LEVEL: 10, 11, 12, 13 or 14
 std::set<std::string> gNoSuites;     // OFX14_NOSUITE: "name Vn" or "name", comma-separated
 std::set<std::string> gExtraUnknown; // names added after gOfxLevel
 double gRS = 1.;                     // OFX14_SCALE
 bool gOpenGLRender = false;          // OFX14_GL: the host has the OpenGL render suite (optional in OFX 1.4)
+// Is the property name defined by OFX 1.4 (or by the older version of OFX14_LEVEL)?
 bool isOfx14Name(const char* n)
 {
     if (gExtraUnknown.count(n)) return false;
