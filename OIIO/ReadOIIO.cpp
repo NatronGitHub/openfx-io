@@ -30,6 +30,7 @@
 #include <cstring> // memset
 #include <fstream>
 #include <iostream>
+#include <new> // std::bad_alloc
 #include <set>
 #include <sstream>
 
@@ -2682,8 +2683,10 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                     // whole lines, so read blocks of lines into a buffer, and copy the render window part of them.
                     const int nch = chend - chbegin;
                     const std::size_t lineFloats = (std::size_t)spec.width * nch;
+                    // at most 256 lines, and at most 16 MB (but at least one line)
                     const int kBlockLines = 256;
-                    const int blockLines = (std::min)(kBlockLines, yendClamped - ybeginClamped);
+                    const std::size_t kBlockBytes = 16 << 20;
+                    const int blockLines = (std::max)(1, (int)(std::min)((std::size_t)(std::min)(kBlockLines, yendClamped - ybeginClamped), kBlockBytes / (lineFloats * sizeof(float))));
                     vector<float> lines(lineFloats * blockLines);
                     char* dstLine = (char*)topScanLineDataStartPtr; // the line ybeginClamped (the top line)
                     for (int yb = ybeginClamped; yb < yendClamped; yb += blockLines) {
@@ -2708,7 +2711,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                     // If the region to read is not a multiple of tile size we must provide a buffer
                     // with the appropriate size.
                     float* tiledBuffer = topScanLineDataStartPtr;
-                    float* tiledBufferToFree = 0;
+                    vector<float> tiledBufferStorage; // (freed on all paths, also if read_tiles() fails)
                     int tiledXBegin = xbeginClamped;
                     int tiledYBegin = ybeginClamped;
                     int tiledXEnd = xendClamped;
@@ -2750,15 +2753,17 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                         tiledBufferPixelSize = getComponentBytes(eBitDepthFloat) * (chend - chbegin);
                         tiledBufferRowSize = (tiledXEnd - tiledXBegin) * tiledBufferPixelSize;
                         std::size_t nBytes = tiledBufferRowSize * (tiledYEnd - tiledYBegin);
-                        tiledBufferToFree = (float*)malloc(nBytes);
-                        if (!tiledBufferToFree) {
+                        try {
+                            tiledBufferStorage.resize((nBytes + sizeof(float) - 1) / sizeof(float));
+                        } catch (const std::bad_alloc&) {
                             throwSuiteStatusException(kOfxStatErrMemory);
 
                             return;
                         }
+                        char* tiledBufferStart = (char*)&tiledBufferStorage.front();
 
                         // Make tile buffer point to the first pixel of the last scan-line of our temporary tile-adjusted buffer.
-                        tiledBuffer = (float*)((char*)tiledBufferToFree + (tiledYEnd - tiledYBegin - 1) * tiledBufferRowSize);
+                        tiledBuffer = (float*)(tiledBufferStart + (tiledYEnd - tiledYBegin - 1) * tiledBufferRowSize);
                     }
 
                     // Pass the valid tile range and buffer to OIIO and decode with a negative Y stride from
@@ -2815,7 +2820,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                                 }
                             }
                         }
-                        free(tiledBufferToFree);
                     }
                 }
             } // !useCache

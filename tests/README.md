@@ -11,7 +11,7 @@ make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
-make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
+make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
@@ -412,8 +412,9 @@ It sets `OCIO=test.ocio`.
 
 ### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163)
 
-`reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (RGB, RGBA), and scanline
-and tiled EXR with a data window smaller than the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM;
+`reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
+and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
+and extends past the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM;
 8-bit RGB and RGBA PNG for ReadPNG (only if `pkg-config` finds libpng). It is built with
 [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS Windows), and the output image is
 between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush against one of them:

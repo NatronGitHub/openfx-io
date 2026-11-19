@@ -28,8 +28,8 @@
  *    GenericReader) and 1/2 (GenericReader's buffer): only the window is written, with the pixels of the whole
  *    image's render (#163). ReadOIIO supports tiles: also with an output image that is the render window only.
  *    (ReadOIIO reads with OpenImageIO's ImageInput: its ImageCache is only used in Natron < 2.2.)
- *  - the files: ReadOIIO, float TIFF (RGB, RGBA), scanline and tiled EXR with a data window smaller than the display
- *    window; ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA PNG. At scale 1, the whole
+ *  - the files: ReadOIIO, float TIFF (grey, RGB, RGBA), scanline and tiled EXR with a data window smaller than the
+ *    display window, and an EXR whose data window has a negative origin and extends past the display window; ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA PNG. At scale 1, the whole
  *    image is the file's pixels (premultiplied by GenericReader for the RGBA files, read as unpremultiplied).
  *  - a file rewritten with a smaller or larger image, rendered with the RoD that the host got before (decode() then
  *    gets a render window that is not the file's): only the window is written
@@ -366,7 +366,7 @@ floatValue(int x,
            int c)
 {
     if (c == 3) {
-        return 0.25f + ((x + 2 * y) % 4) * 0.25f; // 0.25 to 1
+        return 0.25f + (((x + 2 * y) % 4 + 4) % 4) * 0.25f; // 0.25 to 1 (also for negative x or y)
     }
 
     return (((x + 3 * y + 7 * c) % 97 + 97) % 97) / 16.f + c * 0.0625f;
@@ -416,7 +416,7 @@ struct File {
         // PFM is stored bottom-up, the others top-down
         const int fx = x;
         const int fy = (kind == ePFM) ? y : height - 1 - y;
-        if ((nchannels == 3) && (c == 3)) {
+        if ((nchannels < 4) && (c == 3)) {
             // opaque: GenericReader sets alpha to 1
             return false;
         }
@@ -425,7 +425,9 @@ struct File {
 
             return true;
         }
-        float value = isFloat() ? floatValue(fx, fy, c) : byteValue(fx, fy, c) * (1.f / 255);
+        // a grey file (1 channel): R = G = B
+        const int fc = (nchannels == 1) ? 0 : c;
+        float value = isFloat() ? floatValue(fx, fy, fc) : byteValue(fx, fy, fc) * (1.f / 255);
         if ((nchannels == 4) && (c < 3)) {
             const float alpha = isFloat() ? floatValue(fx, fy, 3) : byteValue(fx, fy, 3) * (1.f / 255);
             value *= alpha;
@@ -880,6 +882,12 @@ main(int argc,
     testFile(oiio, dir, "rgba", tiffRGBA);
     testFile(oiio, dir, "datawindow", exr);
     testFile(oiio, dir, "datawindow-tiled", exrTiled);
+    // grey (R = G = B: the duplicated channels), and a data window with a negative origin that extends past the
+    // display window (overscan)
+    const File tiffGrey = { "fr.inria.openfx.ReadOIIO", eTIFF, 61, 47, 1, 0, 0, 0, 0 };
+    const File exrOverscan = { "fr.inria.openfx.ReadOIIO", eEXR, 80, 60, 4, -6, -4, 95, 70 };
+    testFile(oiio, dir, "grey", tiffGrey);
+    testFile(oiio, dir, "overscan", exrOverscan);
     testFile(pfm, dir, "rgb", pfmRGB);
 #ifdef HAVE_PNG
     OfxPlugin* png = findPlugin("fr.inria.openfx.ReadPNG");

@@ -1717,10 +1717,22 @@ GenericReaderPlugin::render(const RenderArguments& args)
     OfxRectI renderWindow = args.renderWindow;
     {
         OfxRectI frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
-        if (((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2))
+        // The part of the render window in the RoD that the host got: if it is out of the frame bounds, the reader's
+        // cached frame bounds may be older than the file (e.g. the file reverted to the header that the host got the
+        // RoD from), and the reader may read them again. A render window larger than an up-to-date RoD (e.g. the
+        // display window of a cropped image) is not in that case: its part out of the RoD is black anyway, and the
+        // file is not read again for each render.
+        OfxRectI hostWindow = renderWindow;
+        {
+            OfxRectI hostRoD;
+            Coords::toPixelEnclosing(_outputClip->getRegionOfDefinition(args.time), args.renderScale, _outputClip->getPixelAspectRatio(), &hostRoD);
+            if (!intersectWindow(renderWindow, hostRoD, &hostWindow)) {
+                hostWindow = frameWindow; // (nothing to refresh)
+            }
+        }
+        if (((hostWindow.x1 < frameWindow.x1) || (hostWindow.y1 < frameWindow.y1) || (hostWindow.x2 > frameWindow.x2) || (hostWindow.y2 > frameWindow.y2))
             && refreshFrameBounds(filename, sequenceTime, args.renderView)) {
-            // the reader's cached frame bounds were older than the file (e.g. the file reverted to the header that
-            // the host got the RoD from): get the new ones
+            // the reader's cached frame bounds were older than the file: get the new ones
             success = getFrameBounds(filename, sequenceTime, args.renderView, &frameBounds, &format, &par, &error, &tile_width, &tile_height);
             if (!success) {
                 setPersistentMessage(Message::eMessageError, "", error);

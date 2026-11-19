@@ -106,7 +106,8 @@ private:
     virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
-    // the render window is out of the cached frame bounds: read the header again (the file may have changed)
+    // the render window is in the host's RoD but out of the cached frame bounds: read the header again (the file may
+    // have changed)
     virtual bool refreshFrameBounds(const string& filename, OfxTime time, int view) OVERRIDE FINAL;
 
     /**
@@ -603,9 +604,8 @@ ReadEXRPlugin::decode(const string& filename,
                       int pixelComponentCount,
                       int rowBytes)
 {
-    // renderWindow and bounds are in the pixels of the file: GenericReader scales the image afterwards if the render
-    // scale is not 1 (or reads a proxy file), but passes the render scale of the render action (so it is not
-    // always 1, and not used here)
+    // renderWindow and bounds are in the pixels of the file, at full resolution: GenericReader scales the image
+    // afterwards if the render scale is not 1 (or reads a proxy file), and renderScale is always (1,1)
     unused(renderScale);
     /// we only support RGBA output clip
     if ((pixelComponents != ePixelComponentRGBA) || (pixelComponentCount != 4)) {
