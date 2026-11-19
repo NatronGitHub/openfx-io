@@ -1862,6 +1862,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 #endif
 
     bool hasPicture = false;
+    _sawFrameWithoutTimestamp = false;
     AVFrame* avFrameOut = stream->_avFrame;
 
     // If gop_size == 0 then this is a intra-only encode and we can
@@ -1940,6 +1941,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     }
 
     if (!hasPicture) {
+        if (_sawFrameWithoutTimestamp) {
+            setInternalError(-1, "FFmpeg Reader Video frames have no timestamp: ");
+        }
         // The decoder position is unknown: seek before the next decode.
         stream->resetHeldFrames();
     }
@@ -2044,7 +2048,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             // A given framme cannot be read from a video with no timestamps.
             // H.264 elementary packets have no timestamp.
             // See https://libav-user.ffmpeg.narkive.com/HhouRdWQ/pts-from-best-effort-timestamp
-            setInternalError(-1, "FFmpeg Reader Video frames have no timestamp: ");
+            // Only an error if decode() gets no picture: the retry from the start may still give the
+            // frame, and setInternalError() would make the file invalid (setError()).
+            _sawFrameWithoutTimestamp = true;
             // When the decoder is drained, stop: a frame without a timestamp then cannot be
             // placed (no frame was decoded since the seek), and neither can the frames after it.
             // E.g. in AVI with MPEG-4 B-frames (no PTS), after a seek to the last reference frame,

@@ -350,6 +350,12 @@ main(int argc, char** argv)
             ++mismatches;
             continue;
         }
+        if (file.isInvalid()) {
+            // A successful decode must not leave the file invalid: the plug-in would refuse every
+            // later render.
+            std::printf("  INVALID after seeked frame %d decoded: %s\n", f, file.getError().c_str());
+            ++seekErrors;
+        }
         const double s = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
         const double diff = std::fabs(s - seqSig[f]);
         const bool seekCheck = std::find(noSeekCheck.begin(), noSeekCheck.end(), f) == noSeekCheck.end();
