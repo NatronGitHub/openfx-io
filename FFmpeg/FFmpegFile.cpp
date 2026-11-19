@@ -345,7 +345,8 @@ FFmpegFile::isCodecAllowedForWriting(const char* codecName)
 // The Y'CbCr matrix of the conversion to RGB (the "YCbCr Matrix" param of ReadFFmpeg):
 // - Rec. 601, Rec. 709 or Rec. 2020 if the user chose one,
 // - Auto: the matrix of the frame (AVFrame.colorspace: the decoders give the one of the bitstream, e.g. the H.264/HEVC
-//   VUI or the ProRes frame header, or else the one of the codec context, which avcodec_parameters_to_context()
+//   VUI, the ProRes frame header or the DNxHD frame header, which is BT.709 when FFmpeg wrote it, FFmpeg n9.0.2
+//   libavcodec/dnxhddec.c:237-242 and libavcodec/dnxhdenc.c:544, whatever the container says), or else the one of the codec context, which avcodec_parameters_to_context()
 //   copied from the container, e.g. the MOV 'colr' atom or the Matroska Colour element: fill_frame_props() in FFmpeg
 //   n9.0 libavcodec/decode.c:575-585, n4.0 libavcodec/decode.c:1717-1724), else the one of the stream
 //   (AVCodecParameters.color_space), else, if neither is a matrix that swscale has (see

@@ -147,7 +147,10 @@ the real render pipeline, linked directly (no host binary):
   (Y' = Kr R + (1 - Kr - Kb) G + Kb B, video range), and ReadFFmpeg (Auto matrix and
   range) must decode the color back within 0.01. In Matroska, the OCIO output
   colorspace must be in the `uk.co.thefoundry.Colorspace` metadata, and ReadFFmpeg
-  must use it as its File Colorspace.
+  must use it as its File Colorspace. DNxHR HQX and HQ (720p, Rec2020, and HQ in SD,
+  rec709) must use the BT.709 matrix, the one of the DNxHD frame header that FFmpeg's
+  encoder writes and FFmpeg's decoder uses, whatever the primaries and size; DNxHR 444
+  is RGB (`gbr`).
 * **WriteFFmpeg, output RoD changed during the render**: from the second frame
   on, the render window and the source image are smaller (64x32) or larger
   (192x160) than the movie (128x128, the RoD at `beginSequenceRender`), as when

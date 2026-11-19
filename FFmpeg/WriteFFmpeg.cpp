@@ -2071,8 +2071,9 @@ WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
 // - The Y'CbCr matrix (AVCodecContext.colorspace, which the encoders and muxers write, e.g. libx264 in the VUI, FFmpeg
 //   n9.0 libavcodec/libx264.c:1340-1341, and the mov muxer in the 'colr' atom, libavformat/movenc.c:2648-2650) is the
 //   one that colourSpaceConvert() converts with: for a Y'CbCr pixel format, BT.2020 non-constant luminance with the
-//   BT.2020 primaries (except for JPEG, which is always BT.601), else BT.709 for HD and BT.601 (SMPTE 170M) for SD,
-//   and for an RGB pixel format, AVCOL_SPC_RGB (libavutil/pixfmt.h: "order of coefficients is actually GBR").
+//   BT.2020 primaries (except for JPEG, which is always BT.601, and DNxHD/DNxHR, which is always BT.709, see
+//   below), else BT.709 for HD and BT.601 (SMPTE 170M) for SD, and for an RGB pixel format, AVCOL_SPC_RGB
+//   (libavutil/pixfmt.h: "order of coefficients is actually GBR").
 //   Before, the matrix was only set for the codecs of IsYUVFromShortName(), so the other Y'CbCr streams (e.g.
 //   H.264) were untagged, and the RGB ones too.
 void
@@ -2123,7 +2124,15 @@ WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixelFormat);
     if (FFmpeg::pixelFormatIsYUV(pixelFormat)) {
         const bool isJpeg = IsJpeg(_codec, codec);
-        if ((avCodecContext->color_primaries == AVCOL_PRI_BT2020) && !isJpeg) {
+        if (avCodecContext->codec_id == AV_CODEC_ID_DNXHD) {
+            // DNxHD/DNxHR: the matrix is in the frame header, which FFmpeg's encoder always writes as BT.709 (bits 1-2
+            // of byte 0x2c are 0, FFmpeg n8.0 libavcodec/dnxhdenc.c:545, n9.0.2 :544), and FFmpeg's decoder sets
+            // the frame's matrix from it (n8.0 and n9.0.2 libavcodec/dnxhddec.c:237-242), so the stream's one (the
+            // MOV 'colr' atom) is ignored: fill_frame_props() only uses it if the frame's is unspecified (n8.0
+            // libavcodec/decode.c:563-564, n9.0.2 :582-583). So the BT.709 matrix, at all sizes and with the
+            // BT.2020 primaries too: the one every decoder assumes for this file.
+            avCodecContext->colorspace = AVCOL_SPC_BT709;
+        } else if ((avCodecContext->color_primaries == AVCOL_PRI_BT2020) && !isJpeg) {
             avCodecContext->colorspace = AVCOL_SPC_BT2020_NCL;
         } else {
             avCodecContext->colorspace = isHD ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;

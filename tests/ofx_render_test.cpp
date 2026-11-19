@@ -55,6 +55,8 @@
  *       decodes is the one of that matrix; ReadFFmpeg (Auto matrix and range) decodes the color back
  *     - Matroska: the OCIO output colorspace is written in the uk.co.thefoundry.Colorspace metadata, and ReadFFmpeg
  *       uses it as its File Colorspace
+ *     - DNxHR HQX, HQ and 444 with Rec2020, and DNxHR HQ in SD: the Y'CbCr matrix is always BT.709 (the one of the
+ *       DNxHD frame header that FFmpeg's encoder writes, which FFmpeg's decoder uses), 444 is RGB (gbr)
  *
  *   WriteFFmpeg, output RoD changed during the render:
  *     - from the second frame on, the image is smaller (or larger) than the movie, as when Natron sets the project
@@ -1686,6 +1688,7 @@ struct ColorRoundTrip {
     double kr, kb;        // the matrix of the decoded Y' (kr < 0: RGB, not checked)
     int bits;             // the bit depth of the decoded Y'
     const char* fileColorspace; // if not null, the File Colorspace that ReadFFmpeg must guess
+    int dnxhdProfile = -1; // if >= 0, the DNxHDCodecProfile (written with the Video Range)
 };
 
 int testWriteFFmpegColorRoundTrip(const std::string& outFile, const ColorRoundTrip& c)
@@ -1694,6 +1697,9 @@ int testWriteFFmpegColorRoundTrip(const std::string& outFile, const ColorRoundTr
     WriterParams wp;
     wp.strings = { { "codecShortName", c.codec } };
     wp.stringsAfterCreate = { { "ocioOutputSpace", c.ocioOut } };
+    if (c.dnxhdProfile >= 0) {
+        wp.ints = { { "DNxHDCodecProfile", c.dnxhdProfile }, { "DNxHDEncodeVideoRange", 1 } };
+    }
     wp.color.assign(color, color + 3);
     const std::string file = outFile + c.ext;
     if (testWriteFFmpeg(file, c.W, c.H, 2, wp)) return 1;
@@ -2226,6 +2232,12 @@ main(int argc, char** argv)
             { "QuickTime Animation (RGB), sRGB", "qtrle", ".mov", "sRGB", 128, 96, AVCOL_SPC_RGB, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, -1., -1., 8, nullptr },
             { "H.264 in Matroska, SD, sRGB: colorspace metadata", "libx264", ".mkv", "sRGB", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, k601[0], k601[1], 8, "sRGB" },
             { "H.264 in Matroska, SD, Gamma2.2: colorspace metadata", "libx264", ".mkv", "Gamma2.2", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_GAMMA22, false, k601[0], k601[1], 8, "Gamma2.2" },
+            // DNxHD/DNxHR: FFmpeg's decoder takes the matrix of every frame from the frame header, where FFmpeg's
+            // encoder always writes BT.709, so the BT.709 matrix, with the BT.2020 primaries and in SD too
+            { "DNxHR HQX, 720p, Rec2020: BT.709 matrix", "dnxhd", ".mov", "Rec2020", 1280, 720, AVCOL_SPC_BT709, AVCOL_PRI_BT2020, -1, false, k709[0], k709[1], 10, nullptr, 1 },
+            { "DNxHR HQ, 720p, Rec2020: BT.709 matrix", "dnxhd", ".mov", "Rec2020", 1280, 720, AVCOL_SPC_BT709, AVCOL_PRI_BT2020, -1, false, k709[0], k709[1], 8, nullptr, 2 },
+            { "DNxHR HQ, SD, rec709: BT.709 matrix", "dnxhd", ".mov", "rec709", 256, 144, AVCOL_SPC_BT709, AVCOL_PRI_BT709, AVCOL_TRC_BT709, false, k709[0], k709[1], 8, nullptr, 2 },
+            { "DNxHR 444 (RGB), 720p, Rec2020", "dnxhd", ".mov", "Rec2020", 1280, 720, AVCOL_SPC_RGB, AVCOL_PRI_BT2020, -1, false, -1., -1., 10, nullptr, 0 },
         };
         for (const auto& c : cases) {
             std::printf("==== WriteFFmpeg + ReadFFmpeg %s: color tags and Y'CbCr matrix ====\n", c.label);
