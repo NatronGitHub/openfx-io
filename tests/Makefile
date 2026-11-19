@@ -72,7 +72,9 @@ TBBMALLOC_LIBS := $(if $(and $(TBB_LIBDIR),$(wildcard $(TBB_LIBDIR)/libtbbmalloc
 OFX_CXXFLAGS := $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) $(shell $(PKGCONF) --cflags $(OFX_PKGS)) $(FMT_INC) $(OMP_CFLAGS)
 OFX_LIBS  := $(shell $(PKGCONF) --libs $(OFX_PKGS)) $(OMP_LDLIBS) $(TBBMALLOC_LIBS)
 
-# OFX C++ Support library (host-facing plugin runtime); ofxsHWNDInteract.cpp is Windows-only.
+# OFX C++ Support library (host-facing plugin runtime), as in openfx's Makefile.master: ofxsDrawContextOpenGL.cpp
+# (DrawArgs::isOpenGLContextCurrent, used by SupportExt's OverlayDraw) loads OpenGL at run time; ofxsHWNDInteract.cpp
+# is Windows-only.
 OFX_SUPPORT := \
     ../openfx/Support/Library/ofxsCore.cpp \
     ../openfx/Support/Library/ofxsImageEffect.cpp \
@@ -81,7 +83,8 @@ OFX_SUPPORT := \
     ../openfx/Support/Library/ofxsMultiThread.cpp \
     ../openfx/Support/Library/ofxsParams.cpp \
     ../openfx/Support/Library/ofxsProperty.cpp \
-    ../openfx/Support/Library/ofxsPropertyValidation.cpp
+    ../openfx/Support/Library/ofxsPropertyValidation.cpp \
+    ../openfx/Support/Library/ofxsDrawContextOpenGL.cpp
 
 # The reader/writer plugin translation units + their in-repo dependencies.
 # (LibRaw/RAW support is left out of the test build to avoid an OpenMP dependency;
@@ -203,7 +206,9 @@ clean-oiio-edge:
 # property newer than OFX 1.4, no extension, no OfxSetHost), and in the full host: describe, instantiate and render
 # each one. With OpenGL render support, as in ../Makefile.master. The SeExpr plug-ins only if SeExpr 2.11 (the SeExpr 1
 # API, SeExpression.h) is in $(SEEXPR_HOME), and the PNG ones only if pkg-config finds libpng.
-SEEXPR_HOME ?= /usr
+# SEEXPR_HOME default: MacPorts' prefix on macOS if SeExpr is there (the seexpr211 port), else /usr (also for test-seexpr,
+# below)
+SEEXPR_HOME ?= $(if $(and $(filter Darwin,$(shell uname -s)),$(wildcard /opt/local/include/SeExpression.h)),/opt/local,/usr)
 comma := ,
 HAVE_SEEXPR := $(if $(wildcard $(SEEXPR_HOME)/include/SeExpression.h),1,)
 HAVE_PNG := $(shell $(PKGCONF) --exists libpng 2>/dev/null && echo 1)
@@ -296,8 +301,7 @@ exr_read_bench: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT
 # as in ../Makefile.master. test-seexpr is skipped if they are not found there, or fails if SEEXPR_REQUIRED=1 (ctest sets
 # it). SEEXPR_LIBDIR: the directory of libSeExpr (default: the first of lib, lib64 and lib/<multiarch> in SEEXPR_HOME
 # that has it; ctest sets it to the directory of the library that CMake found).
-# default: MacPorts' prefix on macOS if SeExpr is there (the seexpr211 port), else /usr
-SEEXPR_HOME ?= $(if $(and $(filter Darwin,$(shell uname -s)),$(wildcard /opt/local/include/SeExpression.h)),/opt/local,/usr)
+# SEEXPR_HOME: its default is set above, for test-ofx14.
 SEEXPR_REQUIRED ?= 0
 SEEXPR_MULTIARCH := $(shell $(CXX) -print-multiarch 2>/dev/null)
 SEEXPR_LIBDIR ?= $(firstword $(patsubst %/,%,$(dir $(wildcard $(SEEXPR_HOME)/lib/libSeExpr.* $(SEEXPR_HOME)/lib64/libSeExpr.* \
