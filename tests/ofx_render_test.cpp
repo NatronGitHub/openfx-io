@@ -119,7 +119,11 @@ struct WriterParams {
     // extension), as the param and the text of the label of the option
     std::vector<std::pair<std::string, std::string>> choicesAfterCreate;
     std::string renderFile;          // if not empty, the "filename" param from the second frame on (#137)
-    bool expectRenderFailure = false; // with renderFile: frames 2..N must fail to render
+    bool expectRenderFailure = false; // with renderFile or outputFetchFails: frames 2..N must fail to render
+    // with expectRenderFailure: the persistent error after endSequenceRender must contain this
+    std::string renderErrorText = "another active render";
+    bool outputFetchFails = false;   // from the second frame on, the Output clip is connected and its image can not
+                                     // be fetched (an error of GenericWriterPlugin::render(), before encode())
     // if renderW > 0: from the second frame on, the render window and the source image are renderW x renderH,
     // not W x H (the size of the movie, the output RoD at beginSequenceRender), as when Natron changes the
     // project format during the render
@@ -248,6 +252,12 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         if ((t == 2) && !wp.renderFile.empty()) {
             setOverrideString(&ctx, kOfxImageEffectFileParamName, wp.renderFile);
         }
+        if ((t == 2) && wp.outputFetchFails && ctx.clips.count(kOfxImageEffectOutputClipName)) {
+            Clip* o = ctx.clips[kOfxImageEffectOutputClipName];
+            o->connected = true;
+            pSetInt(PH(&o->props), kOfxImageClipPropConnected, 0, 1);
+            o->noImage = true;
+        }
         if ((t == 2) && (wp.renderW > 0)) {
             rw = wp.renderW;
             rh = wp.renderH;
@@ -296,8 +306,8 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     std::printf("  encoded %s (%ld bytes), render failures=%d\n", outFile.c_str(), sz, rfail);
     if (wp.expectRenderFailure) {
         const int expected = (nFrames - 1) * (int)wp.views.size();
-        if ((rfail != expected) || (gPersistentError.find("another active render") == std::string::npos)) {
-            std::printf("  FAIL: expected %d render failures, \"another active render\" (error: \"%s\")\n", expected, gPersistentError.c_str());
+        if ((rfail != expected) || (gPersistentError.find(wp.renderErrorText) == std::string::npos)) {
+            std::printf("  FAIL: expected %d render failures, \"%s\" (error: \"%s\")\n", expected, wp.renderErrorText.c_str(), gPersistentError.c_str());
             return 1;
         }
         std::printf("  PASS (render failed as expected: %s)\n", gPersistentError.c_str());
@@ -2399,6 +2409,33 @@ main(int argc, char** argv)
         for (size_t i = 0; i < cases.size(); ++i) {
             std::printf("==== WriteFFmpeg %s, read back by ReadFFmpeg (issue #170) ====\n", cases[i].label);
             failures += testUncompressed(outFile + ".i170-" + std::to_string(i) + "." + cases[i].ext, cases[i]);
+        }
+
+        // A frame fails after a good one, while a warning is set (rawvideo RGB 16-bit in QuickTime writes 8-bit RGB):
+        // endSequenceRender must not replace the error by the warning.
+        const std::pair<const char*, bool> lateFailures[] = { { "another file from frame 2 (encode())", true },
+                                                              { "the output image can not be fetched from frame 2 (render())", false } };
+        for (const auto& lf : lateFailures) {
+            std::printf("==== WriteFFmpeg rawvideo RGB 16-bit in QuickTime (warning), %s: the error stays (issue #170) ====\n", lf.first);
+            WriterParams wp;
+            wp.strings = { { "codecShortName", "rawvideo" } };
+            wp.ints = { { "prefPixelCoding", 3 }, { "prefBitDepth", 3 } };
+            wp.expectRenderFailure = true;
+            if (lf.second) {
+                wp.renderFile = outFile + ".i170-late-other.mov";
+            } else {
+                wp.outputFetchFails = true;
+                wp.renderErrorText = "Output image could not be fetched";
+            }
+            gMessages.clear();
+            const int f = testWriteFFmpeg(outFile + ".i170-late.mov", 64, 48, 3, wp);
+            if (!f && (gMessages.find("rawvideo has no pixel format with RGB, 16 bits") == std::string::npos)) {
+                std::printf("  FAIL: no fallback warning in:\n%s", gMessages.c_str());
+                ++failures;
+            }
+            failures += f;
+            std::remove((outFile + ".i170-late.mov").c_str());
+            std::remove((outFile + ".i170-late-other.mov").c_str());
         }
     }
 

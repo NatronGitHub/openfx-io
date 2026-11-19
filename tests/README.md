@@ -161,7 +161,10 @@ the real render pipeline, linked directly (no host binary):
   rows); v210 with an odd width must fail with an error before opening the
   encoder. A project saved with the v308 or v410 encoder must write rawvideo
   with the same tag when FFmpeg (9) does not have them, with a warning that is
-  still shown after the render (and UYVY with a warning in Matroska). The last
+  still shown after the render (and UYVY with a warning in Matroska). When a
+  frame fails after a good one (another file in encode(), or an Output image
+  that can not be fetched in render()) while a warning is set, the error must
+  stay the persistent message after endSequenceRender. The last
   frame of the NUT files is not checked: ReadFFmpeg reads one frame less from
   NUT.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the

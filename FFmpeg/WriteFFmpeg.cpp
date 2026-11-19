@@ -5582,6 +5582,13 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
 
         return;
     }
+    // Whether all the frames were encoded: if a frame failed (in GenericWriterPlugin::render(), or in encode()'s
+    // checks, which do not change _error), its error is the persistent message, and must stay.
+    bool allEncoded;
+    {
+        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+        allEncoded = (_nextFrameToEncode != INT_MIN) && (_nextFrameToEncode > _lastFrameToEncode);
+    }
 
     bool flushFrames = true;
     while (flushFrames) {
@@ -5636,8 +5643,8 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         setPersistentMessage(Message::eMessageError, "", string("Unable to finalize the file: ") + szError);
         throwSuiteStatusException(kOfxStatFailed);
     }
-    if ((closeError >= 0) && (_error == SUCCESS) && !_encodeWarnings.empty()) {
-        // the warnings of beginEncode(), which GenericWriterPlugin::render() cleared
+    if ((closeError >= 0) && (_error == SUCCESS) && allEncoded && !_encodeWarnings.empty()) {
+        // the warnings of beginEncode(), which GenericWriterPlugin::render() cleared after each frame
         setPersistentMessage(Message::eMessageWarning, "", _encodeWarnings);
     }
 }
