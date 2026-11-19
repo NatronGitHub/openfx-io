@@ -1250,8 +1250,10 @@ SeNoisePlugin::changedClip(const InstanceChangedArgs& args,
     }
 }
 
-class SeNoiseOverlayDescriptor
-    : public DefaultEffectOverlayDescriptor<SeNoiseOverlayDescriptor, OverlayInteractFromHelpers2<TransformInteractHelper, RampInteractHelper>> {
+// Draws with the DrawSuite when the host provides it: both helpers take the
+// draw mode of the interact being created (see ofxsOverlayDraw.h).
+class SeNoiseOverlayDescriptorV2
+    : public DefaultEffectOverlayDescriptorV2<SeNoiseOverlayDescriptorV2, OverlayInteractFromHelpers2<TransformInteractHelper, RampInteractHelper>> {
 };
 
 mDeclarePluginFactory(SeNoisePluginFactory, { ofxsThreadSuiteCheck(); }, {});
@@ -1282,7 +1284,7 @@ SeNoisePluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setSupportsMultipleClipPARs(kSupportsMultipleClipPARs);
     desc.setSupportsMultipleClipDepths(kSupportsMultipleClipDepths);
     desc.setRenderThreadSafety(kRenderThreadSafety);
-    desc.setOverlayInteractDescriptor(new SeNoiseOverlayDescriptor);
+    ofxsSetOverlayInteractDescriptorV2(desc, new SeNoiseOverlayDescriptorV2);
 
 #ifdef OFX_EXTENSIONS_NATRON
     desc.setChannelSelector(ePixelComponentNone); // we have our own channel selector
