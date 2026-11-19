@@ -364,7 +364,12 @@ namespace IO {
         virtual bool supportsAlpha(const std::string& filename) const = 0;
 
     protected:
-        void getSelectedOutputFormat(OfxRectI* format, double* par);
+        // the output format, at time and view (the input's RoD, for the input format, if the host has no
+        // kOfxImageClipPropFormat)
+        void getSelectedOutputFormat(OfxTime time, int view, OfxRectI* format, double* par);
+
+        // the bounds of the host's time line, or without the (optional) TimeLine suite, the frame range of the input
+        void getTimeLineBounds(double* first, double* last);
 
         void refreshRGBAParamsFromOutputComponents();
 
