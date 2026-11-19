@@ -66,6 +66,8 @@
  *     - write a color pattern (with an alpha ramp if the format has alpha) with v210 and with rawvideo in QuickTime,
  *       NUT, Matroska and AVI, check the codec, tag, pixel format and range that libavformat reads back, and that
  *       ReadFFmpeg decodes the pattern exactly (RGB formats) or within the Y'CbCr conversion tolerance
+ *     - same, with values on no grid (float, 10-bit and 16-bit), and with an odd width (63x47): RGB in QuickTime is
+ *       written as ARGB, and v210 fails with an error
  *     - a project saved with the v308 or v410 encoder, which FFmpeg 9 removed, writes rawvideo with the same tag
  *
  * Exit status: 0 = all checks passed.
@@ -124,14 +126,21 @@ struct WriterParams {
     int renderW = 0, renderH = 0;
     // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque)
     int pattern = 0;
+    // the quantization of colorPattern() (see there)
+    int patternQuant = 255;
 };
 
+// The persistent warning of WriteFFmpeg after endSequenceRender (see testWriteFFmpeg()).
+std::string gWarningAfterRender;
+
 // The color pattern of frame t (issue #170), at column x and row r of the image buffer: smooth ramps (so that 4:2:2
-// chroma subsampling only adds a small error), with values on the 8-bit grid (k/255, which is also exact in 16 bits:
-// k * 257 / 65535), black and white included. Unpremultiplied (alpha < 1 if alpha).
-void colorPattern(int x, int r, int t, int W, int H, bool alpha, float* rgba)
+// chroma subsampling only adds a small error), black and white included. Unpremultiplied (alpha < 1 if alpha).
+// quant > 0: the values are on the grid k/quant, e.g. 255 (the 8-bit grid, which is also exact in 16 bits:
+// k * 257 / 65535, whose two bytes are equal, so that it does not show byte-swapped 16-bit samples) or 65535.
+// quant = 0: values that are on no grid (as float images, or 10-bit and 16-bit images, have), in [0.00617, 0.98765].
+void colorPattern(int x, int r, int t, int W, int H, bool alpha, float* rgba, int quant = 255)
 {
-    auto q = [](double v) { return (float)((double)std::lround(v * 255.) / 255.); };
+    auto q = [quant](double v) { return quant > 0 ? (float)((double)std::lround(v * quant) / quant) : (float)(0.00617 + 0.98148 * v); };
     rgba[0] = q((double)x / (W - 1));
     rgba[1] = q(1. - (double)r / (H - 1));
     rgba[2] = q(0.2 + 0.5 * (double)(x + r) / (W + H - 2) + 0.05 * t);
@@ -252,7 +261,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             if (view != 0) v = 1.f - v;
             if (wp.pattern > 0) {
                 for (int r = 0; r < rh; ++r) {
-                    for (int x = 0; x < rw; ++x) colorPattern(x, r, t, rw, rh, wp.pattern > 1, &fp[((size_t)r * rw + x) * 4]);
+                    for (int x = 0; x < rw; ++x) colorPattern(x, r, t, rw, rh, wp.pattern > 1, &fp[((size_t)r * rw + x) * 4], wp.patternQuant);
                 }
             } else {
                 for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
@@ -274,6 +283,8 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
         OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        gWarningAfterRender = gPersistentWarning;
     }
 
     p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
@@ -1739,17 +1750,27 @@ struct UncompressedCase {
     const char* expectPixFmt; // the pixel format
     double tolerance;         // the largest difference of R, G, B, A with the pattern (ReadFFmpeg output)
     const char* expectMessage = nullptr; // a message that the plug-in must send (e.g. the codec was replaced)
+    // a text that the persistent warning must contain after the render (e.g. the codec was replaced)
+    const char* expectWarningAfterRender = nullptr;
+    int quant = 255;          // the quantization of colorPattern(): 255 (the 8-bit grid), or 0 (values on no grid)
+    int W = 64, H = 48;       // the size of the images
+    bool expectBeginFailure = false; // beginSequenceRender must fail, with the error expectMessage, and write no file
 };
 
-int testUncompressed(const std::string& outFile, int W, int H, const UncompressedCase& c)
+int testUncompressed(const std::string& outFile, const UncompressedCase& c)
 {
     const int N = 3;
+    const int W = c.W, H = c.H;
     WriterParams wp;
     wp.strings = { { "codecShortName", c.codec } };
     wp.ints = { { "prefPixelCoding", c.prefCoding }, { "prefBitDepth", c.prefDepth }, { "enableAlpha", c.alpha ? 1 : 0 },
                 { "inputPremult", 2 } }; // unpremultiplied: the pattern is written as is
     wp.pattern = c.alpha ? 2 : 1;
+    wp.patternQuant = c.quant;
+    wp.expectBeginFailure = c.expectBeginFailure;
+    wp.expectNoFile = c.expectBeginFailure;
     gMessages.clear();
+    gWarningAfterRender.clear();
     if (testWriteFFmpeg(outFile, W, H, N, wp)) {
         std::printf("  messages:\n%s", gMessages.c_str());
         return 1;
@@ -1757,6 +1778,15 @@ int testUncompressed(const std::string& outFile, int W, int H, const Uncompresse
     int failures = 0;
     if (c.expectMessage && (gMessages.find(c.expectMessage) == std::string::npos)) {
         std::printf("  FAIL: no message \"%s\" in:\n%s", c.expectMessage, gMessages.c_str());
+        ++failures;
+    }
+    if (c.expectBeginFailure) {
+        std::printf(failures ? "  FAIL (%s)\n" : "  PASS (%s)\n", c.label);
+        return failures;
+    }
+    if (c.expectWarningAfterRender && (gWarningAfterRender.find(c.expectWarningAfterRender) == std::string::npos)) {
+        std::printf("  FAIL: the persistent warning after the render is \"%s\", it does not contain \"%s\"\n", gWarningAfterRender.c_str(),
+                    c.expectWarningAfterRender);
         ++failures;
     }
     StreamInfo s;
@@ -1767,6 +1797,9 @@ int testUncompressed(const std::string& outFile, int W, int H, const Uncompresse
     if ((int)s.center.size() != N) { std::printf("  FAIL: %d frames decoded, expected %d\n", (int)s.center.size(), N); ++failures; }
     const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(av_get_pix_fmt(s.pixFmt.c_str()));
     const bool yuv = d && !(d->flags & AV_PIX_FMT_FLAG_RGB) && d->nb_components >= 3;
+    // the file has alpha (e.g. ARGB for RGB in QuickTime with an odd width): ReadFFmpeg gives RGBA, whose alpha must
+    // be the pattern's (1 if the pattern is opaque)
+    const bool readAlpha = c.alpha || (d && (d->flags & AV_PIX_FMT_FLAG_ALPHA));
     // (of these containers, only Matroska stores the range: the QuickTime 'colr' nclc atom has none, and NUT and AVI
     // have no color tags)
     if (yuv && (s.range != AVCOL_RANGE_MPEG) && (std::string(c.ext) == "mkv")) {
@@ -1800,7 +1833,7 @@ int testUncompressed(const std::string& outFile, int W, int H, const Uncompresse
         double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
         p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
     }
-    if (c.alpha) {
+    if (readAlpha) {
         setOverrideInt(&ctx, "outputComponents", optRGBA);
         setOverrideInt(&ctx, "filePremult", 2); // unpremultiplied
         setOverrideInt(&ctx, "outputPremult", 2);
@@ -1808,8 +1841,8 @@ int testUncompressed(const std::string& outFile, int W, int H, const Uncompresse
     Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
     if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
     out->connected = true;
-    const int outComps = c.alpha ? 4 : 3;
-    setupClipImage(out, W, H, c.alpha ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    const int outComps = readAlpha ? 4 : 3;
+    setupClipImage(out, W, H, readAlpha ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
     { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     float* fp = reinterpret_cast<float*>(out->buffer.data());
     double maxErr[4] = { 0., 0., 0., 0. };
@@ -1830,7 +1863,7 @@ int testUncompressed(const std::string& outFile, int W, int H, const Uncompresse
         for (int r = 0; r < H; ++r) {
             for (int x = 0; x < W; ++x) {
                 float e[4];
-                colorPattern(x, r, t, W, H, c.alpha, e);
+                colorPattern(x, r, t, W, H, c.alpha, e, c.quant);
                 const float* v = &fp[((size_t)r * W + x) * outComps];
                 for (int k = 0; k < outComps; ++k) {
                     const double err = std::fabs((double)v[k] - (double)e[k]);
@@ -1845,7 +1878,7 @@ int testUncompressed(const std::string& outFile, int W, int H, const Uncompresse
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::printf("  ReadFFmpeg: largest difference with the pattern (x 255): R %.3f at (%d,%d), G %.3f at (%d,%d), B %.3f at (%d,%d)",
                 maxErr[0] * 255, worst[0][0], worst[0][1], maxErr[1] * 255, worst[1][0], worst[1][1], maxErr[2] * 255, worst[2][0], worst[2][1]);
-    if (c.alpha) std::printf(", A %.3f at (%d,%d)", maxErr[3] * 255, worst[3][0], worst[3][1]);
+    if (readAlpha) std::printf(", A %.3f at (%d,%d)", maxErr[3] * 255, worst[3][0], worst[3][1]);
     std::printf(" (tolerance %.3f)\n", c.tolerance * 255);
     for (int k = 0; k < outComps; ++k) {
         if (!(maxErr[k] <= c.tolerance)) { std::printf("  FAIL: component %d differs by %g\n", k, maxErr[k]); ++failures; }
@@ -2253,14 +2286,19 @@ main(int argc, char** argv)
         // interpolation (measured: 4:4:4 at most 2/255 in 8 bits and 0.5/255 in 10 bits, 4:2:2 5/255 in 8 bits and
         // 2.1/255 in 10 bits, 4:2:0 7/255). A wrong range would give about 16/255 in black and white, and a wrong
         // matrix more than 10/255 in the saturated corners of the pattern.
-        const double rgbTol = 1e-4, yuv8Tol = 2.5 / 255., yuv10Tol = 1. / 255., yuv422Tol = 6. / 255.,
+        // With values on no grid (quant 0): 8-bit RGB rounds to the nearest of 255 levels (0.5/255), 16-bit RGB is exact
+        // within 1e-4 (6.5/65535, much less than the 8-bit rounding).
+        const double rgbTol = 1e-4, rgb8Tol = 0.5 / 255. + 1e-5, yuv8Tol = 2.5 / 255., yuv10Tol = 1. / 255., yuv422Tol = 6. / 255.,
                      yuv422p10Tol = 3. / 255., yuv420Tol = 8. / 255.;
         std::vector<UncompressedCase> cases = {
             { "v210 in QuickTime", "mov", "v210", 1, 1, false, "v210", "v210", "yuv422p10le", yuv422p10Tol },
             { "rawvideo 2vuy in QuickTime", "mov", "rawvideo", 1, 0, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol },
             { "rawvideo raw RGB in QuickTime", "mov", "rawvideo", 3, 0, false, "rawvideo", "raw ", "rgb24", rgbTol },
             { "rawvideo raw ARGB in QuickTime", "mov", "rawvideo", 3, 0, true, "rawvideo", "raw ", "argb", rgbTol },
-            { "rawvideo b48r in QuickTime", "mov", "rawvideo", 3, 3, false, "rawvideo", "b48r", "rgb48be", rgbTol },
+            // 16-bit RGB in QuickTime: b48r (rgb48be) is not written, since QuickTime reads it byte-swapped: 8-bit RGB,
+            // with a warning (values on no grid)
+            { "rawvideo RGB 16-bit in QuickTime: 8-bit raw RGB", "mov", "rawvideo", 3, 3, false, "rawvideo", "raw ", "rgb24", rgb8Tol,
+              "rawvideo has no pixel format with RGB, 16 bits in the mov container", nullptr, 0 },
             { "rawvideo YUV420 8-bit in Matroska", "mkv", "rawvideo", 0, 0, false, "rawvideo", "I420", "yuv420p", yuv420Tol },
             { "rawvideo YUV422 8-bit in Matroska", "mkv", "rawvideo", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol },
             { "rawvideo RGB 16-bit in NUT", "nut", "rawvideo", 3, 3, false, "rawvideo", "RGB0", "rgb48le", rgbTol }, // (48 is '0')
@@ -2287,14 +2325,80 @@ main(int argc, char** argv)
             cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "v410", "v410", "yuv444p10le", yuv10Tol });
 #endif
         } else {
+            // the warning stays after the render (GenericWriterPlugin::render() clears the persistent message)
             cases.push_back({ "saved v308 project, rawvideo in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol,
-                              "the codec was replaced by rawvideo" });
+                              "the codec was replaced by rawvideo",
+                              "with the v308 tag, as the v308 encoder did" });
             cases.push_back({ "saved v410 project, rawvideo in QuickTime", "mov", "v410", 1, 0, false, "rawvideo", "v410", "v30xle", yuv10Tol,
-                              "the codec was replaced by rawvideo" });
+                              "the codec was replaced by rawvideo",
+                              "In the mov container, rawvideo writes the v30xle pixel format with the v410 tag, as the v410 encoder did" });
+            // Matroska has no 4:4:4: UYVY, and the warning says so
+            cases.push_back({ "saved v308 project, rawvideo in Matroska", "mkv", "v308", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol,
+                              "In the matroska container, rawvideo writes the uyvy422 pixel format.",
+                              "rawvideo has no pixel format with Y'CbCr 4:4:4, 8 bits in the matroska container" });
+        }
+
+        // Values on no grid (as in float, 10-bit and 16-bit images), which show a lower depth than expected (e.g.
+        // 16-bit samples read byte-swapped, or written in 8 bits)
+        cases.push_back({ "rawvideo RGB 16-bit in NUT, values on no grid", "nut", "rawvideo", 3, 3, false, "rawvideo", "RGB0", "rgb48le", rgbTol,
+                          nullptr, nullptr, 0 });
+        cases.push_back({ "rawvideo RGBA 16-bit in NUT, values on no grid", "nut", "rawvideo", 3, 3, true, "rawvideo", "RBA[64]", "rgba64le", rgbTol,
+                          nullptr, nullptr, 0 });
+        cases.push_back({ "rawvideo RGB 10-bit in QuickTime: 8-bit raw RGB", "mov", "rawvideo", 3, 1, false, "rawvideo", "raw ", "rgb24", rgb8Tol,
+                          "rawvideo has no pixel format with RGB, 10 bits in the mov container", nullptr, 0 });
+        cases.push_back({ "rawvideo raw ARGB 16-bit in QuickTime: 8-bit ARGB", "mov", "rawvideo", 3, 3, true, "rawvideo", "raw ", "argb", rgb8Tol,
+                          "rawvideo has no pixel format with RGB, 16 bits and alpha in the mov container", nullptr, 0 });
+        cases.push_back({ "v210 in QuickTime, values on no grid", "mov", "v210", 1, 1, false, "v210", "v210", "yuv422p10le", yuv422p10Tol,
+                          nullptr, nullptr, 0 });
+        cases.push_back({ "rawvideo YUVA444 10-bit in NUT, values on no grid", "nut", "rawvideo", 2, 1, true, "rawvideo", "Y4[0][10]", "yuva444p10le",
+                          yuv10Tol, nullptr, nullptr, 0 });
+#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
+        cases.push_back({ "rawvideo v410 in QuickTime, values on no grid", "mov", "rawvideo", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol,
+                          nullptr, nullptr, 0 });
+        // Y'CbCr with more than 10 bits in QuickTime: v410 (10-bit 4:4:4), with a warning
+        cases.push_back({ "rawvideo YUV444 16-bit in QuickTime: v410", "mov", "rawvideo", 2, 3, false, "rawvideo", "v410", "v30xle", yuv10Tol,
+                          "rawvideo has no pixel format with Y'CbCr 4:4:4, 16 bits in the mov container", nullptr, 0 });
+        cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: v410", "mov", "rawvideo", 1, 2, false, "rawvideo", "v410", "v30xle", yuv10Tol,
+                          "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
+#else
+        cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: 2vuy", "mov", "rawvideo", 1, 2, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol,
+                          "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
+#endif
+
+        // Odd widths (63x47)
+        {
+            std::vector<UncompressedCase> odd = {
+                // the mov muxer pads the RGB24 rows to an even number of bytes, which FFmpeg and QuickTime do not read:
+                // ARGB (opaque)
+                { "rawvideo RGB in QuickTime, odd width: ARGB", "mov", "rawvideo", 3, 0, false, "rawvideo", "raw ", "argb", rgbTol },
+                { "rawvideo raw ARGB in QuickTime, odd width", "mov", "rawvideo", 3, 0, true, "rawvideo", "raw ", "argb", rgbTol },
+                { "rawvideo 2vuy in QuickTime, odd width", "mov", "rawvideo", 1, 0, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol },
+                // the v210 encoder needs an even width
+                { "v210 in QuickTime, odd width: error", "mov", "v210", 1, 1, false, "v210", "v210", "yuv422p10le", yuv422p10Tol,
+                  "The v210 codec needs an even width, and the image is 63 pixels wide" },
+                { "rawvideo RGB 16-bit in NUT, odd width", "nut", "rawvideo", 3, 3, false, "rawvideo", "RGB0", "rgb48le", rgbTol },
+                { "rawvideo YUV422 8-bit in NUT, odd width", "nut", "rawvideo", 1, 0, false, "rawvideo", "Y42B", "yuv422p", yuv422Tol },
+                { "rawvideo YUVA444 10-bit in NUT, odd width", "nut", "rawvideo", 2, 1, true, "rawvideo", "Y4[0][10]", "yuva444p10le", yuv10Tol },
+                { "rawvideo BI_RGB in AVI, odd width", "avi", "rawvideo", 3, 0, false, "rawvideo", "[0][0][0][0]", "bgr24", rgbTol },
+                { "rawvideo BI_RGB BGRA in AVI, odd width", "avi", "rawvideo", 3, 0, true, "rawvideo", "[0][0][0][0]", "bgra", rgbTol },
+                { "rawvideo UYVY in AVI, odd width", "avi", "rawvideo", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol },
+                { "rawvideo YUV420 8-bit in Matroska, odd width", "mkv", "rawvideo", 0, 0, false, "rawvideo", "I420", "yuv420p", yuv420Tol },
+#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
+                { "rawvideo v410 in QuickTime, odd width", "mov", "rawvideo", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol },
+                { "rawvideo v308 in QuickTime, odd width", "mov", "rawvideo", 2, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol },
+                { "rawvideo v408 in QuickTime, odd width", "mov", "rawvideo", 2, 0, true, "rawvideo", "v408", "uyva", yuv8Tol },
+#endif
+            };
+            for (UncompressedCase c : odd) {
+                c.W = 63;
+                c.H = 47;
+                c.expectBeginFailure = (std::string(c.codec) == "v210");
+                cases.push_back(c);
+            }
         }
         for (size_t i = 0; i < cases.size(); ++i) {
             std::printf("==== WriteFFmpeg %s, read back by ReadFFmpeg (issue #170) ====\n", cases[i].label);
-            failures += testUncompressed(outFile + ".i170-" + std::to_string(i) + "." + cases[i].ext, 64, 48, cases[i]);
+            failures += testUncompressed(outFile + ".i170-" + std::to_string(i) + "." + cases[i].ext, cases[i]);
         }
     }
 

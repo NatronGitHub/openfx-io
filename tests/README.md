@@ -145,16 +145,25 @@ the real render pipeline, linked directly (no host binary):
   the frame, and black elsewhere (ProRes, 16-bit buffer, and MPEG-4, 8-bit).
   WriteFFmpeg read the image as if it had the size of the movie: out of its
   buffer when it is smaller (a crash in NatronRenderer).
-* **WriteFFmpeg uncompressed codecs** (issue #170): a 64x48 color pattern (with
-  an alpha ramp for the formats with alpha) is written with v210 and with
-  rawvideo in QuickTime (2vuy, raw RGB and ARGB, b48r, and from FFmpeg 8 v308,
-  v408 and v410), Matroska, NUT and AVI. libavformat must read back the expected
+* **WriteFFmpeg uncompressed codecs** (issue #170): a color pattern (with an
+  alpha ramp for the formats with alpha) is written with v210 and with
+  rawvideo in QuickTime (2vuy, raw RGB and ARGB, and from FFmpeg 8 v308, v408
+  and v410), Matroska, NUT and AVI. libavformat must read back the expected
   codec, tag and pixel format (and the BT.601 matrix in QuickTime and Matroska,
   video range in Matroska), and ReadFFmpeg must decode the pattern exactly for
-  RGB, or within the Y'CbCr conversion error. A project saved with the v308 or
-  v410 encoder must write rawvideo with the same tag when FFmpeg (9) does not
-  have them, with a warning. The last frame of the NUT files is not checked:
-  ReadFFmpeg reads one frame less from NUT.
+  RGB, or within the Y'CbCr conversion error. The pattern is 64x48 with values
+  on the 8-bit grid, and also has values on no grid (as float, 10-bit and
+  16-bit images: 16-bit RGB must be exact within 1e-4, a lower depth fails)
+  and an odd size (63x47). RGB with 10 or 16 bits in QuickTime must write
+  8-bit RGB with a warning (b48r is not written: QuickTime reads it
+  byte-swapped), Y'CbCr with 12 or 16 bits v410; RGB with an odd width in
+  QuickTime must write ARGB (FFmpeg and QuickTime do not read the padded RGB24
+  rows); v210 with an odd width must fail with an error before opening the
+  encoder. A project saved with the v308 or v410 encoder must write rawvideo
+  with the same tag when FFmpeg (9) does not have them, with a warning that is
+  still shown after the render (and UYVY with a warning in Matroska). The last
+  frame of the NUT files is not checked: ReadFFmpeg reads one frame less from
+  NUT.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
