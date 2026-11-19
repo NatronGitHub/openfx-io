@@ -2129,7 +2129,7 @@ WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
             // of byte 0x2c are 0, FFmpeg n8.0 libavcodec/dnxhdenc.c:545, n9.0.2 :544), and FFmpeg's decoder sets
             // the frame's matrix from it (n8.0 and n9.0.2 libavcodec/dnxhddec.c:237-242), so the stream's one (the
             // MOV 'colr' atom) is ignored: fill_frame_props() only uses it if the frame's is unspecified (n8.0
-            // libavcodec/decode.c:563-564, n9.0.2 :582-583). So the BT.709 matrix, at all sizes and with the
+            // libavcodec/decode.c:564-565, n9.0.2 :582-583). So the BT.709 matrix, at all sizes and with the
             // BT.2020 primaries too: the one every decoder assumes for this file.
             avCodecContext->colorspace = AVCOL_SPC_BT709;
         } else if ((avCodecContext->color_primaries == AVCOL_PRI_BT2020) && !isJpeg) {
