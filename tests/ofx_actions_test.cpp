@@ -7,7 +7,7 @@
  * It implements just enough of the seven mandatory OFX suites (Property,
  * ImageEffect, Parameter, Memory, MultiThread, Message, Interact) — backed by a
  * generic property bag — for the Support library to run:
- *   OfxSetHost -> mainEntry(kOfxActionLoad)
+ *   OfxPlugin::setHost -> mainEntry(kOfxActionLoad)
  *              -> mainEntry(kOfxActionDescribe)          (per plugin)
  *              -> mainEntry(kOfxImageEffectActionDescribeInContext)
  *              -> mainEntry(kOfxActionUnload)

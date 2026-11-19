@@ -184,6 +184,54 @@ test-oiio-edge: oiio_edge_test
 clean-oiio-edge:
 	rm -rf oiio_edge_test oiio_edge_test.dSYM
 
+# Every plug-in of IO.ofx (the sources of ../IO/Makefile), in the OFX 1.4-only host of ofx_test_host.h (no suite or
+# property newer than OFX 1.4, no extension, no OfxSetHost), and in the full host: describe, instantiate and render
+# each one. With OpenGL render support, as in ../Makefile.master. The SeExpr plug-ins only if SeExpr 2.11 (the SeExpr 1
+# API, SeExpression.h) is in $(SEEXPR_HOME), and the PNG ones only if pkg-config finds libpng.
+SEEXPR_HOME ?= /usr
+comma := ,
+HAVE_SEEXPR := $(if $(wildcard $(SEEXPR_HOME)/include/SeExpression.h),1,)
+HAVE_PNG := $(shell $(PKGCONF) --exists libpng 2>/dev/null && echo 1)
+OFX14_SRCS := ../EXR/ReadEXR.cpp ../EXR/WriteEXR.cpp \
+    ../FFmpeg/ReadFFmpeg.cpp ../FFmpeg/WriteFFmpeg.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp \
+    ../OIIO/ReadOIIO.cpp ../OIIO/WriteOIIO.cpp ../OIIO/OIIOGlobal.cpp ../OIIO/OIIOText.cpp ../OIIO/OIIOResize.cpp \
+    ../PFM/ReadPFM.cpp ../PFM/WritePFM.cpp \
+    ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIODisplay.cpp ../OCIO/OCIOCDLTransform.cpp ../OCIO/OCIOFileTransform.cpp \
+    ../OCIO/OCIOLogConvert.cpp ../OCIO/OCIOLookTransform.cpp ../OCIO/OCIOPluginBase.cpp \
+    ../IOSupport/GenericReader.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
+    ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp ../IOSupport/SequenceParsing/SequenceParsing.cpp \
+    ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp \
+    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
+    ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp ../SupportExt/ofxsOGLTextRenderer.cpp \
+    ../SupportExt/ofxsOGLFontData.cpp ../SupportExt/ofxsRamp.cpp ../SupportExt/ofxsGenerator.cpp \
+    ../SupportExt/ofxsTransformInteract.cpp ../SupportExt/ofxsRectangleInteract.cpp ../SupportExt/ofxsOGLUtilities.cpp \
+    ../SupportExt/glad/glad.cpp ../SupportExt/glad/gladegl.cpp \
+    $(if $(HAVE_SEEXPR),../SeExpr/SeExpr.cpp ../SeExpr/SeGrain.cpp ../SeExpr/SeNoise.cpp,) \
+    $(if $(HAVE_PNG),../PNG/ReadPNG.cpp ../PNG/WritePNG.cpp,)
+OFX14_CXXFLAGS := -DOFX_SUPPORTS_OPENGLRENDER -I../EXR -I../OCIO -I../PFM -I../PNG -I../SeExpr \
+    -I../SupportExt/glad -I../openfx/Support/Plugins/include \
+    $(if $(HAVE_SEEXPR),-I$(SEEXPR_HOME)/include,) $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),)
+OFX14_LIBS := $(if $(HAVE_SEEXPR),-L$(SEEXPR_HOME)/lib -Wl$(comma)-rpath$(comma)$(SEEXPR_HOME)/lib -lSeExpr,) \
+    $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,)
+
+ofx14_host_test: ofx14_host_test.cpp ofx_test_host.h ofx14_names.h $(OFX14_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OFX14_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OFX14_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+.PHONY: test-ofx14 clean-ofx14
+test: test-ofx14
+clean: clean-ofx14
+# the OFX 1.4-only host; an OFX 1.1 host (no OFX 1.2-1.4 property, e.g. kOfxImageEffectPropSequentialRenderStatus,
+# no Message suite V2, no RGB); OFX 1.4 with the optional OpenGL render suite, and a sequential render status of 0;
+# then the full host
+test-ofx14: ofx14_host_test
+	rm -rf .ofx14 .ofx14-11 .ofx14-gl .ofx14full
+	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test $(CURDIR)/.ofx14
+	OCIO=$(CURDIR)/test.ocio OFX14_LEVEL=11 ./ofx14_host_test $(CURDIR)/.ofx14-11
+	OCIO=$(CURDIR)/test.ocio OFX14_GL=1 OFX14_SEQSTATUS=0 ./ofx14_host_test $(CURDIR)/.ofx14-gl
+	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test --full $(CURDIR)/.ofx14full
+clean-ofx14:
+	rm -rf ofx14_host_test ofx14_host_test.dSYM .ofx14 .ofx14-11 .ofx14-gl .ofx14full
+
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # -pthread: the test uses std::thread
 EXR_READ_SRCS := ../EXR/ReadEXR.cpp $(READER_HOOKS_SRCS)

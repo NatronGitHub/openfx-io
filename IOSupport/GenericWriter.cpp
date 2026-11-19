@@ -26,6 +26,8 @@
 
 #include <algorithm>
 #include <cfloat> // DBL_MAX
+#include <climits> // INT_MAX
+#include <cstdint> // uint64_t
 #include <cstring> // memset
 #include <locale>
 #include <sstream>
@@ -160,6 +162,37 @@ static bool gHostIsNatronVersion3OrGreater = false;
 static bool gHostIsMultiPlanar = false;
 static bool gHostIsMultiView = false;
 
+// the multi-plane suites of the host (FnOfxImageEffectPlaneSuiteV1 and V2, Nuke extensions), set at describe
+static bool gHostHasPlaneSuiteV1 = false;
+static bool gHostHasPlaneSuiteV2 = false;
+
+// The image of a plane of a clip, at a view (in bounds, if not NULL); renderView is the view that the host renders.
+// The multi-plane suites are Nuke extensions: with V1 only, there is a single view (the one rendered), and in a
+// host without them, such as an OFX 1.4 host, a clip has only the colour plane, fetched with clipGetImage
+// (OFX 1.0), at the view that the host renders.
+static Image*
+fetchPlaneImage(Clip* clip,
+                double time,
+                int view,
+                int renderView,
+                const string& plane,
+                const OfxRectD* bounds = NULL)
+{
+#ifdef OFX_EXTENSIONS_NUKE
+    if (gHostHasPlaneSuiteV2) {
+        return bounds ? clip->fetchImagePlane(time, view, plane.c_str(), *bounds) : clip->fetchImagePlane(time, view, plane.c_str());
+    }
+    if ( gHostHasPlaneSuiteV1 && (view == renderView) ) {
+        return bounds ? clip->fetchImagePlane(time, plane.c_str(), *bounds) : clip->fetchImagePlane(time, plane.c_str());
+    }
+#endif
+    if ( (plane != kFnOfxImagePlaneColour) || (view != renderView) ) {
+        return NULL; // no such plane or view
+    }
+
+    return clip->fetchImage(time, bounds);
+}
+
 template <typename T>
 static inline void
 unused(const T&)
@@ -242,8 +275,6 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
 
     int frameRangeChoice;
     _frameRange->getValue(frameRangeChoice);
-    double first, last;
-    timeLineGetBounds(first, last);
     if (frameRangeChoice == 2) {
         _firstFrame->setIsSecretAndDisabled(false);
         _lastFrame->setIsSecretAndDisabled(false);
@@ -420,7 +451,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     OfxRectD inputBounds;
     double inputPar = _inputClip->getPixelAspectRatio();
     Coords::toCanonical(renderWindow, renderScale, inputPar, &inputBounds);
-    const Image* srcImg = _inputClip->fetchImagePlane(time, view, plane.c_str(), inputBounds);
+    const Image* srcImg = fetchPlaneImage(_inputClip, time, view, renderRequestedView, plane, &inputBounds);
     *inputImage = srcImg;
     if (!srcImg) {
         if (failIfNoSrcImg) {
@@ -485,7 +516,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         // copy to dstImg if necessary
         if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
-            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+            auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, renderRequestedView, renderRequestedView, plane));
             if (!dstImg.get()) {
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                 throwSuiteStatusException(kOfxStatFailed);
@@ -644,7 +675,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
             // copy to dstImg if necessary
             if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+                auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, renderRequestedView, renderRequestedView, plane));
                 if (!dstImg.get()) {
                     setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                     throwSuiteStatusException(kOfxStatFailed);
@@ -701,7 +732,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         } else if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
             // The render window does not intersect the source image: the temporary buffer is
             // black (it was zeroed above), and so is the output image (the writer is a no-op).
-            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+            auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, renderRequestedView, renderRequestedView, plane));
             if (!dstImg.get()) {
                 if (abort()) {
                     // no data: the callers write nothing when aborted (they check abort() before encoding)
@@ -803,8 +834,14 @@ GenericWriterPlugin::getPackingOptions(bool* allCheckboxHidden,
 }
 
 void
-GenericWriterPlugin::render(const RenderArguments& args)
+GenericWriterPlugin::render(const RenderArguments& hostArgs)
 {
+    // kOfxImageEffectPropRenderPlanes is a Nuke extension: a host without it (e.g. an OFX 1.4 host) renders the
+    // colour plane
+    RenderArguments args(hostArgs);
+    if ( args.planes.empty() ) {
+        args.planes.push_back(kFnOfxImagePlaneColour);
+    }
     const double time = args.time;
 
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
@@ -817,11 +854,6 @@ GenericWriterPlugin::render(const RenderArguments& args)
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
-    }
-
-    if (args.planes.empty()) {
-        setPersistentMessage(Message::eMessageError, "", "Host did not requested any layer to render");
-        throwSuiteStatusException(kOfxStatFailed);
     }
 
     string filename;
@@ -1082,7 +1114,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
 
             // the writer is a no-op: the output image is black too
             if (_outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, args.renderView, args.planes.front().c_str()));
+                auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, args.renderView, args.renderView, args.planes.front()));
                 if (!dstImg.get()) {
                     if (abort()) {
                         return;
@@ -1861,7 +1893,9 @@ GenericWriterPlugin::premultPixelData(const OfxRectI& renderWindow,
 }
 
 void
-GenericWriterPlugin::getSelectedOutputFormat(OfxRectI* format,
+GenericWriterPlugin::getSelectedOutputFormat(OfxTime time,
+                                             int view,
+                                             OfxRectI* format,
                                              double* par)
 {
     FormatTypeEnum formatType = (FormatTypeEnum)_outputFormatType->getValue();
@@ -1872,6 +1906,13 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxRectI* format,
         OfxRectI inputFormat;
         _inputClip->getFormat(inputFormat);
         double inputPar = _inputClip->getPixelAspectRatio();
+        if ( (inputFormat.x2 <= inputFormat.x1) || (inputFormat.y2 <= inputFormat.y1) ) {
+            // no kOfxImageClipPropFormat (a Natron extension, e.g. in an OFX 1.4 host): the format of the input is
+            // its RoD
+            const OfxRectD inputRoD = _inputClip->getRegionOfDefinition(time, view);
+            const OfxPointD renderScale = { 1., 1. };
+            Coords::toPixelEnclosing(inputRoD, renderScale, inputPar > 0. ? inputPar : 1., &inputFormat);
+        }
         format->x1 = inputFormat.x1;
         format->x2 = inputFormat.x2;
         format->y1 = inputFormat.y1;
@@ -1935,7 +1976,7 @@ GenericWriterPlugin::getOutputRoD(OfxTime time,
     } else {
         OfxRectI format;
         double formatPar;
-        getSelectedOutputFormat(&format, &formatPar);
+        getSelectedOutputFormat(time, view, &format, &formatPar);
         if (rod) {
             OfxPointD renderScale = { 1., 1. };
             Coords::toCanonical(format, renderScale, formatPar, rod);
@@ -2035,6 +2076,56 @@ GenericWriterPlugin::encodePart(void* /*user_data*/,
 }
 
 bool
+GenericWriterPlugin::getTimeLineBounds(double* first,
+                                       double* last)
+{
+    // the TimeLine suite is optional ("This is an optional suite in the Image Effect API", ofxTimeLine.h): without
+    // it, the bounds are the frame range of the input (an OFX 1.0 clip property). Not the output's: the host derives
+    // it from the writer's time domain.
+    if (getImageEffectHostDescription()->supportsTimeLineSuite) {
+        timeLineGetBounds(*first, *last);
+
+        return true;
+    }
+    if ( !_inputClip || !_inputClip->isConnected() ) {
+        return false;
+    }
+    const OfxRangeD r = _inputClip->getFrameRange();
+    *first = r.min;
+    *last = r.max;
+
+    return true;
+}
+
+// A frame number as an int. The bounds of the frame range may be infinite ("infinite if there are no non optional
+// input clips", kOfxImageEffectPropFrameRange) or NaN: they are clamped to +-INT_MAX/2, and a NaN, tested on its bits
+// (which works even if the compiler assumes that there are no NaNs), gives 0.
+static int
+frameToInt(double frame)
+{
+    uint64_t bits;
+    std::memcpy(&bits, &frame, sizeof(bits));
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__("" : "+r"(bits)); // an optimization barrier: the compiler can't know the bits
+#else
+    volatile uint64_t volatileBits = bits;
+    bits = volatileBits;
+#endif
+    if ( (bits & 0x7fffffffffffffffULL) > 0x7ff0000000000000ULL ) {
+        return 0; // NaN
+    }
+    const int kMax = INT_MAX / 2;
+    if (frame <= -kMax) {
+        return -kMax;
+    }
+    if (frame >= kMax) {
+        return kMax;
+    }
+
+    return (int)frame;
+}
+
+bool
 GenericWriterPlugin::getTimeDomain(OfxRangeD& range)
 {
     int choice;
@@ -2044,9 +2135,8 @@ GenericWriterPlugin::getTimeDomain(OfxRangeD& range)
         /// let the default be applied
         return false;
     } else if (choice == 1) {
-        timeLineGetBounds(range.min, range.max);
-
-        return true;
+        // (without the TimeLine suite and an input, the default applies)
+        return getTimeLineBounds(&range.min, &range.max);
     } else {
         int first;
         _firstFrame->getValue(first);
@@ -2257,22 +2347,22 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
     if (paramName == kParamFrameRange) {
         int choice;
         double first, last;
-        timeLineGetBounds(first, last);
+        const bool hasBounds = getTimeLineBounds(&first, &last);
         _frameRange->getValue(choice);
         if (choice == 2) {
             _firstFrame->setIsSecretAndDisabled(false);
             int curFirstFrame;
             _firstFrame->getValue(curFirstFrame);
             // if first-frame has never been set by the user, set it
-            if ((first != curFirstFrame) && (curFirstFrame == 0)) {
-                _firstFrame->setValue((int)first);
+            if ( hasBounds && (curFirstFrame == 0) && (frameToInt(first) != curFirstFrame) ) {
+                _firstFrame->setValue( frameToInt(first) );
             }
             _lastFrame->setIsSecretAndDisabled(false);
             int curLastFrame;
             _lastFrame->getValue(curLastFrame);
             // if last-frame has never been set by the user, set it
-            if ((last != curLastFrame) && (curLastFrame == 0)) {
-                _lastFrame->setValue((int)last);
+            if ( hasBounds && (curLastFrame == 0) && (frameToInt(last) != curLastFrame) ) {
+                _lastFrame->setValue( frameToInt(last) );
             }
         } else {
             _firstFrame->setIsSecretAndDisabled(true);
@@ -2550,7 +2640,9 @@ GenericWriterDescribe(ImageEffectDescriptor& desc,
             desc.setPassThroughForNotProcessedPlanes(ePassThroughLevelPassThroughNonRenderedPlanes);
         }
     }
-    if (isMultiView && fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true)) {
+    gHostHasPlaneSuiteV1 = fetchSuite(kFnOfxImageEffectPlaneSuite, 1, true) != NULL;
+    gHostHasPlaneSuiteV2 = fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true) != NULL;
+    if (isMultiView && gHostHasPlaneSuiteV2) {
         gHostIsMultiView = true;
         desc.setIsViewAware(true);
         desc.setIsViewInvariant(eViewInvarianceAllViewsVariant);

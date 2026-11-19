@@ -6,6 +6,16 @@
  * Interact suites, plus FnOfxImageEffectPlaneSuiteV2, over a generic property bag:
  * param values (definition defaults or host overrides), image clips backed by a pixel
  * buffer, and a few helpers to load/describe a plugin and build action arguments.
+ * The plug-ins get the host through OfxPlugin::setHost (loadAndDescribe), never OfxSetHost.
+ *
+ * OFX 1.4-only mode (gOfx14Only = true, before initHost()): the host is one that supports
+ * OFX 1.4 and nothing newer, and no extension. fetchSuite returns NULL for every suite but
+ * the mandatory ones of OFX 1.4 (Property, ImageEffect, Parameter, Memory, MultiThread V1,
+ * Message V1 and V2, Interact V1), and every property suite function fails with
+ * kOfxStatErrUnknown on a property that is not defined in the OFX 1.4 headers
+ * (ofx14_names.h), on any property set (host, effect, clip, param, image, action
+ * arguments): reading it fails, and setting it stores nothing. The host has no Natron,
+ * Nuke, Vegas or other extension property, and no OpenGL render suite.
  * Param values are not animated: getValueAtTime() ignores the time, except for a string
  * param whose stringAtTime is set (e.g. a file param naming each frame of an image sequence).
  *
@@ -23,6 +33,7 @@
 #include "ofxMultiThread.h"
 #include "ofxParam.h"
 #include "ofxProperty.h"
+#include "ofxGPURender.h" // OfxImageEffectOpenGLRenderSuiteV1 (OFX14_GL)
 #include "nuke/fnOfxExtensions.h" // kOfxImageEffectPropRenderPlanes, kFnOfxImagePlaneColour, kFnOfxImageEffectPropView
 #include "ofxNatron.h" // kNatronOfxParamProcessR/G/B/A
 
@@ -35,8 +46,11 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
+
+#include "ofx14_names.h"
 
 extern "C" {
 int OfxGetNumberOfPlugins(void);
@@ -53,7 +67,11 @@ struct Value {
     std::vector<void*> p;
 };
 struct PropSet {
+    // the object that the property set belongs to (for gDefaultUnsetProps): action arguments by default
+    enum Kind { eArgs, eHost, eEffect, eClip, eImage, eParam, eInteract };
+    explicit PropSet(Kind k = eArgs) : kind(k) {}
     std::map<std::string, Value> props;
+    Kind kind;
 };
 
 struct ParamRec {
@@ -67,26 +85,119 @@ struct ParamRec {
 
 struct Clip {
     std::string name;
-    PropSet props;            // clip props (components, depth, connected, ...)
-    PropSet image;            // image props returned by clipGetImage
+    PropSet props{PropSet::eClip};   // clip props (components, depth, connected, ...)
+    PropSet image{PropSet::eImage};  // image props returned by clipGetImage
     std::vector<uint8_t> buffer; // pixel buffer backing the image
     bool connected = false;
     bool noImage = false;     // clipGetImage fails with kOfxStatFailed ("assume black and transparent")
 };
 
 struct Effect {
-    PropSet props;                          // effect props (context, instance data, ...)
+    PropSet props{PropSet::eEffect};        // effect props (context, instance data, ...)
     std::map<std::string, ParamRec> params; // by name
     std::map<std::string, Clip*> clips;     // by name
     std::vector<PropSet*> owned;
     Effect* delegate = nullptr;             // instance -> context descriptor for params/clips
     ~Effect() { for (PropSet* ps : owned) delete ps; for (auto& kv : clips) delete kv.second; }
-    PropSet* newChild() { PropSet* ps = new PropSet(); owned.push_back(ps); return ps; }
+    PropSet* newChild() { PropSet* ps = new PropSet(PropSet::eParam); owned.push_back(ps); return ps; } // (params)
     Effect* src() { return delegate ? delegate : this; }
 };
 
-PropSet gHostProps;
+PropSet gHostProps(PropSet::eHost);
 OfxHost gOfxHost;
+
+// OFX 1.4-only host mode (see the top of this file). Set it before initHost().
+bool gOfx14Only = false;
+
+// Older hosts and other host variants, from the environment (read by initHost(), see tests/README.md):
+int gOfxLevel = 14;                  // OFX14_LEVEL: 10, 11, 12, 13 or 14
+std::set<std::string> gNoSuites;     // OFX14_NOSUITE: "name Vn" or "name", comma-separated
+std::set<std::string> gExtraUnknown; // names added after gOfxLevel
+double gRS = 1.;                     // OFX14_SCALE
+bool gOpenGLRender = false;          // OFX14_GL: the host has the OpenGL render suite (optional in OFX 1.4)
+// Is the property name defined by OFX 1.4 (or by the older version of OFX14_LEVEL)?
+bool isOfx14Name(const char* n)
+{
+    if (gExtraUnknown.count(n)) return false;
+    // the names of OFX 1.4's ofxOpenGLRender.h, which ofx14_names.h leaves out
+    static const std::set<std::string> glNames = {
+        "OfxImageEffectOpenGLRenderSuite", "OfxBitDepthHalf", "OfxImageEffectPropOpenGLRenderSupported",
+        "OfxOpenGLPropPixelDepth", "OfxImageEffectPropOpenGLEnabled", "OfxImageEffectPropOpenGLTextureIndex",
+        "OfxImageEffectPropOpenGLTextureTarget", "OfxActionOpenGLContextAttached", "kOfxActionOpenGLContextDetached"
+    };
+    if (gOpenGLRender && glNames.count(n)) return true;
+    static const std::set<std::string> names(std::begin(kOfx14Names), std::end(kOfx14Names));
+    if (names.count(n)) return true;
+    for (const char* prefix : kOfx14ClipPrefixes) {
+        if (!std::strncmp(n, prefix, std::strlen(prefix))) return true;
+    }
+    return false;
+}
+
+// Every property access to a name that the host doesn't know fails with this status (kOfxStatOK: known).
+// With gDefaultUnsetProps, a known property that was never set has a default value (0, "" or NULL) at index 0, as in
+// a real host, which defines every property of a property set: e.g. kOfxParamPropHint, which
+// ChoiceParamDescriptor::appendOption() reads when the host has no kOfxParamPropChoiceLabelOption (an extension), or
+// kOfxParamPropSecret. (Otherwise, the default, reading it fails.)
+// The default is only on the property sets that a property belongs to (OFX 1.4 ofxImageEffect.h, ofxParam.h,
+// ofxInteract.h): e.g. kOfxParamProp* on a param, kOfxImageClipProp* on a clip. On the host and on the action
+// arguments, which the host sets entirely, and for a property of another property set, reading it fails with
+// kOfxStatErrUnknown, and so does propGetDimension. The dimension of a defaulted property is 1, or 0 for the
+// properties of variable dimension (e.g. kOfxParamPropChoiceOption).
+bool gDefaultUnsetProps = false;
+
+bool startsWith(const char* n, const char* prefix) { return !std::strncmp(n, prefix, std::strlen(prefix)); }
+
+// Does the property n belong to the property set ps (gDefaultUnsetProps)?
+bool belongsTo(const PropSet* ps, const char* n)
+{
+    static const std::set<std::string> labels = { kOfxPropLabel, kOfxPropShortLabel, kOfxPropLongLabel, kOfxPropName, kOfxPropType };
+    static const std::set<std::string> clipEffect = {
+        kOfxImageEffectPropComponents, kOfxImageEffectPropPixelDepth, kOfxImageEffectPropPreMultiplication,
+        kOfxImageEffectPropFrameRate, kOfxImageEffectPropFrameRange, kOfxImageEffectPropUnmappedFrameRate,
+        kOfxImageEffectPropUnmappedFrameRange, kOfxImageEffectPropSupportedComponents,
+        kOfxImageEffectPropTemporalClipAccess, kOfxImageEffectPropSupportsTiles, kOfxImagePropPixelAspectRatio
+    };
+    switch (ps->kind) {
+    case PropSet::eParam:
+        return startsWith(n, "OfxParamProp") || labels.count(n) || !std::strcmp(n, kOfxPropIcon) ||
+               !std::strcmp(n, kOfxPropInstanceData) || !std::strcmp(n, kOfxParamPropUseHostOverlayHandle);
+    case PropSet::eEffect:
+        return startsWith(n, "OfxImageEffectPluginProp") || startsWith(n, "OfxImageEffectProp") ||
+               startsWith(n, "OfxImageEffectInstanceProp") || startsWith(n, "OfxPluginProp") || labels.count(n) ||
+               !std::strcmp(n, kOfxImageEffectPluginRenderThreadSafety) || !std::strcmp(n, kOfxPropVersion) ||
+               !std::strcmp(n, kOfxPropVersionLabel) || !std::strcmp(n, kOfxPropPluginDescription) ||
+               !std::strcmp(n, kOfxPropInstanceData) || !std::strcmp(n, kOfxPropIsInteractive) ||
+               !std::strcmp(n, kOfxPropParamSetNeedsSyncing);
+    case PropSet::eClip:
+        return startsWith(n, "OfxImageClipProp") || clipEffect.count(n) || labels.count(n);
+    case PropSet::eImage:
+        return startsWith(n, "OfxImageProp") || clipEffect.count(n) || !std::strcmp(n, kOfxImageEffectPropRenderScale) ||
+               !std::strcmp(n, kOfxPropType);
+    case PropSet::eInteract:
+        return startsWith(n, "OfxInteractProp") || !std::strcmp(n, kOfxPropEffectInstance) || !std::strcmp(n, kOfxPropInstanceData);
+    case PropSet::eHost:
+    case PropSet::eArgs:
+        break;
+    }
+    return false;
+}
+
+// the defaulted properties of variable dimension: their default dimension is 0
+bool variableDimension(const char* n)
+{
+    static const std::set<std::string> names = {
+        kOfxParamPropChoiceOption, kOfxParamPropPageChild, kOfxImageEffectPropSupportedContexts,
+        kOfxImageEffectPropSupportedPixelDepths, kOfxImageEffectPropSupportedComponents,
+        kOfxImageEffectPropClipPreferencesSlaveParam, kOfxPluginPropParamPageOrder, "OfxOpenGLPropPixelDepth"
+    };
+    return names.count(n) != 0;
+}
+
+// gDefaultUnsetProps: is the unset property n of ps defaulted?
+bool defaulted(OfxPropertySetHandle h, const char* n) { return gDefaultUnsetProps && belongsTo(reinterpret_cast<const PropSet*>(h), n) && !variableDimension(n); }
+OfxStatus unknownProp(const char* n) { return (gOfx14Only && !isOfx14Name(n)) ? kOfxStatErrUnknown : kOfxStatOK; }
+#define CHECK_PROP_KNOWN(n) do { if (unknownProp(n) != kOfxStatOK) return kOfxStatErrUnknown; } while (0)
 
 inline PropSet* PS(OfxPropertySetHandle h) { return reinterpret_cast<PropSet*>(h); }
 inline Effect* EF(OfxImageEffectHandle h) { return reinterpret_cast<Effect*>(h); }
@@ -94,34 +205,39 @@ inline OfxPropertySetHandle PH(PropSet* ps) { return reinterpret_cast<OfxPropert
 
 // ------------------------------------------------------------------ property suite
 OfxStatus pSetPointer(OfxPropertySetHandle h, const char* n, int idx, void* v)
-{ auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
 OfxStatus pSetString(OfxPropertySetHandle h, const char* n, int idx, const char* v)
-{ auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
 OfxStatus pSetDouble(OfxPropertySetHandle h, const char* n, int idx, double v)
-{ auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
 OfxStatus pSetInt(OfxPropertySetHandle h, const char* n, int idx, int v)
-{ auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
 // (setting N values sets the dimension of the property to N, e.g. 0 to empty a choice param's options)
-OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
 
 OfxStatus pGetPointer(OfxPropertySetHandle h, const char* n, int idx, void** v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = nullptr; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
 OfxStatus pGetString(OfxPropertySetHandle h, const char* n, int idx, const char** v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.s.size() <= idx) return kOfxStatErrUnknown; *v = it->second.s[idx].c_str(); return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = ""; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.s.size() <= idx) return kOfxStatErrUnknown; *v = it->second.s[idx].c_str(); return kOfxStatOK; }
 OfxStatus pGetDouble(OfxPropertySetHandle h, const char* n, int idx, double* v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.d.size() <= idx) return kOfxStatErrUnknown; *v = it->second.d[idx]; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = 0.; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.d.size() <= idx) return kOfxStatErrUnknown; *v = it->second.d[idx]; return kOfxStatOK; }
 OfxStatus pGetInt(OfxPropertySetHandle h, const char* n, int idx, int* v)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() || (int)it->second.i.size() <= idx) return kOfxStatErrUnknown; *v = it->second.i[idx]; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = 0; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.i.size() <= idx) return kOfxStatErrUnknown; *v = it->second.i[idx]; return kOfxStatOK; }
 OfxStatus pGetPointerN(OfxPropertySetHandle h, const char* n, int c, void** v) { for (int k = 0; k < c; ++k) if (pGetPointer(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
 OfxStatus pGetStringN(OfxPropertySetHandle h, const char* n, int c, const char** v) { for (int k = 0; k < c; ++k) if (pGetString(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
 OfxStatus pGetDoubleN(OfxPropertySetHandle h, const char* n, int c, double* v) { for (int k = 0; k < c; ++k) if (pGetDouble(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
 OfxStatus pGetIntN(OfxPropertySetHandle h, const char* n, int c, int* v) { for (int k = 0; k < c; ++k) if (pGetInt(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
-OfxStatus pReset(OfxPropertySetHandle h, const char* n) { PS(h)->props.erase(n); return kOfxStatOK; }
+OfxStatus pReset(OfxPropertySetHandle h, const char* n) { CHECK_PROP_KNOWN(n); PS(h)->props.erase(n); return kOfxStatOK; }
 OfxStatus pGetDimension(OfxPropertySetHandle h, const char* n, int* c)
-{ auto it = PS(h)->props.find(n); if (it == PS(h)->props.end()) { *c = 0; return kOfxStatOK; }
+{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n);
+  if (it == PS(h)->props.end()) {
+      if (!gDefaultUnsetProps) { *c = 0; return kOfxStatOK; }
+      if (!belongsTo(PS(h), n)) return kOfxStatErrUnknown; // (as its getters)
+      *c = variableDimension(n) ? 0 : 1; return kOfxStatOK;
+  }
   const Value& v = it->second; size_t m = v.i.size(); if (v.d.size() > m) m = v.d.size(); if (v.s.size() > m) m = v.s.size(); if (v.p.size() > m) m = v.p.size(); *c = (int)m; return kOfxStatOK; }
 
 OfxPropertySuiteV1 gPropSuite = {
@@ -309,7 +425,8 @@ OfxMessageSuiteV2 gMsgSuiteV2 = { msg, msgPersist, msgClear };
 
 OfxStatus itSwap(OfxInteractHandle) { return kOfxStatOK; }
 OfxStatus itRedraw(OfxInteractHandle) { return kOfxStatOK; }
-OfxStatus itGetPropSet(OfxInteractHandle, OfxPropertySetHandle*) { return kOfxStatErrUnsupported; }
+// an interact handle is its PropSet
+OfxStatus itGetPropSet(OfxInteractHandle h, OfxPropertySetHandle* ps) { if (!h || !ps) return kOfxStatErrBadHandle; *ps = reinterpret_cast<OfxPropertySetHandle>(h); return kOfxStatOK; }
 OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 
 // ------------------------------------------------------------------ FnOfx multi-plane suite v2
@@ -320,33 +437,67 @@ OfxStatus fnGetViewName(OfxImageEffectHandle, int, const char** n) { if (n) *n =
 OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = 1; return kOfxStatOK; }
 FnOfxImageEffectPlaneSuiteV2 gPlaneSuiteV2 = { fnClipGetImagePlaneV2, fnClipGetRoDV2, fnGetViewName, fnGetViewCount };
 
+// OFX14_GL: an OpenGL render suite, for a host that has it but renders on the CPU: the render actions never have
+// kOfxImageEffectPropOpenGLEnabled, so the textures are never loaded
+OfxStatus glLoadTexture(OfxImageClipHandle, OfxTime, const char*, const OfxRectD*, OfxPropertySetHandle*) { return kOfxStatFailed; }
+OfxStatus glFreeTexture(OfxPropertySetHandle) { return kOfxStatErrBadHandle; }
+OfxStatus glFlushResources() { return kOfxStatReplyDefault; }
+OfxImageEffectOpenGLRenderSuiteV1 gOpenGLSuite = { glLoadTexture, glFreeTexture, glFlushResources };
+
+// The names of the suites that the plug-ins fetched (ofx14_host_test checks them in the OFX 1.4-only mode)
+std::set<std::string> gFetchedSuites;
+
+// Only the versions that the host implements (e.g. no OfxMultiThreadSuiteV2, OFX 1.5): NULL for any other suite or
+// version, as the spec allows ("returns a pointer to the suite, or NULL if the suite is not supported").
 const void* fetchSuite(OfxPropertySetHandle, const char* name, int v)
 {
-    if (!std::strcmp(name, kOfxPropertySuite)) return &gPropSuite;
-    if (!std::strcmp(name, kOfxImageEffectSuite)) return &gEffectSuite;
-    if (!std::strcmp(name, kOfxParameterSuite)) return &gParamSuite;
-    if (!std::strcmp(name, kOfxMemorySuite)) return &gMemSuite;
-    if (!std::strcmp(name, kOfxMultiThreadSuite)) return &gMTSuite;
-    if (!std::strcmp(name, kOfxMessageSuite)) return v >= 2 ? (const void*)&gMsgSuiteV2 : (const void*)&gMsgSuite;
-    if (!std::strcmp(name, kOfxInteractSuite)) return &gInteractSuite;
-    if (!std::strcmp(name, kFnOfxImageEffectPlaneSuite)) return v >= 2 ? (const void*)&gPlaneSuiteV2 : nullptr;
+    gFetchedSuites.insert(std::string(name) + " V" + std::to_string(v));
+    if (gOfx14Only && (gNoSuites.count(name) || gNoSuites.count(std::string(name) + " V" + std::to_string(v)))) return nullptr;
+    if (gOfx14Only && gOfxLevel < 12 && !std::getenv("OFX14_KEEPMSG2") && !std::strcmp(name, kOfxMessageSuite) && v == 2) return nullptr; // V2: OFX 1.2
+    if (!std::strcmp(name, kOfxPropertySuite)) return v == 1 ? &gPropSuite : nullptr;
+    if (!std::strcmp(name, kOfxImageEffectSuite)) return v == 1 ? &gEffectSuite : nullptr;
+    if (!std::strcmp(name, kOfxParameterSuite)) return v == 1 ? &gParamSuite : nullptr;
+    if (!std::strcmp(name, kOfxMemorySuite)) return v == 1 ? &gMemSuite : nullptr;
+    if (!std::strcmp(name, kOfxMultiThreadSuite)) return v == 1 ? &gMTSuite : nullptr;
+    if (!std::strcmp(name, kOfxMessageSuite)) return v == 2 ? (const void*)&gMsgSuiteV2 : (v == 1 ? (const void*)&gMsgSuite : nullptr);
+    if (!std::strcmp(name, kOfxInteractSuite)) return v == 1 ? &gInteractSuite : nullptr;
+    if (gOpenGLRender && !std::strcmp(name, kOfxOpenGLRenderSuite)) return v == 1 ? &gOpenGLSuite : nullptr;
+    if (gOfx14Only) return nullptr; // no extension suite
+    if (!std::strcmp(name, kFnOfxImageEffectPlaneSuite)) return v == 2 ? (const void*)&gPlaneSuiteV2 : nullptr;
     return nullptr;
 }
 
+inline std::vector<std::string> splitc(const char* e) { std::vector<std::string> r; if (!e) return r; std::string x(e); size_t p = 0; while (p <= x.size()) { size_t q = x.find(',', p); if (q == std::string::npos) q = x.size(); if (q > p) r.push_back(x.substr(p, q - p)); p = q + 1; } return r; }
 void initHost()
 {
+    if (const char* e = std::getenv("OFX14_LEVEL")) gOfxLevel = std::atoi(e);
+    for (auto& x : splitc(std::getenv("OFX14_NOSUITE"))) gNoSuites.insert(x);
+    if (const char* e = std::getenv("OFX14_SCALE")) gRS = std::atof(e);
+    gOpenGLRender = std::getenv("OFX14_GL") != nullptr;
+    {
+        // from the headers of the upstream release tags (names-OFX_Release_*.txt diffs)
+        const char* a11[] = { "OfxParamPropInteractSize" };
+        const char* a12[] = { "kOfxParamPropUseHostOverlayHandle", "OfxImageComponentRGB", "OfxImageEffectPropInteractiveRenderStatus", "OfxImageEffectPropSequentialRenderStatus", "OfxInteractPropPenViewportPosition", "OfxInteractPropSuggestedColour", "OfxParamPropDefaultCoordinateSystem", "OfxParamPropGroupOpen", "OfxParamPropHasHostOverlayHandle", "OfxParamPropParametricDimension", "OfxParamPropParametricInteractBackground", "OfxParamPropParametricRange", "OfxParamPropParametricUIColour", "OfxParamHostPropSupportsParametricAnimation", "OfxPropAPIVersion", "OfxPropHostOSHandle", "OfxPropIcon", "OfxPropParamSetNeedsSyncing", "OfxPropPluginDescription", "OfxPropVersion", "OfxPropVersionLabel" };
+        const char* a13[] = { "OfxParamStringIsRichTextFormat" };
+        const char* a14[] = { "OfxImageEffectHostPropNativeOrigin", "OfxImageEffectPropRenderQualityDraft" };
+        if (gOfxLevel < 11) for (auto x : a11) gExtraUnknown.insert(x);
+        if (gOfxLevel < 12) for (auto x : a12) gExtraUnknown.insert(x);
+        if (gOfxLevel < 13) for (auto x : a13) gExtraUnknown.insert(x);
+        if (gOfxLevel < 14) for (auto x : a14) gExtraUnknown.insert(x);
+    }
     OfxPropertySetHandle h = PH(&gHostProps);
     pSetString(h, kOfxPropName, 0, "org.openfx-io.tests.renderhost");
     pSetString(h, kOfxPropLabel, 0, "openfx-io render test host");
     pSetInt(h, kOfxImageEffectHostPropIsBackground, 0, 1);
     pSetInt(h, kOfxImageEffectPropSupportsMultipleClipDepths, 0, 1);
     pSetInt(h, kOfxImageEffectPropSupportsMultipleClipPARs, 0, 0);
-    pSetInt(h, kOfxImageEffectPropSupportsTiles, 0, 1);
-    pSetInt(h, kOfxImageEffectPropSupportsMultiResolution, 0, 1);
+    pSetInt(h, kOfxImageEffectPropSupportsTiles, 0, std::getenv("OFX14_NOTILES") ? 0 : 1);
+    pSetInt(h, kOfxImageEffectPropSupportsMultiResolution, 0, std::getenv("OFX14_NOMULTIRES") ? 0 : 1);
     pSetInt(h, kOfxImageEffectPropTemporalClipAccess, 0, 1);
     pSetInt(h, kOfxImageEffectPropSetableFrameRate, 0, 0);
     pSetInt(h, kOfxImageEffectPropSetableFielding, 0, 0);
-    pSetInt(h, kOfxImageEffectPropSupportsOverlays, 0, 0);
+    // (the OFX 1.4-only host has overlays, so that the plug-ins register their overlay interacts)
+    pSetInt(h, kOfxImageEffectPropSupportsOverlays, 0, (gOfx14Only && !std::getenv("OFX14_NOOVERLAYS")) ? 1 : 0);
     pSetInt(h, kOfxPropAPIVersion, 0, 1); pSetInt(h, kOfxPropAPIVersion, 1, 4);
     pSetInt(h, kOfxPropVersion, 0, 1);
     pSetInt(h, kOfxParamHostPropSupportsStringAnimation, 0, 1);
@@ -360,10 +511,14 @@ void initHost()
     pSetInt(h, kOfxParamHostPropPageRowColumnCount, 1, 10);
     const char* ctx[] = { kOfxImageEffectContextGenerator, kOfxImageEffectContextFilter, kOfxImageEffectContextGeneral, kOfxImageEffectContextReader, kOfxImageEffectContextWriter };
     pSetStringN(h, kOfxImageEffectPropSupportedContexts, 5, ctx);
-    const char* comps[] = { kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha };
-    pSetStringN(h, kOfxImageEffectPropSupportedComponents, 3, comps);
-    const char* depths[] = { kOfxBitDepthByte, kOfxBitDepthShort, kOfxBitDepthFloat };
-    pSetStringN(h, kOfxImageEffectPropSupportedPixelDepths, 3, depths);
+    std::vector<std::string> comps = { kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha };
+    if (gOfxLevel < 12) comps = { kOfxImageComponentRGBA, kOfxImageComponentAlpha }; // RGB: OFX 1.2
+    if (const char* e = std::getenv("OFX14_COMPS")) comps = splitc(e);
+    for (size_t k = 0; k < comps.size(); ++k) pSetString(h, kOfxImageEffectPropSupportedComponents, (int)k, comps[k].c_str());
+    std::vector<std::string> depths = { kOfxBitDepthByte, kOfxBitDepthShort, kOfxBitDepthFloat };
+    if (const char* e = std::getenv("OFX14_DEPTHS")) depths = splitc(e);
+    for (size_t k = 0; k < depths.size(); ++k) pSetString(h, kOfxImageEffectPropSupportedPixelDepths, (int)k, depths[k].c_str());
+    if (gOpenGLRender) pSetString(h, "OfxImageEffectPropOpenGLRenderSupported", 0, "true");
     gOfxHost.host = h;
     gOfxHost.fetchSuite = fetchSuite;
 }
@@ -422,7 +577,7 @@ void setupClipImage(Clip* c, int w, int h, const char* comps, const char* depth,
     pSetString(ip, kOfxImageEffectPropPreMultiplication, 0, premultOpaque ? kOfxImageOpaque : kOfxImagePreMultiplied);
     pSetString(ip, kOfxImagePropField, 0, kOfxImageFieldNone);
     pSetString(ip, kOfxImagePropUniqueIdentifier, 0, "img");
-    double rs[2] = { 1., 1. }; pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
+    double rs[2] = { gRS, gRS }; pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
     pSetDouble(ip, kOfxImagePropPixelAspectRatio, 0, 1.);
     // Clip props mirror the image format.
     OfxPropertySetHandle cp = PH(&c->props);
@@ -458,7 +613,7 @@ PropSet makeRenderInArgs(double t, int w, int h)
     PropSet a;
     OfxPropertySetHandle ap = PH(&a);
     pSetDouble(ap, kOfxPropTime, 0, t);
-    double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+    double rs[2] = { gRS, gRS }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     int win[4] = { 0, 0, w, h }; pSetIntN(ap, kOfxImageEffectPropRenderWindow, 4, win);
     pSetString(ap, kOfxImageEffectPropFieldToRender, 0, kOfxImageFieldNone);
     pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);

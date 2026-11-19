@@ -1291,7 +1291,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
             // Set the display window to format using user prefs
             OfxRectI format;
             double formatPar;
-            getSelectedOutputFormat(&format, &formatPar);
+            getSelectedOutputFormat(time, viewsToRender.empty() ? 0 : viewsToRender.begin()->first, &format, &formatPar);
             spec.full_x = format.x1;
             spec.full_y = format.y1;
             spec.full_width = format.x2 - format.x1;

@@ -18,6 +18,7 @@ make test-runscript # RunScript: stderr line splitting (all systems); on MS Wind
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
+make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-exr-tsan # the same, built with ThreadSanitizer
 make test-exr-ubsan # the same, built with UndefinedBehaviorSanitizer
 make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
@@ -297,6 +298,55 @@ The conversions are only detected by UBSan: build it with
 `make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.
 It sets `OCIO=test.ocio`.
 
+### 1f3. `test-ofx14` — every plug-in in an OFX 1.4-only host
+
+Every plug-in must work in a host that supports only OFX 1.4 or older: the features of OFX 1.5 and later, and the
+Natron, Nuke, Vegas and other extensions, are optional. `ofx14_host_test.cpp` links every plug-in of `IO.ofx` (the
+sources of `../IO/Makefile`, with OpenGL render support as in the bundle; the SeExpr plug-ins if SeExpr 2.11 is in
+`SEEXPR_HOME`, the PNG ones if pkg-config finds libpng) with the host of `ofx_test_host.h` in its OFX 1.4-only mode
+(`gOfx14Only`):
+
+* `fetchSuite` returns NULL for every suite but the mandatory ones of OFX 1.4 (Property, ImageEffect, Parameter,
+  Memory, MultiThread V1, Message V1 and V2, Interact V1): no OpenGL render suite, DrawSuite, MultiThread V2,
+  multi-plane suite, camera suite...;
+* any property that is not defined in the OFX 1.4 headers (`ofx14_names.h`, generated from the headers of
+  [OFX_Release_1_4_TAG](https://github.com/AcademySoftwareFoundation/openfx/tree/OFX_Release_1_4_TAG/include),
+  without the optional `ofxOpenGLRender.h`) is unknown, on every property set: reading it, or setting it, fails with
+  `kOfxStatErrUnknown`. So the host has no Natron or other extension property, no colour management and no OpenGL;
+* the plug-ins get the host from `OfxPlugin::setHost`; `OfxSetHost` (OFX 1.5) is never called.
+
+A known property that was never set has its default value (0, "" or NULL), as in a real host, but only on the
+property sets it belongs to (e.g. `kOfxParamProp*` on a param): on the host, on the action arguments, or on another
+property set, it is unknown (`kOfxStatErrUnknown`), and so is its dimension.
+
+For each plug-in: Load, Describe (and the overlay interact's Describe and CreateInstance, which must be an
+OverlayInteractV1), DescribeInContext in each of its contexts, with an instance and an InstanceChanged on each of
+its params, then in the filter context (filters) or the general context (readers, writers): CreateInstance,
+GetClipPreferences, GetTimeDomain, GetRegionOfDefinition, GetRegionsOfInterest, GetFramesNeeded, IsIdentity,
+Begin/EndSequenceRender, the render of one frame, DestroyInstance, Unload. Each must succeed without an error message;
+filters and readers must write their whole output; the writers write the files that the readers then read (PNG, EXR,
+PFM, TIFF, MOV), whose images must be the writer's input; the writers' time domain must be their input's frame range
+(1..3: the default frame range is the time line's, and the host has no TimeLine suite, which is optional), and their
+RoD the input's, also with the input format (`formatType` 0: the host has no `kOfxImageClipPropFormat`); the OCIO
+plug-ins that are an identity with `test.ocio` must output their input. A plug-in of the binary without a test fails.
+
+`make test-ofx14` runs it in four hosts:
+
+* OFX 1.4 only;
+* OFX 1.1 (`OFX14_LEVEL=11`): also without the properties of OFX 1.2 to 1.4 (e.g.
+  `kOfxImageEffectPropSequentialRenderStatus`, `kOfxPropAPIVersion`), the Message suite V2 and RGB images;
+* OFX 1.4 with the optional OpenGL render suite (`OFX14_GL=1`, which renders on the CPU), and a sequential render
+  status of 0 (`OFX14_SEQSTATUS=0`);
+* the full host (`--full`), where an OverlayInteractV2 also requires an OverlayInteractV1.
+
+Other variants, from environment variables (see `ofx_test_host.h` and `ofx14_host_test.cpp`): `OFX14_NOSUITE` (suites
+to drop), `OFX14_COMPS` and `OFX14_DEPTHS` (the host's components and depths), `OFX14_NOTILES`, `OFX14_NOMULTIRES`,
+`OFX14_NOOVERLAYS`, `OFX14_SCALE` (the render scale, if the plug-in supports multiple resolutions, or always with
+`OFX14_FORCESCALE`), `OFX14_SETINT` (`param=value,...`), `OFX14_SKIPPARAMS`, `OFX14_NOCTX` (no instance in every
+context), and `--only <plug-in identifier>`. It sets `OCIO=test.ocio`; `make test-ofx14 SEEXPR_HOME=/opt/local` (the
+[`seexpr211`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts/graphics/seexpr211) port of Natron's
+MacPorts tree) includes the SeExpr plug-ins.
+
 ### 1g. `test-exr` — ReadEXR (#123)
 
 `exr_read_test.cpp` writes EXR files with OpenEXR in a scratch directory (`.exr_read`),
@@ -505,6 +555,8 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
 | `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |
+| `ofx14_host_test.cpp`       | Every plug-in in an OFX 1.4-only host, and in the full host (`test-ofx14`). |
+| `ofx14_names.h`             | The names defined by the OFX 1.4 headers, for the OFX 1.4-only mode of `ofx_test_host.h`. |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |
 | `swap.ocio`                 | OpenColorIO config where xN is N times the reference (`test-ocio-anim`, `hostdemo/run.sh`). |

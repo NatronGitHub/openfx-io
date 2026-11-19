@@ -73,9 +73,7 @@ typedef SeVec3d Vec3d;
 #include "ofxsMaskMix.h"
 #include "ofxsMatrix2D.h"
 #include "ofxsProcessing.H"
-#include "ofxsRamp.h"
 #include "ofxsThreadSuite.h"
-#include "ofxsTransformInteract.h"
 
 using namespace OFX;
 
@@ -449,8 +447,6 @@ private:
     /* set up and run a processor */
     void setupAndProcess(SeGrainProcessorBase&, const RenderArguments& args);
 
-    bool getInverseTransformCanonical(double time, Matrix3x3* invtransform) const;
-
     virtual bool isIdentity(const IsIdentityArguments& args, Clip*& identityClip, double& identityTime, int& view, std::string& plane) OVERRIDE FINAL;
     virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
@@ -701,10 +697,6 @@ SeGrainPlugin::changedParam(const InstanceChangedArgs& args,
     }
 }
 
-class SeGrainOverlayDescriptor
-    : public DefaultEffectOverlayDescriptor<SeGrainOverlayDescriptor, OverlayInteractFromHelpers2<TransformInteractHelper, RampInteractHelper>> {
-};
-
 mDeclarePluginFactory(SeGrainPluginFactory, { ofxsThreadSuiteCheck(); }, {});
 
 void
@@ -733,7 +725,8 @@ SeGrainPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setSupportsMultipleClipPARs(kSupportsMultipleClipPARs);
     desc.setSupportsMultipleClipDepths(kSupportsMultipleClipDepths);
     desc.setRenderThreadSafety(kRenderThreadSafety);
-    desc.setOverlayInteractDescriptor(new SeGrainOverlayDescriptor);
+    // no overlay: SeGrain has no transform or ramp param (an overlay with the transform and ramp interacts of SeNoise
+    // failed to be created, because it fetches their params)
 
 #ifdef OFX_EXTENSIONS_NATRON
     desc.setChannelSelector(ePixelComponentNone); // we have our own channel selector
