@@ -449,13 +449,13 @@ ReadFFmpegPlugin::decode(const string& filename,
     string error;
     bool decoded = false;
     try {
-        decoded = file->decode(this, (int)time, loadNearestFrame(missingFrame), buffer);
+        // the error message of this frame (another render may decode another frame meanwhile)
+        decoded = file->decode(this, (int)time, loadNearestFrame(missingFrame), buffer, &error);
         if (!decoded) {
             if (abort()) {
                 // decode() probably exited because plugin was aborted
                 return;
             }
-            error = file->getError();
         }
     } catch (const FFmpegFile::MissingFrameException& e) {
         // the frame is outside of the stream, and !loadNearestFrame(missingFrame)

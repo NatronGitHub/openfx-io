@@ -486,6 +486,65 @@ decode, identically after a seek except at the two swapped frame times
 (`--no-seek-check`): there, FFmpeg 8 gives timestamps after a seek that depend on the
 timestamps decoded before, since `avcodec_flush_buffers()` does not reset its
 best_effort_timestamp heuristic.
+Damaged packets (issue #151): the `noise` bitstream filter (with expressions, FFmpeg 5.1 or
+later) modifies every byte of chosen packets, which the decoder rejects with
+AVERROR_INVALIDDATA: an H.264 P-frame, IDR frame or B-frame in Matroska, two B-frames in a VFR
+Matroska clip, and two frames of ProRes (MOV) and MJPEG (AVI), each with 1 and 8 decoder
+threads (`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`). The reader must drop them and
+go on decoding: the frame time of a damaged packet shows the previous frame, with its ramp
+content (`--gaps`, or `--positions` for the VFR clip), sequentially and after a seek (for the
+intra-only codecs, the reader decodes from the previous frames). The other frames of the GOP
+of a damaged H.264 frame (and the last frames of the previous GOP, which the decoder outputs
+after the next reference frame) show what the decoder conceals: they must decode, but their
+content is not checked (`--concealed`). With a damaged first GOP, its frames must fail with
+an error message, without making the file invalid (`FFmpegFile::isInvalid()`, which makes the
+plug-in refuse every frame), and the other frames must decode (`--fail`). An AV1 clip (libdav1d,
+which reports damage as AVERROR(ENOMEM) with threads; the second half of two packets is
+scrambled with `perl`, since the muxers reject AV1 packets damaged by `noise`) must decode every
+frame. Truncated ProRes and MJPEG in MOV (faststart, cut in frame 16, a packet that the demuxer
+flags as corrupt) must fail for the missing frames, with an error, sequentially and after a
+seek, as for issue #134. A run of 4 damaged ProRes and MJPEG frames must show the frame before
+them, also when each one is decoded first in a newly opened file (`--fresh`, in reverse and in
+another order). A truncated H.264 MP4 (faststart, with B-frames) must fail from the DTS of the
+truncated packet, found in the index at open, in any render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
+decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one
+damaged from its 7th packet on, decoding every frame sequentially, and in reverse order in a newly
+opened file, must read at most 12 times the file (`--max-seq-bytes`, `--max-reverse-bytes`: the
+reader remembers the damaged ranges, instead of reading the damaged packets again for each frame).
+In one with packets 100-179 and 181-183 damaged, decoding frames 101, 184, 181 and 182 in that
+order in a newly opened file (`--order`) must fail for 101, and give frame 181 for the other
+three: with frame threads, the error of a damaged packet comes with a later packet, and the good
+frame 181 must not join a damaged range. In a long-GOP H.264 MP4 (GOP 300) with a damaged first keyframe, every
+frame must fail, and decoding every frame sequentially and in reverse order must read at most 4
+times the file (the frames that cannot be decoded from the start of the file are not decoded again
+for each request). In a Matroska H.264 clip with a GOP of 100 and B-frames, with packets 50-150
+damaged, frames 49 and 52 (decoded before the run, and still in the decoder when it gives up after
+too many damaged packets) must decode in any order, and frames 53-200 must fail. In a 300-frame ProRes MOV with packets 10-74 and 76 damaged (a run of more than 64
+packets), frames 11-75 must fail with 1 and with 8 decoder threads (with frame threads, the
+packets after the run were already sent when the error of the 65th damaged packet came back).
+In a 12 s H.264 Matroska clip with a GOP of 100 and B-frames, where 200 bytes at offset 8 of the
+packets 50-99, 50-113, 80-119 or 120-190 are overwritten with random bytes (`perl`, seeded; the
+damage also hits the Matroska block headers, which gives keyframe flags to damaged packets, and
+damaged packets are parsed as H.264 parameter sets), the frames that the reader decoded before
+damaged packets were skipped (1-48 and 101-300, 1-48 and 201-300, 1-78 and 201-300, 1-118 and
+201-300) must give exactly the images of the clean file (`--reference`), sequentially, in reverse
+order, in a random order, with frame 120 then frame 1 in a newly opened file, and each frame in
+its own newly opened file, with 1 and 8 threads; the same without cues (a stream copy written to
+a pipe: the Matroska index is then only built from the blocks read, including the damaged ones), for
+the packets 50-113 and 80-119, and in MP4 (a stream copy, packets 80-119, including the IDR frame of
+packet 100). Opening a Matroska file with a single keyframe, and one without cues (20 s of 160x120
+noise, about 9 MB), must read at most 1 MB, and decoding frame 3 after the open at most 1.5 times
+the file. With only the flags byte of the block headers of the packets 80-119 damaged (some values
+turn on lacing: blocks are lost or merged), frames 1-80, 101 and 201-300 must give the clean images
+in every order. In a 400-frame H.264 Matroska clip with a GOP of 5 and B-frames, with every
+keyframe from packet 20 damaged (the decoder then outputs frames whose best_effort_timestamp is the
+DTS of a later packet), frames 1-18 must give the clean images in every order (the others fail:
+the stream ends in damage). In an AVI with MPEG-4 B-frames (the reference frames have no PTS) with
+packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. In all-intra H.264
+(`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
+(the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
+order, must read at most 6 times the file. An MPEG-TS with a continuity counter error (a packet flagged
+as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration
