@@ -174,6 +174,14 @@ enum NoiseTypeEnum {
 #define kParamNoiseSizeLabel "Noise Size"
 #define kParamNoiseSizeHint "Size of noise in pixels, corresponding to its lowest frequency."
 #define kParamNoiseSizeDefault 350., 350.
+#define kNoiseSizeMin 0.001 // the noise size used for a size of 0 or less (the param range starts at 0)
+
+// The noise size, or kNoiseSizeMin if it is below 1e-300 or NaN (1 / size must be finite)
+static double
+validNoiseSize(double size)
+{
+    return (!OFX::IsNaN(size) && (size >= 1e-300)) ? size : kNoiseSizeMin;
+}
 
 #define kParamNoiseZ "noiseZ"
 #define kParamNoiseZLabel "Z0"
@@ -883,11 +891,17 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase& processor,
     _replace->getValueAtTime(time, replace);
 
     double par = _dstClip->getPixelAspectRatio();
-    Matrix3x3 toCanonicalMat(par / args.renderScale.x, 0., 0.5 * par / args.renderScale.x,
-                             0., 1. / args.renderScale.x, 0.5 / args.renderScale.y,
+    // a render scale of 0 or less, NaN or infinite is invalid (it is divided by)
+    const double rsx = (!OFX::IsNaN(args.renderScale.x) && !OFX::IsInfinite(args.renderScale.x) && (args.renderScale.x > 0.)) ? args.renderScale.x : 1.;
+    const double rsy = (!OFX::IsNaN(args.renderScale.y) && !OFX::IsInfinite(args.renderScale.y) && (args.renderScale.y > 0.)) ? args.renderScale.y : 1.;
+    Matrix3x3 toCanonicalMat(par / rsx, 0., 0.5 * par / rsx,
+                             0., 1. / rsy, 0.5 / rsy,
                              0., 0., 1);
-    Matrix3x3 sizeMat(1. / noiseSize.x, 0., 0.,
-                      0., 1. / noiseSize.y, 0.,
+    // the noise size param may be 0 (its range starts at 0), or a denormal, which would give an infinite scale (and
+    // inf * 0 = NaN in the matrix product): a size below 1e-300 (or NaN, from the host) is replaced by kNoiseSizeMin,
+    // any other positive size is used as is
+    Matrix3x3 sizeMat(1. / validNoiseSize(noiseSize.x), 0., 0.,
+                      0., 1. / validNoiseSize(noiseSize.y), 0.,
                       0., 0., noiseZ + time * noiseZSlope);
     Matrix3x3 invtransform;
     getInverseTransformCanonical(time, &invtransform);

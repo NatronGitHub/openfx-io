@@ -620,6 +620,13 @@ if(BUILD_TESTING)
       list(APPEND _io_make_tests exr)
     endif()
   endif()
+  # SeExpr and SeNoise (seexpr_test, which also needs tests/Makefile's OFX_PKGS), with the SeExpr of this build
+  set(_io_seexpr_home "")
+  if(" ${_io_groups} " MATCHES " SeExpr " AND " ${_io_groups} " MATCHES " OCIO " AND " ${_io_groups} " MATCHES " OIIO "
+     AND " ${_io_groups} " MATCHES " FFmpeg ")
+    list(APPEND _io_make_tests seexpr)
+    get_filename_component(_io_seexpr_home "${SEEXPR_INCLUDE_DIR}" DIRECTORY)
+  endif()
   # RunScript's MS Windows process launching (a no-op elsewhere)
   if(" ${_io_groups} " MATCHES " RunScript ")
     list(APPEND _io_make_tests runscript)
@@ -639,9 +646,15 @@ if(BUILD_TESTING)
     endif()
     separate_arguments(_io_make_args NATIVE_COMMAND "${IO_TESTS_MAKE_ARGS}")
     foreach(_t ${_io_make_tests})
+      set(_io_t_args ${_io_make_args})
+      if(_t STREQUAL "seexpr")
+        # the SeExpr that CMake found: test-seexpr fails (instead of being skipped) if tests/Makefile does not find it
+        get_filename_component(_io_seexpr_libdir "${SEEXPR_LIBRARY}" DIRECTORY)
+        list(APPEND _io_t_args "SEEXPR_HOME=${_io_seexpr_home}" "SEEXPR_LIBDIR=${_io_seexpr_libdir}" "SEEXPR_REQUIRED=1")
+      endif()
       add_test(NAME tests-make-${_t}
                COMMAND "${IO_MAKE_PROGRAM}" -C "${PROJECT_SOURCE_DIR}/tests" test-${_t}
-                       "CXX=${IO_TESTS_CXX}" ${_io_make_args})
+                       "CXX=${IO_TESTS_CXX}" ${_io_t_args})
       # the tests are built in the source tree: one at a time
       set_tests_properties(tests-make-${_t} PROPERTIES RESOURCE_LOCK openfx-io-tests-dir)
       if(_io_test_env)

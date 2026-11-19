@@ -233,6 +233,17 @@ static struct PresetStruct gPresets[NUMPRESETS] = {
 
 static bool gHostIsNatron = false;
 
+// The render scale, with a component of 0 or less (invalid: it is divided by) replaced by 1
+static OfxPointD
+validRenderScale(const OfxPointD& rs)
+{
+    OfxPointD ret;
+    ret.x = (!OFX::IsNaN(rs.x) && !OFX::IsInfinite(rs.x) && (rs.x > 0.)) ? rs.x : 1.;
+    ret.y = (!OFX::IsNaN(rs.y) && !OFX::IsInfinite(rs.y) && (rs.y > 0.)) ? rs.y : 1.;
+
+    return ret;
+}
+
 class SeGrainProcessorBase
     : public ImageProcessor {
 protected:
@@ -261,7 +272,7 @@ public:
         , _doMasking(false)
         , _mix(1.)
         , _maskInvert(false)
-        , _renderScale(args.renderScale)
+        , _renderScale(validRenderScale(args.renderScale))
         , _time(args.time)
         , _seed(0.)
         , _colorCorr(0.)
@@ -300,8 +311,9 @@ public:
             _black[c] = black[c];
             _minimum[c] = minimum[c];
 
+            // the y axis is scaled by the y render scale (it was the x render scale)
             Matrix3x3 sizeMat(1. / _renderScale.x / (std::max)(size[c], kSizeMin), 0., 0.,
-                              0., 1. / _renderScale.x / (std::max)(size[c], kSizeMin), 0.,
+                              0., 1. / _renderScale.y / (std::max)(size[c], kSizeMin), 0.,
                               0., 0., (staticSeed ? 0. : _time) + (1 + c) * seed + irregularity[c] / 2.);
             double rads = irregularity[c] * 45. * OFXS_PI / 180.;
             double ca = std::cos(rads);
