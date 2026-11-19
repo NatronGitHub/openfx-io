@@ -156,7 +156,10 @@ the real render pipeline, linked directly (no host binary):
   on the 8-bit grid, and also has values on no grid (as float, 10-bit and
   16-bit images: 16-bit RGB must be exact within 1e-4, a lower depth fails)
   and an odd size (63x47; before FFmpeg 8, swscale read a pixel past the end
-  of the row for the last 4:2:2/4:2:0 chroma sample). RGB with 10 or 16 bits in QuickTime must write
+  of the row for the last 4:2:2/4:2:0 chroma sample: WriteFFmpeg passes
+  SWS_FULL_CHR_H_INP at odd widths, which also changes the other chroma
+  columns slightly, since the chroma is then computed from the full-resolution
+  input as in FFmpeg 8, not from pairs of pixels). RGB with 10 or 16 bits in QuickTime must write
   8-bit RGB with a warning (b48r is not written: QuickTime reads it
   byte-swapped), Y'CbCr with 12 or 16 bits v410; RGB with an odd width in
   QuickTime must write ARGB (FFmpeg and QuickTime do not read the padded RGB24

@@ -4367,7 +4367,9 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
             // FFmpeg 8 disables this at an odd width (FFmpeg commit 2f95bc3cb3, "swscale/utils: disable
             // full_chr_h_input optimization for odd width", ticket #11265; n8.0 utils.c:1331), which is what
             // SWS_FULL_CHR_H_INP does: it is not used otherwise (n9.0 libswscale/utils.c:1380), so this changes
-            // nothing from FFmpeg 8 on, and nothing at an even width.
+            // nothing from FFmpeg 8 on, and nothing at an even width. Before FFmpeg 8, at an odd width, it changes
+            // every chroma column slightly, not only the last one: the chroma is computed from the full-resolution
+            // input instead of the averages of pairs of pixels, so that the whole chroma plane is FFmpeg 8's.
             swsFlags |= SWS_FULL_CHR_H_INP;
         }
         _convertCtx = sws_getContext(width, height, srcPixelFormat, // from
