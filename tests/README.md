@@ -529,7 +529,12 @@ damaged packets are parsed as H.264 parameter sets), the frames that the reader 
 damaged packets were skipped (1-48 and 101-300, 1-48 and 201-300, 1-78 and 201-300, 1-118 and
 201-300) must give exactly the images of the clean file (`--reference`), sequentially, in reverse
 order, in a random order, with frame 120 then frame 1 in a newly opened file, and each frame in
-its own newly opened file, with 1 and 8 threads. An MPEG-TS with a continuity counter error (a packet flagged
+its own newly opened file, with 1 and 8 threads; the same without cues (a stream copy written to
+a pipe: the Matroska index is then only built from the blocks read, including the damaged ones), for
+the packets 50-113 and 80-119, and in MP4 (a stream copy, packets 80-119, including the IDR frame of
+packet 100). Opening a Matroska file with a single keyframe, and one without cues (20 s of 160x120
+noise, about 9 MB), must read at most 1 MB, and decoding frame 3 after the open at most 1.5 times
+the file. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to

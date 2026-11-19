@@ -1667,28 +1667,6 @@ FFmpegFile::FFmpegFile(const string& filename)
             }
         }
     }
-    // The keyframes of the index after the open (e.g. the Matroska cues, the MP4 sync samples), which damaged data
-    // cannot change: the Matroska demuxer adds an index entry for each block whose header has the keyframe flag
-    // (libavformat/matroskadec.c:4319-4331 in FFmpeg 9.0.2), also in a damaged block, and these spurious entries
-    // would make the seeks land in the damage (see seekToFrame()) and the decoder restart at a damaged packet.
-    // The Matroska demuxer reads the cues at the first seek (matroska_read_seek(), libavformat/matroskadec.c:4508-4512
-    // in FFmpeg 9.0.2; cues_parsing_deferred is set in matroska_read_header(), matroskadec.c:3434): seek once, so
-    // that they are in the index.
-    if (_context && _context->iformat && _context->iformat->name && std::strstr(_context->iformat->name, "matroska") && !_streams.empty()) {
-        _readAtOpen = true;
-        (void)av_seek_frame(_context, _streams[0]->_idx, (_streams[0]->_avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? _streams[0]->_avstream->start_time : 0, AVSEEK_FLAG_BACKWARD);
-    }
-    for (Stream* st : _streams) {
-        const int entries = IndexEntriesCount(st->_avstream);
-        for (int i = 0; i < entries; ++i) {
-            const AVIndexEntry* e = IndexEntry(st->_avstream, i);
-            if (e && (e->flags & AVINDEX_KEYFRAME) && (e->timestamp != int64_t(AV_NOPTS_VALUE))) {
-                st->_openKeyframes.push_back(e->timestamp);
-                st->_openKeyframeEntries.push_back(*e);
-            }
-        }
-        // (the index is sorted by timestamp)
-    }
     _bytesReadAtOpen = (_context && _context->pb) ? _context->pb->bytes_read : 0;
     if (_streams.empty()) {
         setError(unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream");
@@ -1740,6 +1718,11 @@ FFmpegFile::setSelectedStream(int streamIndex)
 const char*
 FFmpegFile::getColorspace() const
 {
+#ifdef OFX_IO_MT_FFMPEG
+    // decode() may open the decoder again (flushDecoder()), which replaces the codec context
+    AutoMutex guard(_lock);
+#endif
+
     // The preferred colorspace is figured out from a number of sources - initially we look for a number
     // of different metadata sources that may be present in the file. If these fail we then fall back
     // to using the codec's underlying storage mechanism - if RGB we default to gamma 1.8, if YCbCr we
@@ -1813,7 +1796,7 @@ FFmpegFile::getColorspace() const
             return "linear";
         }
     }
-    return isYUV() ? "Gamma2.2" : "Gamma1.8";
+    return (!_streams.empty() && _streams[0]->isYUV()) ? "Gamma2.2" : "Gamma1.8"; // (FFmpegFile::isYUV() takes the lock)
 } // FFmpegFile::getColorspace
 
 void
@@ -2180,6 +2163,30 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     return hasPicture;
 } // FFmpegFile::decode
 
+// A frame decoded as a keyframe, without an error: e.g. an H.264 IDR frame (AV_FRAME_FLAG_KEY, libavcodec/h264_slice.c:
+// 1663 in FFmpeg 9.0.2), without decode_error_flags or AV_FRAME_FLAG_CORRUPT (which libavcodec sets on frames that
+// conceal errors, e.g. h264_slice.c:1383)
+static bool
+IsCleanKeyframe(const AVFrame* f)
+{
+#if defined(AV_FRAME_FLAG_KEY)
+    const bool key = (f->flags & AV_FRAME_FLAG_KEY) != 0;
+#else
+    const bool key = f->key_frame != 0;
+#endif
+    return key && !(f->flags & AV_FRAME_FLAG_CORRUPT) && !f->decode_error_flags;
+}
+
+// Whether the codec only has keyframes (gop_size 0, or a known intra-only codec that may still report a gop_size if
+// incorrectly muxed)
+static bool
+IsIntraOnly(const AVCodecContext* ctx)
+{
+    const AVCodecID id = ctx->codec_id;
+    return !ctx->gop_size || (id == AV_CODEC_ID_PRORES) || (id == AV_CODEC_ID_DNXHD) || (id == AV_CODEC_ID_MJPEG) || (id == AV_CODEC_ID_MJPEGB) ||
+           (id == AV_CODEC_ID_PNG) || (id == AV_CODEC_ID_DPX) || (id == AV_CODEC_ID_TARGA) || (id == AV_CODEC_ID_TIFF);
+}
+
 // After damage, the decoder is opened again instead of flushed: avcodec_flush_buffers() keeps the parameter sets
 // that the decoder parsed (in FFmpeg 9.0.2, h264_decode_flush(), libavcodec/h264dec.c:476-497, only resets the
 // pictures and the DPB; the H.264 SPS and PPS are only freed when the decoder is closed, h264dec.c:372, and parsed
@@ -2224,18 +2231,28 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
     ++_seekCount;
     int res = 0;
 
-    // Once damage was found in the file, seek to the timestamp of a keyframe of the index at open (the last one at
-    // or before the target, as av_seek_frame() does with AVSEEK_FLAG_BACKWARD), so that a spurious index entry
-    // added by the demuxer in damaged data (see the constructor) is not used.
-    if (stream->_damageSeen && (seekFlags == AVSEEK_FLAG_BACKWARD) && !stream->_openKeyframes.empty()) {
-        auto it = std::upper_bound(stream->_openKeyframes.begin(), stream->_openKeyframes.end(), frame);
-        if (it != stream->_openKeyframes.begin()) {
-            // The demuxer replaces the entry of a timestamp by a new one with the same timestamp
-            // (ff_add_index_entry(), libavformat/seek.c:100-116 in FFmpeg 9.0.2), e.g. from a damaged block: restore it.
-            const AVIndexEntry& e = stream->_openKeyframeEntries[size_t(it - 1 - stream->_openKeyframes.begin())];
-            (void)av_add_index_entry(stream->_avstream, e.pos, e.timestamp, e.size, e.min_distance, e.flags);
-            frame = e.timestamp;
+    // Once damage was found in the file (long-GOP codecs), a seek may land on a spurious keyframe: the Matroska
+    // demuxer adds an index entry for each block whose header has the keyframe flag (libavformat/matroskadec.c:
+    // 4319-4320 and 4329-4331 in FFmpeg 9.0.2), also in a damaged block. Skip the index entries of the keyframes
+    // that did not decode cleanly (Stream::_suspectKeyPts), and decode as after a restart at a keyframe: the
+    // frames are only used once the first packet read decodes as a clean keyframe (Stream::verifyRestart()).
+    if (stream->_damageSeen && !IsIntraOnly(stream->_codecContext)) {
+        if (seekFlags == AVSEEK_FLAG_BACKWARD) {
+            int i = av_index_search_timestamp(stream->_avstream, frame, AVSEEK_FLAG_BACKWARD);
+            while (i > 0) {
+                const AVIndexEntry* e = IndexEntry(stream->_avstream, i);
+                if (!e || !stream->isSuspectKeyPts(e->timestamp)) {
+                    break;
+                }
+                --i;
+            }
+            const AVIndexEntry* e = (i >= 0) ? IndexEntry(stream->_avstream, i) : nullptr;
+            if (e && (e->timestamp < frame)) {
+                frame = e->timestamp;
+            }
         }
+        stream->_tainted = true;
+        stream->_verifyNextPacket = true;
     }
     if ((res = av_seek_frame(_context, stream->_idx, frame, seekFlags)) < 0) {
         setDecodeError(res, "FFmpeg Reader Failed to seek frame: ");
@@ -2332,9 +2349,18 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         droppedPackets = 0;
         decodedAny = true;
         // The damaged packets are known by their PTS: a frame whose timestamp is from its DTS is not compared.
-        // A frame of a packet sent after damage, before the decoder restarted at a keyframe (long-GOP codecs), is
-        // not used either: it may reference a damaged frame (Stream::taint()).
-        const bool damaged = (decodedFrame->pts != AV_NOPTS_VALUE) && (stream->isDamagedPts(decodedFrame->pts) || stream->isTaintedPts(decodedFrame->pts));
+        // A frame of a packet sent after damage, before the decoder restarted at a keyframe that decoded cleanly
+        // (long-GOP codecs), is not used either: it may reference a damaged frame (Stream::taint()).
+        if ((decodedFrame->pts != AV_NOPTS_VALUE) && (decodedFrame->pts == stream->_restartPts)) {
+            stream->verifyRestart(IsCleanKeyframe(decodedFrame));
+        }
+        // While tainted, a frame that conceals errors (decode_error_flags, AV_FRAME_FLAG_CORRUPT) is not used either,
+        // whatever its packet: e.g. a damaged IDR frame that the H.264 decoder decodes without an error, but with
+        // FF_DECODE_ERROR_DECODE_SLICES (libavcodec/h264dec.c:752-764 in FFmpeg 9.0.2), output after the
+        // errors of the following packets.
+        const bool concealsDamage = (decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) || decodedFrame->decode_error_flags;
+        const bool damaged = ((decodedFrame->pts != AV_NOPTS_VALUE) && (stream->isDamagedPts(decodedFrame->pts) || stream->isTaintedPts(decodedFrame->pts) || stream->isCandidatePts(decodedFrame->pts))) ||
+                             (!acceptCorruptHeldFrame && stream->_tainted && concealsDamage);
         decodedFrame->pts = decodedFrame->best_effort_timestamp;
         if (decodedFrame->pts == AV_NOPTS_VALUE) {
             // A frame without a PTS, output after a packet without a DTS, e.g. a frame output when
@@ -2468,7 +2494,6 @@ if (draining) {
             return false;
         }
         ++stream->_requestDroppedPackets;
-        stream->_damagedSinceKeyframe = true;
         stream->_damageSeen = true;
         stream->_damagedSinceOpen = true;
         if (!acceptCorruptHeldFrame) {
@@ -2643,12 +2668,16 @@ if (draining) {
         // (e.g. a damaged packet parsed as a parameter set, or broken reordering), so that the frames after the
         // keyframe would not be output, or would differ from the frames decoded after a seek to it. Drain the
         // decoder (its frames before the keyframe are still used), and restart it at the keyframe, as after a
-        // seek. (A packet with a keyframe flag in damaged data, e.g. from a broken Matroska block, is not a real
-        // keyframe: the frames after it then fail or are concealed, as without the restart.) If draining gives
+        // seek. A packet with a keyframe flag in damaged data (e.g. from a broken Matroska block header,
+        // matroskadec.c:4319-4320) is not a real keyframe: the frames are only used again once the keyframe
+        // decodes as a keyframe, without an error (Stream::verifyRestart()); otherwise the decoder restarts at the
+        // next packet with the keyframe flag. If draining gives
         // the requested frame, or stops decoding, the keyframe is not sent (nor the other frames of the drain
         // used): the next requests that need more frames seek (Stream::_drainedEarly).
-        if (!acceptCorruptHeldFrame && stream->_damagedSinceKeyframe && stream->isRealKeyframe(avPacket.pkt())) {
-            stream->_damagedSinceKeyframe = false;
+        if (!acceptCorruptHeldFrame && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
+            if (stream->_restartPts != int64_t(AV_NOPTS_VALUE)) {
+                stream->verifyRestart(false); // the previous restart gave no clean keyframe
+            }
             bool stop = false;
             (void)avcodec_send_packet(stream->_codecContext, nullptr);
             for (int i = 0; i < 4 * kMaxDroppedPackets; ++i) {
@@ -2665,16 +2694,16 @@ if (draining) {
                 }
             }
             flushDecoder(stream);
-            // The frames of the packets from here on are used again (the tainted PTS are kept until the next
-            // seek: e.g. the leading B-frames of an open GOP, which reference the previous GOP).
-            stream->_tainted = false;
+            // The frames of the packets from here on are used once this keyframe decodes cleanly (see
+            // Stream::verifyRestart(); the tainted PTS are kept until the next seek).
+            stream->_verifyNextPacket = true;
             stream->_recentPts.clear();
             if (stop) {
                 stream->_drainedEarly = true;
                 return hasPicture;
             }
         }
-        stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1);
+        stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1, (avPacket->flags & AV_PKT_FLAG_KEY) != 0);
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
         if (skipInvalidData(res, avPacket.pkt())) {
             res = 0; // the packet is dropped: drain the frames of the previous packets

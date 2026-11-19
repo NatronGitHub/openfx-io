@@ -174,13 +174,14 @@ private:
         int _firstFrameAfter; // the first frame after the requested one decoded by the last demuxAndDecode() (-1 if none)
         bool _reachedEnd; // the last demuxAndDecode() drained the decoder at the end of the file, without a frame to hold
         bool _drainedEarly; // the decoder was drained after too many damaged packets: decoding further needs a seek
-        bool _damagedSinceKeyframe; // a damaged packet was dropped since the last restart of the decoder
-        bool _damageSeen; // a damaged packet was dropped in this file (seeks then use _openKeyframes)
+        bool _damageSeen; // a damaged packet was dropped in this file (see seekToFrame())
         bool _damagedSinceOpen; // a damaged packet was dropped since the decoder was opened (see flushDecoder())
         bool _singleThreaded; // long-GOP codecs: damage was found with frame threads, the decoder now has 1 thread
         bool _restartSingleThread; // the decoder must be opened again with 1 thread, before decoding further
-        std::vector<int64_t> _openKeyframes; // the timestamps of the keyframes of the index at open (sorted)
-        std::vector<AVIndexEntry> _openKeyframeEntries; // the same index entries
+        int64_t _restartPts; // the PTS of the keyframe where the decoder restarted, until it decodes (AV_NOPTS_VALUE if none)
+        bool _verifyNextPacket; // the next packet sent is a restart keyframe, to verify (see verifyRestart())
+        std::vector<int64_t> _candidatePts; // the PTS of the packets sent since the restart keyframe, until it is verified
+        std::vector<int64_t> _suspectKeyPts; // the PTS of the packets with a keyframe flag that did not decode as a clean keyframe
         std::vector<int64_t> _recentPts; // the PTS of the last packets sent (as many as the frame threads)
         bool _tainted; // long-GOP codecs: damage was found since the last restart of the decoder (see taint())
         std::vector<int64_t> _taintedPts; // the PTS of the packets sent since the damage (see taint())
@@ -256,13 +257,14 @@ private:
             , _firstFrameAfter(-1)
             , _reachedEnd(false)
             , _drainedEarly(false)
-            , _damagedSinceKeyframe(false)
             , _damageSeen(false)
             , _damagedSinceOpen(false)
             , _singleThreaded(false)
             , _restartSingleThread(false)
-            , _openKeyframes()
-            , _openKeyframeEntries()
+            , _restartPts(AV_NOPTS_VALUE)
+            , _verifyNextPacket(false)
+            , _candidatePts()
+            , _suspectKeyPts()
             , _recentPts()
             , _tainted(false)
             , _taintedPts()
@@ -399,12 +401,47 @@ private:
         // comes with up to thread_count packets sent after it: these are taken as damaged too.
         void taint()
         {
-            if (!_tainted) {
-                _tainted = true;
-                for (int64_t pts : _recentPts) {
+            if (_restartPts != int64_t(AV_NOPTS_VALUE)) {
+                verifyRestart(false); // damage before the restart keyframe was verified
+            }
+            _tainted = true;
+            for (int64_t pts : _recentPts) {
+                addTaintedPts(pts);
+            }
+        }
+
+        // The keyframe where the decoder restarted (after damage, or after a seek once damage was found) gave its
+        // frame: if it is a clean keyframe (IsCleanKeyframe() in FFmpegFile.cpp), the frames of the packets from
+        // there on are used again (but not the frames displayed before it, e.g. the leading B-frames of an open
+        // GOP, which reference the previous GOP); otherwise they stay tainted, and the decoder restarts at the next
+        // packet with the keyframe flag.
+        void verifyRestart(bool clean)
+        {
+            if (clean) {
+                _tainted = false;
+                for (int64_t pts : _candidatePts) {
+                    if (pts < _restartPts) {
+                        addTaintedPts(pts);
+                    }
+                }
+                _suspectKeyPts.erase(std::remove(_suspectKeyPts.begin(), _suspectKeyPts.end(), _restartPts), _suspectKeyPts.end());
+            } else {
+                for (int64_t pts : _candidatePts) {
                     addTaintedPts(pts);
                 }
             }
+            _candidatePts.clear();
+            _restartPts = AV_NOPTS_VALUE;
+        }
+
+        bool isCandidatePts(int64_t pts) const
+        {
+            return std::find(_candidatePts.begin(), _candidatePts.end(), pts) != _candidatePts.end();
+        }
+
+        bool isSuspectKeyPts(int64_t pts) const
+        {
+            return std::find(_suspectKeyPts.begin(), _suspectKeyPts.end(), pts) != _suspectKeyPts.end();
         }
 
         void addTaintedPts(int64_t pts)
@@ -427,10 +464,13 @@ private:
             _tainted = false;
             _taintedPts.clear();
             _recentPts.clear();
+            _restartPts = AV_NOPTS_VALUE;
+            _verifyNextPacket = false;
+            _candidatePts.clear();
         }
 
         // a packet is sent to the decoder (window: the number of packets that may be decoded at once)
-        void packetSent(int64_t pts, int window)
+        void packetSent(int64_t pts, int window, bool key)
         {
             if (pts == int64_t(AV_NOPTS_VALUE)) {
                 return;
@@ -439,24 +479,25 @@ private:
                 _recentPts.erase(_recentPts.begin());
             }
             _recentPts.push_back(pts);
+            if (_verifyNextPacket) {
+                _verifyNextPacket = false;
+                _restartPts = pts;
+            }
             if (_tainted) {
-                addTaintedPts(pts);
+                if (_restartPts != int64_t(AV_NOPTS_VALUE)) {
+                    if (_candidatePts.size() < 4096) {
+                        _candidatePts.push_back(pts);
+                    }
+                } else {
+                    addTaintedPts(pts);
+                }
+                if (key && !isSuspectKeyPts(pts)) {
+                    if (_suspectKeyPts.size() >= 1024) {
+                        _suspectKeyPts.erase(_suspectKeyPts.begin());
+                    }
+                    _suspectKeyPts.push_back(pts); // until it decodes as a clean keyframe (verifyRestart())
+                }
             }
-        }
-
-        // A keyframe where the decoder may restart after damage: a keyframe of the index at open (by its
-        // timestamp: the index has the PTS of a Matroska block, the DTS of an MP4 sample), or without an index, a
-        // packet with the keyframe flag.
-        bool isRealKeyframe(const AVPacket* pkt) const
-        {
-            if (!(pkt->flags & AV_PKT_FLAG_KEY)) {
-                return false;
-            }
-            if (_openKeyframes.empty()) {
-                return true;
-            }
-            return ((pkt->pts != int64_t(AV_NOPTS_VALUE)) && std::binary_search(_openKeyframes.begin(), _openKeyframes.end(), pkt->pts)) ||
-                   ((pkt->dts != int64_t(AV_NOPTS_VALUE)) && std::binary_search(_openKeyframes.begin(), _openKeyframes.end(), pkt->dts));
         }
 
         bool isDamagedPts(int64_t pts) const
@@ -481,7 +522,6 @@ private:
             }
             _heldFrameIsLast = false;
             _drainedEarly = false;
-            _damagedSinceKeyframe = false;
             _decodingFromStart = false;
             _nextDecodedPts = AV_NOPTS_VALUE;
         }
@@ -733,6 +773,9 @@ public:
 
     bool isRec709Format() const
     {
+#ifdef OFX_IO_MT_FFMPEG
+        AutoMutex guard(_lock); // decode() may replace the codec context (flushDecoder())
+#endif
         if (_streams.empty()) {
             return false;
         }
@@ -745,6 +788,9 @@ public:
 
     bool isYUV() const
     {
+#ifdef OFX_IO_MT_FFMPEG
+        AutoMutex guard(_lock); // decode() may replace the codec context (flushDecoder())
+#endif
         if (_streams.empty()) {
             return false;
         }
