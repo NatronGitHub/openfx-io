@@ -61,6 +61,8 @@
 #     sequentially and after a seek.
 #   * MPEG-TS with a continuity counter error (a packet flagged as corrupt, but not at the end
 #     of the file): every frame must decode.
+#   * Clean VP9 (WebM and Matroska, 8 and 10 bits, with and without alt-ref frames) and AV1, with 1, 4 and 8
+#     decoder threads: every frame must be that of a lossless copy, in every order (issue #159).
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -804,6 +806,56 @@ check_damaged_ref() {
     done
 }
 
+# check_frame_threads NAME DESCRIPTION ENCODER PIX_FMT FFMPEG_OUTPUT_ARGS...
+# A clean 48-frame clip (testsrc with a moving luma offset, 256x160, 24 fps, GOP 12, ENCODER in 2 passes, so that
+# libvpx makes alt-ref frames, which it only makes in 2 passes) must give exactly the images of its lossless copy
+# (decoded by the ffmpeg CLI with 1 thread), in every order, with 1, 4 and 8 decoder threads (--reference). Issue #159:
+# with frame threads, the VP9 decoder refuses a packet with AVERROR(EAGAIN) after a superframe (a hidden alt-ref frame
+# and a shown frame), and the reader lost that packet when the drain gave the requested frame: sequentially, the
+# frames after it decoded wrong until the next keyframe.
+check_frame_threads() {
+    local name="$1" desc="$2" encoder="$3" pixfmt="$4" all threads hidden ref
+    shift 4
+    # The lossless copy: FFV1, or for more than 8 bits lossless VP9 without alt-ref frames, which the reader also
+    # decodes to 8 bits (it takes the bit depth from bits_per_raw_sample, which FFV1 sets and VP9 does not).
+    local refargs=(-c:v ffv1)
+    ref="$tmp/ref_$name.mkv"
+    if [[ "$pixfmt" == *10* ]]; then
+        refargs=(-c:v libvpx-vp9 -lossless 1 -auto-alt-ref 0)
+        ref="$tmp/ref_$name.webm"
+    fi
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    local src="testsrc=s=256x160:r=24,format=yuv420p,geq=lum='lum(X,Y)+2*N':cb='cb(X,Y)':cr='cr(X,Y)',format=$pixfmt"
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$src" -frames:v 48 -c:v "$encoder" -g 12 "$@" -pass 1 -passlogfile "$tmp/$name.pass" -f null - ||
+        ! ffmpeg -y -loglevel error -f lavfi -i "$src" -frames:v 48 -c:v "$encoder" -g 12 "$@" -pass 2 -passlogfile "$tmp/$name.pass" "$tmp/$name" ||
+        ! ffmpeg -y -loglevel error -threads 1 -i "$tmp/$name" "${refargs[@]}" "$ref"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    if [ "$encoder" = libvpx-vp9 ]; then
+        # the hidden frames: the packets after splitting the superframes, minus the 48 packets
+        hidden=$(ffmpeg -loglevel error -i "$tmp/$name" -c:v copy -bsf:v vp9_superframe_split -f framecrc - | grep -vc '^#') || true
+        echo "  $((hidden - 48)) hidden (alt-ref) frames"
+    fi
+    all="$(seq -s, 1 48)"
+    for threads in 1 4 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --reference "$ref" --reference-frames "$all" \
+            ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/$name.out" 2>&1; then
+            grep -E '^  REFERENCE|^FAIL' "$tmp/$name.out" | head -5 || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        else
+            echo "  $threads decoder threads: PASS"
+        fi
+    done
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -961,6 +1013,13 @@ check_damaged_ref damaged_g5_keys.mkv "Matroska (H.264, GOP 5, B-frames, every k
 # and after the next keyframe must decode as in the clean file, in any order.
 check_damaged_ref damaged_bframes.avi "AVI (MPEG-4, GOP 24, B-frames, packets 60-62 damaged)" mpeg4 200 \
     "if(between(n,60,62),1,0)" "1-59,73-200" -bf 2 -g 24 -q:v 3
+# Clean clips decoded with frame threads (issue #159): VP9 with alt-ref frames (superframes), in WebM and Matroska, 8 and
+# 10 bits, and without alt-ref frames; AV1.
+check_frame_threads vp9_altref.webm "WebM (VP9, GOP 12, alt-ref frames): frame threads" libvpx-vp9 yuv420p -b:v 300k -auto-alt-ref 1
+check_frame_threads vp9_altref.mkv "Matroska (VP9, GOP 12, alt-ref frames): frame threads" libvpx-vp9 yuv420p -b:v 300k -auto-alt-ref 1
+check_frame_threads vp9_altref10.webm "WebM (VP9 10 bits, GOP 12, alt-ref frames): frame threads" libvpx-vp9 yuv420p10le -b:v 300k -auto-alt-ref 1
+check_frame_threads vp9_noaltref.webm "WebM (VP9, GOP 12, no alt-ref frames): frame threads" libvpx-vp9 yuv420p -b:v 300k -auto-alt-ref 0
+check_frame_threads av1.mkv "Matroska (AV1, libaom, GOP 12): decoder threads" libaom-av1 yuv420p -b:v 300k -cpu-used 8
 # All-intra H.264 (every packet is an IDR frame) with every other packet from packet 20 damaged: decoded as an
 # intra-only stream once damage is found (not from the start of the file for each frame), bounded in bytes.
 check_damaged_gop damaged_intra_h264.mkv "Matroska (all-intra H.264, every other packet from packet 20 damaged)" 120 \

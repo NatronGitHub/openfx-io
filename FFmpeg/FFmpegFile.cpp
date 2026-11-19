@@ -1566,6 +1566,7 @@ FFmpegFile::FFmpegFile(const string& filename)
         stream->_avIntermediateFrame = av_frame_alloc();
         stream->_avHeldFrame = av_frame_alloc();
         stream->_avNextFrame = av_frame_alloc();
+        stream->_pendingPacket = av_packet_alloc();
 
         {
             // In |engine| the output bit depth was hard coded to 16-bits.
@@ -2684,8 +2685,16 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         return false;
     };
 
-    // Begin reading from the newly seeked position.
-    while ((res = av_read_frame(_context, avPacket.pkt())) >= 0) {
+    // Begin reading from the newly seeked position, or from the packet that the decoder refused at the previous
+    // request (Stream::_pendingPacket, see below): it is sent first, as the next packet of the stream (its checks
+    // below were made when it was read, and it was counted by Stream::packetSent()).
+    bool resendPending = Stream::hasPacket(stream->_pendingPacket);
+    if (resendPending) {
+        av_packet_move_ref(avPacket.pkt(), stream->_pendingPacket);
+    }
+    while (resendPending || ((res = av_read_frame(_context, avPacket.pkt())) >= 0)) {
+        const bool resending = resendPending;
+        resendPending = false;
         if (stream->_restartSingleThread) {
             return hasPicture; // decode() decodes again with 1 thread
         }
@@ -2703,7 +2712,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // fail, sequentially and after a seek, as before (issue #134).
         // (A packet with a transport error that happens to be the last one of the file, e.g. a TS continuity
         // counter error in the last packet, is also taken as truncated: rare.)
-        if ((avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_size(_context->pb) > 0) && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
+        if (!resending && (avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_size(_context->pb) > 0) && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
             const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
             if (ts != int64_t(AV_NOPTS_VALUE)) {
                 const int truncatedFrame = stream->ptsToFrame(ts);
@@ -2723,7 +2732,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // next packet with the keyframe flag. If draining gives
         // the requested frame, or stops decoding, the keyframe is not sent (nor the other frames of the drain
         // used): the next requests that need more frames seek (Stream::_drainedEarly).
-        if (!acceptCorruptHeldFrame && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
+        if (!resending && !acceptCorruptHeldFrame && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
             bool stop = false;
             (void)avcodec_send_packet(stream->_codecContext, nullptr);
             for (int i = 0; i < 4 * kMaxDroppedPackets; ++i) {
@@ -2760,7 +2769,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
                 return hasPicture;
             }
         }
-        stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1, (avPacket->flags & AV_PKT_FLAG_KEY) != 0);
+        if (!resending) {
+            stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1, (avPacket->flags & AV_PKT_FLAG_KEY) != 0);
+        }
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
         if ((res >= 0) && !acceptCorruptHeldFrame) {
             // Long-GOP codecs (decoded with 1 thread after damage, see skipInvalidData): an accepted packet ends a
@@ -2780,6 +2791,21 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             return fail(drained, "FFmpeg Reader Failed to decode packet: ");
         }
         if (drained == 1) {
+            if (res == AVERROR(EAGAIN)) {
+                // The drain gave the requested frame, but the packet was not accepted: keep it for the next request,
+                // which sends it before reading the next one (a seek drops it, Stream::resetHeldFrames()). It was
+                // lost before, and the frames that reference it decoded wrong until the next keyframe (issue #159).
+                // E.g. VP9 with frame threads: the decoder splits a superframe (a hidden alt-ref frame and a shown
+                // frame) into two packets with its vp9_superframe_split bitstream filter (FFCodec.bsfs,
+                // libavcodec/vp9.c:1934 in FFmpeg 9.0.2, 1927 in 8.0). Its frame threads take one packet per thread
+                // and return a frame once every thread has one (ff_thread_receive_frame(), libavcodec/
+                // pthread_frame.c:565-603), so the bitstream filter may still hold the shown frame when the next
+                // packet is sent: the decoder takes that one first and keeps the sent packet in its input buffer
+                // (ff_decode_get_packet(), libavcodec/decode.c:268-283), until a later avcodec_receive_frame().
+                // A packet sent before that is refused with AVERROR(EAGAIN) (avcodec_send_packet(), decode.c:
+                // 745-747), and the frame of the drain may then be the requested one.
+                av_packet_move_ref(stream->_pendingPacket, avPacket.pkt());
+            }
             return hasPicture;
         }
 
