@@ -1817,9 +1817,14 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
         ++failures;
     }
     // the matrix that the writer converts with (BT.601 in SD), in the 'colr' atom or the Matroska Colour element.
-    // Not for the v308 and v410 encoders (FFmpeg < 9), whose files must stay as on master, which does not set
-    // their matrix: the mov muxer writes the unspecified one (FFmpeg n6.1 libavformat/movenc.c:2164).
-    const bool oldEncoder = (s.codec == "v308") || (s.codec == "v408") || (s.codec == "v410");
+    // Not for the files of the v308, v408 and v410 encoders (FFmpeg < 9), which must stay as on master, which does
+    // not set their matrix: the mov muxer writes the unspecified one (FFmpeg n6.1 libavformat/movenc.c:2164). This
+    // depends on the encoder that wrote the file, not on the codec that libavformat reads: from FFmpeg 8, the mov
+    // demuxer gives these tags to rawvideo (n8.0 libavformat/isom_tags.c:36-38), although the encoders still exist
+    // (n8.0 libavcodec/allcodecs.c:354-359). When rawvideo writes them (FFmpeg 9), they are tagged.
+    const std::string codecParam = c.codec;
+    const bool oldEncoder = ((codecParam == "v308") || (codecParam == "v408") || (codecParam == "v410"))
+        && (avcodec_find_encoder_by_name(c.codec) != nullptr);
     if (yuv && !oldEncoder && (s.space != AVCOL_SPC_SMPTE170M) && ((std::string(c.ext) == "mkv") || (std::string(c.ext) == "mov"))) {
         std::printf("  FAIL: Y'CbCr is not tagged with the BT.601 (SMPTE 170M) matrix\n");
         ++failures;
@@ -2330,7 +2335,8 @@ main(int argc, char** argv)
         // a project saved with the v308 or v410 encoder: with FFmpeg 9, which removed them, rawvideo writes the same tag
         if (avcodec_find_encoder_by_name("v308")) {
 #if (LIBAVFORMAT_VERSION_MAJOR >= 62)
-            // the mov demuxer of FFmpeg 8 gives these tags to rawvideo (libavformat/isom_tags.c:36-38 in n8.0)
+            // the real encoders, whose files the mov demuxer of FFmpeg 8 gives to rawvideo (libavformat/isom_tags.c:36-38
+            // in n8.0)
             cases.push_back({ "v308 encoder in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
             cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "rawvideo", "v410", "v30xle", yuv10Tol });
 #else

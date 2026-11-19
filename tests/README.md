@@ -150,8 +150,9 @@ the real render pipeline, linked directly (no host binary):
   rawvideo in QuickTime (2vuy, raw RGB and ARGB, and from FFmpeg 8 v308, v408
   and v410), Matroska, NUT and AVI. libavformat must read back the expected
   codec, tag and pixel format (and the BT.601 matrix in QuickTime and Matroska,
-  except for the v308 and v410 encoders of FFmpeg < 9, which master does not
-  tag; video range in Matroska), and ReadFFmpeg must decode the pattern exactly for
+  except for the files of the real v308 and v410 encoders, FFmpeg < 9, which
+  master does not tag, although FFmpeg 8 reads them back as rawvideo; video
+  range in Matroska), and ReadFFmpeg must decode the pattern exactly for
   RGB, or within the Y'CbCr conversion error. The pattern is 64x48 with values
   on the 8-bit grid, and also has values on no grid (as float, 10-bit and
   16-bit images: 16-bit RGB must be exact within 1e-4, a lower depth fails)
