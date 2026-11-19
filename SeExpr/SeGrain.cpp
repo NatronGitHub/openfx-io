@@ -73,9 +73,7 @@ typedef SeVec3d Vec3d;
 #include "ofxsMaskMix.h"
 #include "ofxsMatrix2D.h"
 #include "ofxsProcessing.H"
-#include "ofxsRamp.h"
 #include "ofxsThreadSuite.h"
-#include "ofxsTransformInteract.h"
 
 using namespace OFX;
 
