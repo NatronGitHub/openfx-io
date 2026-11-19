@@ -177,6 +177,8 @@ private:
         bool _damageSeen; // a damaged packet was dropped in this file (see seekToFrame())
         bool _damagedSinceOpen; // a damaged packet was dropped since the decoder was opened (see flushDecoder())
         bool _singleThreaded; // long-GOP codecs: damage was found with frame threads, the decoder now has 1 thread
+        int64_t _keyFrames; // the keyframes decoded without an error
+        int64_t _nonKeyFrames; // the other frames decoded without an error
         bool _restartSingleThread; // the decoder must be opened again with 1 thread, before decoding further
         int64_t _restartPts; // the PTS of the keyframe where the decoder restarted, until it decodes (AV_NOPTS_VALUE if none)
         bool _verifyNextPacket; // the next packet sent is a restart keyframe, to verify (see verifyRestart())
@@ -260,6 +262,8 @@ private:
             , _damageSeen(false)
             , _damagedSinceOpen(false)
             , _singleThreaded(false)
+            , _keyFrames(0)
+            , _nonKeyFrames(0)
             , _restartSingleThread(false)
             , _restartPts(AV_NOPTS_VALUE)
             , _verifyNextPacket(false)
@@ -432,6 +436,12 @@ private:
             }
             _candidatePts.clear();
             _restartPts = AV_NOPTS_VALUE;
+        }
+
+        // damage was found in a stream whose frames decoded without an error are all keyframes (see decode())
+        bool allKeyframesAfterDamage() const
+        {
+            return _damageSeen && (_nonKeyFrames == 0) && (_keyFrames >= 2);
         }
 
         bool isCandidatePts(int64_t pts) const

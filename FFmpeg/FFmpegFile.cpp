@@ -1935,6 +1935,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // assume sequential frame output from the decoder
     bool isIntraOnly = stream->_codecContext->gop_size ? false : true;
 
+    // A stream whose frames decoded so far without an error are all keyframes (e.g. all-intra H.264, -g 1) is decoded
+    // as an intra-only one once damage was found: each frame is then decoded from the previous keyframes (the back-off below,
+    // bounded), instead of restarting the decoder at each keyframe and decoding from the start of the file.
+    if (stream->allKeyframesAfterDamage()) {
+        isIntraOnly = true;
+    }
+
     // These codecs may still report a gop_size if incorrectly muxed.
     if ((stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) || (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) || (stream->_codecContext->codec_id == AV_CODEC_ID_PNG) || (stream->_codecContext->codec_id == AV_CODEC_ID_DPX) || (stream->_codecContext->codec_id == AV_CODEC_ID_TARGA) || (stream->_codecContext->codec_id == AV_CODEC_ID_TIFF)) {
         isIntraOnly = true;
@@ -2164,8 +2171,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 } // FFmpegFile::decode
 
 // A frame decoded as a keyframe, without an error: e.g. an H.264 IDR frame (AV_FRAME_FLAG_KEY, libavcodec/h264_slice.c:
-// 1663 in FFmpeg 9.0.2), without decode_error_flags or AV_FRAME_FLAG_CORRUPT (which libavcodec sets on frames that
-// conceal errors, e.g. h264_slice.c:1383)
+// 1664 in FFmpeg 9.0.2), without decode_error_flags (which the H.264 decoder sets on a frame whose slices had errors or
+// were concealed, libavcodec/h264dec.c:752-764) or AV_FRAME_FLAG_CORRUPT (only set with AV_CODEC_FLAG_OUTPUT_CORRUPT or
+// AV_CODEC_FLAG2_SHOW_ALL, h264_slice.c:1379-1384)
 static bool
 IsCleanKeyframe(const AVFrame* f)
 {
@@ -2236,7 +2244,7 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
     // 4319-4320 and 4329-4331 in FFmpeg 9.0.2), also in a damaged block. Skip the index entries of the keyframes
     // that did not decode cleanly (Stream::_suspectKeyPts), and decode as after a restart at a keyframe: the
     // frames are only used once the first packet read decodes as a clean keyframe (Stream::verifyRestart()).
-    if (stream->_damageSeen && !IsIntraOnly(stream->_codecContext)) {
+    if (stream->_damageSeen && !IsIntraOnly(stream->_codecContext) && !stream->allKeyframesAfterDamage()) {
         if (seekFlags == AVSEEK_FLAG_BACKWARD) {
             int i = av_index_search_timestamp(stream->_avstream, frame, AVSEEK_FLAG_BACKWARD);
             while (i > 0) {
@@ -2358,9 +2366,25 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // whatever its packet: e.g. a damaged IDR frame that the H.264 decoder decodes without an error, but with
         // FF_DECODE_ERROR_DECODE_SLICES (libavcodec/h264dec.c:752-764 in FFmpeg 9.0.2), output after the
         // errors of the following packets.
+        // The frame is placed at its best_effort_timestamp (see below), which libavcodec takes from the PTS, or
+        // from the DTS of the packet that returned the frame once the PTS look less reliable than the DTS
+        // (guess_correct_pts(), libavcodec/decode.c:296-320 and 694-696 in FFmpeg 9.0.2): the taint is checked at
+        // both, and while tainted, a frame whose two timestamps differ is not used (e.g. a frame decoded before
+        // the damage, but placed after it at the DTS of a damaged packet).
         const bool concealsDamage = (decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) || decodedFrame->decode_error_flags;
-        const bool damaged = ((decodedFrame->pts != AV_NOPTS_VALUE) && (stream->isDamagedPts(decodedFrame->pts) || stream->isTaintedPts(decodedFrame->pts) || stream->isCandidatePts(decodedFrame->pts))) ||
-                             (!acceptCorruptHeldFrame && stream->_tainted && concealsDamage);
+        if (!concealsDamage) {
+            // (see decode(): the frames decoded without an error, keyframes or not)
+            if (IsCleanKeyframe(decodedFrame)) {
+                ++stream->_keyFrames;
+            } else {
+                ++stream->_nonKeyFrames;
+            }
+        }
+        auto taintedAt = [stream](int64_t t) -> bool {
+            return (t != AV_NOPTS_VALUE) && (stream->isDamagedPts(t) || stream->isTaintedPts(t) || stream->isCandidatePts(t));
+        };
+        const bool damaged = taintedAt(decodedFrame->pts) || taintedAt(decodedFrame->best_effort_timestamp) ||
+                             (!acceptCorruptHeldFrame && stream->_tainted && (concealsDamage || (decodedFrame->best_effort_timestamp != decodedFrame->pts)));
         decodedFrame->pts = decodedFrame->best_effort_timestamp;
         if (decodedFrame->pts == AV_NOPTS_VALUE) {
             // A frame without a PTS, output after a packet without a DTS, e.g. a frame output when
@@ -2675,9 +2699,6 @@ if (draining) {
         // the requested frame, or stops decoding, the keyframe is not sent (nor the other frames of the drain
         // used): the next requests that need more frames seek (Stream::_drainedEarly).
         if (!acceptCorruptHeldFrame && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
-            if (stream->_restartPts != int64_t(AV_NOPTS_VALUE)) {
-                stream->verifyRestart(false); // the previous restart gave no clean keyframe
-            }
             bool stop = false;
             (void)avcodec_send_packet(stream->_codecContext, nullptr);
             for (int i = 0; i < 4 * kMaxDroppedPackets; ++i) {
@@ -2693,10 +2714,17 @@ if (draining) {
                     break;
                 }
             }
+            // The drain gave the frame of the previous restart keyframe, if any (with B-frames, a keyframe is
+            // output after the next packets, which may be another keyframe, e.g. when damaged blocks are lost):
+            // if it did not come, that restart gave no clean keyframe.
+            if (stream->_restartPts != int64_t(AV_NOPTS_VALUE)) {
+                stream->verifyRestart(false);
+            }
             flushDecoder(stream);
             // The frames of the packets from here on are used once this keyframe decodes cleanly (see
-            // Stream::verifyRestart(); the tainted PTS are kept until the next seek).
-            stream->_verifyNextPacket = true;
+            // Stream::verifyRestart(); the tainted PTS are kept until the next seek), unless the drain verified
+            // the previous restart.
+            stream->_verifyNextPacket = stream->_tainted;
             stream->_recentPts.clear();
             if (stop) {
                 stream->_drainedEarly = true;

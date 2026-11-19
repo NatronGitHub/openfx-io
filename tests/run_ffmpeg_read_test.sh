@@ -678,7 +678,7 @@ check_damaged_gop() {
     done
 }
 
-# check_damaged_mkv_run NAME DESCRIPTION FROM TO REFERENCE_FRAMES [CONTAINER]
+# check_damaged_mkv_run NAME DESCRIPTION FROM TO REFERENCE_FRAMES [CONTAINER [DAMAGE]]
 # A 12 s H.264 Matroska clip (testsrc2, 320x240, 25 fps, GOP 100 with B-frames: keyframes at packets 0, 100 and
 # 200) where 200 bytes at offset 8 of the video packets FROM to TO (0-based, in decoding order) are overwritten
 # with random bytes (perl, seeded): the damage also hits the Matroska block headers (e.g. keyframe flags on
@@ -689,9 +689,11 @@ check_damaged_gop() {
 # decoder threads (--reference): these are the frames that the reader decoded before #158 (it failed at the
 # first damaged packet), which must not fail or change. CONTAINER is mkv (default), pipe (a stream copy written to
 # a pipe: Matroska without cues, whose index is only built from the blocks read, including the damaged ones), or
-# mp4 (a stream copy).
+# mp4 (a stream copy). DAMAGE is data (default: 200 bytes at offset 8 of each packet, seed 4) or flags (only the
+# flags byte of the Matroska SimpleBlock header of each packet, seed 2: some values turn on lacing, and the demuxer
+# then splits or merges the blocks).
 check_damaged_mkv_run() {
-    local name="$1" desc="$2" from="$3" to="$4" frames="$5" container="${6:-mkv}" clean
+    local name="$1" desc="$2" from="$3" to="$4" frames="$5" container="${6:-mkv}" damage="${7:-data}" clean
     echo "== $desc =="
     if ! have_encoder libx264; then
         echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
@@ -719,20 +721,26 @@ check_damaged_mkv_run() {
     cp "$clean" "$tmp/$name"
     ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of compact=p=0 "$clean" > "$tmp/$name.packets"
     if ! perl -e '
-        my ($file, $list, $from, $to) = @ARGV;
-        srand(4);
+        my ($file, $list, $from, $to, $damage) = @ARGV;
+        srand($damage eq "flags" ? 2 : 4);
         open(my $l, "<", $list) or die;
         my @p;
         while (<$l>) { my ($size) = /size=(\d+)/; my ($pos) = /pos=(\d+)/; push @p, [$pos, $size]; }
         open(my $f, "+<:raw", $file) or die;
         for my $i ($from .. $to) {
             my ($pos, $size) = @{$p[$i]};
+            if ($damage eq "flags") {
+                # the block data starts with the track number (1 byte), the timecode (2 bytes) and the flags
+                seek($f, $pos + 3, 0) or die;
+                print $f pack("C", int(rand(256)));
+                next;
+            }
             my $n = $size - 8 < 200 ? $size - 8 : 200;
             next if $n <= 0;
             seek($f, $pos + 8, 0) or die;
             print $f pack("C*", map { int(rand(256)) } 1 .. $n);
         }
-        close($f) or die;' "$tmp/$name" "$tmp/$name.packets" "$from" "$to"; then
+        close($f) or die;' "$tmp/$name" "$tmp/$name.packets" "$from" "$to" "$damage"; then
         echo "FAIL: could not damage $name"
         rc=1
         return
@@ -749,6 +757,46 @@ check_damaged_mkv_run() {
         # shellcheck disable=SC2086
         if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --reference "$clean" --reference-frames "$list" \
             --order 120,1 ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
+# check_damaged_ref NAME DESCRIPTION FRAMES NOISE_AMOUNT REFERENCE_FRAMES FFMPEG_OUTPUT_ARGS...
+# A FRAMES-frame H.264 Matroska clip (testsrc2, 320x240, 24 fps) damaged by the noise bitstream filter (NOISE_AMOUNT):
+# the 1-based REFERENCE_FRAMES (e.g. "1-18") must give exactly the images of the clean file in every order, with 1 and
+# 8 decoder threads (--reference).
+check_damaged_ref() {
+    local name="$1" desc="$2" frames="$3" amount="$4" refs="$5" list="" range a b i threads
+    shift 5
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! noise_takes_expressions; then
+        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v "$frames" -c:v libx264 -pix_fmt yuv420p "$@" "$tmp/clean_$name" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount='$amount'" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    for range in ${refs//,/ }; do
+        a=${range%-*}
+        b=${range#*-}
+        for ((i = a; i <= b; i++)); do
+            list="${list:+$list,}$i"
+        done
+    done
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --reference "$tmp/clean_$name" --reference-frames "$list" \
+            ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
             grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
             echo "(with $threads decoder threads)"
             rc=1
@@ -901,6 +949,18 @@ check_damaged_mkv_run damaged_g100_120_190.mkv "Matroska (H.264, GOP 100, B-fram
 check_damaged_mkv_run damaged_g100_pipe_50_113.mkv "Matroska without cues (H.264, GOP 100, B-frames, packets 50-113 damaged)" 50 113 "1-48,201-300" pipe
 check_damaged_mkv_run damaged_g100_pipe_80_119.mkv "Matroska without cues (H.264, GOP 100, B-frames, packets 80-119 damaged)" 80 119 "1-78,201-300" pipe
 check_damaged_mkv_run damaged_g100_80_119.mp4 "MP4 (H.264, GOP 100, B-frames, packets 80-119 damaged)" 80 119 "1-78,201-300" mp4
+# Only the flags byte of the block headers of the packets 80-119: blocks are lost or merged (lacing), and frame 101 (an
+# IDR frame, followed by the next keyframe) must decode.
+check_damaged_mkv_run damaged_g100_flags_80_119.mkv "Matroska (H.264, GOP 100, B-frames, block flags of packets 80-119 damaged)" 80 119 "1-80,101-101,201-300" mkv flags
+# A GOP of 5 with B-frames and every keyframe from packet 20 damaged: after the damage, the decoder outputs frames whose
+# PTS is from before the damage, but whose best_effort_timestamp is the DTS of a later packet; frames 1-18 must decode
+# as in the clean file, in any order.
+check_damaged_ref damaged_g5_keys.mkv "Matroska (H.264, GOP 5, B-frames, every keyframe from packet 20 damaged)" 400 \
+    "if(eq(mod(n,5),0)*gte(n,20),1,0)" "1-18" -g 5 -bf 2 -x264-params scenecut=0
+# All-intra H.264 (every packet is an IDR frame) with every other packet from packet 20 damaged: decoded as an
+# intra-only stream once damage is found (not from the start of the file for each frame), bounded in bytes.
+check_damaged_gop damaged_intra_h264.mkv "Matroska (all-intra H.264, every other packet from packet 20 damaged)" 120 \
+    "if(eq(mod(n,2),0)*gte(n,20),1,0)" 1 0 6 -preset ultrafast -g 1
 check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
     "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.

@@ -534,7 +534,14 @@ a pipe: the Matroska index is then only built from the blocks read, including th
 the packets 50-113 and 80-119, and in MP4 (a stream copy, packets 80-119, including the IDR frame of
 packet 100). Opening a Matroska file with a single keyframe, and one without cues (20 s of 160x120
 noise, about 9 MB), must read at most 1 MB, and decoding frame 3 after the open at most 1.5 times
-the file. An MPEG-TS with a continuity counter error (a packet flagged
+the file. With only the flags byte of the block headers of the packets 80-119 damaged (some values
+turn on lacing: blocks are lost or merged), frames 1-80, 101 and 201-300 must give the clean images
+in every order. In a 400-frame H.264 Matroska clip with a GOP of 5 and B-frames, with every
+keyframe from packet 20 damaged (the decoder then outputs frames whose best_effort_timestamp is the
+DTS of a later packet), frames 1-18 must give the clean images in every order. In all-intra H.264
+(`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
+(the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
+order, must read at most 6 times the file. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
