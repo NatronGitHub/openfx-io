@@ -519,6 +519,12 @@ ctest --test-dir build -R io-hostdemo --output-on-failure
 tests/hostdemo/run.sh build/openfx/HostSupport/examples/hostDemo Bundle/IO.ofx.bundle build/io_verify_plugin_loads /tmp/hostdemo
 ```
 
+`io-hostdemo-ofx14` runs the same tests in `hostDemo --ofx14` (`HOSTDEMO_ARGS=--ofx14`, work directory
+`build/hostdemo-ofx14`), a host that implements only OFX 1.4: only the OFX 1.4 host properties and suites (no
+DrawSuite, plane suite V2 or Vegas suites), no `OfxSetHost`, no StrChoice or Bytes params, and one view (its output
+files are `<prefix>.<t>.ppm`, without the `l`/`r` suffix). Readers, writers and filters must work there as in the
+default host.
+
 `hostdemo/run.sh` lists the plug-ins of the bundle with `io_verify_plugin_loads`, and renders each one with
 `hostDemo` (frames 0 and 1, two views, default parameters, `OCIO=tests/test.ocio`, on hostDemo's PAL SD input: at
 time t, the left view is red and the right view cyan, at grey level t, so both are black at t=0):

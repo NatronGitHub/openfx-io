@@ -28,6 +28,8 @@
 #   HOSTDEMO_TOTAL_TIMEOUT  seconds for all of them (default 600, less than ctest's TIMEOUT for io-hostdemo): the runs
 #                           after that fail without running
 #   IO_HOSTDEMO_STRICT      1 (as in CI): a bundle that is not installed, or a plug-in that is not in it, fails
+#   HOSTDEMO_ARGS           more hostDemo arguments for every run, split on spaces, e.g. --ofx14 (io-hostdemo-ofx14:
+#                           an OFX 1.4 host, which renders one view, into <prefix>.<t>.ppm)
 #   PYTHON                  Python 3 (default: python3, or python), for compare.py
 #   OIIOTOOL                OpenImageIO's oiiotool (default: oiiotool, on PATH), which writes the EXR window files:
 #                           without it, those tests are skipped (they fail with IO_HOSTDEMO_STRICT=1)
@@ -91,7 +93,7 @@ fi
 # "plugin[0] : fr.inria.openfx.ReadEXR v1.0"
 PLUGINS=$(sed -n 's/^plugin\[[0-9]*\] : \([^ ]*\) v.*/\1/p' "$WORK/plugins.txt" | tr -d '\r' | tr '\n' ' ')
 NPLUGINS=$(echo $PLUGINS | wc -w | tr -d ' ')
-echo "$BINARY: $NPLUGINS plug-ins"
+echo "$BINARY: $NPLUGINS plug-ins${HOSTDEMO_ARGS:+ (hostDemo $HOSTDEMO_ARGS)}"
 [ "$NPLUGINS" -gt 0 ] || { cat "$WORK/plugins.txt"; echo "FAIL: no plug-in"; exit 1; }
 
 in_bundle() {
@@ -161,8 +163,9 @@ run() {
     fi
     local status=0 pid watchdog
     rm -f "$OUT/$name".*
-    (cd "$OUT" && exec env OFX_PLUGIN_PATH="$PLUGPATH" "$HD" --quiet --no-std-paths --no-cache -p "$id" -c "$ctx" \
-        -o "$(native "$OUT/$name")" --report "$(native "$OUT/$name.json")" "$@") > "$log" 2>&1 &
+    # shellcheck disable=SC2086
+    (cd "$OUT" && exec env OFX_PLUGIN_PATH="$PLUGPATH" "$HD" --quiet --no-std-paths --no-cache $HOSTDEMO_ARGS -p "$id" \
+        -c "$ctx" -o "$(native "$OUT/$name")" --report "$(native "$OUT/$name.json")" "$@") > "$log" 2>&1 &
     pid=$!
     # the watchdog is a sleep, a child of this shell (no subshell whose own sleep could be orphaned): poll hostDemo,
     # and kill it if the watchdog has ended first
@@ -378,5 +381,5 @@ for id in $PLUGINS; do
     fi
 done
 
-echo "hostdemo: $NOK ok, $NFAIL failed, $NSKIP plug-ins skipped, $NABSENT tests of plug-ins not in the bundle (logs: $OUT)"
+echo "hostdemo${HOSTDEMO_ARGS:+ $HOSTDEMO_ARGS}: $NOK ok, $NFAIL failed, $NSKIP plug-ins skipped, $NABSENT tests of plug-ins not in the bundle (logs: $OUT)"
 exit $fail

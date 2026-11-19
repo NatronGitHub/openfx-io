@@ -111,7 +111,7 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `OFX_USE_OPENMP` | ON | Link [OpenMP](https://www.openmp.org) when LibRaw's pkg-config file asks for it. |
 | `BUILD_TESTING` | ON | `ctest` runs the tests of [`tests/Makefile`](tests/Makefile) (`IO_TESTS_MAKE_ARGS`: extra `make` arguments, e.g. `WITH_LIBRAW=1`). |
 | `IO_TESTS_CXX` | `CMAKE_CXX_COMPILER` | C++ compiler for `tests/Makefile`. |
-| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [hostDemo](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples); `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)). Needs `BUILD_TESTING`. |
+| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [hostDemo](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples); `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `hostDemo --ofx14` (`io-hostdemo-ofx14`). Needs `BUILD_TESTING`. |
 
 ## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
 
