@@ -19,7 +19,14 @@
  *   - a reader's image must be the writer's input (a constant colour), within a tolerance;
  *   - the filters that are an identity with their default parameters (OCIOColorSpace, OCIOCDLTransform,
  *     OCIOFileTransform with an identity LUT, with the identity colour spaces of test.ocio) must output their input.
+ * Each writer also gets an InstanceChanged on its filename, its time domain must be its input's frame range (1..3:
+ * the default frame range is the time line's, and the host never has the optional TimeLine suite), and its RoD the
+ * input's, also with the input format (formatType 0, without Natron's kOfxImageClipPropFormat).
+ * Every context of every plug-in is also instantiated, with an InstanceChanged on each of its params.
  * Every plug-in of the binary must have a test below: a new plug-in without one fails.
+ * Environment variables select other hosts (see tests/README.md): OFX14_LEVEL=11 (OFX 1.1: no property of OFX 1.2 to
+ * 1.4, no Message suite V2, no RGB), OFX14_GL=1 (the optional OpenGL render suite), OFX14_SEQSTATUS=0 (the sequential
+ * render status), OFX14_NOSUITE, OFX14_COMPS, OFX14_DEPTHS, OFX14_SCALE...
  *
  * Usage: ofx14_host_test [--full] [--only <plug-in identifier>] <work directory>
  *   --full: the same tests in the full host (the default mode of ofx_test_host.h), for comparison. In that mode, a
@@ -104,6 +111,10 @@ nComps(const std::string& comps)
     return comps == kOfxImageComponentRGBA ? 4 : (comps == kOfxImageComponentAlpha ? 1 : 3);
 }
 
+// the frame range of the clips: 1..gLastFrame (3 for the writers, whose default frame range is the time line's: in a
+// host without the optional TimeLine suite, it must be the input's)
+double gLastFrame = 1.;
+
 // The image of a clip: bounds b (x1, y1, x2, y2), components comps, float.
 double gReqScale = 1.; // requested OFX14_SCALE
 std::string gDepth = kOfxBitDepthFloat; // depth of the current images
@@ -138,7 +149,7 @@ setupImage(Clip* c,
     pSetIntN(PH(&c->image), kOfxImagePropRegionOfDefinition, 4, b);
     double rod[4] = { (double)b[0] / gRS, (double)b[1] / gRS, (double)b[2] / gRS, (double)b[3] / gRS };
     pSetDoubleN(PH(&c->props), kOfxImageEffectPropRegionOfDefinition, 4, rod);
-    double fr[2] = { 1., 1. };
+    double fr[2] = { 1., gLastFrame };
     pSetDoubleN(PH(&c->props), kOfxImageEffectPropFrameRange, 2, fr);
 }
 
@@ -180,7 +191,10 @@ sequenceArgs(double t)
     pSetInt(ap, kOfxPropIsInteractive, 0, 0);
     double rs[2] = { gRS, gRS };
     pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-    pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
+    // OFX14_SEQSTATUS: the value of kOfxImageEffectPropSequentialRenderStatus (OFX 1.2; a 1.4 host may pass 0, and
+    // with OFX14_LEVEL < 12 it is unknown, so absent)
+    const char* seq = std::getenv("OFX14_SEQSTATUS");
+    pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, seq ? std::atoi(seq) : 1);
     pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
     return a;
 }
@@ -224,7 +238,7 @@ void
 testOverlay(OfxPluginEntryPoint* entry,
             Effect* inst)
 {
-    PropSet ip;
+    PropSet ip(PropSet::eInteract);
     OfxStatus st = entry(kOfxActionDescribe, &ip, nullptr, nullptr);
     if (!ok(st)) {
         fail("overlay Describe = %d", st);
@@ -233,7 +247,7 @@ testOverlay(OfxPluginEntryPoint* entry,
     if (!inst) {
         return;
     }
-    PropSet ii;
+    PropSet ii(PropSet::eInteract);
     OfxPropertySetHandle h = PH(&ii);
     pSetPointer(h, kOfxPropEffectInstance, 0, inst);
     double ps[2] = { 1., 1. };
@@ -317,6 +331,7 @@ testPlugin(OfxPlugin* p,
 {
     std::printf("== %s v%d.%d ==\n", p->pluginIdentifier, p->pluginVersionMajor, p->pluginVersionMinor);
     const int failuresBefore = gFailures;
+    gLastFrame = (s.kind == eWriter) ? 3. : 1.;
     std::string msgs;
     (void)errorMessages(&msgs);
     msgs.clear();
@@ -499,6 +514,11 @@ testPlugin(OfxPlugin* p,
             fail("GetTimeDomain = %d", st);
         }
         std::printf("  time domain %g..%g (%s)\n", fr[0], fr[1], st == kOfxStatOK ? "plug-in" : "default");
+        // a writer renders its input's frames by default (frame range: time line bounds, or the input's without the
+        // TimeLine suite, which the test host never has)
+        if ((s.kind == eWriter) && ((fr[0] != 1.) || (fr[1] != gLastFrame))) {
+            fail("the writer's time domain is %g..%g, not the input's frame range 1..%g", fr[0], fr[1], gLastFrame);
+        }
     }
 
     // the region of definition (the default one is the source's, or the project's)
@@ -530,8 +550,8 @@ testPlugin(OfxPlugin* p,
         }
         std::printf("  RoD %d %d %d %d\n", rod[0], rod[1], rod[2], rod[3]);
     }
-    if ((s.kind == eReader) && ((rod[0] != 0) || (rod[1] != 0) || (rod[2] != kW) || (rod[3] != kH))) {
-        fail("the reader's RoD is not 0 0 %d %d", kW, kH);
+    if (((s.kind == eReader) || (s.kind == eWriter)) && ((rod[0] != 0) || (rod[1] != 0) || (rod[2] != kW) || (rod[3] != kH))) {
+        fail("the %s's RoD is not 0 0 %d %d", s.kind == eReader ? "reader" : "writer", kW, kH);
     }
     const int crod[4] = { rod[0], rod[1], rod[2], rod[3] }; // canonical
     for (int k = 0; k < 4; ++k) rod[k] = (int)(k < 2 ? std::floor(crod[k] * gRS) : std::ceil(crod[k] * gRS)); // pixel
@@ -652,7 +672,7 @@ main(int argc,
     std::printf("host: %s\n", gOfx14Only ? "OFX 1.4 only (no newer suite or property, no extension)" : "full");
     initHost();
     gReqScale = gRS;
-    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d\n", gOfxLevel, std::getenv("OFX14_NOSUITE") ? std::getenv("OFX14_NOSUITE") : "-", std::getenv("OFX14_DEPTHS") ? std::getenv("OFX14_DEPTHS") : "all", std::getenv("OFX14_COMPS") ? std::getenv("OFX14_COMPS") : "default", !std::getenv("OFX14_NOTILES"), !std::getenv("OFX14_NOMULTIRES"), gRS, !std::getenv("OFX14_NOOVERLAYS"));
+    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d, opengl=%d, seqstatus=%s\n", gOfxLevel, std::getenv("OFX14_NOSUITE") ? std::getenv("OFX14_NOSUITE") : "-", std::getenv("OFX14_DEPTHS") ? std::getenv("OFX14_DEPTHS") : "all", std::getenv("OFX14_COMPS") ? std::getenv("OFX14_COMPS") : "default", !std::getenv("OFX14_NOTILES"), !std::getenv("OFX14_NOMULTIRES"), gRS, !std::getenv("OFX14_NOOVERLAYS"), (int)gOpenGLRender, std::getenv("OFX14_SEQSTATUS") ? std::getenv("OFX14_SEQSTATUS") : "1");
 
     // an identity 1D LUT for OCIOFileTransform (which has no default file)
     {
@@ -668,6 +688,8 @@ main(int argc,
     const std::vector<Spec> specs = {
         // writers first, then the readers of their files
         { "fr.inria.openfx.WritePNG", eWriter, "image.png", kNone, {}, {} },
+        // the input format (formatType 0): without kOfxImageClipPropFormat (Natron), the input's RoD
+        { "fr.inria.openfx.WritePNG", eWriter, "image-input.png", kNone, {}, { { "formatType", 0 } } },
         { "fr.inria.openfx.WriteEXR", eWriter, "image.exr", kNone, {}, {} },
         { "fr.inria.openfx.WritePFM", eWriter, "image.pfm", kNone, {}, {} },
         { "fr.inria.openfx.WriteOIIO", eWriter, "image.tif", kNone, {}, {} },

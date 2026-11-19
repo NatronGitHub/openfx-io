@@ -220,13 +220,17 @@ ofx14_host_test: ofx14_host_test.cpp ofx_test_host.h ofx14_names.h $(OFX14_SRCS)
 .PHONY: test-ofx14 clean-ofx14
 test: test-ofx14
 clean: clean-ofx14
-# the OFX 1.4-only host, then the full host
+# the OFX 1.4-only host; an OFX 1.1 host (no OFX 1.2-1.4 property, e.g. kOfxImageEffectPropSequentialRenderStatus,
+# no Message suite V2, no RGB); OFX 1.4 with the optional OpenGL render suite, and a sequential render status of 0;
+# then the full host
 test-ofx14: ofx14_host_test
-	rm -rf .ofx14 .ofx14full
+	rm -rf .ofx14 .ofx14-11 .ofx14-gl .ofx14full
 	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test $(CURDIR)/.ofx14
+	OCIO=$(CURDIR)/test.ocio OFX14_LEVEL=11 ./ofx14_host_test $(CURDIR)/.ofx14-11
+	OCIO=$(CURDIR)/test.ocio OFX14_GL=1 OFX14_SEQSTATUS=0 ./ofx14_host_test $(CURDIR)/.ofx14-gl
 	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test --full $(CURDIR)/.ofx14full
 clean-ofx14:
-	rm -rf ofx14_host_test ofx14_host_test.dSYM .ofx14 .ofx14full
+	rm -rf ofx14_host_test ofx14_host_test.dSYM .ofx14 .ofx14-11 .ofx14-gl .ofx14full
 
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # -pthread: the test uses std::thread
