@@ -499,7 +499,7 @@ ofx_deploy_bundle(IO)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tests (ctest):
-# - io-load: loads the IO.ofx of the build tree with .github/workflows/verify_plugin_loads.cpp (RTLD_NOW, as in
+# - io-load: loads the IO.ofx of the build tree with tests/verify_plugin_loads.cpp (RTLD_NOW, as in
 #   CI) and checks the number of plug-ins against the groups built;
 # - io-icons: each plug-in of the build tree's bundle has its icon, Contents/Resources/<identifier>.png
 #   (tests/check_icons.cmake);
@@ -530,7 +530,7 @@ if(BUILD_TESTING)
   string(REPLACE "RTLD_LAZY" "RTLD_NOW" _io_src "${_io_src}")
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp.new" "${_io_src}")
   configure_file("${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp.new" "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp" COPYONLY)
-  add_executable(io_verify_plugin_loads .github/workflows/verify_plugin_loads.cpp "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp")
+  add_executable(io_verify_plugin_loads tests/verify_plugin_loads.cpp "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp")
   if(WIN32)
     target_sources(io_verify_plugin_loads PRIVATE "${OPENFX_PATH}/HostSupport/src/ofxhUtilities.cpp")
   endif()

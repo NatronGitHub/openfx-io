@@ -19,8 +19,8 @@
 #   -o DIR    where to write each check's raw output (default: a new temporary directory)
 # CXX: the C++ compiler for the load checker (default c++; may include flags, e.g. "clang++ -std=c++17").
 # The load checker is built from the source tree containing this script (openfx submodule and
-# .github/workflows/verify_plugin_loads.cpp: a git checkout, not a release archive), and needs the
-# expat headers (openfx HostSupport), e.g. expat-devel or libexpat1-dev.
+# tests/verify_plugin_loads.cpp; a source archive works if it includes the submodules), and needs
+# the expat headers (openfx HostSupport), e.g. expat-devel or libexpat1-dev.
 
 # the check functions are called indirectly, by compare and problems
 # shellcheck disable=SC2329
@@ -240,9 +240,9 @@ if need "${cxx[0]}"; then
     [ "$os" = Darwin ] || ldl="-ldl"
     sed -e 's/RTLD_LAZY/RTLD_NOW/g' "$srcdir/openfx/HostSupport/src/ofxhBinary.cpp" > "$outdir/ofxhBinaryStrict.cpp"
     # as in the CI load checks: ofxhBinary.cpp only (Linux, macOS), plus ofxhUtilities.cpp if needed
-    if "${cxx[@]}" -std=c++17 -o "$verify" "$srcdir/.github/workflows/verify_plugin_loads.cpp" "$outdir/ofxhBinaryStrict.cpp" \
+    if "${cxx[@]}" -std=c++17 -o "$verify" "$srcdir/tests/verify_plugin_loads.cpp" "$outdir/ofxhBinaryStrict.cpp" \
         -I "$srcdir/openfx/HostSupport/include" -I "$srcdir/openfx/include" $ldl > "$outdir/verify-build.log" 2>&1 ||
-        "${cxx[@]}" -std=c++17 -o "$verify" "$srcdir/.github/workflows/verify_plugin_loads.cpp" "$outdir/ofxhBinaryStrict.cpp" \
+        "${cxx[@]}" -std=c++17 -o "$verify" "$srcdir/tests/verify_plugin_loads.cpp" "$outdir/ofxhBinaryStrict.cpp" \
         "$srcdir/openfx/HostSupport/src/ofxhUtilities.cpp" -I "$srcdir/openfx/HostSupport/include" -I "$srcdir/openfx/include" $ldl \
         >> "$outdir/verify-build.log" 2>&1; then
         # the checker's output and exit status are compared: a bundle that fails to load differs from one that loads
