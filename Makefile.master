@@ -4,13 +4,6 @@ OFXSEXTPATH ?= $(TOP_SRCDIR)/SupportExt
 
 PATHTOROOT = $(OFXPATH)/Support
 
-# Minimum macOS version of the plug-ins (Natron 2.6 supports macOS 14 and later). openfx's Makefile.master passes it
-# to -mmacosx-version-min; without it, the plug-ins would require the SDK's macOS version. Override it with
-# `make MACOSX_DEPLOYMENT_TARGET=...` or in the environment (an empty value also gives 14.0). Ignored on other systems.
-ifeq ($(strip $(MACOSX_DEPLOYMENT_TARGET)),)
-override MACOSX_DEPLOYMENT_TARGET := 14.0
-endif
-
 include $(PATHTOROOT)/Plugins/Makefile.master
 
 CXXFLAGS += -DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE -DOFX_EXTENSIONS_NATRON -I$(TOP_SRCDIR)/IOSupport -I$(OFXSEXTPATH) -I$(OFXSEXTPATH)/glad

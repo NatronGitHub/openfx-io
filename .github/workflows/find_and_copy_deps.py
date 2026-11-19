@@ -27,7 +27,7 @@ def get_deps_for_binary(binary_path, search_directories):
     if sys.platform == "linux":
         # System libraries to skip: the glibc libraries and the dynamic loader, the GCC runtime (libstdc++,
         # libgcc_s, libgomp: never bundled, the system's must be used, see "Linux runtime requirements" in
-        # README.md), OpenGL and X11.
+        # README.md), OpenGL, OpenCL and CUDA drivers, and X11.
         system_libs_to_skip = [
             "ld-linux",
             "libc.so",
@@ -51,6 +51,24 @@ def get_deps_for_binary(binary_path, search_directories):
             "libXext.so",
             "libXfixes.so",
             "libXrender.so",
+            # the rest of openfx's linuxCheckBundle.sh system list (glibc, libatomic, GLVND, OpenCL and CUDA drivers)
+            "ld64.so",
+            "libBrokenLocale.so",
+            "libEGL.so",
+            "libGLESv1_CM.so",
+            "libGLESv2.so",
+            "libOpenCL.so",
+            "libOpenGL.so",
+            "libanl.so",
+            "libatomic.so",
+            "libc_malloc_debug.so",
+            "libcrypt.so",
+            "libcuda.so",
+            "libmvec.so",
+            "libnsl.so",
+            "libnss_",
+            "libthread_db.so",
+            "libutil.so",
         ]
     ret = set()
     while True:

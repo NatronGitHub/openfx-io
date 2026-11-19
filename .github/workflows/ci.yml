@@ -112,6 +112,29 @@ jobs:
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build
+      - name: Check the installed bundle (linuxCheckBundle.sh)
+        # openfx's linuxCheckBundle.sh (OFX_LINUX_CHECK_BUNDLE): no bundled system library, no GLIBC_PRIVATE, GLIBC_ABI_*,
+        # DT_RELR or unnumbered version need, only $ORIGIN rpaths (or OFX_ABI_RPATH_ALLOW's). This build uses
+        # Ubuntu 24.04's libraries (glibc 2.39, GCC 13): --no-needed (they come from the system, nothing is bundled)
+        # and no symbol version limit (99). A Rocky Linux 9 build would use the defaults (EL9's limits).
+        # Exit status 1 (problems) or 2 (usage error, missing tool) fails the job.
+        env:
+          OFX_ABI_GLIBC: 99
+          OFX_ABI_GLIBCXX: 99
+          OFX_ABI_CXXABI: 99
+          OFX_ABI_GCC: 99
+          OFX_ABI_GOMP: 99
+          OFX_ABI_LIBATOMIC: 99
+          OFX_ABI_ZLIB: 99
+        run: |
+          check=$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)
+          test -n "$check" || { echo "OFX_LINUX_CHECK_BUNDLE is not in build/CMakeCache.txt"; exit 1; }
+          # RUNPATH/RPATH entries that don't start with $ORIGIN are problems (openfx #163), except those listed in
+          # OFX_ABI_RPATH_ALLOW (exact match): the CMake bundle's only other entry is this build's in-tree SeExpr
+          # (installers rewrite the rpath)
+          export OFX_ABI_RPATH_ALLOW="$PWD/SeExprBuild/lib"
+          echo "OFX_ABI_RPATH_ALLOW=$OFX_ABI_RPATH_ALLOW"
+          "$check" -v --no-needed Bundle
       - name: Build (debug, C++20, Makefiles)
         if: env.EXTRA_VARIANTS == 'true'
         run: make -j4 CONFIG=debug SEEXPR_HOME=$PWD/SeExprBuild CXX="g++ -std=c++20"
@@ -134,7 +157,7 @@ jobs:
       - name: Generate testing bundle
         run: |
           # Bundle used for Natron's automated testing. It carries the libraries of Ubuntu 24.04, but no system libraries
-          # (glibc, libstdc++, libgcc_s, libgomp, libGL, X11: see find_and_copy_deps.py), so it needs Ubuntu 24.04's.
+          # (glibc, libstdc++, libgcc_s, libgomp, GLVND, OpenCL, X11: see find_and_copy_deps.py), so it needs Ubuntu 24.04's.
           # Release bundles are built on Rocky Linux 9 (see "Linux runtime requirements" in README.md).
           cp -r Bundle TestingBundle
           printf '%s\n' "Ubuntu 24.04 testing build, not a release." \
@@ -146,6 +169,10 @@ jobs:
           python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} \
             SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
+          # No system library may be bundled (same limits as the Bundle check above; --no-needed: the copied
+          # Ubuntu libraries find their dependencies in the system).
+          OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
+            OFX_ABI_ZLIB=99 "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
           # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
           g++ -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
