@@ -280,7 +280,7 @@ jobs:
           # tests/Makefile (CXX=clang++ WITH_LIBRAW=1) and io-hostdemo (on the installed, deployed bundle), run by ctest
           IO_HOSTDEMO_STRICT=1 ctest --test-dir build --output-on-failure
           if [ "$EXTRA_VARIANTS" = true ]; then
-            make -C tests clean test CXX=clang++ WITH_LIBRAW=1 CXXSTD=-std=c++20
+            make -C tests clean test CXX=clang++ WITH_LIBRAW=1 CXXSTD=-std=c++20 SEEXPR_HOME=$SEEXPR_HOME
           fi
       - name: Upload the hostDemo test outputs
         if: failure()
@@ -359,7 +359,7 @@ jobs:
         # bundle with hostDemo (io-hostdemo, a bash script: the bundle's DLLs are found in $MINGW_PREFIX/bin, on PATH)
         run: |
           set -eo pipefail
-          make -C tests test
+          make -C tests test SEEXPR_HOME="$MINGW_PREFIX"
           ctest --test-dir build -R '^io-(load|icons)$' --output-on-failure
           # (--no-tests=error: fails if there is no io-hostdemo test; IO_HOSTDEMO_STRICT: if the bundle is not
           # installed or lacks a plug-in)
@@ -375,7 +375,7 @@ jobs:
         if: env.EXTRA_VARIANTS == 'true'
         run: |
           set -eo pipefail
-          make -C tests clean test CXXSTD=-std=c++20
+          make -C tests clean test CXXSTD=-std=c++20 SEEXPR_HOME="$MINGW_PREFIX"
       - name: Generate testing bundle
         run: |
           set -eo pipefail

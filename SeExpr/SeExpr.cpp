@@ -24,8 +24,12 @@
 
 #include <algorithm>
 #include <cfloat> // DBL_MAX
+#include <climits> // INT_MAX
+#include <cctype>
+#include <map>
 #include <limits>
 #include <set>
+#include <utility>
 #include <vector>
 
 //#include <stdio.h> // for snprintf & _snprintf
@@ -263,17 +267,10 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "\n"                                                                                                                                              \
     "### Accessing pixel values from other frames\n"                                                                                                  \
     "\n"                                                                                                                                              \
-    "The input frame range used to render a given output frame is computed automatically if the following conditions hold:\n\n"                       \
-    "- The `frame` parameter to cpixel/apixel must not depend on the color or alpha of a pixel, nor on the result of another call to cpixel/apixel\n" \
-    "- A call to cpixel/apixel must not depend on the color or alpha of a pixel, as in the following:\n"                                              \
-    "\n"                                                                                                                                              \
-    "    if (As > 0.1) {\n"                                                                                                                           \
-    "        src = cpixel(1,frame,x,y);\n"                                                                                                            \
-    "    } else {\n"                                                                                                                                  \
-    "        src = [0,0,0];\n"                                                                                                                        \
-    "    }\n"                                                                                                                                         \
-    "\n"                                                                                                                                              \
-    "If one of these conditions does not hold, all frames from the specified input frame range are asked for."
+    "The frames fetched by cpixel/apixel to render a given output frame are computed automatically, for every call, even in a branch that is not taken:\n\n" \
+    "- The frames of a call are computed if its `frame` argument (and its input index) is made only of `frame`, numbers, operators, `?:` and the usual math functions (e.g. floor, round, abs, min, max, clamp, sqrt, pow, sin...).\n" \
+    "- Local variables computed the same way are followed, also through if blocks (`f = frame - 1; cpixel(1, f, x, y)`).\n" \
+    "- If the `frame` argument of a call depends on anything else (another variable, the color or alpha of a pixel, the result of another call to cpixel/apixel), the frames of the Input Frame Range parameter are asked for that input, in addition to the frames computed for it."
 #define kPluginDescription kPluginDescriptionHead kPluginDescriptionMid kPluginDescriptionFoot
 #define kPluginDescriptionSimple kPluginDescriptionHead kPluginDescriptionMidSimple kPluginDescriptionFoot
 
@@ -291,6 +288,88 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kRenderThreadSafety eRenderFullySafe
 
 #define kSourceClipCount 10
+
+// The arguments of cpixel() and apixel() are computed by the expression, possibly from pixel values: they may be NaN,
+// infinite, or out of the range of int. They are tested with OFX::IsNaN() and OFX::IsInfinite(), which test the bits
+// and work even if the compiler assumes that there are no NaNs or infinities (-ffast-math), unlike comparisons.
+// - The coordinates are clamped to [-kSeExprMaxArg, kSeExprMaxArg] (far out of any image, so that the result is the same
+//   as without clamping: the edge pixel for coordinates out of the image) before their conversion to int.
+// - A finite frame is used as is (OfxTime is a double); an infinite one is clamped to +-kSeExprMaxArg.
+// - A NaN coordinate or frame gives a black pixel.
+#define kSeExprMaxArg 1e9
+
+// Clamp a coordinate of cpixel() or apixel() to [-kSeExprMaxArg, kSeExprMaxArg]. Returns false if it is NaN.
+static bool
+clampPixelArg(double* v)
+{
+    if (OFX::IsNaN(*v)) {
+        return false;
+    }
+    if (OFX::IsInfinite(*v)) {
+        *v = (*v > 0.) ? kSeExprMaxArg : -kSeExprMaxArg;
+    } else if (*v > kSeExprMaxArg) {
+        *v = kSeExprMaxArg;
+    } else if (*v < -kSeExprMaxArg) {
+        *v = -kSeExprMaxArg;
+    }
+
+    return true;
+}
+
+// The frame of cpixel() or apixel(): unchanged if finite, clamped to +-kSeExprMaxArg if infinite. Returns false if it
+// is NaN.
+static bool
+clampPixelFrame(double* v)
+{
+    if (OFX::IsNaN(*v)) {
+        return false;
+    }
+    if (OFX::IsInfinite(*v)) {
+        *v = (*v > 0.) ? kSeExprMaxArg : -kSeExprMaxArg;
+    }
+
+    return true;
+}
+
+// The input index (0 to kSourceClipCount - 1) of the first argument of cpixel() and apixel(), rounded and clamped (without
+// converting a value that is not in the range of int, or NaN, to int).
+static int
+pixelInputIndex(double v)
+{
+    if (OFX::IsNaN(v)) {
+        return 0;
+    }
+    const double r = SeExpr::round(v);
+    if ((1. <= r) && (r <= (double)kSourceClipCount)) {
+        return (int)r - 1;
+    }
+
+    return (r > (double)kSourceClipCount) ? (kSourceClipCount - 1) : 0;
+}
+
+// The size x2 - x1 of a rectangle, computed in double (it may overflow int, e.g. for an infinite RoD) and clamped to
+// the range of int
+static int
+rectSize(int x1,
+         int x2)
+{
+    const double size = (double)x2 - x1;
+
+    return (size >= (double)INT_MAX) ? INT_MAX : ((size <= (double)INT_MIN) ? INT_MIN : (int)size);
+}
+
+// Is the first argument of cpixel() and apixel() a valid input index (1 to kSourceClipCount, once rounded)?
+static bool
+pixelInputIndexIsValid(double v)
+{
+    if (OFX::IsNaN(v)) {
+        return false;
+    }
+    // compared once rounded, as master did (0.49999999999999994 rounds to 1 with SeExpr::round())
+    const double r = SeExpr::round(v);
+
+    return (1. <= r) && (r <= (double)kSourceClipCount);
+}
 #define kParamsCount 10
 
 #define kSeExprCPixelFuncName "cpixel"
@@ -840,8 +919,7 @@ private:
 
         SeExpr2::Vec3d v;
         node->child(0)->eval(v);
-        int inputIndex = (int)SeExpr::round(v[0]) - 1;
-        if ((inputIndex < 0) || (inputIndex >= kSourceClipCount)) {
+        if (!pixelInputIndexIsValid(v[0])) {
             node->addError("Invalid input index");
 
             return false;
@@ -856,14 +934,9 @@ private:
         SeExpr2::Vec3d v;
 
         node->child(0)->eval(v);
-        int inputIndex = (int)SeExpr::round(v[0]) - 1;
-        if (inputIndex < 0) {
-            inputIndex = 0;
-        } else if (inputIndex >= kSourceClipCount) {
-            inputIndex = kSourceClipCount - 1;
-        }
+        const int inputIndex = pixelInputIndex(v[0]);
         node->child(1)->eval(v);
-        OfxTime frame = SeExpr::round(v[0]);
+        const double frameArg = v[0];
         node->child(2)->eval(v);
         double x = v[0];
         node->child(3)->eval(v);
@@ -876,20 +949,25 @@ private:
 #endif
         if (nargs == 5) {
             node->child(4)->eval(v);
-            int interp_i = SeExpr::round(v[0]);
-            if (interp_i < 0) {
-                interp_i = 0;
-            } else if (interp_i > (int)eFilterNotch) {
-                interp_i = (int)eFilterNotch;
+            // rounded and clamped to 0..eFilterNotch (without converting a value out of the range of int to int)
+            const double interpArg = v[0];
+            // compared once rounded, as master did
+            const double r = OFX::IsNaN(interpArg) ? 0. : SeExpr::round(interpArg);
+            if ((0. <= r) && (r <= (double)eFilterNotch)) {
+                interp = (FilterEnum)(int)r;
+            } else if (r > (double)eFilterNotch) {
+                interp = eFilterNotch;
             }
-            interp = (FilterEnum)interp_i;
         }
-        if ((frame != frame) || (x != x) || (y != y)) {
-            // one of the parameters is NaN
+        double frameClamped = frameArg;
+        const bool argsInRange = clampPixelFrame(&frameClamped) && clampPixelArg(&x) && clampPixelArg(&y);
+        if (!argsInRange) {
+            // the frame or the coordinates are NaN
             result = SeExpr2::Vec3d(0., 0., 0.);
 
             return;
         }
+        const OfxTime frame = SeExpr::round(frameClamped);
         _processor->prefetchImage(inputIndex, frame);
         const Image* img = _processor->getImage(inputIndex, frame);
         if (!img) {
@@ -1104,16 +1182,288 @@ private:
 
 typedef map<int, vector<OfxTime>> FramesNeeded;
 
+// The value given to the variables other than frame, and returned by cpixel() and apixel(), in the stub expression
+// (a finite value). It is never used to compute a frame: the frames are computed from the frame and constants only
+// (see StubFrameAnalysis).
+#define kStubUnknownValue 0.5
+
+// The name of a variable, without its leading '$'
+static string
+stubVarName(const char* name)
+{
+    return (name && (name[0] == '$')) ? string(name + 1) : string(name ? name : "");
+}
+
+// Is a function one of the builtin functions of SeExpr 2.11 whose result depends only on its arguments (checked in
+// SeExprBuiltins.cpp)?
+static bool
+stubIsPureMathFunction(const string& name)
+{
+    static const char* const functions[] = {
+        // math
+        "abs", "acos", "acosd", "acosh", "asin", "asind", "asinh", "atan", "atand", "atan2", "atan2d", "atanh",
+        "bias", "boxstep", "cbrt", "ceil", "clamp", "compress", "contrast", "cos", "cosd", "cosh", "deg", "exp",
+        "expand", "fit", "floor", "fmod", "gamma", "gaussstep", "hypot", "invert", "linearstep", "log", "log10", "max",
+        "min", "mix", "pow", "rad", "remap", "round", "sin", "sind", "sinh", "smoothstep", "sqrt", "tan", "tand",
+        "tanh", "trunc",
+        // selection and curves (functions of their arguments; choose() and wchoose() protect against NaN, their
+        // allocations depend only on the number of arguments)
+        "choose", "wchoose", "curve", "ccurve",
+        // vectors and colors
+        "length", "dist", "dot", "cross", "norm", "ortho", "up", "angle", "rotate", "rgbtohsl", "hsltorgb", "hsi",
+        "saturate",
+    };
+    // Not here: getVar() (a variable given by its name), printf() (a side effect), cpixel() and apixel() (see
+    // StubFrameAnalysis::evaluateFunction() for getVar() and printf()); and the builtins that convert an argument to
+    // int, divide by it, or allocate on the stack a size that comes from it: they are evaluated only with valid
+    // arguments (stubIsGuardedFunction(), stubGuardedArgsAreValid()), since the calls of a branch that is not taken are
+    // evaluated here, which must not crash where the render would not.
+    // A function of the list redefined by a SeExpr plug-in (SE_EXPR_PLUGINS) is trusted to be a function of its
+    // arguments too.
+    for (std::size_t i = 0; i < sizeof(functions) / sizeof(functions[0]); ++i) {
+        if (name == functions[i]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Is a node one of those whose value is a function of their children (operators, ?:, vector literals, indexing)?
+static bool
+stubIsPureOperator(const SeExprNode* node)
+{
+    return dynamic_cast<const SeExprNegNode*>(node) || dynamic_cast<const SeExprNotNode*>(node)
+           || dynamic_cast<const SeExprCondNode*>(node) || dynamic_cast<const SeExprAndNode*>(node)
+           || dynamic_cast<const SeExprOrNode*>(node) || dynamic_cast<const SeExprCompareEqNode*>(node)
+           || dynamic_cast<const SeExprCompareNode*>(node) || dynamic_cast<const SeExprAddNode*>(node)
+           || dynamic_cast<const SeExprSubNode*>(node) || dynamic_cast<const SeExprMulNode*>(node)
+           || dynamic_cast<const SeExprDivNode*>(node) || dynamic_cast<const SeExprModNode*>(node)
+           || dynamic_cast<const SeExprExpNode*>(node) || dynamic_cast<const SeExprInvertNode*>(node)
+           || dynamic_cast<const SeExprVecNode*>(node) || dynamic_cast<const SeExprSubscriptNode*>(node);
+}
+
+// Is a function one of the builtins of SeExpr 2.11 that are functions of their arguments, but convert an argument to
+// int (undefined behaviour out of the range of int, or for NaN), divide by an argument converted to int, or allocate on
+// the stack a size that comes from an argument? They are evaluated by the analysis only if stubGuardedArgsAreValid()
+// (checked in SeExprBuiltins.cpp and SeNoise.cpp of SeExpr 2.11).
+static bool
+stubIsGuardedFunction(const string& name)
+{
+    static const char* const functions[] = {
+        "noise", "snoise", "vnoise", "cnoise", "snoise4", "vnoise4", "cnoise4", // floor(argument) to int
+        "fbm", "vfbm", "cfbm", "turbulence", "vturbulence", "cturbulence", // the same, at p * lacunarity^k + 1234...
+        "pnoise", // floor(argument) to int, int(period), and % period
+        "cellnoise", "ccellnoise", // floor(argument) to uint32_t
+        "voronoi", "cvoronoi", "pvoronoi", // cellnoise of the cells around the point, int(type), fbm
+        "hash", // frexp(argument) to uint32_t
+        "pick", // alloca(int(hi) - int(lo) + 1), twice
+        "cycle", "spline", "remap", "midhsi", // an argument to int
+    };
+    for (std::size_t i = 0; i < sizeof(functions) / sizeof(functions[0]); ++i) {
+        if (name == functions[i]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The bound of |p| after the octaves of FBM() (SeNoise.cpp: p = p * lacunarity + 1234 at each octave), or more than
+// 2^29 if it is too large
+static double
+stubFbmBound(double p,
+             double octaves,
+             double lacunarity)
+{
+    const double maxValue = 536870912.; // 2^29
+    const int n = (int)((octaves < 1.) ? 1. : ((octaves > 8.) ? 8. : octaves)); // int(clamp(octaves, 1, 8))
+    double bound = p;
+    for (int k = 1; (k < n) && (bound <= maxValue); ++k) {
+        bound = bound * ((lacunarity < 0.) ? -lacunarity : lacunarity) + 1234.;
+    }
+
+    return bound;
+}
+
+// Are the values of the arguments of a guarded node (a function of stubIsGuardedFunction(), or a subscript, name "[]")
+// such that it is defined, and does not allocate too much? They are computed from the frame and constants
+// (OFX::IsNaN() and OFX::IsInfinite() test them, they are not markers):
+// - all the components must be finite and in [-2^29, 2^29] (so that floor(v) + 1, the conversions to int and the
+//   int arithmetic of the builtins are defined);
+// - cellnoise(), ccellnoise(): in [0, 2^29] (a conversion to uint32_t);
+// - pick(index, lo, hi, ...): hi - lo at most 4096; cycle(index, lo, hi): hi - lo less than 2^29;
+// - fbm(p, octaves = 6, lacunarity = 2, gain = 0.5) and the others of the family: p * |lacunarity|^k + 1234...
+//   (the point of each octave) in [-2^29, 2^29];
+// - pnoise(p, period): int(period) at least 1 (it is the divisor of %);
+// - voronoi(p, type, jitter, fbmScale, fbmOctaves, fbmLacunarity, fbmGain), cvoronoi() (the same arguments) and
+//   pvoronoi(p, jitter, fbmScale, fbmOctaves, fbmLacunarity, fbmGain) (no type: its fbmScale is the third argument,
+//   whatever its docstring says): fbmScale 0 (no fbm distortion), and p in [2, 2^29] (the cells around it,
+//   floor(p) - 1, are converted to uint32_t).
+static bool
+stubGuardedArgsAreValid(const string& name,
+                        const vector<SeVec3d>& args)
+{
+    const double maxValue = 536870912.; // 2^29
+    if (name == "[]") {
+        // v[index]: int(index)
+        return (args.size() == 2) && !OFX::IsNaN(args[1][0]) && !OFX::IsInfinite(args[1][0]) && (args[1][0] <= maxValue) && (args[1][0] >= -maxValue);
+    }
+    const bool nonNegative = (name == "cellnoise") || (name == "ccellnoise");
+    double maxP = 0.;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        for (int c = 0; c < 3; ++c) {
+            const double v = args[i][c];
+            if (OFX::IsNaN(v) || OFX::IsInfinite(v) || (v > maxValue) || (v < (nonNegative ? 0. : -maxValue))) {
+                return false;
+            }
+            if (i == 0) {
+                maxP = (std::max)(maxP, (v < 0.) ? -v : v);
+            }
+        }
+    }
+    if (name == "pick") {
+        // pick(index, lo, hi, weights...)
+        return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] <= 4096);
+    }
+    if (name == "cycle") {
+        return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] < (int)maxValue);
+    }
+    if ((name == "fbm") || (name == "vfbm") || (name == "cfbm") || (name == "turbulence") || (name == "vturbulence")
+        || (name == "cturbulence")) {
+        const double octaves = (args.size() >= 2) ? args[1][0] : 6.;
+        const double lacunarity = (args.size() >= 3) ? args[2][0] : 2.;
+
+        return stubFbmBound(maxP, octaves, lacunarity) <= maxValue;
+    }
+    if (name == "pnoise") {
+        if (args.size() < 2) {
+            return false;
+        }
+        for (int c = 0; c < 3; ++c) {
+            if ((int)args[1][c] < 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+    if ((name == "voronoi") || (name == "cvoronoi") || (name == "pvoronoi")) {
+        const std::size_t fbmScale = (name == "pvoronoi") ? 2 : 3; // SeExprBuiltins.cpp: pvoronoiFn() has no type
+        if ((args.size() > fbmScale) && (args[fbmScale][0] != 0.)) {
+            return false; // fbm distortion
+        }
+        for (int c = 0; c < 3; ++c) {
+            if ((args.empty()) || (args[0][c] < 2.)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    return true;
+}
+
+// Is the subtree made only of numbers, variables, the operators of stubIsPureOperator() and the functions of
+// stubIsPureMathFunction() and stubIsGuardedFunction()? Its variable nodes are added to vars, its guarded nodes (the
+// calls to guarded functions, and the subscripts, whose index is converted to int) to guarded (in postorder: the inner
+// ones first).
+static bool
+stubIsPureExpression(const SeExprNode* node,
+                     vector<const SeExprVarNode*>* vars,
+                     vector<const SeExprNode*>* guarded = NULL)
+{
+    if (const SeExprVarNode* var = dynamic_cast<const SeExprVarNode*>(node)) {
+        vars->push_back(var);
+
+        return true;
+    }
+    if (dynamic_cast<const SeExprNumNode*>(node)) {
+        return true;
+    }
+    const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node);
+    if (func) {
+        if (!stubIsPureMathFunction(func->name()) && !stubIsGuardedFunction(func->name())) {
+            return false;
+        }
+    } else if (!stubIsPureOperator(node)) {
+        return false;
+    }
+    for (int i = 0; i < node->numChildren(); ++i) {
+        if (!stubIsPureExpression(node->child(i), vars, guarded)) {
+            return false;
+        }
+    }
+    if (guarded && ((func && stubIsGuardedFunction(func->name())) || dynamic_cast<const SeExprSubscriptNode*>(node))) {
+        guarded->push_back(node);
+    }
+
+    return true;
+}
+
+// The name of a guarded node for stubGuardedArgsAreValid()
+static string
+stubGuardedName(const SeExprNode* node)
+{
+    const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node);
+
+    return func ? string(func->name()) : string("[]");
+}
+
+// Is a computed value finite (all its components)? A value that is not (e.g. sqrt(frame - 20) at frame 10) is not used:
+// the set arithmetic of the analysis, compiled with -ffast-math, would not handle it.
+static bool
+stubIsFinite(const SeVec3d& v)
+{
+    for (int c = 0; c < 3; ++c) {
+        if (OFX::IsNaN(v[c]) || OFX::IsInfinite(v[c])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// The variables other than frame, in the stub expression: their values are not known. Reading one (eval()) sets the
+// flag touched: an evaluation that read it does not give a known value. (Its value, kStubUnknownValue, is never used.)
+class StubUnknownScalar
+    : public SeExprVarRef {
+public:
+    mutable bool touched;
+
+    StubUnknownScalar()
+        : SeExprVarRef()
+        , touched(false)
+    {
+    }
+
+    virtual ~StubUnknownScalar() { }
+
+    virtual bool isVec() { return false; }
+
+    virtual void eval(const SeExprVarNode* /*node*/,
+                      SeExpr2::Vec3d& result)
+    {
+        touched = true;
+        result[0] = result[1] = result[2] = kStubUnknownValue;
+    }
+};
+
 /**
  * @brief Used to determine what are the frames needed and RoIs of the expression
+ *
+ * Every cpixel() and apixel() call of the expression is recorded when it is prepped (whether or not it would be
+ * evaluated), and analyzed by StubFrameAnalysis. The variables other than frame are given kStubUnknownValue; the
+ * expression itself is not evaluated.
  **/
 class StubSeExpression
     : public SeExpression {
-    mutable SimpleScalar _nanScalar, _zeroScalar;
+    mutable StubUnknownScalar _unknownScalar;
     mutable StubPixelFuncX _pixel;
     mutable SeExprFunc _pixelFunction;
     mutable SimpleScalar _currentTime;
-    mutable FramesNeeded _images;
+    mutable vector<const SeExprFuncNode*> _pixelCalls; // the cpixel() and apixel() calls (prepped)
 
 public:
     StubSeExpression(const string& expr,
@@ -1128,25 +1478,27 @@ public:
     /** override resolveFunc to add external functions */
     virtual SeExprFunc* resolveFunc(const string& name) const OVERRIDE FINAL;
 
-    void onPixelCalled(int inputIndex,
-                       OfxTime time)
+    void onPixelPrepped(const SeExprFuncNode* node) const
     {
-        // Register image needed
-        FramesNeeded::iterator foundInput = _images.find(inputIndex);
-        if (foundInput == _images.end()) {
-            vector<OfxTime> times;
-            times.push_back(time);
-            _images.insert(make_pair(inputIndex, times));
-        } else {
-            if (std::find(foundInput->second.begin(), foundInput->second.end(), time) == foundInput->second.end()) {
-                foundInput->second.push_back(time);
-            }
+        if (std::find(_pixelCalls.begin(), _pixelCalls.end(), node) == _pixelCalls.end()) {
+            _pixelCalls.push_back(node);
         }
     }
 
-    const FramesNeeded& getFramesNeeded() const
+    const vector<const SeExprFuncNode*>& getPixelCalls() const
     {
-        return _images;
+        return _pixelCalls;
+    }
+
+    // was a variable that is not known read (see StubUnknownScalar)?
+    bool touched() const
+    {
+        return _unknownScalar.touched;
+    }
+
+    void resetTouched() const
+    {
+        _unknownScalar.touched = false;
     }
 };
 
@@ -1207,10 +1559,12 @@ public:
     {
         _xCoord._value = x;
         _yCoord._value = y;
-        assert(_dstPixelRod.x2 - _dstPixelRod.x1);
-        assert(_dstPixelRod.y2 - _dstPixelRod.y1);
-        _uCoord._value = (x + 0.5 - _dstPixelRod.x1) / (_dstPixelRod.x2 - _dstPixelRod.x1);
-        _vCoord._value = (y + 0.5 - _dstPixelRod.y1) / (_dstPixelRod.y2 - _dstPixelRod.y1);
+        // u and v are 0 if the output RoD is empty
+        // in double: the difference may overflow int (e.g. an infinite RoD)
+        const double rodWidth = (double)_dstPixelRod.x2 - _dstPixelRod.x1;
+        const double rodHeight = (double)_dstPixelRod.y2 - _dstPixelRod.y1;
+        _uCoord._value = (rodWidth > 0) ? (x + 0.5 - _dstPixelRod.x1) / rodWidth : 0.;
+        _vCoord._value = (rodHeight > 0) ? (y + 0.5 - _dstPixelRod.y1) / rodHeight : 0.;
         _xCanCoord._value = (x + 0.5) * _par._value / _scalex._value;
         _yCanCoord._value = (y + 0.5) / _scaley._value;
     }
@@ -1284,10 +1638,11 @@ OFXSeExpression::OFXSeExpression(SeExprProcessorBase* processor,
 {
     _dstPixelRod = outputRod;
 
-    _scalex._value = renderScale.x;
+    // a render scale of 0 or less, NaN or infinite is invalid (x and y are divided by it)
+    _scalex._value = (!OFX::IsNaN(renderScale.x) && !OFX::IsInfinite(renderScale.x) && (renderScale.x > 0.)) ? renderScale.x : 1.;
     _variables[kSeExprRenderScaleXVarName] = &_scalex;
 
-    _scaley._value = renderScale.y;
+    _scaley._value = (!OFX::IsNaN(renderScale.y) && !OFX::IsInfinite(renderScale.y) && (renderScale.y > 0.)) ? renderScale.y : 1.;
     _variables[kSeExprRenderScaleYVarName] = &_scaley;
 
     _curTime._value = time;
@@ -1417,49 +1772,1154 @@ StubPixelFuncX::prep(SeExpr2::ExprFuncNode* node,
         }
     }
 
-    SeExpr2::Vec3d v;
-    node->child(0)->eval(v);
-    int inputIndex = (int)SeExpr::round(v[0]) - 1;
-    if ((inputIndex < 0) || (inputIndex >= kSourceClipCount)) {
-        node->addError("Invalid input index");
+    // the input index is checked if it is a number (an input index that is computed is checked by the analysis, and
+    // one that is not computable gives the default frame range to all the inputs)
+    if (dynamic_cast<const SeExprNumNode*>(node->child(0))) {
+        SeExpr2::Vec3d v;
+        node->child(0)->eval(v);
+        if (!pixelInputIndexIsValid(v[0])) {
+            node->addError("Invalid input index");
 
-        return false;
+            return false;
+        }
     }
+    _expr->onPixelPrepped(node);
 
     return true;
 }
 
 void
-StubPixelFuncX::eval(const SeExpr2::ExprFuncNode* node,
+StubPixelFuncX::eval(const SeExpr2::ExprFuncNode* /*node*/,
                      SeExpr2::Vec3d& result) const
 {
-    SeExpr2::Vec3d v;
-
-    node->child(0)->eval(v);
-    int inputIndex = (int)SeExpr::round(v[0]) - 1;
-    node->child(1)->eval(v);
-    OfxTime frame = SeExpr::round(v[0]);
-
-    _expr->onPixelCalled(inputIndex, frame);
-    result[0] = result[1] = result[2] = std::numeric_limits<double>::quiet_NaN();
+    // the pixel value is unknown (only evaluated to find the variable of an assignment, see StubFrameAnalysis)
+    result[0] = result[1] = result[2] = kStubUnknownValue;
 }
 
 StubSeExpression::StubSeExpression(const string& expr,
                                    bool wantVec,
                                    OfxTime time)
     : SeExpression(expr, wantVec)
-    , _nanScalar()
-    , _zeroScalar()
+    , _unknownScalar()
     , _pixel(this)
     , _pixelFunction(_pixel, 4, 5)
     , _currentTime()
+    , _pixelCalls()
 {
-    _nanScalar._value = std::numeric_limits<double>::quiet_NaN();
     _currentTime._value = time;
 }
 
 StubSeExpression::~StubSeExpression()
 {
+}
+
+// Does the parse tree of SeExpr give the node classes that StubFrameAnalysis expects? If dynamic_cast failed
+// (e.g. without the type information of the SeExpr library), every node would look like an unknown one; this checks
+// it once, on cpixel(1, frame, x, 0) and cpixel(1, frame + 1, x, 0).
+static bool
+stubAnalysisWorks()
+{
+    static const bool works = []() {
+        StubSeExpression expr("cpixel(1, frame, x, 0) + cpixel(1, frame + 1, x, 0)", false, 0.);
+        if (!expr.isValid() || (expr.getPixelCalls().size() != 2)) {
+            return false;
+        }
+        for (std::size_t i = 0; i < 2; ++i) {
+            const SeExprFuncNode* call = expr.getPixelCalls()[i];
+            vector<const SeExprVarNode*> vars;
+            if ((call->numChildren() < 3) || !dynamic_cast<const SeExprNumNode*>(call->child(0))
+                || !dynamic_cast<const SeExprVarNode*>(call->child(2)) || !stubIsPureExpression(call->child(1), &vars)
+                || (vars.size() != 1) || (stubVarName(vars[0]->name()) != kSeExprCurrentTimeVarName)) {
+                return false;
+            }
+        }
+
+        return true;
+    }();
+
+    return works;
+}
+
+// The frames of an input are not known: the default frame range is used (in addition to its known frames)
+static void
+stubAddUnknown(int input,
+               FramesNeeded* frames,
+               std::set<int>* unknownFrames)
+{
+    unknownFrames->insert(input);
+    (*frames)[input];
+}
+
+// A frame of an input: a NaN frame gives the default frame range (cpixel() gives black; the frame is computed from the
+// frame and constants, and tested with OFX::IsNaN()), an infinite frame is clamped as in the render
+// (clampPixelFrame()), and the frame is rounded as on master
+static void
+stubAddFrame(int input,
+             double frame,
+             FramesNeeded* frames,
+             std::set<int>* unknownFrames)
+{
+    if (!clampPixelFrame(&frame)) {
+        stubAddUnknown(input, frames, unknownFrames);
+
+        return;
+    }
+    vector<OfxTime>& times = (*frames)[input];
+    const OfxTime t = SeExpr::round(frame);
+    if (std::find(times.begin(), times.end(), t) == times.end()) {
+        times.push_back(t);
+    }
+}
+
+#define kStubMaxValues 64 // above, the values of a variable are not exact
+
+// The values that a variable may have at a point of the expression. known: the variable has one of these values (a
+// superset); otherwise, it may also have other values (not known): its values, if any, are used, and the default
+// frame range too.
+struct StubValues
+{
+    bool known;
+    vector<SeVec3d> values;
+
+    StubValues()
+        : known(false)
+        , values()
+    {
+    }
+
+    explicit StubValues(const SeVec3d& v)
+        : known(true)
+        , values(1, v)
+    {
+    }
+
+    void add(const SeVec3d& v)
+    {
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            if ((values[i][0] == v[0]) && (values[i][1] == v[1]) && (values[i][2] == v[2])) {
+                return;
+            }
+        }
+        values.push_back(v);
+    }
+
+    // add the values of another set (a union: not exact if either is not exact)
+    void merge(const StubValues& other)
+    {
+        known = known && other.known;
+        for (std::size_t i = 0; i < other.values.size(); ++i) {
+            add(other.values[i]);
+        }
+        cap();
+    }
+
+    // at most kStubMaxValues values: above, the first ones, not exact
+    void cap()
+    {
+        if (values.size() > kStubMaxValues) {
+            values.resize(kStubMaxValues);
+            known = false;
+        }
+    }
+
+    bool operator==(const StubValues& other) const
+    {
+        if ((known != other.known) || (values.size() != other.values.size())) {
+            return false;
+        }
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            bool found = false;
+            for (std::size_t k = 0; !found && (k < other.values.size()); ++k) {
+                found = (values[i][0] == other.values[k][0]) && (values[i][1] == other.values[k][1]) && (values[i][2] == other.values[k][2]);
+            }
+            if (!found) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+};
+
+typedef map<string, StubValues> StubState; // the values of the local variables, by name (without '$')
+
+#define kStubMaxCombinations 1024 // the combinations of the values of the variables of an expression evaluated
+#define kStubMaxIterations 8 // the evaluations of the statements to find the values that the locals keep between pixels
+#define kStubMaxWork 100000. // the maximum of (the number of nodes of the parse tree) * (the number of locals + 1)
+#define kStubMaxDepth 256 // the maximum depth of the parse tree (the analysis is recursive: its stack grows with it)
+#define kStubMaxWalk 1000000. // the maximum of (the sum of the sizes of the subtrees of all the nodes) * (the number of locals + 1)
+
+// The variables assigned in the text of an expression, in order (without '$'), found with the rules of the lexer of
+// SeExpr 2.11 (SeExprParserLex.l): the tokens are skipped up to each variable (VAR, $name or $name::name, or NAME,
+// [a-zA-Z_][a-zA-Z0-9_.]*) followed by '=' (not "==") or by one of +=, -=, *=, /=, %=, ^=; strings ("..." and '...',
+// with escaped quotes, on one line), comments (# up to the end of the line or a "\n" escape), numbers, the escapes
+// "\n" and "\t", and the two-character operators (==, !=, <=, >=, ||, &&, ->) are skipped.
+static void
+stubAssignedVariables(const string& text,
+                      vector<string>* names)
+{
+    const std::size_t n = text.size();
+    std::size_t i = 0;
+    string previous; // the name of the previous token, if it was a variable
+    while (i < n) {
+        const char c = text[i];
+        if ((c == ' ') || (c == '\t') || (c == '\n') || (c == '\r')) {
+            ++i;
+            continue; // whitespace: the previous token is still the last one
+        }
+        if ((c == '\\') && (i + 1 < n) && ((text[i + 1] == 'n') || (text[i + 1] == 't'))) {
+            i += 2;
+            continue; // a quoted newline or tab, ignored
+        }
+        if (c == '#') {
+            // a comment, up to the end of the line, or to a "\n" escape
+            ++i;
+            // (\#([^\\\n]|\\[^n\n])*: a backslash followed by n, a newline or nothing ends it)
+            while ((i < n) && (text[i] != '\n')
+                   && !((text[i] == '\\') && ((i + 1 >= n) || (text[i + 1] == 'n') || (text[i + 1] == '\n')))) {
+                i += (text[i] == '\\') ? 2 : 1;
+            }
+            continue;
+        }
+        if ((c == '"') || (c == '\'')) {
+            // a string on one line (\"(\\\"|[^"\n])*\"): the longest match, which ends at the last quote of the line
+            // before the first one that is not escaped (a quote after a backslash may end the string or be escaped);
+            // no closing quote: the quote is a character token
+            std::size_t end = n;
+            for (std::size_t k = i + 1; (k < n) && (text[k] != '\n'); ++k) {
+                if (text[k] == c) {
+                    end = k;
+                    if (text[k - 1] != '\\') {
+                        break;
+                    }
+                }
+            }
+            i = (end < n) ? end + 1 : i + 1;
+            previous.clear();
+            continue;
+        }
+        if ((c == '$') || (c == '_') || std::isalpha((unsigned char)c)) {
+            std::size_t k = i + ((c == '$') ? 1 : 0);
+            while ((k < n) && ((text[k] == '_') || (text[k] == '.') || std::isalnum((unsigned char)text[k]))) {
+                ++k;
+            }
+            if ((c == '$') && (k + 1 < n) && (text[k] == ':') && (text[k + 1] == ':')) {
+                // $name::name
+                k += 2;
+                while ((k < n) && ((text[k] == '_') || (text[k] == '.') || std::isalnum((unsigned char)text[k]))) {
+                    ++k;
+                }
+            }
+            previous = stubVarName(text.substr(i, k - i).c_str());
+            i = k;
+            continue;
+        }
+        if (std::isdigit((unsigned char)c) || ((c == '.') && (i + 1 < n) && std::isdigit((unsigned char)text[i + 1]))) {
+            // a number: digits, '.', and an exponent
+            while ((i < n) && (std::isdigit((unsigned char)text[i]) || (text[i] == '.'))) {
+                ++i;
+            }
+            if ((i < n) && ((text[i] == 'e') || (text[i] == 'E'))) {
+                std::size_t k = i + 1;
+                if ((k < n) && ((text[k] == '+') || (text[k] == '-'))) {
+                    ++k;
+                }
+                if ((k < n) && std::isdigit((unsigned char)text[k])) {
+                    i = k;
+                    while ((i < n) && std::isdigit((unsigned char)text[i])) {
+                        ++i;
+                    }
+                }
+            }
+            previous.clear();
+            continue;
+        }
+        const char d = (i + 1 < n) ? text[i + 1] : '\0';
+        const bool twoChars = ((c == '=') && (d == '=')) || ((c == '!') && (d == '=')) || ((c == '<') && (d == '='))
+                              || ((c == '>') && (d == '=')) || ((c == '|') && (d == '|')) || ((c == '&') && (d == '&'))
+                              || ((c == '-') && (d == '>'));
+        const bool assignment = ((c == '=') && (d != '=')) || ((d == '=') && ((c == '+') || (c == '-') || (c == '*') || (c == '/') || (c == '%') || (c == '^')));
+        if (assignment && !previous.empty() && (previous != "if") && (previous != "else")) {
+            names->push_back(previous);
+        }
+        i += (twoChars || (assignment && (c != '='))) ? 2 : 1;
+        previous.clear();
+    }
+}
+
+/**
+ * @brief The frames fetched by cpixel() and apixel(), found by an analysis of the parse tree
+ *
+ * The statements of the expression (assignments of local variables, if blocks) are followed in order, with the set of
+ * the values that each local variable may have (StubValues):
+ * - an expression is evaluated by SeExpr for every combination of the values of the local variables it reads, if it is
+ *   made only of numbers, variables, operators, ?: and the functions of stubIsPureMathFunction(), or those of
+ *   stubIsGuardedFunction() whose arguments are valid. The variable frame (until it is assigned) is the render time.
+ *   The other variables (x, u, Cs, a param...) are not known: if one of them is read (StubUnknownScalar), or if a
+ *   local variable it reads is not known, the values are unknown. (An operand that SeExpr does not evaluate, e.g. x
+ *   in 1 || x, does not make the value unknown.) For a ?: whose condition is not known, the values are those of both
+ *   branches.
+ * - an assignment gives its variable the values of its expression;
+ * - after an if block, a variable has the values of both branches (the condition is not evaluated);
+ * - a local variable keeps its value between the pixels: before its first assignment, it has the value 0 (the first
+ *   pixel) or one of its values at the end of the expression (the previous pixels), found by evaluating the
+ *   statements until these values do not change.
+ * The input index and the frame of each call to cpixel() and apixel() are computed the same way, at their point of
+ * the expression, whether or not the call would be evaluated for a pixel (both branches of an if or a ?: are
+ * followed): the frames are a superset. A frame that is unknown gives the default frame range to its input (in
+ * addition to its known frames), an input index that is unknown to all the inputs.
+ * No value is a NaN marker, and nothing is sampled: the values that are not computable from the frame and constants
+ * are unknown. Unlike master (which evaluated the expression with NaN for the other variables), a frame that depends
+ * on another variable (e.g. frame + (x != x) * 5, or frame + max(x, 0)) gives the default range, not the frame
+ * computed with NaN.
+ *
+ * SeExpr 2.11 does not give the variable of an assignment node (SeExprAssignNode::_name is private): it is found in
+ * the text of the expression (stubAssignedVariables()), without evaluating anything. If that fails, all the local
+ * variables are unknown. A variable node refers to a local variable if
+ * an assignment of that variable is before it in the parse tree (the order of the prep, which binds the variables).
+ **/
+class StubFrameAnalysis
+{
+    const StubSeExpression& _expr;
+    const OfxTime _time;
+    FramesNeeded* _frames;
+    std::set<int>* _unknownFrames;
+    bool _record; // record the frames of the calls (the last evaluation of the statements)
+    bool _namesKnown;
+    map<const SeExprNode*, string> _assignmentNames;
+    map<const SeExprNode*, std::size_t> _order; // the position of each node in the parse tree (preorder)
+    map<string, std::size_t> _firstAssignmentEnd; // the position after the first assignment of each local variable
+    std::set<const SeExprNode*> _analyzedCalls;
+
+public:
+    StubFrameAnalysis(const StubSeExpression& expr,
+                      OfxTime time,
+                      FramesNeeded* frames,
+                      std::set<int>* unknownFrames)
+        : _expr(expr)
+        , _time(time)
+        , _frames(frames)
+        , _unknownFrames(unknownFrames)
+        , _record(false)
+        , _namesKnown(true)
+        , _assignmentNames()
+        , _order()
+        , _firstAssignmentEnd()
+        , _analyzedCalls()
+    {
+    }
+
+    void run()
+    {
+        const vector<const SeExprFuncNode*>& calls = _expr.getPixelCalls();
+        if (calls.empty()) {
+            return;
+        }
+        if (!stubAnalysisWorks()) {
+            // the analysis can not be done: all the inputs use the default frame range
+            for (int input = 0; input < kSourceClipCount; ++input) {
+                stubAddUnknown(input, _frames, _unknownFrames);
+            }
+
+            return;
+        }
+        const SeExprNode* root = calls[0];
+        while (root->parent()) {
+            root = root->parent();
+        }
+        // the cost of the analysis grows with the size of the expression times the number of local variables (each
+        // if block copies and merges their values, at each evaluation of the statements), and with the sizes of the
+        // subtrees (an expression whose value is not known is evaluated again operand by operand: each node is walked
+        // once for each of its ancestors); its stack grows with the depth of the tree, which is measured without
+        // recursion. Above kStubMaxWork, kStubMaxWalk or kStubMaxDepth, it is not done, and all the inputs use the
+        // default frame range.
+        std::size_t nodeCount = 0;
+        std::size_t maxDepth = 0;
+        double walk = 0.;
+        {
+            vector<std::pair<const SeExprNode*, std::size_t> > stack(1, std::make_pair(root, (std::size_t)1));
+            while (!stack.empty() && (maxDepth <= kStubMaxDepth)) {
+                const SeExprNode* node = stack.back().first;
+                const std::size_t depth = stack.back().second;
+                stack.pop_back();
+                ++nodeCount;
+                maxDepth = (std::max)(maxDepth, depth);
+                walk += (double)depth;
+                for (int i = 0; i < node->numChildren(); ++i) {
+                    stack.push_back(std::make_pair(node->child(i), depth + 1));
+                }
+            }
+        }
+        const double localCount = (double)(_expr.getLocalVars().size() + 1);
+        if ((maxDepth > kStubMaxDepth) || ((double)nodeCount * localCount > kStubMaxWork) || (walk * localCount > kStubMaxWalk)) {
+            for (int input = 0; input < kSourceClipCount; ++input) {
+                stubAddUnknown(input, _frames, _unknownFrames);
+            }
+            for (std::size_t i = 0; i < calls.size(); ++i) {
+                _analyzedCalls.insert(calls[i]);
+            }
+
+            return;
+        }
+        std::size_t position = 0;
+        numberNodes(root, &position);
+        findAssignmentNames(root);
+        // the values of the local variables before the statements: 0, or their values at the end (previous pixels)
+        StubState initial;
+        const SeExpression::LocalVarTable& locals = _expr.getLocalVars();
+        for (SeExpression::LocalVarTable::const_iterator l = locals.begin(); l != locals.end(); ++l) {
+            initial[stubVarName(l->first.c_str())] = StubValues(SeVec3d(0.));
+        }
+        for (int iteration = 0; iteration <= kStubMaxIterations; ++iteration) {
+            _record = (iteration == kStubMaxIterations);
+            StubState state = initial;
+            program(root, &state);
+            if (_record) {
+                break;
+            }
+            StubState next = initial;
+            bool changed = false;
+            for (StubState::iterator it = next.begin(); it != next.end(); ++it) {
+                StubValues v = it->second;
+                v.merge(state[it->first]);
+                changed = changed || !(v == it->second);
+                it->second = v;
+            }
+            initial = next;
+            if (!changed) {
+                // the last evaluation, which records the frames
+                _record = true;
+                StubState last = initial;
+                program(root, &last);
+                break;
+            }
+            if (iteration == kStubMaxIterations - 1) {
+                // the values keep changing (e.g. frame = frame + 2 at each pixel): the values found so far are used,
+                // but they are not exact
+                for (StubState::iterator it = initial.begin(); it != initial.end(); ++it) {
+                    it->second.known = false;
+                }
+            }
+        }
+        // a call that was not found in the tree (it should not happen): its input is not known
+        for (std::size_t i = 0; i < calls.size(); ++i) {
+            if (_analyzedCalls.find(calls[i]) == _analyzedCalls.end()) {
+                for (int input = 0; input < kSourceClipCount; ++input) {
+                    stubAddUnknown(input, _frames, _unknownFrames);
+                }
+            }
+        }
+    }
+
+private:
+    void program(const SeExprNode* root,
+                 StubState* state)
+    {
+        if (dynamic_cast<const SeExprBlockNode*>(root) && (root->numChildren() == 2)) {
+            statements(root->child(0), state);
+            expression(root->child(1), *state);
+        } else {
+            expression(root, *state);
+        }
+    }
+
+    void numberNodes(const SeExprNode* node,
+                     std::size_t* position)
+    {
+        _order[node] = (*position)++;
+        for (int i = 0; i < node->numChildren(); ++i) {
+            numberNodes(node->child(i), position);
+        }
+    }
+
+    // the position after the subtree of node
+    std::size_t endOf(const SeExprNode* node) const
+    {
+        while (node->numChildren() > 0) {
+            node = node->child(node->numChildren() - 1);
+        }
+
+        return _order.find(node)->second + 1;
+    }
+
+    // the local variable of the expression named name (without '$'), or NULL
+    SeExprLocalVarRef* localVar(const string& name) const
+    {
+        const SeExpression::LocalVarTable& locals = _expr.getLocalVars();
+        if (locals.find(name) != locals.end()) {
+            return _expr.getLocalVar(name.c_str());
+        }
+        if (locals.find("$" + name) != locals.end()) {
+            return _expr.getLocalVar(("$" + name).c_str());
+        }
+
+        return NULL;
+    }
+
+    // does a variable node refer to a local variable (an assignment of it is before it)?
+    bool isLocal(const SeExprVarNode* var) const
+    {
+        if (!_namesKnown) {
+            return localVar(stubVarName(var->name())) != NULL;
+        }
+        map<string, std::size_t>::const_iterator it = _firstAssignmentEnd.find(stubVarName(var->name()));
+
+        return (it != _firstAssignmentEnd.end()) && (_order.find(var)->second >= it->second);
+    }
+
+    // the values of an expression, or unknown (see the class description); allowInfinite: the frame of a call, whose
+    // infinite values the render clamps
+    StubValues evaluate(const SeExprNode* node,
+                        const StubState& state,
+                        bool allowInfinite = false) const
+    {
+        StubValues result = evaluateWhole(node, state, allowInfinite);
+        if (!result.known) {
+            StubValues partial = evaluatePartial(node, state);
+            if (partial.known || (partial.values.size() > result.values.size())) {
+                result = partial;
+            }
+        }
+        result.cap();
+
+        return result;
+    }
+
+    // are the components of all the values equal (an unknown value is uniform: it is not used)?
+    static bool uniform(const StubValues& v)
+    {
+        for (std::size_t i = 0; i < v.values.size(); ++i) {
+            if ((v.values[i][1] != v.values[i][0]) || (v.values[i][2] != v.values[i][0])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    static bool allTrue(const StubValues& v)
+    {
+        for (std::size_t i = 0; i < v.values.size(); ++i) {
+            if (!v.values[i][0]) {
+                return false;
+            }
+        }
+
+        return v.known;
+    }
+
+    static bool allFalse(const StubValues& v)
+    {
+        for (std::size_t i = 0; i < v.values.size(); ++i) {
+            if (v.values[i][0]) {
+                return false;
+            }
+        }
+
+        return v.known;
+    }
+
+    // The values of a scalar operator from the values of its operands, when the whole subtree can not be evaluated by
+    // SeExpr (evaluateWhole()), with the semantics of SeExpr 2.11 (SeExprNode.cpp): a ?: whose condition is not known
+    // has the values of both branches; a || b is 1 if a or b is always true, a && b is 0 if a or b is always false
+    // (whatever the other operand); a comparison or a logical operator whose operands are not known is 0 or 1;
+    // printf() is 0 (its arguments are not evaluated: no output); the arithmetic and comparison operators combine the
+    // values of their operands. Otherwise, the values are unknown.
+    StubValues evaluatePartial(const SeExprNode* node,
+                               const StubState& state) const
+    {
+        StubValues result = evaluateOperator(node, state);
+        if (!result.known && isBoolean(node)) {
+            // a comparison or a logical operator is 0 or 1, whatever its operands
+            result = StubValues(SeVec3d(0.));
+            result.add(SeVec3d(1.));
+        }
+
+        return result;
+    }
+
+    // is the value of a node always 0 or 1 (SeExprNode.cpp: comparisons, !, &&, ||, all scalar; SeExprBuiltins.cpp:
+    // boxstep(x, a) is x < a ? 0 : 1)?
+    static bool isBoolean(const SeExprNode* node)
+    {
+        const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node);
+        if (func && (string(func->name()) == "boxstep") && !node->isVec()) {
+            return true;
+        }
+
+        return (dynamic_cast<const SeExprNotNode*>(node) && !node->isVec()) || dynamic_cast<const SeExprAndNode*>(node)
+               || dynamic_cast<const SeExprOrNode*>(node) || dynamic_cast<const SeExprCompareNode*>(node)
+               || dynamic_cast<const SeExprCompareEqNode*>(node);
+    }
+
+    StubValues evaluateOperator(const SeExprNode* node,
+                                const StubState& state) const
+    {
+        if (dynamic_cast<const SeExprCondNode*>(node) && (node->numChildren() == 3)) {
+            const StubValues c = evaluate(node->child(0), state);
+            StubValues result;
+            result.known = true;
+            bool any = false;
+            if (!c.known || !allFalse(c)) {
+                result.merge(evaluate(node->child(1), state));
+                any = true;
+            }
+            if (!c.known || !allTrue(c)) {
+                result.merge(evaluate(node->child(2), state));
+                any = true;
+            }
+            if (!any) {
+                return StubValues();
+            }
+
+            return result;
+        }
+        if (const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node)) {
+            return evaluateFunction(func, state);
+        }
+        if (dynamic_cast<const SeExprSubscriptNode*>(node) && (node->numChildren() == 2)) {
+            return evaluateSubscript(node, state);
+        }
+        const bool unary = dynamic_cast<const SeExprNegNode*>(node) || dynamic_cast<const SeExprNotNode*>(node) || dynamic_cast<const SeExprInvertNode*>(node);
+        const bool logical = dynamic_cast<const SeExprAndNode*>(node) || dynamic_cast<const SeExprOrNode*>(node);
+        const bool comparison = dynamic_cast<const SeExprCompareNode*>(node) || dynamic_cast<const SeExprCompareEqNode*>(node);
+        const bool arithmetic = dynamic_cast<const SeExprAddNode*>(node) || dynamic_cast<const SeExprSubNode*>(node)
+                                || dynamic_cast<const SeExprMulNode*>(node) || dynamic_cast<const SeExprDivNode*>(node)
+                                || dynamic_cast<const SeExprModNode*>(node) || dynamic_cast<const SeExprExpNode*>(node);
+        if (!(unary && (node->numChildren() == 1)) && !((logical || comparison || arithmetic) && (node->numChildren() == 2))) {
+            return StubValues();
+        }
+        // the scalar operators (logical, comparison: their operands are scalars, except for == and != of vectors,
+        // which are not combined here) use the first component; the vector ones (unary, arithmetic) are applied to each
+        // component, a scalar operand being broadcast (SeExprNode.cpp)
+        const StubValues a = evaluate(node->child(0), state);
+        if (unary) {
+            if (a.values.empty()) {
+                return StubValues();
+            }
+            StubValues result;
+            result.known = a.known;
+            for (std::size_t i = 0; i < a.values.size(); ++i) {
+                SeVec3d v;
+                for (int k = 0; k < 3; ++k) {
+                    const double x = a.values[i][k];
+                    v[k] = dynamic_cast<const SeExprNegNode*>(node) ? -x : (dynamic_cast<const SeExprNotNode*>(node) ? (double)!x : 1 - x);
+                }
+                if (!stubIsFinite(v)) {
+                    return StubValues();
+                }
+                result.add(v);
+            }
+
+            return result;
+        }
+        if ((logical || comparison) && (node->child(0)->isVec() || node->child(1)->isVec())) {
+            return StubValues();
+        }
+        const StubValues b = evaluate(node->child(1), state);
+        if (dynamic_cast<const SeExprOrNode*>(node)) {
+            if (allTrue(a) || allTrue(b)) {
+                return StubValues(SeVec3d(1.));
+            }
+        } else if (dynamic_cast<const SeExprAndNode*>(node)) {
+            if (allFalse(a) || allFalse(b)) {
+                return StubValues(SeVec3d(0.));
+            }
+        }
+        if (a.values.empty() || b.values.empty() || (a.values.size() * b.values.size() > kStubMaxCombinations)) {
+            return StubValues();
+        }
+        StubValues result;
+        result.known = a.known && b.known;
+        for (std::size_t i = 0; i < a.values.size(); ++i) {
+            for (std::size_t k = 0; k < b.values.size(); ++k) {
+                SeVec3d v;
+                for (int c = 0; c < 3; ++c) {
+                    // a scalar operand: its components are equal (evaluateWhole() broadcasts them)
+                    const double x = a.values[i][(logical || comparison) ? 0 : c];
+                    const double y = b.values[k][(logical || comparison) ? 0 : c];
+                    if (dynamic_cast<const SeExprDivNode*>(node) && (y == 0.)) {
+                        // a division by 0 (inf or NaN) is not computed here
+                        return StubValues();
+                    }
+                    v[c] = binaryOperator(node, x, y);
+                }
+                if (!stubIsFinite(v)) {
+                    // a NaN or an infinite value is not used (unknown)
+                    return StubValues();
+                }
+                result.add(v);
+            }
+        }
+
+        return result;
+    }
+
+    // the values of a function whose arguments are not all known (SeExprBuiltins.cpp semantics): printf() is 0 (not
+    // evaluated: no output); pow(x, 0) is 1 and contrast(x, c <= 0) is 0.5, whatever x; getVar("frame", default) is the
+    // frame variable; floor(), ceil(), round(), trunc() and abs() of a known set of values (e.g. of a ?:)
+    StubValues evaluateFunction(const SeExprFuncNode* func,
+                                const StubState& state) const
+    {
+        const string name = func->name();
+        const int n = func->numChildren();
+        if (name == "printf") {
+            return StubValues(SeVec3d(0.));
+        }
+        if ((name == "pow") && (n == 2)) {
+            const StubValues e = evaluate(func->child(1), state);
+            if (allFalse(e) && uniform(e)) {
+                return StubValues(SeVec3d(1.)); // pow(x, 0) is 1, even for NaN or inf
+            }
+        }
+        if ((name == "contrast") && (n == 2)) {
+            const StubValues c = evaluate(func->child(1), state);
+            bool nonPositive = c.known && uniform(c);
+            for (std::size_t i = 0; nonPositive && (i < c.values.size()); ++i) {
+                nonPositive = c.values[i][0] <= 0.;
+            }
+            if (nonPositive) {
+                return StubValues(SeVec3d(0.5)); // if (c <= 0) return .5;
+            }
+        }
+        if ((name == "getVar") && (n == 2) && func->isStrArg(0)) {
+            // getVar(name, default): the variable, or the default if there is none (all the names are variables here).
+            // Its variable node is bound at the prep of the call (GetVarFunc::prep()), like a variable node at that
+            // point: a local variable if it is assigned before, else the external variable.
+            const string var = stubVarName(func->getStrArg(0).c_str());
+            if (!_namesKnown) {
+                return StubValues();
+            }
+            map<string, std::size_t>::const_iterator it = _firstAssignmentEnd.find(var);
+            if ((it != _firstAssignmentEnd.end()) && (_order.find(func)->second >= it->second)) {
+                StubState::const_iterator v = state.find(var);
+
+                return (v != state.end()) ? v->second : StubValues(); // a local variable
+            }
+            if (var == kSeExprCurrentTimeVarName) {
+                return StubValues(SeVec3d(_time)); // the external frame variable
+            }
+
+            return StubValues();
+        }
+        if (((name == "pick") || (name == "cycle")) && (n >= 3)) {
+            // pick(index, lo, hi, ...) and cycle(index, lo, hi) are integers from lo to hi (or lo, if hi < lo), whatever
+            // the index: all of them, if the range is small (SeExprBuiltins.cpp)
+            const StubValues lo = evaluate(func->child(1), state);
+            const StubValues hi = evaluate(func->child(2), state);
+            if (lo.known && hi.known && (lo.values.size() == 1) && (hi.values.size() == 1) && uniform(lo) && uniform(hi)) {
+                vector<SeVec3d> args(2);
+                args[0] = lo.values[0];
+                args[1] = hi.values[0];
+                if (stubGuardedArgsAreValid("range", args)) {
+                    const int l = (int)lo.values[0][0];
+                    const int h = (int)hi.values[0][0];
+                    if (h - l <= kStubMaxValues) {
+                        StubValues result(SeVec3d((double)l));
+                        for (int k = l + 1; k <= h; ++k) {
+                            result.add(SeVec3d((double)k));
+                        }
+
+                        return result;
+                    }
+                }
+            }
+        }
+        if (((name == "floor") || (name == "ceil") || (name == "round") || (name == "trunc") || (name == "abs")) && (n == 1)) {
+            const StubValues a = evaluate(func->child(0), state);
+            if (a.values.empty() || (!uniform(a) && !func->isVec())) {
+                return StubValues();
+            }
+            StubValues result;
+            result.known = a.known;
+            for (std::size_t i = 0; i < a.values.size(); ++i) {
+                SeVec3d v;
+                for (int k = 0; k < 3; ++k) {
+                    const double x = a.values[i][k];
+                    v[k] = (name == "floor") ? std::floor(x) : ((name == "ceil") ? std::ceil(x) : ((name == "round") ? SeExpr::round(x) : ((name == "trunc") ? ((x < 0.) ? std::ceil(x) : std::floor(x)) : std::fabs(x))));
+                }
+                result.add(v);
+            }
+
+            return result;
+        }
+
+        return StubValues();
+    }
+
+    // the values of v[index] whose operands are not all known: v may be a vector literal ([frame, x, y][0]), or a set of
+    // vectors (e.g. of a ?:); the index must be known (SeExprSubscriptNode::eval(): int(index), 0 out of 0..2)
+    StubValues evaluateSubscript(const SeExprNode* node,
+                                 const StubState& state) const
+    {
+        const StubValues index = evaluate(node->child(1), state);
+        const SeExprNode* base = node->child(0);
+        if (!index.known) {
+            // an index that is not known: any component, or 0 (out of 0..2)
+            StubValues result(SeVec3d(0.));
+            if (dynamic_cast<const SeExprVecNode*>(base) && (base->numChildren() == 3)) {
+                for (int k = 0; k < 3; ++k) {
+                    result.merge(evaluate(base->child(k), state));
+                }
+            } else {
+                const StubValues v = evaluate(base, state);
+                if (v.values.empty()) {
+                    return StubValues();
+                }
+                result.known = v.known;
+                for (std::size_t j = 0; j < v.values.size(); ++j) {
+                    for (int k = 0; k < (base->isVec() ? 3 : 1); ++k) {
+                        result.add(SeVec3d(v.values[j][k]));
+                    }
+                }
+            }
+
+            return result.values.empty() ? StubValues() : result;
+        }
+        StubValues result;
+        result.known = true;
+        for (std::size_t i = 0; i < index.values.size(); ++i) {
+            const double x = index.values[i][0];
+            if ((x <= -2.) || (x >= 3.)) {
+                result.add(SeVec3d(0.)); // out of 0..2, also for a scalar base (int(index) is defined: |x| < 3)
+                continue;
+            }
+            const int k = (int)x;
+            if ((k < 0) || (k > 2)) {
+                result.add(SeVec3d(0.));
+                continue;
+            }
+            if (!base->isVec()) {
+                result.merge(evaluate(base, state));
+            } else if (dynamic_cast<const SeExprVecNode*>(base) && (base->numChildren() == 3)) {
+                result.merge(evaluate(base->child(k), state));
+            } else {
+                const StubValues v = evaluate(base, state);
+                if (v.values.empty()) {
+                    return StubValues();
+                }
+                result.known = result.known && v.known;
+                for (std::size_t j = 0; j < v.values.size(); ++j) {
+                    result.add(SeVec3d(v.values[j][k]));
+                }
+            }
+            if (result.values.empty()) {
+                return StubValues();
+            }
+        }
+
+        return result;
+    }
+
+    // a scalar binary operator of SeExpr 2.11 (SeExprNode.cpp)
+    static double binaryOperator(const SeExprNode* node,
+                                 double a,
+                                 double b)
+    {
+        if (dynamic_cast<const SeExprOrNode*>(node)) {
+            return a ? 1. : (double)(b != 0.);
+        }
+        if (dynamic_cast<const SeExprAndNode*>(node)) {
+            return !a ? 0. : (double)(b != 0.);
+        }
+        if (dynamic_cast<const SeExprEqNode*>(node)) {
+            return (double)(a == b);
+        }
+        if (dynamic_cast<const SeExprNeNode*>(node)) {
+            return (double)(a != b);
+        }
+        if (dynamic_cast<const SeExprLtNode*>(node)) {
+            return (double)(a < b);
+        }
+        if (dynamic_cast<const SeExprGtNode*>(node)) {
+            return (double)(a > b);
+        }
+        if (dynamic_cast<const SeExprLeNode*>(node)) {
+            return (double)(a <= b);
+        }
+        if (dynamic_cast<const SeExprGeNode*>(node)) {
+            return (double)(a >= b);
+        }
+        if (dynamic_cast<const SeExprAddNode*>(node)) {
+            return a + b;
+        }
+        if (dynamic_cast<const SeExprSubNode*>(node)) {
+            return a - b;
+        }
+        if (dynamic_cast<const SeExprMulNode*>(node)) {
+            return a * b;
+        }
+        if (dynamic_cast<const SeExprDivNode*>(node)) {
+            return a / b;
+        }
+        if (dynamic_cast<const SeExprModNode*>(node)) {
+            return (b == 0) ? 0. : (a - std::floor(a / b) * b);
+        }
+        // SeExprExpNode
+        if ((a < 0) && (std::floor(b) != b)) {
+            a = 0.;
+        }
+
+        return std::pow(a, b);
+    }
+
+    StubValues evaluateWhole(const SeExprNode* node,
+                             const StubState& state,
+                             bool allowInfinite) const
+    {
+        vector<const SeExprVarNode*> varNodes;
+        vector<const SeExprNode*> guarded;
+        if (!stubIsPureExpression(node, &varNodes, &guarded)) {
+            return StubValues();
+        }
+        // the local variables read, and their values
+        vector<string> names;
+        for (std::size_t i = 0; i < varNodes.size(); ++i) {
+            if (isLocal(varNodes[i])) {
+                const string name = stubVarName(varNodes[i]->name());
+                if (std::find(names.begin(), names.end(), name) == names.end()) {
+                    names.push_back(name);
+                }
+            }
+            // an external variable: frame is the render time, the others are StubUnknownScalar
+        }
+        vector<StubValues> values(names.size());
+        vector<SeExprLocalVarRef*> refs(names.size(), (SeExprLocalVarRef*)NULL);
+        std::size_t combinations = 1;
+        bool exact = true; // all the local variables read have exact values
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            StubState::const_iterator it = state.find(names[i]);
+            refs[i] = localVar(names[i]);
+            if ((it == state.end()) || it->second.values.empty() || !refs[i]) {
+                return StubValues();
+            }
+            values[i] = it->second;
+            exact = exact && it->second.known;
+            combinations *= values[i].values.size();
+            if (combinations > kStubMaxCombinations) {
+                return StubValues();
+            }
+        }
+        StubValues result;
+        result.known = exact;
+        for (std::size_t c = 0; c < combinations; ++c) {
+            std::size_t rest = c;
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                refs[i]->val = values[i].values[rest % values[i].values.size()];
+                rest /= values[i].values.size();
+            }
+            _expr.resetTouched();
+            // the arguments of the guarded functions (inner calls first)
+            for (std::size_t g = 0; g < guarded.size(); ++g) {
+                vector<SeVec3d> args(guarded[g]->numChildren());
+                for (int a = 0; a < guarded[g]->numChildren(); ++a) {
+                    guarded[g]->child(a)->eval(args[a]);
+                    if (!guarded[g]->child(a)->isVec()) {
+                        // a scalar argument is broadcast (its other components are not set)
+                        args[a][1] = args[a][2] = args[a][0];
+                    }
+                }
+                if (_expr.touched() || !stubGuardedArgsAreValid(stubGuardedName(guarded[g]), args)) {
+                    return StubValues();
+                }
+            }
+            SeVec3d v;
+            node->eval(v);
+            if (_expr.touched()) {
+                // it depends on a variable that is not known
+                return StubValues();
+            }
+            if (!node->isVec()) {
+                v[1] = v[2] = v[0];
+            }
+            // a NaN (or an infinite value, except for the frame of a call, which the render clamps) is not used: it is
+            // unknown (OFX::IsNaN() and OFX::IsInfinite() test the bits of the computed value)
+            for (int k = 0; k < 3; ++k) {
+                if (OFX::IsNaN(v[k]) || (!allowInfinite && OFX::IsInfinite(v[k]))) {
+                    return StubValues();
+                }
+            }
+            result.add(v);
+            if (result.values.size() > kStubMaxValues) {
+                result.cap();
+
+                return result;
+            }
+        }
+
+        return result;
+    }
+
+    // the calls to cpixel() and apixel() in an expression, with the values of the local variables at that point
+    void expression(const SeExprNode* node,
+                    const StubState& state)
+    {
+        if (const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node)) {
+            const string name = func->name();
+            if (_record && ((name == kSeExprCPixelFuncName) || (name == kSeExprAPixelFuncName))) {
+                call(func, state);
+            }
+        }
+        for (int i = 0; i < node->numChildren(); ++i) {
+            expression(node->child(i), state);
+        }
+    }
+
+    void call(const SeExprFuncNode* node,
+              const StubState& state)
+    {
+        _analyzedCalls.insert(node);
+        if (node->numChildren() < 2) {
+            return;
+        }
+        const StubValues indexes = evaluate(node->child(0), state);
+        const StubValues frameValues = evaluate(node->child(1), state, /*allowInfinite=*/true);
+        vector<int> inputs;
+        bool allInputs = !indexes.known; // (all the inputs: those of the known values among them)
+        for (std::size_t i = 0; !allInputs && (i < indexes.values.size()); ++i) {
+            if (OFX::IsNaN(indexes.values[i][0])) {
+                allInputs = true;
+            } else {
+                inputs.push_back(pixelInputIndex(indexes.values[i][0]));
+            }
+        }
+        if (allInputs) {
+            // the input is not known: all the inputs, with the frames of the call if they are known
+            inputs.clear();
+            for (int input = 0; input < kSourceClipCount; ++input) {
+                inputs.push_back(input);
+                stubAddUnknown(input, _frames, _unknownFrames);
+            }
+        }
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            (*_frames)[inputs[i]]; // the input is needed
+            if (!frameValues.known) {
+                // not all the frames are known: the default range, and the frames that are known
+                stubAddUnknown(inputs[i], _frames, _unknownFrames);
+            }
+            for (std::size_t k = 0; k < frameValues.values.size(); ++k) {
+                stubAddFrame(inputs[i], frameValues.values[k][0], _frames, _unknownFrames);
+            }
+        }
+    }
+
+    // a list of statements (assignments, if blocks)
+    void statements(const SeExprNode* node,
+                    StubState* state)
+    {
+        if (dynamic_cast<const SeExprIfThenElseNode*>(node) || dynamic_cast<const SeExprAssignNode*>(node)) {
+            statement(node, state);
+
+            return;
+        }
+        for (int i = 0; i < node->numChildren(); ++i) {
+            statement(node->child(i), state);
+        }
+    }
+
+    void statement(const SeExprNode* node,
+                   StubState* state)
+    {
+        if (dynamic_cast<const SeExprAssignNode*>(node)) {
+            if (node->numChildren() < 1) {
+                return;
+            }
+            expression(node->child(0), *state);
+            map<const SeExprNode*, string>::const_iterator it = _assignmentNames.find(node);
+            if (!_namesKnown || (it == _assignmentNames.end())) {
+                // the variable of the assignment is not known: all the local variables are unknown
+                for (StubState::iterator l = state->begin(); l != state->end(); ++l) {
+                    l->second = StubValues();
+                }
+
+                return;
+            }
+            (*state)[it->second] = evaluate(node->child(0), *state);
+        } else if (dynamic_cast<const SeExprIfThenElseNode*>(node)) {
+            if (node->numChildren() < 3) {
+                return;
+            }
+            expression(node->child(0), *state);
+            StubState thenState = *state;
+            StubState elseState = *state;
+            statements(node->child(1), &thenState);
+            statements(node->child(2), &elseState);
+            // the values of both branches
+            for (StubState::iterator it = state->begin(); it != state->end(); ++it) {
+                StubValues u = thenState[it->first];
+                u.merge(elseState[it->first]);
+                it->second = u;
+            }
+        } else {
+            expression(node, *state);
+        }
+    }
+
+    // the variable of each assignment node (see the class description): the n-th assignment of the text (a variable
+    // followed by = or by an operator-assignment, +=, -=, *=, /=, %= or ^=; stubAssignedVariables()) is the n-th
+    // assignment node of the parse tree, in preorder (the parser builds the statements in the order of the text). If
+    // the numbers differ, the variables are not known. No right-hand side is evaluated here.
+    void findAssignmentNames(const SeExprNode* root)
+    {
+        vector<const SeExprNode*> assignments;
+        collectAssignments(root, &assignments);
+        if (assignments.empty()) {
+            return;
+        }
+        vector<string> names;
+        stubAssignedVariables(_expr.getExpr(), &names);
+        if (names.size() != assignments.size()) {
+            _namesKnown = false;
+
+            return;
+        }
+        for (std::size_t a = 0; a < assignments.size(); ++a) {
+            _assignmentNames[assignments[a]] = names[a];
+            if (_firstAssignmentEnd.find(names[a]) == _firstAssignmentEnd.end()) {
+                // assignments are in preorder: this is the first one
+                _firstAssignmentEnd[names[a]] = endOf(assignments[a]);
+            }
+        }
+    }
+
+    static void collectAssignments(const SeExprNode* node,
+                                   vector<const SeExprNode*>* assignments)
+    {
+        if (dynamic_cast<const SeExprAssignNode*>(node)) {
+            assignments->push_back(node);
+        }
+        for (int i = 0; i < node->numChildren(); ++i) {
+            collectAssignments(node->child(i), assignments);
+        }
+    }
+
+};
+
+// The frames of each input that the expression fetches with cpixel() and apixel(), for the frames needed and the RoIs
+// (see StubFrameAnalysis): unknownFrames are the inputs that use the default frame range, in addition to their known
+// frames. The frames of each input are sorted.
+// Returns false and sets error if the expression is not valid.
+static bool
+getStubFramesNeeded(const string& script,
+                    bool wantVec,
+                    OfxTime time,
+                    FramesNeeded* frames,
+                    std::set<int>* unknownFrames,
+                    string* error)
+{
+    StubSeExpression expr(script, wantVec, time);
+    if (!expr.isValid()) {
+        *error = expr.parseError();
+
+        return false;
+    }
+    StubFrameAnalysis analysis(expr, time, frames, unknownFrames);
+    analysis.run();
+    for (FramesNeeded::iterator it = frames->begin(); it != frames->end(); ++it) {
+        std::sort(it->second.begin(), it->second.end());
+    }
+
+    return true;
 }
 
 /** override resolveVar to add external variables */
@@ -1470,7 +2930,7 @@ StubSeExpression::resolveVar(const string& varName) const
         return &_currentTime;
     }
 
-    return &_nanScalar;
+    return &_unknownScalar;
 }
 
 /** override resolveFunc to add external functions */
@@ -2020,8 +3480,8 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase& processor,
             double par = _srcClip[i]->getPixelAspectRatio();
             OfxRectI pixelRod;
             Coords::toPixelEnclosing(rod, args.renderScale, par, &pixelRod);
-            inputSizes[i].x = pixelRod.x2 - pixelRod.x1;
-            inputSizes[i].y = pixelRod.y2 - pixelRod.y1;
+            inputSizes[i].x = rectSize(pixelRod.x1, pixelRod.x2);
+            inputSizes[i].y = rectSize(pixelRod.y1, pixelRod.y2);
         } else {
             inputSizes[i].x = inputSizes[i].y = 0.;
         }
@@ -2038,8 +3498,8 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase& processor,
 
     Coords::toPixelEnclosing(outputRod, args.renderScale, par, &outputPixelRod);
     OfxPointI outputSize;
-    outputSize.x = outputPixelRod.x2 - outputPixelRod.x1;
-    outputSize.y = outputPixelRod.y2 - outputPixelRod.y1;
+    outputSize.x = rectSize(outputPixelRod.x1, outputPixelRod.x2);
+    outputSize.y = rectSize(outputPixelRod.y1, outputPixelRod.y2);
 
     if (_simple) {
         processor.setValuesSimple(time, args.renderView, mix, rExpr, gExpr, bExpr, aExpr, outputPixelRod, inputSizes, outputSize, args.renderScale, par);
@@ -2423,19 +3883,14 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
         }
     }
 
-    // To determine the frames needed of the expression, we just execute the expression for 1 pixel
-    // and record what are the calls made to getPixel in order to figure out the Roi.
-    // We trust that only evaluating the expression for 1 pixel will make all the calls to getPixel
-    // In other words, we do not support scripts that do not fetch all images needed for all pixels, e.g:
-    /*
-       if(x > 0) {
-       srcCol = getPixel(0,frame,5,5)
-       } else {
-       srcCol = [0,0,0]
-       }
-     */
+    // The frames needed of the expression are found by getStubFramesNeeded() (StubFrameAnalysis): every call to
+    // cpixel() and apixel() is analyzed, also in a branch that is not taken (e.g. if (x > 0) { srcCol = cpixel(1,
+    // frame + 1, 5, 5); }), with the values of the local variables computed from the frame and constants. The inputs
+    // whose frames are not known (a frame that depends on another variable or on a pixel value) get the input frame
+    // range param, in addition to their known frames.
     const double time = args.time;
     FramesNeeded framesNeeded;
+    std::set<int> unknownFrames; // the inputs whose frames depend on unknown values (e.g. pixel values)
     PixelComponentEnum outputComponents = getOutputComponents();
     if ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA)) { // RGB || RGBA
         for (int e = 0; e < (_simple ? 3 : 1); ++e) {
@@ -2448,16 +3903,15 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
             if (isSpaces(script)) {
                 framesNeeded[0].push_back(time);
             } else {
-                StubSeExpression expr(script, /*wantVec=*/!_simple, time);
-                if (!expr.isValid()) {
-                    setPersistentMessage(Message::eMessageError, "", expr.parseError());
+                FramesNeeded rgbNeeded;
+                string error;
+                if (!getStubFramesNeeded(script, /*wantVec=*/!_simple, time, &rgbNeeded, &unknownFrames, &error)) {
+                    setPersistentMessage(Message::eMessageError, "", error);
                     throwSuiteStatusException(kOfxStatFailed);
 
                     return;
                 }
 
-                (void)expr.evaluate();
-                const FramesNeeded& rgbNeeded = expr.getFramesNeeded();
                 for (FramesNeeded::const_iterator it = rgbNeeded.begin(); it != rgbNeeded.end(); ++it) {
                     vector<OfxTime>& frames = framesNeeded[it->first];
                     for (std::size_t j = 0; j < it->second.size(); ++j) {
@@ -2486,16 +3940,15 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
         if (isSpaces(script)) {
             framesNeeded[0].push_back(time);
         } else {
-            StubSeExpression expr(script, false, time);
-            if (!expr.isValid()) {
-                setPersistentMessage(Message::eMessageError, "", expr.parseError());
+            FramesNeeded alphaNeeded;
+            string error;
+            if (!getStubFramesNeeded(script, /*wantVec=*/false, time, &alphaNeeded, &unknownFrames, &error)) {
+                setPersistentMessage(Message::eMessageError, "", error);
                 throwSuiteStatusException(kOfxStatFailed);
 
                 return;
             }
 
-            (void)expr.evaluate();
-            const FramesNeeded& alphaNeeded = expr.getFramesNeeded();
             for (FramesNeeded::const_iterator it = alphaNeeded.begin(); it != alphaNeeded.end(); ++it) {
                 vector<OfxTime>& frames = framesNeeded[it->first];
                 for (std::size_t j = 0; j < it->second.size(); ++j) {
@@ -2516,27 +3969,21 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
 
     bool useDefaultRange[kSourceClipCount];
     std::fill(useDefaultRange, useDefaultRange + kSourceClipCount, false);
-    for (FramesNeeded::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
-        assert(it->first >= 0 && it->first < kSourceClipCount);
-        for (std::size_t i = 0; i < it->second.size(); ++i) {
-            if (it->second[i] != it->second[i]) {
-                // This number is NaN! The user probably used something dependant on a pixel value as a time for the getPixel function
-                //  we fall back on using the default frame range
-                useDefaultRange[it->first] = true;
-            }
-        }
+    for (std::set<int>::const_iterator it = unknownFrames.begin(); it != unknownFrames.end(); ++it) {
+        assert(*it >= 0 && *it < kSourceClipCount);
+        // The user probably used something dependant on a pixel value as a time for the getPixel function:
+        // we fall back on using the default frame range
+        useDefaultRange[*it] = true;
     }
 
+    // the known frames of each input, also for the inputs that use the default frame range (some of their calls have
+    // a frame that is not known): the frames are a superset
     for (FramesNeeded::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
-        if (useDefaultRange[it->first]) {
-            continue;
-        }
         Clip* clip = getClip(it->first);
         assert(clip);
 
         bool hasFetchedCurrentTime = false;
         for (std::size_t i = 0; i < it->second.size(); ++i) {
-            assert(it->second[i] == it->second[i]);
             OfxRangeD range;
             if (it->second[i] == time) {
                 hasFetchedCurrentTime = true;
@@ -2671,22 +4118,25 @@ SeExprPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
                 continue;
             }
 
-            StubSeExpression expr(script, wantVec, time);
-            if (!expr.isValid()) {
-                setPersistentMessage(Message::eMessageError, "", expr.parseError());
+            // Now evaluate the expression and determine whether the user will call getPixel.
+            // If he/she does, then we have no choice but to ask for the entire input image because we do not know
+            // what the user may need (typically when applying UVMaps and stuff)
+            FramesNeeded framesNeeded;
+            std::set<int> unknownFrames;
+            string error;
+            if (!getStubFramesNeeded(script, wantVec, time, &framesNeeded, &unknownFrames, &error)) {
+                setPersistentMessage(Message::eMessageError, "", error);
                 throwSuiteStatusException(kOfxStatFailed);
 
                 return;
             }
-            // Now evaluate the expression once and determine whether the user will call getPixel.
-            // If he/she does, then we have no choice but to ask for the entire input image because we do not know
-            // what the user may need (typically when applying UVMaps and stuff)
-
-            (void)expr.evaluate();
-            const FramesNeeded& framesNeeded = expr.getFramesNeeded();
-
+            std::set<int> inputs(unknownFrames);
             for (FramesNeeded::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
-                Clip* clip = getClip(it->first);
+                inputs.insert(it->first);
+            }
+
+            for (std::set<int>::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
+                Clip* clip = getClip(*it);
                 assert(clip);
                 pair<std::set<Clip*>::iterator, bool> ret = processedClips.insert(clip);
                 if (ret.second) {

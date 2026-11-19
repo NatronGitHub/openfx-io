@@ -292,6 +292,52 @@ reader_hooks_test_tsan_debug: reader_hooks_test.cpp ofx_test_host.h $(READER_HOO
 exr_read_bench: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -O2 $(EXR_READ_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# SeExpr.cpp, SeNoise.cpp and SeGrain.cpp and their in-repo dependencies, with SeExpr 2.11 (the SeExpr 1 API) from SEEXPR_HOME,
+# as in ../Makefile.master. test-seexpr is skipped if they are not found there, or fails if SEEXPR_REQUIRED=1 (ctest sets
+# it). SEEXPR_LIBDIR: the directory of libSeExpr (default: the first of lib, lib64 and lib/<multiarch> in SEEXPR_HOME
+# that has it; ctest sets it to the directory of the library that CMake found).
+# default: MacPorts' prefix on macOS if SeExpr is there (the seexpr211 port), else /usr
+SEEXPR_HOME ?= $(if $(and $(filter Darwin,$(shell uname -s)),$(wildcard /opt/local/include/SeExpression.h)),/opt/local,/usr)
+SEEXPR_REQUIRED ?= 0
+SEEXPR_MULTIARCH := $(shell $(CXX) -print-multiarch 2>/dev/null)
+SEEXPR_LIBDIR ?= $(firstword $(patsubst %/,%,$(dir $(wildcard $(SEEXPR_HOME)/lib/libSeExpr.* $(SEEXPR_HOME)/lib64/libSeExpr.* \
+    $(if $(SEEXPR_MULTIARCH),$(SEEXPR_HOME)/lib/$(SEEXPR_MULTIARCH)/libSeExpr.*)))) $(SEEXPR_HOME)/lib)
+# the header and the library (a missing library skips the test instead of failing to link)
+SEEXPR_FOUND := $(and $(wildcard $(SEEXPR_HOME)/include/SeExpression.h),$(wildcard $(SEEXPR_LIBDIR)/libSeExpr.*))
+SEEXPR_SRCS := ../SeExpr/SeExpr.cpp ../SeExpr/SeNoise.cpp ../SeExpr/SeGrain.cpp \
+    ../SupportExt/ofxsRectangleInteract.cpp ../SupportExt/ofxsTransformInteract.cpp ../SupportExt/ofxsRamp.cpp \
+    ../SupportExt/ofxsOGLTextRenderer.cpp ../SupportExt/ofxsOGLFontData.cpp \
+    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp
+SEEXPR_CXXFLAGS := -I$(SEEXPR_HOME)/include -I../openfx/Support/Plugins/include
+SEEXPR_LIBS := -L$(SEEXPR_LIBDIR) -lSeExpr
+ifeq ($(OS),Windows_NT)
+  # the SeExpr DLL is found on PATH ($(SEEXPR_HOME)/bin, e.g. $MINGW_PREFIX/bin)
+  SEEXPR_LIBS += -lopengl32
+else ifeq ($(shell uname -s),Darwin)
+  SEEXPR_LIBS += -Wl,-rpath,$(SEEXPR_LIBDIR) -framework OpenGL
+else
+  SEEXPR_LIBS += -Wl,-rpath,$(SEEXPR_LIBDIR) -lGL
+endif
+
+seexpr_test: seexpr_test.cpp seexpr_test_master.inc ofx_test_host.h $(SEEXPR_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(SEEXPR_CXXFLAGS) $(filter-out %.h %.inc,$^) $(OFX_LIBS) $(SEEXPR_LIBS) -o $@
+
+# (added to test and clean here, on lines of their own)
+.PHONY: test-seexpr clean-seexpr
+test: test-seexpr
+clean: clean-seexpr
+clean-seexpr:
+	rm -rf seexpr_test seexpr_test.dSYM
+
+ifneq ($(SEEXPR_FOUND),)
+test-seexpr: seexpr_test
+	./seexpr_test
+else
+test-seexpr:
+	@echo "test-seexpr: SKIPPED: SeExpr 2.11 (include/SeExpression.h and libSeExpr) not found in SEEXPR_HOME=$(SEEXPR_HOME) (set SEEXPR_HOME)"
+	@test "$(SEEXPR_REQUIRED)" != 1 || { echo "test-seexpr: SEEXPR_REQUIRED=1: failing"; exit 1; }
+endif
+
 runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h ../RunScript/RunScriptOutput.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
 

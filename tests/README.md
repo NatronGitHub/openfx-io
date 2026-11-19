@@ -23,6 +23,7 @@ make test-ofx14    # every plug-in described, instantiated and rendered in an OF
 make test-exr-tsan # the same, built with ThreadSanitizer
 make test-exr-ubsan # the same, built with UndefinedBehaviorSanitizer
 make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
+make test-seexpr   # SeExpr's frames needed and cpixel() domain, SeNoise/SeGrain degenerate params (SEEXPR_HOME=..., SEEXPR_LIBDIR=...)
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
 
@@ -392,6 +393,34 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
+### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
+
+`seexpr_test.cpp` links `SeExpr.cpp`, `SeNoise.cpp` and `SeGrain.cpp` with SeExpr 2.11 (the SeExpr 1 API, found in
+`SEEXPR_HOME`, as for the plug-ins; the test is skipped if it is not there; ctest runs it as `tests-make-seexpr`
+with the SeExpr of the CMake build), in the Filter context:
+
+* **frames needed**: the frames that `cpixel()` fetches, at frame 10, are found by an analysis of the parse tree
+  (no NaN, no sampling): the values of the local variables (and of `frame` once assigned) are followed through the
+  assignments and if blocks, computed from `frame` and constants only, and every call is analyzed, whether or not it
+  would be evaluated (`x > 1e6 ? cpixel(1, frame + 3, x, y) : ...` gives 13). Known: `frame - 2`,
+  `f = frame - 2; ... f` (8), `o = 3`, `frame -= 2`, `y = 2; ... frame - y`, both branches of `x > 0 ? frame :
+  frame + 1` or of an if, `(1 || x) * 5`, `(x > 0 || frame > 0)`, `printf()` (0), `pick(frame, 0, 3)` (the builtins
+  that convert an argument to int, with valid arguments). Anything that depends on another variable gives the input
+  frame range (-5..5) and frame 10: `x`, `round(clamp(u, 0, 1) * 10)` (slit-scan), `Cs[0] - Cs[1]`, `x = x + frame`,
+  a pixel value; and the builtins with invalid arguments (`pick(1, 0, 1e9)`, whose alloca overflowed the stack). The
+  564 cases of the review corpus where an earlier version gave fewer frames than master (`seexpr_test_master.inc`,
+  generated with master) must have at least the frames of master, or be a documented NaN artifact (`kNaNArtifacts`:
+  master evaluated the expression with NaN for the other variables, e.g. `frame + max(x, 0)` gave the frame); the
+  cases that this build of SeExpr can not parse or prep are skipped (with MacPorts' SeExpr 2.11, 533 are checked, 1
+  is a NaN artifact and 30 are skipped).
+* **render**: `cpixel()` with coordinates of 1e9, 1e12 or -1e300 gives the edge pixel, as before (they are clamped to
+  +-1e9 before their conversion to int); a finite frame (1e12) is used as is, an infinite one is clamped; a NaN
+  coordinate or frame (`sqrt(x - 100)`) gives black.
+* **SeNoise** with a noise size of 0, a denormal size (1e-310) or a render scale of 0, and **SeGrain** with a render
+  scale of 0: no output value may be NaN or infinite. A positive noise size below 0.001 (0.0005) is used as is.
+
+It also passes when built with `-O3 -ffast-math` and with `-fsanitize=undefined,float-cast-overflow`.
+
 ### 2. `test-ffmpeg` — FFmpeg reader core (direct coverage of the reader fixes)
 
 `ffmpeg_read_test.cpp` links `FFmpeg/FFmpegFile.cpp` directly (plus `ofx_stubs.cpp`
@@ -559,6 +588,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ofx_actions_test.cpp`      | In-process OFX host + action-dispatch integration test (all plugins). |
 | `ofx_test_host.h`           | Minimal in-process OFX host (suites, param values, image clips) shared by the render and reader-hook tests. |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
+| `seexpr_test.cpp`           | SeExpr's frames needed and `cpixel()` domain, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
