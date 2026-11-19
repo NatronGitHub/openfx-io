@@ -62,6 +62,12 @@
  *     - same, with a source image whose bounds do not intersect the render window:
  *       a black image must be written, and the output image must be black
  *
+ *   WriteFFmpeg uncompressed codecs (issue #170):
+ *     - write a color pattern (with an alpha ramp if the format has alpha) with v210 and with rawvideo in QuickTime,
+ *       NUT, Matroska and AVI, check the codec, tag, pixel format and range that libavformat reads back, and that
+ *       ReadFFmpeg decodes the pattern exactly (RGB formats) or within the Y'CbCr conversion tolerance
+ *     - a project saved with the v308 or v410 encoder, which FFmpeg 9 removed, writes rawvideo with the same tag
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -116,7 +122,21 @@ struct WriterParams {
     // not W x H (the size of the movie, the output RoD at beginSequenceRender), as when Natron changes the
     // project format during the render
     int renderW = 0, renderH = 0;
+    // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque)
+    int pattern = 0;
 };
+
+// The color pattern of frame t (issue #170), at column x and row r of the image buffer: smooth ramps (so that 4:2:2
+// chroma subsampling only adds a small error), with values on the 8-bit grid (k/255, which is also exact in 16 bits:
+// k * 257 / 65535), black and white included. Unpremultiplied (alpha < 1 if alpha).
+void colorPattern(int x, int r, int t, int W, int H, bool alpha, float* rgba)
+{
+    auto q = [](double v) { return (float)((double)std::lround(v * 255.) / 255.); };
+    rgba[0] = q((double)x / (W - 1));
+    rgba[1] = q(1. - (double)r / (H - 1));
+    rgba[2] = q(0.2 + 0.5 * (double)(x + r) / (W + H - 2) + 0.05 * t);
+    rgba[3] = alpha ? q(1. - 0.75 * (double)x / (W - 1)) : 1.f;
+}
 
 // The index of the first option of a choice param whose label contains the given text, or -1.
 int choiceIndex(Effect& ctx, const char* param, const char* text)
@@ -230,7 +250,13 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
             if (!wp.frameValues.empty()) v = wp.frameValues[(size_t)(t - 1) % wp.frameValues.size()];
             if (view != 0) v = 1.f - v;
-            for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
+            if (wp.pattern > 0) {
+                for (int r = 0; r < rh; ++r) {
+                    for (int x = 0; x < rw; ++x) colorPattern(x, r, t, rw, rh, wp.pattern > 1, &fp[((size_t)r * rw + x) * 4]);
+                }
+            } else {
+                for (size_t i = 0; i < npix; ++i) { fp[i * 4 + 0] = v; fp[i * 4 + 1] = v; fp[i * 4 + 2] = v; fp[i * 4 + 3] = 1.f; }
+            }
             PropSet a = makeRenderInArgs((double)t, rw, rh);
             pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
             OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
@@ -1700,6 +1726,135 @@ int testWriteFFmpegX265(const std::string& outFile, int W, int H, int prefCoding
     return failures;
 }
 
+// Issue #170: an uncompressed codec, written with the given settings, and read back.
+struct UncompressedCase {
+    const char* label;
+    const char* ext;          // the file extension, which gives the container
+    const char* codec;        // the codecShortName param (as in a saved project)
+    int prefCoding;           // Pref. Pixel Coding: 0 YUV420, 1 YUV422, 2 YUV444, 3 RGB
+    int prefDepth;            // Pref. Bit Depth: 0 8, 1 10, 2 12, 3 16
+    bool alpha;               // Alpha checked, and the pattern has an alpha ramp
+    const char* expectCodec;  // the codec that libavformat reads
+    const char* expectTag;    // the codec tag, as av_fourcc_make_string() prints it
+    const char* expectPixFmt; // the pixel format
+    double tolerance;         // the largest difference of R, G, B, A with the pattern (ReadFFmpeg output)
+    const char* expectMessage = nullptr; // a message that the plug-in must send (e.g. the codec was replaced)
+};
+
+int testUncompressed(const std::string& outFile, int W, int H, const UncompressedCase& c)
+{
+    const int N = 3;
+    WriterParams wp;
+    wp.strings = { { "codecShortName", c.codec } };
+    wp.ints = { { "prefPixelCoding", c.prefCoding }, { "prefBitDepth", c.prefDepth }, { "enableAlpha", c.alpha ? 1 : 0 },
+                { "inputPremult", 2 } }; // unpremultiplied: the pattern is written as is
+    wp.pattern = c.alpha ? 2 : 1;
+    gMessages.clear();
+    if (testWriteFFmpeg(outFile, W, H, N, wp)) {
+        std::printf("  messages:\n%s", gMessages.c_str());
+        return 1;
+    }
+    int failures = 0;
+    if (c.expectMessage && (gMessages.find(c.expectMessage) == std::string::npos)) {
+        std::printf("  FAIL: no message \"%s\" in:\n%s", c.expectMessage, gMessages.c_str());
+        ++failures;
+    }
+    StreamInfo s;
+    if (probeStream(outFile, &s)) return 1;
+    if (s.codec != c.expectCodec) { std::printf("  FAIL: codec %s, expected %s\n", s.codec.c_str(), c.expectCodec); ++failures; }
+    if (s.tag != c.expectTag) { std::printf("  FAIL: codec tag \"%s\", expected \"%s\"\n", s.tag.c_str(), c.expectTag); ++failures; }
+    if (s.pixFmt != c.expectPixFmt) { std::printf("  FAIL: pix_fmt %s, expected %s\n", s.pixFmt.c_str(), c.expectPixFmt); ++failures; }
+    if ((int)s.center.size() != N) { std::printf("  FAIL: %d frames decoded, expected %d\n", (int)s.center.size(), N); ++failures; }
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(av_get_pix_fmt(s.pixFmt.c_str()));
+    const bool yuv = d && !(d->flags & AV_PIX_FMT_FLAG_RGB) && d->nb_components >= 3;
+    // (of these containers, only Matroska stores the range: the QuickTime 'colr' nclc atom has none, and NUT and AVI
+    // have no color tags)
+    if (yuv && (s.range != AVCOL_RANGE_MPEG) && (std::string(c.ext) == "mkv")) {
+        std::printf("  FAIL: Y'CbCr is not tagged video range\n");
+        ++failures;
+    }
+    // the matrix that the writer converts with (BT.601 in SD), in the 'colr' atom or the Matroska Colour element
+    if (yuv && (s.space != AVCOL_SPC_SMPTE170M) && ((std::string(c.ext) == "mkv") || (std::string(c.ext) == "mov"))) {
+        std::printf("  FAIL: Y'CbCr is not tagged with the BT.601 (SMPTE 170M) matrix\n");
+        ++failures;
+    }
+
+    // ReadFFmpeg: RGBA output if the file has alpha, with no premultiplication
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    const int optRGBA = choiceIndex(ctx, "outputComponents", "RGBA");
+    if (optRGBA < 0) { std::printf("  FAIL: no RGBA option in outputComponents\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    {
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    }
+    if (c.alpha) {
+        setOverrideInt(&ctx, "outputComponents", optRGBA);
+        setOverrideInt(&ctx, "filePremult", 2); // unpremultiplied
+        setOverrideInt(&ctx, "outputPremult", 2);
+    }
+    Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+    if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
+    out->connected = true;
+    const int outComps = c.alpha ? 4 : 3;
+    setupClipImage(out, W, H, c.alpha ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    float* fp = reinterpret_cast<float*>(out->buffer.data());
+    double maxErr[4] = { 0., 0., 0., 0. };
+    int worst[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
+    for (int t = 1; t <= N; ++t) {
+        for (size_t i = 0; i < out->buffer.size() / sizeof(float); ++i) fp[i] = -1.f; // sentinel
+        PropSet a = makeRenderInArgs((double)t, W, H);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        if (!ok(st)) { std::printf("  FAIL: read render frame %d = %d\n", t, st); ++failures; continue; }
+        if ((t == N) && (std::string(c.ext) == "nut")) {
+            // Not checked: ReadFFmpeg reads one frame less from a NUT file (the file has the N frames, see
+            // probeStream() above): the NUT demuxer gives the PTS of the last frame as the duration, not its end, and
+            // FFmpegFile counts the frames from it, so that the last frame is the one before.
+            std::printf("  frame %d: not checked (ReadFFmpeg reads one frame less from NUT)\n", t);
+            continue;
+        }
+        double frameErr = 0.;
+        for (int r = 0; r < H; ++r) {
+            for (int x = 0; x < W; ++x) {
+                float e[4];
+                colorPattern(x, r, t, W, H, c.alpha, e);
+                const float* v = &fp[((size_t)r * W + x) * outComps];
+                for (int k = 0; k < outComps; ++k) {
+                    const double err = std::fabs((double)v[k] - (double)e[k]);
+                    if (!(err <= maxErr[k])) { maxErr[k] = err; worst[k][0] = x; worst[k][1] = r; } // (NaN is the largest)
+                    if (!(err <= frameErr)) frameErr = err;
+                }
+            }
+        }
+        std::printf("  frame %d: largest difference (x 255) %.3f\n", t, frameErr * 255);
+    }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    std::printf("  ReadFFmpeg: largest difference with the pattern (x 255): R %.3f at (%d,%d), G %.3f at (%d,%d), B %.3f at (%d,%d)",
+                maxErr[0] * 255, worst[0][0], worst[0][1], maxErr[1] * 255, worst[1][0], worst[1][1], maxErr[2] * 255, worst[2][0], worst[2][1]);
+    if (c.alpha) std::printf(", A %.3f at (%d,%d)", maxErr[3] * 255, worst[3][0], worst[3][1]);
+    std::printf(" (tolerance %.3f)\n", c.tolerance * 255);
+    for (int k = 0; k < outComps; ++k) {
+        if (!(maxErr[k] <= c.tolerance)) { std::printf("  FAIL: component %d differs by %g\n", k, maxErr[k]); ++failures; }
+    }
+    std::remove(outFile.c_str());
+    std::printf(failures ? "  FAIL (%s)\n" : "  PASS (%s)\n", c.label);
+    return failures;
+}
+
 } // namespace
 
 // A Fixed output format whose PAR is 0 (the range of the PAR param starts at 0): the PAR is invalid, and is
@@ -2091,6 +2246,57 @@ main(int argc, char** argv)
 
     std::printf("==== WriteFFmpeg, Fixed output format with a PAR of 0: the PAR is 1 ====\n");
     failures += testWriterFormatPar0();
+
+    {
+        // #170: uncompressed codecs. RGB is exact (the pattern is on the 8-bit grid). Y'CbCr: the rounding of 8-bit or
+        // 10-bit video range (8 bits: Y' has 219 levels, Cb and Cr 224), plus the error of the 4:2:2 or 4:2:0 chroma
+        // interpolation (measured: 4:4:4 at most 2/255 in 8 bits and 0.5/255 in 10 bits, 4:2:2 5/255 in 8 bits and
+        // 2.1/255 in 10 bits, 4:2:0 7/255). A wrong range would give about 16/255 in black and white, and a wrong
+        // matrix more than 10/255 in the saturated corners of the pattern.
+        const double rgbTol = 1e-4, yuv8Tol = 2.5 / 255., yuv10Tol = 1. / 255., yuv422Tol = 6. / 255.,
+                     yuv422p10Tol = 3. / 255., yuv420Tol = 8. / 255.;
+        std::vector<UncompressedCase> cases = {
+            { "v210 in QuickTime", "mov", "v210", 1, 1, false, "v210", "v210", "yuv422p10le", yuv422p10Tol },
+            { "rawvideo 2vuy in QuickTime", "mov", "rawvideo", 1, 0, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol },
+            { "rawvideo raw RGB in QuickTime", "mov", "rawvideo", 3, 0, false, "rawvideo", "raw ", "rgb24", rgbTol },
+            { "rawvideo raw ARGB in QuickTime", "mov", "rawvideo", 3, 0, true, "rawvideo", "raw ", "argb", rgbTol },
+            { "rawvideo b48r in QuickTime", "mov", "rawvideo", 3, 3, false, "rawvideo", "b48r", "rgb48be", rgbTol },
+            { "rawvideo YUV420 8-bit in Matroska", "mkv", "rawvideo", 0, 0, false, "rawvideo", "I420", "yuv420p", yuv420Tol },
+            { "rawvideo YUV422 8-bit in Matroska", "mkv", "rawvideo", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol },
+            { "rawvideo RGB 16-bit in NUT", "nut", "rawvideo", 3, 3, false, "rawvideo", "RGB0", "rgb48le", rgbTol }, // (48 is '0')
+            { "rawvideo YUV422 8-bit in NUT", "nut", "rawvideo", 1, 0, false, "rawvideo", "Y42B", "yuv422p", yuv422Tol },
+            { "rawvideo YUVA444 10-bit in NUT", "nut", "rawvideo", 2, 1, true, "rawvideo", "Y4[0][10]", "yuva444p10le", yuv10Tol },
+            { "rawvideo RGBA 8-bit in NUT", "nut", "rawvideo", 3, 0, true, "rawvideo", "RGBA", "rgba", rgbTol },
+            { "rawvideo BI_RGB in AVI", "avi", "rawvideo", 3, 0, false, "rawvideo", "[0][0][0][0]", "bgr24", rgbTol },
+            { "rawvideo UYVY in AVI", "avi", "rawvideo", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol },
+        };
+#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
+        // from FFmpeg 8, the mov muxer writes rawvideo with the v308, v408 and v410 tags
+        cases.push_back({ "rawvideo v308 in QuickTime", "mov", "rawvideo", 2, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
+        cases.push_back({ "rawvideo v408 in QuickTime", "mov", "rawvideo", 2, 0, true, "rawvideo", "v408", "uyva", yuv8Tol });
+        cases.push_back({ "rawvideo v410 in QuickTime", "mov", "rawvideo", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol });
+#endif
+        // a project saved with the v308 or v410 encoder: with FFmpeg 9, which removed them, rawvideo writes the same tag
+        if (avcodec_find_encoder_by_name("v308")) {
+#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
+            // the mov demuxer of FFmpeg 8 gives these tags to rawvideo (libavformat/isom_tags.c:36-38 in n8.0)
+            cases.push_back({ "v308 encoder in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
+            cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "rawvideo", "v410", "v30xle", yuv10Tol });
+#else
+            cases.push_back({ "v308 encoder in QuickTime", "mov", "v308", 1, 0, false, "v308", "v308", "yuv444p", yuv8Tol });
+            cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "v410", "v410", "yuv444p10le", yuv10Tol });
+#endif
+        } else {
+            cases.push_back({ "saved v308 project, rawvideo in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol,
+                              "the codec was replaced by rawvideo" });
+            cases.push_back({ "saved v410 project, rawvideo in QuickTime", "mov", "v410", 1, 0, false, "rawvideo", "v410", "v30xle", yuv10Tol,
+                              "the codec was replaced by rawvideo" });
+        }
+        for (size_t i = 0; i < cases.size(); ++i) {
+            std::printf("==== WriteFFmpeg %s, read back by ReadFFmpeg (issue #170) ====\n", cases[i].label);
+            failures += testUncompressed(outFile + ".i170-" + std::to_string(i) + "." + cases[i].ext, 64, 48, cases[i]);
+        }
+    }
 
     {
         // a bitrate above 2147 Mbit/s (its conversion to int overflowed) and a PAR out of range from the host (its

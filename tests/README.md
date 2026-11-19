@@ -145,6 +145,16 @@ the real render pipeline, linked directly (no host binary):
   the frame, and black elsewhere (ProRes, 16-bit buffer, and MPEG-4, 8-bit).
   WriteFFmpeg read the image as if it had the size of the movie: out of its
   buffer when it is smaller (a crash in NatronRenderer).
+* **WriteFFmpeg uncompressed codecs** (issue #170): a 64x48 color pattern (with
+  an alpha ramp for the formats with alpha) is written with v210 and with
+  rawvideo in QuickTime (2vuy, raw RGB and ARGB, b48r, and from FFmpeg 8 v308,
+  v408 and v410), Matroska, NUT and AVI. libavformat must read back the expected
+  codec, tag and pixel format (and the BT.601 matrix in QuickTime and Matroska,
+  video range in Matroska), and ReadFFmpeg must decode the pattern exactly for
+  RGB, or within the Y'CbCr conversion error. A project saved with the v308 or
+  v410 encoder must write rawvideo with the same tag when FFmpeg (9) does not
+  have them, with a warning. The last frame of the NUT files is not checked:
+  ReadFFmpeg reads one frame less from NUT.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
