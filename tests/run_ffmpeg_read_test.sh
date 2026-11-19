@@ -1164,8 +1164,14 @@ check_color() {
         rc=1
         return
     fi
-    # the clip must hold the constant color exactly (lossless, and not converted by ffmpeg)
-    if ! ffmpeg -loglevel error -i "$tmp/$name" -f rawvideo -pix_fmt "$pixfmt" - | cmp -s - "$tmp/$name.yuv"; then
+    # the clip must hold the constant color exactly (lossless, and not converted by ffmpeg). The samples are written
+    # in the decoder's own pixel format, without -pix_fmt: for a full-range clip, FFmpeg's H.264 decoder gives
+    # yuvj444p (libavcodec/h264_slice.c:871-877 at n6.1, :878-884 at n9.0.2), which has the layout of yuv444p, and
+    # with FFmpeg 6.1, -pix_fmt yuv444p inserts a scale filter that converts it to video range: libswscale takes
+    # yuvj444p as full range and yuv444p as video range (handle_jpeg(), libswscale/utils.c:928-964 and 2054-2055 at
+    # n6.1), and vf_scale only changes that if out_range is set (libavfilter/vf_scale.c:841-867 at n6.1). n9.0.2
+    # negotiates the range in the filter graph and keeps the frame's one (libavfilter/vf_scale.c:517-520 and 728).
+    if ! ffmpeg -loglevel error -i "$tmp/$name" -f rawvideo - | cmp -s - "$tmp/$name.yuv"; then
         echo "FAIL: $name does not decode to the Y'CbCr samples it was encoded from"
         rc=1
         return
