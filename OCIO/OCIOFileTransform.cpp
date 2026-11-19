@@ -808,6 +808,14 @@ OCIOFileTransformPlugin::isIdentity(const IsIdentityArguments& args,
     return false;
 }
 
+// Does s end with suffix? (std::equal on the reversed strings alone reads before the start of s when s is shorter)
+static bool
+endsWith(const string& s,
+         const string& suffix)
+{
+    return (s.size() >= suffix.size()) && std::equal(suffix.rbegin(), suffix.rend(), s.rbegin());
+}
+
 void
 OCIOFileTransformPlugin::updateCCCId()
 {
@@ -818,7 +826,7 @@ OCIOFileTransformPlugin::updateCCCId()
     _file->getValue(srcstring);
     const string cccext = "ccc";
     const string ccext = "cc";
-    if (std::equal(cccext.rbegin(), cccext.rend(), srcstring.rbegin()) || std::equal(ccext.rbegin(), ccext.rend(), srcstring.rbegin())) {
+    if ( endsWith(srcstring, cccext) || endsWith(srcstring, ccext) ) {
         _cccid->setIsSecretAndDisabled(false);
     } else {
         _cccid->setIsSecretAndDisabled(true);
