@@ -78,6 +78,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -86,6 +87,10 @@ extern "C" {
 #include <filesystem>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <stdlib.h> // mkstemps()
+#include <unistd.h> // close()
+#endif
 
 namespace {
 
@@ -1768,8 +1773,17 @@ int testWriteFFmpegSameFile(const std::string& outFile, int W, int H, int nFrame
     if (ec) { std::printf("  FAIL: symlink %s: %s\n", link.c_str(), ec.message().c_str()); return 1; }
     aliases.push_back({ "symbolic link to the directory", link + "/" + base });
     if (fs::is_symlink("/tmp", ec) && (fs::canonical("/tmp", ec) == fs::path("/private/tmp"))) {
-        // macOS: the file is written through /tmp, and rendered through /private/tmp, and vice versa
-        const std::string tmp = "/tmp/ofx_render_test_i137.mov";
+        // macOS: the file is written through /tmp, and rendered through /private/tmp, and vice versa.
+        // A unique name, since several test runs may share the machine.
+        char tmpTemplate[] = "/tmp/ofx_render_test_i137_XXXXXX.mov";
+        const int tmpFd = mkstemps(tmpTemplate, 4);
+        if (tmpFd < 0) {
+            std::printf("  FAIL: mkstemps %s: %s\n", tmpTemplate, std::strerror(errno));
+            fs::remove(link, ec);
+            return 1;
+        }
+        close(tmpFd);
+        const std::string tmp = tmpTemplate;
         WriterParams wp;
         wp.renderFile = "/private" + tmp;
         std::printf("  -- %s, then %s\n", tmp.c_str(), wp.renderFile.c_str());

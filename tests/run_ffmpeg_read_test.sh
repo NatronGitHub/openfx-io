@@ -14,9 +14,28 @@
 #   * MOV  (H.264, 24 fps)
 #   * MPEG-TS (H.264, start_time ~1.48s) -- non-zero stream start PTS, which is the
 #     case that stresses the frame<->PTS seek arithmetic (Stream::frameToPts).
+#   * M2TS (AVCHD-like: interlaced H.264 at 29.97 fps, with an AC3 audio track that starts
+#     before the video): the frames are counted from the start of the video stream.
 #   * Matroska (H.264) at 23.976, 24, 25, 30 and 60 fps, and ProRes at 24 fps: Matroska
 #     stores timestamps in milliseconds, which are not a whole number of frames, and
 #     Stream::ptsToFrame() must round them to the nearest frame.
+#   * Matroska and FLV (H.264 with B-frames) with a non-zero start time: their duration is
+#     not counted from the start of the movie, but from timestamp 0 (FLV: from the first DTS,
+#     which may be that of the audio). FLV without the duration metadata (as written to a
+#     pipe), and Matroska whose duration is a length (as mkvmerge writes split parts).
+#   * MP4 and MOV with B-frames and no edit list (fragmented MP4 with H.264 and HEVC,
+#     -use_editlist 0), whose start time is the B-frame delay, and FLV without the duration
+#     metadata whose audio ends less than a frame after the video.
+#   * The bytes read at open: a 60 s Matroska with a start time, and FLV, also truncated.
+#   * MOV/MP4 stream copies from a non-keyframe, and VFR MP4 with a one-frame gap, which have
+#     fewer samples than frame times.
+#   * MPEG-TS with two programs, MPEG-PS and VOB with B-frames, and an MPEG-PS cut in the
+#     middle of a GOP (1 and 8 decoder threads): the end read from their last packets.
+#   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
+#     with B-frames, which has no timestamps.
+#   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
+#     timestamps): they are counted in the stream's number of frames, but not displayed.
+#   * AVI (MPEG-4 with B-frames), which has no PTS.
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
 #     screen recordings).
@@ -75,22 +94,42 @@ have_encoder() {
 X264="-c:v libx264 -g 8 -bf 2 -pix_fmt yuv420p"
 
 rc=0
-# check NAME DESCRIPTION ENCODER RATE FFMPEG_OUTPUT_ARGS...
-check() {
-    local name="$1" desc="$2" encoder="$3" rate="$4"
-    shift 4
+# check_frames NAME DESCRIPTION ENCODER RATE EXPECTED_FRAMES FIRST_FRAME FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
+# A gray ramp of $NFRAMES frames, of which the reader must report EXPECTED_FRAMES, the first one
+# being ramp frame FIRST_FRAME (0-based), e.g. if an edit list does not display the first frames.
+# FFMPEG_INPUT_ARGS, after "--", are extra ffmpeg inputs, before the ramp (e.g. an audio track:
+# the ramp is then input 1).
+check_frames() {
+    local name="$1" desc="$2" encoder="$3" rate="$4" expected="$5" first="$6"
+    shift 6
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
         return
     fi
-    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp "$rate")" -frames:v "$NFRAMES" "$@" "$tmp/$name"; then
+    local outargs=() inargs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        outargs+=("$1")
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        shift
+        inargs=("$@")
+    fi
+    if ! ffmpeg -y -loglevel error ${inargs[@]+"${inargs[@]}"} -f lavfi -i "$(ramp "$rate")" -frames:v "$NFRAMES" ${outargs[@]+"${outargs[@]}"} "$tmp/$name"; then
         echo "FAIL: could not generate $name"
         rc=1
         return
     fi
     # shellcheck disable=SC2086
-    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp "$((16 + 4 * first)),4" --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check NAME DESCRIPTION ENCODER RATE FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
+check() {
+    local name="$1" desc="$2" encoder="$3" rate="$4"
+    shift 4
+    check_frames "$name" "$desc" "$encoder" "$rate" "$NFRAMES" 0 "$@"
 }
 
 # check_vfr NAME DESCRIPTION FRAMES AFTER JUMP SPACING AUDIO_SECONDS EXPECTED_FRAMES FFMPEG_OUTPUT_ARGS...
@@ -194,6 +233,102 @@ check_corrupt() {
     "$bin" "$tmp/$name" --tol 3 --positions "$positions" ${seeksarg[@]+"${seeksarg[@]}"} ${FFMPEG_READ_TEST_ARGS:-} 2>/dev/null || rc=1
 }
 
+# check_mkv_length NAME DESCRIPTION FFMPEG_OUTPUT_ARGS...
+# A 40-frame ramp in Matroska with a start time of 0.5 s (and a cluster every 100 ms), whose duration
+# is then rewritten as a length (without the start time), as mkvmerge writes split parts: the
+# duration is not the end of the movie, which must not be cut (with a long GOP, the cues, which only
+# index keyframes, do not show it).
+check_mkv_length() {
+    local name="$1" desc="$2"
+    shift 2
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "SKIPPED: no perl"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" -c:v libx264 -bf 2 -pix_fmt yuv420p "$@" -output_ts_offset 0.5 -cluster_time_limit 100 "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    # The segment duration is an 8-byte float (EBML ID 0x4489), in milliseconds: subtract the start time.
+    if ! perl -e '
+        local $/; open(my $f, "<:raw", $ARGV[0]) or die; my $d = <$f>; close($f);
+        my $i = index($d, "\x44\x89\x88"); die "no 8-byte duration\n" if $i < 0;
+        substr($d, $i + 3, 8) = pack("d>", unpack("d>", substr($d, $i + 3, 8)) - 500);
+        open(my $o, ">:raw", $ARGV[1]) or die; print $o $d; close($o);' "$tmp/clean_$name" "$tmp/$name"; then
+        echo "FAIL: could not rewrite the duration of clean_$name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_flv_overhang NAME DESCRIPTION
+# A 40-frame ramp in FLV without the duration metadata, with an AAC audio track that ends less than a
+# frame after the last video frame: it must not add a frame.
+check_flv_overhang() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder aac; then
+        echo "SKIPPED: no libx264 or aac encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" $X264 "$tmp/video_$name.mkv" ||
+        ! ffmpeg -y -loglevel error -f lavfi -t 1.70 -i anullsrc=r=48000:cl=mono -c:a aac "$tmp/audio_$name.m4a" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/video_$name.mkv" -i "$tmp/audio_$name.m4a" -map 0:v -map 1:a -c copy \
+            -flvflags no_duration_filesize "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --monotonic --tol 3 --ramp 16,4 --frames "$NFRAMES" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_open NAME DESCRIPTION EXPECTED_FRAMES MAX_OPEN_BYTES [HARNESS_ARGS...]
+# Opens the existing clip $tmp/NAME: the reader must report EXPECTED_FRAMES frames, and the open must read
+# at most MAX_OPEN_BYTES bytes (e.g. finding the end of the movie must not read the whole file).
+check_open() {
+    local name="$1" desc="$2" expected="$3" maxbytes="$4"
+    shift 4
+    echo "== $desc =="
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --frames "$expected" --max-open-bytes "$maxbytes" --open-only "$@" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_ss_copy NAME DESCRIPTION EXPECTED_FRAMES SEEK FFMPEG_OUTPUT_ARGS...
+# A stream copy from SEEK seconds (not a keyframe) of a 100-frame 25 fps H.264 clip with B-frames and
+# audio, for 1.6 s: the copy has a gap in its timestamps (fewer samples than frame times), and the last
+# sample must be counted.
+check_ss_copy() {
+    local name="$1" desc="$2" expected="$3" seek="$4"
+    shift 4
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder aac; then
+        echo "SKIPPED: no libx264 or aac encoder in the ffmpeg CLI"
+        return
+    fi
+    if [ ! -f "$tmp/ss_source.mp4" ] && ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=size=160x120:rate=25 -f lavfi -i sine=sample_rate=48000 \
+        -frames:v 100 -t 4 -c:v libx264 -preset veryfast -g 12 -bf 2 -c:a aac "$tmp/ss_source.mp4"; then
+        echo "FAIL: could not generate ss_source.mp4"
+        rc=1
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -ss "$seek" -i "$tmp/ss_source.mp4" -t 1.6 -c copy "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -231,11 +366,48 @@ check ramp.mp4 "MP4 (H.264, start_time 0)" libx264 25 $X264
 check ramp_offset.mp4 "MP4 (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
 check ramp.mov "MOV (H.264, 24 fps)" libx264 24 $X264
 check ramp.ts "MPEG-TS (H.264, non-zero start_time)" libx264 25 $X264 -f mpegts
+# The audio track starts before the video: the frames are counted from the start of the video.
+check ramp_avchd.m2ts "M2TS (AVCHD-like: H.264 interlaced, 29.97 fps, AC3 audio starting before the video)" libx264 30000/1001 \
+    -map 1:v -map 0:a $X264 -flags +ildct+ilme -x264-params tff=1 -c:a ac3 -shortest -f mpegts -mpegts_m2ts_mode 1 \
+    -- -f lavfi -i anullsrc=r=48000:cl=stereo
 check ramp_23.976.mkv "Matroska (H.264, 23.976 fps)" libx264 24000/1001 $X264
 check ramp_24.mkv "Matroska (H.264, 24 fps)" libx264 24 $X264
 check ramp_25.mkv "Matroska (H.264, 25 fps)" libx264 25 $X264
 check ramp_30.mkv "Matroska (H.264, 30 fps)" libx264 30 $X264
 check ramp_60.mkv "Matroska (H.264, 60 fps)" libx264 60 $X264
+# The Matroska and FLV durations are not counted from the start of the movie.
+check ramp_offset.mkv "Matroska (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10.01
+check ramp.flv "FLV (H.264 with B-frames, 24 fps)" libx264 24 $X264
+check ramp_offset.flv "FLV (H.264 with B-frames, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
+# The audio starts first: the FLV duration is counted from its first DTS.
+check ramp_audio_first.flv "FLV (H.264 with B-frames, 24 fps, starting 0.5 s after the AAC audio)" libx264 24 \
+    -map 1:v -map 0:a $X264 -c:a aac -shortest -- -f lavfi -t 3 -i anullsrc=r=48000:cl=mono -itsoffset 0.5
+# Without the duration metadata (as when written to a pipe), the demuxer gives the DTS of the last tag.
+check ramp_nodur.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata)" libx264 24 $X264 -flvflags no_duration_filesize
+check ramp_nodur_offset.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, non-zero start time)" libx264 24 \
+    $X264 -flvflags no_duration_filesize -output_ts_offset 10
+# A low frame rate with audio: the last 64 tags are audio tags and the AVC end of sequence (not a frame).
+check ramp_low_rate.flv "FLV (H.264, 0.5 fps, AAC audio)" libx264 0.5 \
+    -map 1:v -map 0:a -c:v libx264 -bf 0 -pix_fmt yuv420p -c:a aac -shortest -- -f lavfi -t 80 -i sine=r=48000
+check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, GOP 8, start time 0.5 s, duration written as a length, as mkvmerge does)" -g 8
+check_mkv_length ramp_length_gop.mkv "Matroska (H.264, 24 fps, default GOP, start time 0.5 s, duration written as a length)"
+check_flv_overhang ramp_overhang.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, AAC audio ending 40 ms after the video)"
+# MP4/MOV with B-frames and no edit list: the start time is the B-frame delay.
+check ramp_frag.mp4 "Fragmented MP4 (H.264 with B-frames, no edit list)" libx264 24 $X264 -movflags frag_keyframe+empty_moov
+check ramp_noeditlist.mov "MOV (H.264 with B-frames, no edit list)" libx264 24 $X264 -use_editlist 0
+check ramp_hevc_frag.mp4 "Fragmented MP4 (HEVC with B-frames, no edit list)" libx265 24 \
+    -c:v libx265 -x265-params log-level=error:bframes=3:keyint=8 -tag:v hvc1 -pix_fmt yuv420p -movflags frag_keyframe+empty_moov
+# NUT has no start time, and its duration is counted from the first PTS.
+check ramp_mpeg4_bf.nut "NUT (MPEG-4 with B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
+# An elementary stream has no timestamps: the last frame is a reference frame without a PTS.
+check ramp_bframes.m2v "MPEG-2 elementary stream (B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
+# An edit list that starts after the first frames (negative timestamps): they are not displayed.
+check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed: negative timestamp)" libx264 24 39 1 \
+    $X264 -output_ts_offset -0.041666666666666667
+check_frames ramp_preroll3.mp4 "MP4 (H.264, edit list, first 3 frames not displayed: negative timestamps)" libx264 24 37 3 \
+    $X264 -output_ts_offset -0.125
+# AVI has no PTS: the decoder gives the frames the DTS of the packet after which they are output.
+check ramp_bframes.avi "AVI (MPEG-4 with B-frames, no PTS)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
 check ramp_prores_24.mkv "Matroska (ProRes, 24 fps)" prores_ks 24 -c:v prores_ks
 check ramp_vp9_24.webm "WebM (VP9, 24 fps)" libvpx-vp9 24 -c:v libvpx-vp9 -g 8 -crf 10 -b:v 0
 check ramp_vp8_24.webm "WebM (VP8, 24 fps)" libvpx 24 -c:v libvpx -g 8 -crf 4 -b:v 10M
@@ -254,6 +426,112 @@ check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame be
 check_corrupt ramp_corrupt_long_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a 20-frame gap)" 24 21 1 0 2
 check_corrupt ramp_corrupt_end_gap.mkv "VFR MKV (H.264, 24 fps, corrupted last frame before a 35-frame gap at the end)" 13 0 0 2 2
 check_swapped ramp_swapped.mov "MOV (H.264, 24 fps, broken timestamps: two PTS swapped)"
+
+# Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
+# cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is
+# used, and the tags are not walked back to the start of the file).
+if have_encoder libx264; then
+    if ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -t 60 -c:v libx264 -preset ultrafast -g 48 -output_ts_offset 10 "$tmp/long_offset.mkv" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -t 60 -c:v libx264 -preset ultrafast -g 48 -bf 2 "$tmp/long.flv"; then
+        check_open long_offset.mkv "Matroska (H.264, 24 fps, 60 s, start time 10 s): bytes read at open" 1440 2000000
+        check_open long.flv "FLV (H.264 with B-frames, 24 fps, 60 s): bytes read at open, index after the open" 1440 2000000 --max-indexed-frame 720
+        size=$(wc -c < "$tmp/long.flv")
+        for cut in 7 377 12345; do
+            head -c $((size - cut)) "$tmp/long.flv" > "$tmp/long_cut$cut.flv"
+            # (the last tag is not valid: the duration is used, counted from the start of the video, as before,
+            # which includes the B-frame delay)
+            check_open "long_cut$cut.flv" "FLV (H.264 with B-frames, 24 fps, 60 s, truncated by $cut bytes): frame count and bytes read at open" 1442 2000000
+        done
+    else
+        echo "FAIL: could not generate the 60 s clips"
+        rc=1
+    fi
+fi
+# A high bit rate FLV (about 400 kB per frame, more than in the first windows read at the end) without the
+# duration metadata, with and without a start time: the end must still be read from the last packets.
+if have_encoder libx264 && have_encoder aac; then
+    for offset in 0 10; do
+        if ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=640x360:r=25:d=1.2 -f lavfi -i sine=d=1.2 -vf noise=alls=40:allf=t \
+            -c:v libx264 -preset ultrafast -bf 3 -qp 0 -g 250 -pix_fmt yuv420p -c:a aac -flvflags no_duration_filesize \
+            -output_ts_offset "$offset" "$tmp/high_bitrate_$offset.flv"; then
+            check_open "high_bitrate_$offset.flv" "FLV (H.264 with B-frames, 400 kB per frame, no duration metadata, start time $offset s)" 30 40000000
+        else
+            echo "FAIL: could not generate high_bitrate_$offset.flv"
+            rc=1
+        fi
+    done
+fi
+# MPEG-TS/PS, whose end is read from the last packets: two programs in a TS (the second starting at 100 s:
+# only the program of the video stream counts), an MPEG-PS whose last reference frame has no PTS (it is
+# displayed after the B-frames that follow it), VOBs with B-frames, with and without audio (the last
+# reference frame has no PTS, and no B-frame follows it). The expected count is the number of video packets.
+check_packets() {
+    local name="$1" desc="$2" threads
+    shift 2
+    echo "== $desc =="
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    local packets
+    packets=$(ffprobe -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 "$tmp/$name" | head -n 1 | tr -d ',')
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames "$packets" --open-only "$@" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    done
+}
+# An MPEG-PS cut at several offsets (in the middle of a GOP, or on an I-frame followed by the leading B-frames
+# of an open GOP): the frames are counted from the start time of the stream (its first PTS) to the last frame
+# displayed. The leading B-frames of an open GOP have a PTS before it, and are not counted; after a cut in the
+# middle of a GOP, the frames after the start time that cannot be decoded (their reference frames are cut)
+# are counted, and fail. The expected count is from the frames decoded by ffprobe (25 fps): from the start
+# time to the last decoded frame with a timestamp, plus the frames decoded after it without a timestamp (the
+# last reference frame). The count must not depend on the decoder threads.
+check_ps_cuts() {
+    local name="$1" desc="$2" offset threads start expected
+    shift 2
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "== $desc =="
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    for offset in "$@"; do
+        echo "== $desc (cut at byte $offset) =="
+        tail -c +"$offset" "$tmp/$name" > "$tmp/cut_$offset.mpg"
+        start=$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$tmp/cut_$offset.mpg" | head -n 1 | tr -d ',\r')
+        expected=$(ffprobe -v error -select_streams v:0 -show_entries frame=best_effort_timestamp_time -of csv=p=0 "$tmp/cut_$offset.mpg" 2>/dev/null | tr -d ',\r' |
+            awk -v s="$start" 'BEGIN { m = -1; na = 0 } $1 == "N/A" { if (m >= 0) na++ } $1 != "N/A" { if ($1 + 0 > m) { m = $1 + 0; na = 0 } } END { printf "%d\n", int((m - s) * 25 + 1.5) + na }')
+        for threads in 1 8; do
+            # shellcheck disable=SC2086
+            FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/cut_$offset.mpg" --frames "$expected" --open-only ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+        done
+    done
+}
+if have_encoder mpeg2video && have_encoder mp2 && have_encoder ac3; then
+    if ffmpeg -y -loglevel error -f lavfi -i testsrc=d=4 -itsoffset 100 -f lavfi -i testsrc2=d=4 -map 0:v -map 1:v \
+        -c:v mpeg2video -program st=0 -program st=1 "$tmp/two_programs.ts" &&
+        ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" -c:v mpeg2video -bf 2 -g 8 -q:v 2 -f mpeg "$tmp/ramp_ps.mpg" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -f lavfi -i sine -t 10 -c:v mpeg2video -bf 2 -g 12 -c:a mp2 -f vob "$tmp/b_frames.vob" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -t 8 -c:v mpeg2video -bf 2 -g 12 -f vob "$tmp/vob_no_audio.vob" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -f lavfi -i sine -t 8 -c:v mpeg2video -bf 2 -g 12 -c:a ac3 -f vob "$tmp/vob_ac3.vob" &&
+        ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=640x360:r=25 -f lavfi -i sine -t 10 -c:v mpeg2video -b:v 4M -bf 2 -g 15 -c:a mp2 -f mpeg "$tmp/full_ps.mpg"; then
+        check_packets two_programs.ts "MPEG-TS (two programs, the second one starting at 100 s)"
+        check_packets ramp_ps.mpg "MPEG-PS (MPEG-2 with B-frames, the last reference frame has no PTS)"
+        check_packets b_frames.vob "VOB (MPEG-2 with B-frames, MP2 audio)"
+        check_packets vob_no_audio.vob "VOB (MPEG-2 with B-frames, no audio, the last reference frame has no PTS)"
+        check_packets vob_ac3.vob "VOB (MPEG-2 with B-frames, AC3 audio, the last reference frame has no PTS)"
+        check_ps_cuts full_ps.mpg "MPEG-PS cut" 300000 777777 1000001 1234568 1269589 1500000 2222223 2600000 3000000 4000000
+    else
+        echo "FAIL: could not generate the MPEG-TS/PS clips"
+        rc=1
+    fi
+fi
+# A stream copy from a non-keyframe: fewer samples than frame times.
+check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6
+check_ss_copy ramp_ss_copy.mp4 "MP4 (stream copy from 1.3 s, no edit list)" 53 1.3 -use_editlist 0
+# VFR MP4 with a one-frame gap, in the middle and before the last frame: the last frame must be counted.
+check_vfr ramp_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap)" 41 20 2 1 0 42
+check_vfr ramp_end_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap before the last frame)" 41 39 2 1 0 42
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"

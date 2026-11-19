@@ -50,6 +50,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 #include <ofxsImageEffect.h>
@@ -494,6 +495,11 @@ FFmpegFile::Stream::GetStreamAspectRatio(Stream* stream)
 }
 
 // get stream start time
+// The frames are counted from it (AVStream::start_time: the first PTS of the stream). In a stream cut on an
+// I-frame, the leading B-frames of an open GOP, which reference a frame before the cut, have a PTS before it:
+// they are not counted (they cannot be decoded). In a stream cut in the middle of a GOP, the frames after it
+// whose reference frames are cut are counted, and fail: they are on the time line of the stream (e.g. its
+// audio), which a count from the first decodable frame would shift.
 int64_t
 FFmpegFile::getStreamStartTime(Stream& stream)
 {
@@ -506,7 +512,6 @@ FFmpegFile::getStreamStartTime(Stream& stream)
     // Read from stream. If the value read isn't valid, get it from the first frame in the stream that provides such a
     // value.
     int64_t startPTS = stream._avstream->start_time;
-    int64_t startDTS = stream._avstream->start_time;
 #if TRACE_FILE_OPEN
     if (startPTS != int64_t(AV_NOPTS_VALUE)) {
         std::cout << "        Obtained from AVStream::start_time=";
@@ -527,6 +532,7 @@ FFmpegFile::getStreamStartTime(Stream& stream)
         // that it remains valid even after we get out of the |decode| method context, because the information stored by
         // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
         // https://foundry.tpondemand.com/entity/162892
+        _readAtOpen = true;
         if (av_seek_frame(_context, stream._idx, startPTS, AVSEEK_FLAG_BACKWARD) >= 0) {
 
             // Read frames until we get one for the video stream that contains a valid PTS.
@@ -536,7 +542,6 @@ FFmpegFile::getStreamStartTime(Stream& stream)
                 }
                 // Packet read for video stream. Get its PTS.
                 startPTS = avPacket->pts;
-                startDTS = avPacket->dts;
 
                 // Loop will continue if the current packet doesn't end after 0
                 if (startPTS + avPacket->duration > 0) {
@@ -574,17 +579,487 @@ FFmpegFile::getStreamStartTime(Stream& stream)
         std::cout << "        Not found by searching frames, assuming ";
 #endif
         startPTS = 0;
-        startDTS = 0;
     }
 
 #if TRACE_FILE_OPEN
     std::cout << startPTS << " ticks, " << double(startPTS) * double(stream._avstream->time_base.num) / double(stream._avstream->time_base.den) << " s" << std::endl;
 #endif
 
-    stream._startDTS = startDTS;
+    // The DTS of the first packet, for the FLV duration (see getStreamFrames()). With B-frames, read it
+    // from the first packet. Some containers (AVI) have a DTS but no PTS: libavformat then gives the
+    // packets of the frames that are not reordered (B-frames) a PTS equal to their DTS, and the
+    // decoder gives the other frames the DTS of the packet after which they are output
+    // (best_effort_timestamp, see demuxAndDecode()). With B-frames, the timestamps of the decoded
+    // frames are thus delayed by the reordering delay, and the first decoded frame is not at the DTS
+    // of the first packet: use its timestamp as the start.
+    stream._startDTS = startPTS;
+    if (stream._codecContext->has_b_frames > 0) {
+        int64_t firstDTS = AV_NOPTS_VALUE;
+        const int64_t firstFramePTS = probeStreamStart(stream, firstDTS);
+        if (firstDTS != int64_t(AV_NOPTS_VALUE) && (firstDTS <= startPTS)) {
+            stream._startDTS = firstDTS;
+        }
+        // Only if the first decoded frame is within the reordering delay of the first packet: a later one is
+        // after frames that cannot be decoded (e.g. an MPEG-PS cut in the middle of a GOP, whose first packets
+        // have no PTS), and whether the decoder outputs it within the packets read depends on its threads.
+        const int64_t frameTicks = stream.frameToPts(1) - stream.frameToPts(0);
+        if ((firstFramePTS != int64_t(AV_NOPTS_VALUE)) && (firstDTS != int64_t(AV_NOPTS_VALUE)) &&
+            (firstFramePTS - firstDTS <= (stream._codecContext->has_b_frames + 1) * frameTicks)) {
+#if TRACE_FILE_OPEN
+            std::cout << "        Packets have no PTS, start from the first decoded frame=" << firstFramePTS << " ticks" << std::endl;
+#endif
+            startPTS = firstFramePTS;
+        }
+    }
 
     return startPTS;
 } // FFmpegFile::getStreamStartTime
+
+// Read the first packet of the stream, and set firstDTS to its DTS. If it has a DTS but no PTS,
+// return the timestamp of the first decoded frame (best_effort_timestamp), else AV_NOPTS_VALUE.
+int64_t
+FFmpegFile::probeStreamStart(Stream& stream, int64_t& firstDTS)
+{
+    int64_t firstFramePTS = AV_NOPTS_VALUE;
+
+    firstDTS = AV_NOPTS_VALUE;
+    avcodec_flush_buffers(stream._codecContext);
+    // If nothing was read or sought since avformat_find_stream_info(), the first packets are those it kept,
+    // from the start of the file: no seek is needed. Otherwise, seek to the start time (by bytes if it is
+    // unknown, e.g. in elementary streams), never with AVSEEK_FLAG_FRAME, which makes some demuxers (FLV)
+    // read the file from its start.
+    if (_readAtOpen) {
+        const int res = (stream._avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? av_seek_frame(_context, stream._idx, stream._avstream->start_time, AVSEEK_FLAG_BACKWARD) : av_seek_frame(_context, -1, 0, AVSEEK_FLAG_BYTE);
+        if (res < 0) {
+            return firstFramePTS;
+        }
+    }
+    _readAtOpen = true;
+    MyAVPacket avPacket;
+    AVFrame* avFrame = av_frame_alloc();
+    bool firstPacket = true;
+    bool eof = false;
+    // Enough packets for the decoder to output a frame (its delay, with frame threads), but bounded.
+    int packetsLeft = stream.getCodecDelay() + 16;
+    while (avFrame && !eof && (packetsLeft > 0)) {
+        int res = av_read_frame(_context, avPacket.pkt());
+        if (res < 0) {
+            eof = true;
+        } else if (avPacket->stream_index != stream._idx) {
+            av_packet_unref(avPacket.pkt());
+            continue;
+        } else if (firstPacket) {
+            firstPacket = false;
+            firstDTS = avPacket->dts;
+            if ((avPacket->pts != int64_t(AV_NOPTS_VALUE)) || (avPacket->dts == int64_t(AV_NOPTS_VALUE))) {
+                // the packets have a PTS (or no timestamp at all): nothing to decode
+                av_packet_unref(avPacket.pkt());
+                break;
+            }
+        }
+        if (firstPacket) {
+            break; // no packet in the stream
+        }
+        --packetsLeft;
+        res = avcodec_send_packet(stream._codecContext, eof ? nullptr : avPacket.pkt());
+        av_packet_unref(avPacket.pkt());
+        if ((res < 0) && (res != AVERROR(EAGAIN)) && (res != AVERROR_INVALIDDATA)) {
+            break;
+        }
+        if (avcodec_receive_frame(stream._codecContext, avFrame) >= 0) {
+            firstFramePTS = avFrame->best_effort_timestamp;
+            break;
+        }
+    }
+    av_frame_free(&avFrame);
+    avcodec_flush_buffers(stream._codecContext);
+
+    return firstFramePTS;
+} // FFmpegFile::probeStreamStart
+
+// The index entries of a stream (avformat_index_get_entry() appeared in lavf 58.78, FFmpeg 4.4 has 58.76).
+static int
+IndexEntriesCount(AVStream* st)
+{
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 78, 100)
+    return avformat_index_get_entries_count(st);
+#else
+    return st->nb_index_entries;
+#endif
+}
+
+static const AVIndexEntry*
+IndexEntry(AVStream* st, int i)
+{
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 78, 100)
+    return avformat_index_get_entry(st, i);
+#else
+    return &st->index_entries[i];
+#endif
+}
+
+// The number of frames of the stream that are not displayed (marked as discarded in the index, e.g. by an
+// MOV/MP4 edit list).
+int64_t
+FFmpegFile::getDiscardedFrames(Stream& stream)
+{
+    int64_t discarded = 0;
+    const int entries = IndexEntriesCount(stream._avstream);
+    for (int i = 0; i < entries; ++i) {
+        const AVIndexEntry* entry = IndexEntry(stream._avstream, i);
+        if (entry && (entry->flags & AVINDEX_DISCARD_FRAME)) {
+            ++discarded;
+        }
+    }
+
+    return discarded;
+}
+
+#if LIBAVFORMAT_VERSION_MAJOR < 59
+// The largest timestamp in the index of the stream (e.g. the MOV/MP4 sample table, the Matroska cues), in
+// AV_TIME_BASE units, or AV_NOPTS_VALUE if the index is empty.
+int64_t
+FFmpegFile::getLastIndexTimestamp(Stream& stream)
+{
+    int64_t last = AV_NOPTS_VALUE;
+    const int entries = IndexEntriesCount(stream._avstream);
+    for (int i = 0; i < entries; ++i) {
+        const AVIndexEntry* entry = IndexEntry(stream._avstream, i);
+        if (entry && !(entry->flags & AVINDEX_DISCARD_FRAME) && (entry->timestamp != int64_t(AV_NOPTS_VALUE)) && ((last == int64_t(AV_NOPTS_VALUE)) || (entry->timestamp > last))) {
+            last = entry->timestamp;
+        }
+    }
+
+    return (last == int64_t(AV_NOPTS_VALUE)) ? last : av_rescale_q(last, stream._avstream->time_base, AV_TIME_BASE_Q);
+}
+#endif
+
+// The start of the last tags of an FLV file (at most kMaxTags tags, and at least kMinVideoTags video tags if
+// possible), found by walking back from the end with the size of the previous tag, which follows each tag, so
+// that the demuxer does not have to resync. The last bytes of the file are read at once (256 kB), and more if
+// needed (only the extra bytes), up to maxBytes in all. Each tag header is checked (type, data size): -1 if the
+// last tag is not valid (e.g. a truncated file).
+// Whether the data of an FLV video tag (dataSize >= 1 bytes) is a video frame, not a sequence header, an end of
+// sequence or a command (legacy and enhanced FLV).
+static bool
+isFlvVideoFrame(const unsigned char* d,
+                int64_t dataSize)
+{
+    if (((d[0] >> 4) & 7) == 5) {
+        return false; // video info/command frame
+    }
+    if (d[0] & 0x80) {
+        // enhanced FLV: the packet type is in the low 4 bits (1: coded frames, 3: coded frames without composition time)
+        return ((d[0] & 0x0f) == 1) || ((d[0] & 0x0f) == 3);
+    }
+    const int codecId = d[0] & 0x0f;
+    if ((codecId == 7) || (codecId == 12)) { // AVC, HEVC: the AVC packet type (1: NAL units)
+        return (dataSize >= 2) && (d[1] == 1);
+    }
+
+    return true;
+}
+
+static int64_t
+FlvLastTagsStart(AVIOContext* pb,
+                 int64_t size,
+                 int64_t maxBytes)
+{
+    const int kMaxTags = 64;
+    const int kMinVideoTags = 8;
+    const int kMinFrameTags = 2;
+    const int64_t firstTag = 13; // after the 9-byte header and the first previous tag size
+    std::vector<unsigned char> data; // the bytes [begin, size) of the file
+    int64_t begin = size;
+    int64_t start = -1;
+    for (int64_t window = int64_t(1) << 18; begin > firstTag; window *= 4) {
+        const int64_t newBegin = (std::max)(firstTag, size - (std::min)(window, maxBytes));
+        if (newBegin >= begin) {
+            break; // maxBytes reached
+        }
+        std::vector<unsigned char> more(size_t(begin - newBegin));
+        if ((avio_seek(pb, newBegin, SEEK_SET) < 0) || (avio_read(pb, more.data(), (int)more.size()) != (int)more.size())) {
+            return -1;
+        }
+        data.insert(data.begin(), more.begin(), more.end());
+        begin = newBegin;
+        auto at = [&data, begin](int64_t pos) -> const unsigned char* { return &data[size_t(pos - begin)]; };
+        int64_t tag = size;
+        int videoTags = 0;
+        int tags = 0;
+        start = -1;
+        // At most kMaxTags tags, unless fewer than kMinFrameTags video frames were found (e.g. a low frame
+        // rate with audio: the last tags are audio, and the AVC end of sequence).
+        for (; ((tags < kMaxTags) || (videoTags < kMinFrameTags)) && (tag - 4 >= begin); ++tags) {
+            const unsigned char* p = at(tag - 4);
+            const int64_t previousTagSize = (int64_t(p[0]) << 24) | (int64_t(p[1]) << 16) | (int64_t(p[2]) << 8) | int64_t(p[3]);
+            const int64_t tagStart = tag - 4 - previousTagSize;
+            if ((previousTagSize < 11) || (tagStart < firstTag)) {
+                if (tag == size) {
+                    return -1; // the last tag is not valid
+                }
+                break;
+            }
+            if (tagStart < begin) {
+                if (tag == size) {
+                    // A last tag larger than the bytes read: check its header before reading more (the previous
+                    // tag size of a truncated file may be anything).
+                    unsigned char header[4];
+                    if ((avio_seek(pb, tagStart, SEEK_SET) < 0) || (avio_read(pb, header, 4) != 4) ||
+                        (((header[0] & 0x1f) != 8) && ((header[0] & 0x1f) != 9) && ((header[0] & 0x1f) != 18)) ||
+                        ((((int64_t(header[1]) << 16) | (int64_t(header[2]) << 8) | int64_t(header[3])) + 11) != previousTagSize)) {
+                        return -1;
+                    }
+                }
+                break;
+            }
+            const unsigned char* t = at(tagStart);
+            const int type = t[0] & 0x1f;
+            const int64_t dataSize = (int64_t(t[1]) << 16) | (int64_t(t[2]) << 8) | int64_t(t[3]);
+            if (((type != 8) && (type != 9) && (type != 18)) || (dataSize + 11 != previousTagSize)) {
+                if (tag == size) {
+                    return -1; // the last tag is not valid
+                }
+                break;
+            }
+            if ((type == 9) && (dataSize >= 1) && isFlvVideoFrame(t + 11, dataSize)) {
+                ++videoTags;
+            }
+            start = tagStart;
+            tag = tagStart;
+        }
+        if ((start < 0) && (tag == size) && (tag - 4 >= begin)) {
+            // the last tag starts before the bytes read: read more
+            continue;
+        }
+        if ((videoTags >= kMinVideoTags) || (tag - 4 < firstTag) || (start < 0) || ((tags >= kMaxTags) && (videoTags >= kMinFrameTags))) {
+            break;
+        }
+    }
+
+    return start;
+}
+
+// Read the last packets of the file, to get the end of the movie (the largest PTS + duration of the packets of all
+// streams, in AV_TIME_BASE units) and the largest PTS of the video stream (in its time base). This reads at most
+// kMaxEndProbeBytes: the demuxer is positioned through its index (the MOV/MP4 samples, the Matroska cues) or, in FLV,
+// at one of the last tags. Returns false if they cannot be read (e.g. the input is not seekable, there is no
+// index, or the last FLV tag is not valid, as in a truncated file), and the caller then uses the duration.
+// A video packet without a duration lasts one frame. Another stream that ends after the last frame of the video
+// stream (e.g. the last audio packet) only adds the whole frames it covers (the last frame is held until the end
+// of the movie, see demuxAndDecode()): audio that ends a few milliseconds after the video does not add a frame.
+bool
+FFmpegFile::probeEnd(Stream& stream,
+                     int64_t& movieEnd,
+                     int64_t& lastVideoPts)
+{
+    movieEnd = AV_NOPTS_VALUE;
+    lastVideoPts = AV_NOPTS_VALUE;
+    AVIOContext* pb = _context->pb;
+    if (!pb || !(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        return false;
+    }
+    const int64_t size = avio_size(pb);
+    if (size <= 0) {
+        return false;
+    }
+    // The FLV tag walk and the reading of the packets each read at most kMaxEndProbeBytes (the Matroska and MOV/MP4
+    // seeks only read the index: the cues, read at the first seek, or nothing). This is per video stream: with
+    // several matching video streams (views), each one is probed.
+    const int64_t kMaxEndProbeBytes = int64_t(4) << 20;
+    const char* formatName = _context->iformat ? _context->iformat->name : "";
+    const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
+    const bool isMatroska = std::strstr(formatName, "matroska") != nullptr;
+    const bool isMpegTsPs = (std::strcmp(formatName, "mpegts") == 0) || (std::strcmp(formatName, "mpeg") == 0);
+    _readAtOpen = true;
+    // MPEG-TS/PS have no index, but their demuxers resync after a byte seek: read the last 1 MB (or 4 MB if it
+    // has too few video packets, e.g. a high bit rate), to get the end that FFmpeg's estimate may miss.
+    int64_t tsWindow = int64_t(1) << 20;
+    if (isFlv) {
+        // Enough video tags for the reordered frames (with B-frames, the last tag is not the last frame).
+        const int64_t pos = FlvLastTagsStart(pb, size, kMaxEndProbeBytes);
+        if ((pos < 0) || (av_seek_frame(_context, -1, pos, AVSEEK_FLAG_BYTE) < 0)) {
+            return false;
+        }
+    } else if (isMpegTsPs) {
+        if (av_seek_frame(_context, -1, (std::max)(int64_t(0), size - tsWindow), AVSEEK_FLAG_BYTE) < 0) {
+            return false;
+        }
+    } else {
+        if (isMatroska) {
+            // the Matroska demuxer reads the cues at the first seek
+            av_seek_frame(_context, stream._idx, stream._startPTS, AVSEEK_FLAG_BACKWARD);
+        }
+        // The index entry to seek to: in MOV/MP4, where every sample is indexed, one of the last samples
+        // (with AVSEEK_FLAG_ANY, so that only the last samples are read, whatever the GOP), enough before
+        // the last one to read the reordered ones; in Matroska, the last cue (a keyframe). It must be within
+        // the last kMaxEndProbeBytes of the file: otherwise (e.g. a long GOP in Matroska, or no cues near the
+        // end, e.g. written to a pipe, or truncated), the demuxer would read too much.
+        const int entries = IndexEntriesCount(stream._avstream);
+        const bool isMov = std::strstr(formatName, "mov") != nullptr;
+        int entry = entries - 1;
+        if (isMov) {
+            entry -= stream._codecContext->has_b_frames + 4;
+        }
+        if (entries < 1) {
+            return false;
+        }
+        entry = (std::max)(0, entry);
+        const AVIndexEntry* indexEntry = IndexEntry(stream._avstream, entry);
+        if (!indexEntry || (indexEntry->pos < size - kMaxEndProbeBytes) || (indexEntry->timestamp == int64_t(AV_NOPTS_VALUE))) {
+            return false;
+        }
+        if (av_seek_frame(_context, stream._idx, indexEntry->timestamp, AVSEEK_FLAG_BACKWARD | (isMov ? AVSEEK_FLAG_ANY : 0)) < 0) {
+            return false;
+        }
+    }
+    const int64_t frameDuration = av_rescale(AV_TIME_BASE, stream._fpsDen, stream._fpsNum);
+    int64_t end = AV_NOPTS_VALUE;
+    int64_t videoEnd = AV_NOPTS_VALUE;
+    bool eof = false;
+    int videoPackets = 0;
+    int64_t bytesRead0 = pb->bytes_read;
+    bool refPending = false; // a video packet without a PTS was read (MPEG-PS reference frame)
+    int unplacedRefs = 0; // the video packets without a PTS since the last one with a PTS
+    const int64_t frameTicks = stream.frameToPts(1) - stream.frameToPts(0);
+    // The streams of the program of the video stream (all of them if there are no programs)
+    const AVProgram* program = nullptr;
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 0, 0)
+    program = av_find_program_from_stream(_context, nullptr, stream._idx);
+#endif
+    auto sameProgram = [program](int index) -> bool {
+        if (!program) {
+            return true;
+        }
+        for (unsigned i = 0; i < program->nb_stream_indexes; ++i) {
+            if ((int)program->stream_index[i] == index) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // The FLV demuxer adds an index entry for each keyframe it reads from a seekable input: an entry near
+    // the end would make later seeks in a file without a keyframe index decode from near its start.
+    const int seekable = pb->seekable;
+    if (isFlv) {
+        pb->seekable &= ~AVIO_SEEKABLE_NORMAL;
+    }
+    MyAVPacket avPacket;
+    while (pb->bytes_read - bytesRead0 <= kMaxEndProbeBytes) {
+        const int res = av_read_frame(_context, avPacket.pkt());
+        if ((res == AVERROR_EOF) && isMpegTsPs && (videoPackets < 8) && (tsWindow < kMaxEndProbeBytes) && (tsWindow < size)) {
+            // too few video packets in the last bytes: read more
+            tsWindow = kMaxEndProbeBytes;
+            end = videoEnd = lastVideoPts = AV_NOPTS_VALUE;
+            videoPackets = 0;
+            refPending = false;
+            unplacedRefs = 0;
+            bytesRead0 = pb->bytes_read;
+            if (av_seek_frame(_context, -1, (std::max)(int64_t(0), size - tsWindow), AVSEEK_FLAG_BYTE) < 0) {
+                break;
+            }
+            continue;
+        }
+        if (res == AVERROR_EOF) {
+            eof = true;
+            break;
+        }
+        if (res < 0) {
+            break; // an error: use the duration
+        }
+        const AVStream* st = _context->streams[avPacket->stream_index];
+        const bool isVideoStream = avPacket->stream_index == stream._idx;
+        if (!isVideoStream && (!sameProgram(avPacket->stream_index) || ((st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) && (st->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)))) {
+            // another program (e.g. a DVB multiplex), or subtitles or data (e.g. SCTE-35, teletext, KLV)
+            av_packet_unref(avPacket.pkt());
+            continue;
+        }
+        if (isVideoStream && (avPacket->pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE))) {
+            // A reference frame without a PTS (MPEG-PS): displayed after the B-frames that follow it in decoding
+            // order (see the last-resort count in getStreamFrames()).
+            refPending = true;
+            ++unplacedRefs;
+        } else if (isVideoStream && refPending && (avPacket->pts != int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE)) &&
+                   (avPacket->pts > avPacket->dts)) {
+            // a reference frame with a PTS (displayed after its DTS, unlike a B-frame): the pending one is
+            // displayed before it
+            refPending = false;
+        } else if (isVideoStream && refPending && (avPacket->pts != int64_t(AV_NOPTS_VALUE)) && (frameTicks > 0)) {
+            const int64_t refPts = avPacket->pts + frameTicks;
+            const int64_t e = av_rescale_q(refPts + frameTicks, st->time_base, AV_TIME_BASE_Q);
+            end = (end == int64_t(AV_NOPTS_VALUE)) ? e : (std::max)(end, e);
+            videoEnd = (videoEnd == int64_t(AV_NOPTS_VALUE)) ? e : (std::max)(videoEnd, e);
+            lastVideoPts = (lastVideoPts == int64_t(AV_NOPTS_VALUE)) ? refPts : (std::max)(lastVideoPts, refPts);
+        }
+        if (isVideoStream && (avPacket->pts != int64_t(AV_NOPTS_VALUE))) {
+            unplacedRefs = 0;
+        }
+        const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
+        if ((ts != int64_t(AV_NOPTS_VALUE)) && !(avPacket->flags & AV_PKT_FLAG_DISCARD)) {
+            int64_t duration = avPacket->duration;
+            if ((duration <= 0) && (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) && (st->r_frame_rate.num > 0) && (st->r_frame_rate.den > 0)) {
+                duration = av_rescale_q(1, av_inv_q(st->r_frame_rate), st->time_base);
+            }
+            const int64_t e = av_rescale_q(ts + (std::max)(int64_t(0), duration), st->time_base, AV_TIME_BASE_Q);
+            if ((end == int64_t(AV_NOPTS_VALUE)) || (e > end)) {
+                end = e;
+            }
+            if (avPacket->stream_index == stream._idx) {
+                ++videoPackets;
+                if ((videoEnd == int64_t(AV_NOPTS_VALUE)) || (e > videoEnd)) {
+                    videoEnd = e;
+                }
+                if ((avPacket->pts != int64_t(AV_NOPTS_VALUE)) && ((lastVideoPts == int64_t(AV_NOPTS_VALUE)) || (avPacket->pts > lastVideoPts))) {
+                    lastVideoPts = avPacket->pts;
+                }
+            }
+        }
+        av_packet_unref(avPacket.pkt());
+    }
+    pb->seekable = seekable;
+    if (eof && (unplacedRefs > 0) && (lastVideoPts != int64_t(AV_NOPTS_VALUE)) && (frameTicks > 0)) {
+        // The last reference frames have no PTS, and no B-frame follows them: each is displayed after the
+        // previous frame (e.g. the last frame of a VOB).
+        lastVideoPts += unplacedRefs * frameTicks;
+        const int64_t e = av_rescale_q(lastVideoPts + frameTicks, stream._avstream->time_base, AV_TIME_BASE_Q);
+        end = (end == int64_t(AV_NOPTS_VALUE)) ? e : (std::max)(end, e);
+        videoEnd = (videoEnd == int64_t(AV_NOPTS_VALUE)) ? e : (std::max)(videoEnd, e);
+    }
+    if (isMpegTsPs && (videoPackets <= stream._codecContext->has_b_frames)) {
+        eof = false; // too few video packets to know the last frame (with B-frames): use the duration
+    }
+    if (!eof || (end == int64_t(AV_NOPTS_VALUE)) || (videoEnd == int64_t(AV_NOPTS_VALUE))) {
+        // gave up before the end of the file, or no video packet near the end
+        lastVideoPts = AV_NOPTS_VALUE;
+        return false;
+    }
+    if ((end > videoEnd) && (frameDuration > 0)) {
+        // whole frames only (within 1 ms, for the rounding of the timestamps)
+        end = videoEnd + ((end - videoEnd + 1000) / frameDuration) * frameDuration;
+    }
+    movieEnd = end;
+
+    return true;
+}
+
+int
+FFmpegFile::getLastIndexedFrame() const
+{
+    if (!_selectedStream) {
+        return -1;
+    }
+    AVStream* st = _selectedStream->_avstream;
+    int64_t last = AV_NOPTS_VALUE;
+    const int entries = IndexEntriesCount(st);
+    for (int i = 0; i < entries; ++i) {
+        const AVIndexEntry* e = IndexEntry(st, i);
+        if (e && (e->timestamp != int64_t(AV_NOPTS_VALUE)) && ((last == int64_t(AV_NOPTS_VALUE)) || (e->timestamp > last))) {
+            last = e->timestamp;
+        }
+    }
+
+    return (last == int64_t(AV_NOPTS_VALUE)) ? -1 : _selectedStream->ptsToFrame(last);
+}
 
 // Get the video stream duration in frames...
 int64_t
@@ -633,16 +1108,116 @@ FFmpegFile::getStreamFrames(Stream& stream)
         if (tick < 1) {
             tick = 1;
         }
-        int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
-        frames = ((_context->duration - tick) * stream._fpsNum + divisor - 1) / divisor;
+        // The movie lasts from the start of the video stream (the first frame) to the end of the movie, which may
+        // be later than the end of the video stream (another stream may be longer: the last frame is then held,
+        // see demuxAndDecode()).
+        // AVFormatContext::duration is counted from AVFormatContext::start_time, the start of the earliest stream,
+        // which may be before the video stream (e.g. audio in MPEG-TS or M2TS: an AVCHD M2TS counted an extra
+        // frame). But FFmpeg reports the duration stored by some containers as is, and it is not counted from the
+        // start of the movie: Matroska/WebM store the duration of their timeline, which begins at timestamp 0 (e.g.
+        // with a start time of 10 s, a 40-frame 24 fps movie has a duration of 11.667 s), and FLV see below.
+        const char* formatName = _context->iformat ? _context->iformat->name : "";
+        const bool isMatroska = std::strstr(formatName, "matroska") != nullptr;
+        const bool isMov = std::strstr(formatName, "mov") != nullptr;
+        const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
+        const int64_t videoStart = av_rescale_q(stream._startPTS, stream._avstream->time_base, AV_TIME_BASE_Q);
+        // the number of frames from the start of the video stream until a movie end (in AV_TIME_BASE units)
+        auto framesUntil = [&](int64_t end) -> int64_t {
+            const int64_t duration = end - videoStart;
+            const int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
+            return (duration > tick) ? ((duration - tick) * stream._fpsNum + divisor - 1) / divisor : 0;
+        };
+        int64_t movieEnd = AV_NOPTS_VALUE;
+        if (isFlv) {
+            // FLV timestamps are DTS (with a composition time offset for the PTS). FFmpeg's FLV muxer stores the
+            // duration from the first DTS of any stream (before the first frame with B-frames, or the start of an
+            // audio track that starts first), and without that metadata (e.g. written to a pipe) the demuxer gives
+            // the DTS of the last tag, counted from 0: read the end of the movie from the last packets instead.
+            // The duration, if the last packets cannot be read (e.g. a truncated file): it may be counted from the
+            // first DTS (FFmpeg's FLV muxer), or be the DTS of the last tag, counted from 0 (without the duration
+            // metadata), which does not tell; count it from the start of the video stream, as before, which
+            // includes the B-frame delay: never fewer frames than the duration.
+            const int64_t durationEnd = _context->duration + videoStart;
+            int64_t lastVideoPts;
+            // A probed end far beyond the duration is not trusted (e.g. a damaged last tag).
+            if (!probeEnd(stream, movieEnd, lastVideoPts) || (movieEnd > durationEnd + (std::max)(_context->duration / 10, int64_t(2) * AV_TIME_BASE))) {
+                movieEnd = durationEnd;
+            }
+        } else if (_context->start_time == int64_t(AV_NOPTS_VALUE)) {
+            // the start is unknown (e.g. NUT with B-frames, whose duration is counted from the first PTS)
+            movieEnd = _context->duration + videoStart;
+        } else if (isMatroska) {
+            // Matroska: the duration is the end of the movie (from timestamp 0). But a muxer may write a length
+            // while the timestamps do not start at 0 (e.g. mkvmerge with split parts or --sync): with a start
+            // time, read the end of the movie from the last packets, as for FLV.
+            // Without a duration in the file (e.g. written to a pipe), FFmpeg estimates it from the bit rate, as a
+            // length from the start.
+            int64_t lastVideoPts;
+            if ((_context->start_time <= 0) || !probeEnd(stream, movieEnd, lastVideoPts)) {
+                movieEnd = _context->duration;
+                if ((_context->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE) && (_context->start_time > 0)) {
+                    movieEnd += _context->start_time;
+                }
+            }
+        } else if (isMov) {
+            // MOV/MP4: the duration is counted from the start. But in MOV/MP4 with an initial empty edit, lavf 58
+            // (FFmpeg 4) counts it from 0. Use the one that gives the number of samples of the stream (minus the
+            // ones that are not displayed), if only one of them does (with B-frames and no edit list, e.g. in
+            // fragmented MP4, the start time is the B-frame delay, and both may).
+            const int64_t streamFrames = (stream._avstream->nb_frames > 0) ? (stream._avstream->nb_frames - getDiscardedFrames(stream)) : 0;
+            const int64_t fromStart = _context->start_time + _context->duration;
+            const int64_t fromZero = _context->duration;
+            const bool startMatches = (streamFrames > 0) && (std::abs(double(framesUntil(fromStart) - streamFrames)) <= 1);
+            const bool zeroMatches = (streamFrames > 0) && (std::abs(double(framesUntil(fromZero) - streamFrames)) <= 1);
+            movieEnd = fromStart;
+            if (zeroMatches && !startMatches) {
+                movieEnd = fromZero;
+            }
+#if LIBAVFORMAT_VERSION_MAJOR < 59
+            else if (!startMatches) {
+                // without the number of samples (fragmented MP4): a duration that does not reach the last
+                // indexed sample is not an end
+                const int64_t lastIndexed = getLastIndexTimestamp(stream);
+                if ((lastIndexed != int64_t(AV_NOPTS_VALUE)) && (fromZero > lastIndexed + av_rescale(AV_TIME_BASE, stream._fpsDen, stream._fpsNum))) {
+                    movieEnd = fromZero;
+                }
+            }
+#endif
+        } else {
+            movieEnd = _context->start_time + _context->duration;
+            // MPEG-TS/PS: FFmpeg estimates the duration from the timestamps of packets near the end, and may miss
+            // the last frames of the video (e.g. with a high bit rate): read the last packets.
+            int64_t probedEnd, lastVideoPts;
+            // (only near FFmpeg's estimate: within 10 % of the duration, at least 2 s)
+            if (((std::strcmp(formatName, "mpegts") == 0) || (std::strcmp(formatName, "mpeg") == 0)) && probeEnd(stream, probedEnd, lastVideoPts) &&
+                (std::abs(double(probedEnd - movieEnd)) <= double((std::max)(_context->duration / 10, int64_t(2) * AV_TIME_BASE)))) {
+                movieEnd = probedEnd;
+            }
+        }
+        frames = framesUntil(movieEnd);
 
         // The above calculation is not reliable, because it seems in some situations (such as rendering out a mov
         // with 5 frames at 24 fps from Nuke) the duration has been rounded up to the nearest millisecond, which
         // leads to an extra frame being reported.  To attempt to work around this, compare against the number of
         // frames in the stream, and if they differ by one, use that value instead.
+        // In MOV/MP4, the frames before the start of the edit list (e.g. to decode the first displayed frame, if
+        // it is not a keyframe, or with negative timestamps) are counted in AVStream::nb_frames, but they are not
+        // displayed: the demuxer marks them as discarded in the index.
+        // But a stream may have fewer samples than frame times (a gap in the timestamps, e.g. after a stream copy
+        // from a non-keyframe, or VFR): when snapping down, the count must still reach the last sample (its PTS,
+        // from the last packets), which may also be after the end given by the duration.
         int64_t streamFrames = stream._avstream->nb_frames;
+        if (streamFrames > 0) {
+            streamFrames -= getDiscardedFrames(stream);
+        }
         if ((streamFrames > 0) && (std::abs((double)(frames - streamFrames)) <= 1)) {
             frames = streamFrames;
+        }
+        if (isMov && (streamFrames > 0)) {
+            int64_t probedEnd, lastVideoPts;
+            if (probeEnd(stream, probedEnd, lastVideoPts) && (lastVideoPts != int64_t(AV_NOPTS_VALUE))) {
+                frames = (std::max)(frames, int64_t(stream.ptsToFrame(lastVideoPts)) + 1);
+            }
         }
 #if TRACE_FILE_OPEN
         std::cout << "        Obtained from AVFormatContext::duration & framerate=";
@@ -668,7 +1243,8 @@ FFmpegFile::getStreamFrames(Stream& stream)
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::nb_frames, calculating from duration & framerate..." << std::endl;
 #endif
-        frames = (int64_t(stream._avstream->duration) * stream._avstream->time_base.num * stream._fpsNum) / (int64_t(stream._avstream->time_base.den) * stream._fpsDen);
+        // round to the nearest frame, as Stream::ptsToFrame()
+        frames = av_rescale_rnd(stream._avstream->duration, int64_t(stream._avstream->time_base.num) * stream._fpsNum, int64_t(stream._avstream->time_base.den) * stream._fpsDen, AV_ROUND_NEAR_INF);
 #if TRACE_FILE_OPEN
         if (frames > 0) {
             std::cout << "        Calculated from duration & framerate=";
@@ -686,6 +1262,7 @@ FFmpegFile::getStreamFrames(Stream& stream)
         int64_t maxPts = stream._startPTS;
 
         // Seek last key-frame.
+        _readAtOpen = true;
         avcodec_flush_buffers(stream._codecContext);
         av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
 
@@ -698,9 +1275,27 @@ FFmpegFile::getStreamFrames(Stream& stream)
         // _avPacket may be displayed on the screen for multiple frames. Please have a look at TP 162892 for more information
         // https://foundry.tpondemand.com/entity/162892
 
+        // A packet without a PTS (a reference frame in an MPEG-2 elementary stream with B-frames, or in AVI) is
+        // displayed at least at its DTS, delayed as the timestamps of the decoded frames (see
+        // getStreamStartTime()), and after the frames that follow it in decoding order until the next reference
+        // frame (B-frames): e.g. the last reference frame is the last frame displayed.
+        const int64_t frameDuration = stream.frameToPts(1) - stream.frameToPts(0);
+        bool refPending = false; // a packet without a PTS was read
         while (av_read_frame(_context, avPacket.pkt()) >= 0) {
-            if (avPacket->stream_index == stream._idx && avPacket->pts != int64_t(AV_NOPTS_VALUE) && avPacket->pts > maxPts)
-                maxPts = avPacket->pts;
+            if (avPacket->stream_index == stream._idx) {
+                int64_t pts = avPacket->pts;
+                if ((pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE))) {
+                    pts = (std::max)(avPacket->dts + (stream._startPTS - stream._startDTS), maxPts + frameDuration);
+                    refPending = true;
+                } else if ((pts != int64_t(AV_NOPTS_VALUE)) && refPending && (pts + frameDuration > maxPts)) {
+                    // the pending reference frame is displayed after this one
+                    maxPts = pts + frameDuration;
+                }
+                if ((pts != int64_t(AV_NOPTS_VALUE)) && (pts > maxPts)) {
+                    maxPts = pts;
+                }
+            }
+            av_packet_unref(avPacket.pkt());
         }
 #if TRACE_FILE_OPEN
         std::cout << "          Start PTS=" << stream._startPTS << ", Max PTS found=" << maxPts << std::endl;
@@ -771,6 +1366,8 @@ FFmpegFile::FFmpegFile(const string& filename)
     , _errorMsg()
     , _invalidState(false)
     , _seekCount(0)
+    , _bytesReadAtOpen(0)
+    , _readAtOpen(false)
 #ifdef OFX_IO_MT_FFMPEG
     , _lock()
     , _invalidStateLock()
@@ -1050,6 +1647,7 @@ FFmpegFile::FFmpegFile(const string& filename)
         // save the stream
         _streams.push_back(stream);
     }
+    _bytesReadAtOpen = (_context && _context->pb) ? _context->pb->bytes_read : 0;
     if (_streams.empty()) {
         setError(unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream");
         _selectedStream = nullptr;
@@ -1219,26 +1817,6 @@ FFmpegFile::isInvalid() const
     return _invalidState;
 }
 
-bool
-FFmpegFile::seekFrame(int frame,
-                      Stream* stream)
-{
-    /// Private should not lock
-
-    stream->resetHeldFrames();
-    avcodec_flush_buffers(stream->_codecContext);
-    int64_t timestamp = stream->frameToDts(frame);
-    int error = av_seek_frame(_context, stream->_idx, timestamp, AVSEEK_FLAG_BACKWARD);
-    if (error < 0) {
-        // Seek error. Abort attempt to read and decode frames.
-        setInternalError(error, "FFmpeg Reader failed to seek frame: ");
-
-        return false;
-    }
-
-    return true;
-}
-
 // decode a single frame into the buffer thread safe
 bool
 FFmpegFile::decode(const ImageEffect* /*plugin*/,
@@ -1263,10 +1841,11 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // Translate from the 1-based frames expected to 0-based frame offsets for use in the rest of this code.
     frame = frame - 1;
 
-    // Check if the requested frame index is in range
-    if (frame < stream->ptsToFrame(stream->_avstream->start_time)) {
+    // Check if the requested frame index is in range (AVStream::start_time is unknown in elementary streams)
+    const int firstFrame = (stream->_avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? stream->ptsToFrame(stream->_avstream->start_time) : 0;
+    if (frame < firstFrame) {
         if (loadNearest) {
-            frame = stream->ptsToFrame(stream->_avstream->start_time);
+            frame = firstFrame;
         } else {
             throw MissingFrameException();
         }
@@ -1454,6 +2033,12 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // }
         decodedFrame->pts = decodedFrame->best_effort_timestamp;
         if (decodedFrame->pts == AV_NOPTS_VALUE) {
+            // A frame without a PTS, output after a packet without a DTS, e.g. a frame output when
+            // the decoder is drained, in a container that has no PTS (AVI with B-frames): it is
+            // the frame after the previous decoded frame.
+            decodedFrame->pts = stream->_nextDecodedPts;
+        }
+        if (decodedFrame->pts == AV_NOPTS_VALUE) {
             // A given framme cannot be read from a video with no timestamps.
             // H.264 elementary packets have no timestamp.
             // See https://libav-user.ffmpeg.narkive.com/HhouRdWQ/pts-from-best-effort-timestamp
@@ -1462,6 +2047,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         }
 
         int64_t decodedFrameIdx = stream->ptsToFrame(decodedFrame->pts);
+        stream->_nextDecodedPts = stream->frameToPts((int)decodedFrameIdx + 1);
 
         if (decodedFrameIdx == frame) {
             // The requested frame: return it, whatever the frames decoded before it (with broken

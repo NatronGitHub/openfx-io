@@ -353,6 +353,36 @@ H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 
 non-zero start time, MOV, MPEG-TS (`start_time ~1.48 s`), Matroska at 23.976, 24, 25,
 30 and 60 fps, ProRes in Matroska, VP9 and VP8 in WebM, and a Matroska file with
 jittered (VFR) timestamps. The MPEG-TS clip stresses the non-zero stream start PTS.
+Frame counts (issue #145): an AVCHD-like M2TS (interlaced H.264 at 29.97 fps, with an
+AC3 audio track that starts before the video) must count the frames from the start of
+the video stream; Matroska with a non-zero start time and FLV with B-frames (with and
+without a start time, starting after the audio, and without the duration metadata, as
+written to a pipe) store a duration that is not counted from the start of the movie, while
+a Matroska duration rewritten as a length (as mkvmerge writes split parts, which needs
+`perl`; with GOP 8 and with the default GOP) must not cut the end, and AAC audio ending
+40 ms after the video in an FLV without the duration metadata must not add a frame; MP4
+and MOV with B-frames and no edit list (fragmented MP4 with H.264 and HEVC,
+`-use_editlist 0`) start at the B-frame delay and must keep their last frames, as must MOV/MP4
+stream copies from a non-keyframe and VFR MP4 with a one-frame gap (fewer samples than frame
+times); opening a 60 s Matroska with a start time, and a 60 s FLV, also truncated by 7, 377 and
+12345 bytes, must read at most 2 MB (`--max-open-bytes`, `FFmpegFile::getBytesReadAtOpen()`), and
+the index of the FLV must not reach its end after the open (`--max-indexed-frame`: an index entry
+near the end, added while reading the last packets, made the seeks decode from near the start); a high
+bit rate FLV without the duration metadata (400 kB per frame), with and without a start time, must
+count its frames from its last packets, as must an FLV at 0.5 fps with AAC audio (its last 64
+tags are audio tags and the AVC end of sequence); an MPEG-TS with two programs (the second one at
+100 s), an MPEG-PS whose last reference frame has no PTS, and VOBs with B-frames (with MP2, AC3 or
+no audio; the last reference frame has no PTS and no B-frame follows it) must count their video
+packets, with 1 and 8 decoder threads (`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`); an
+MPEG-PS cut at 10 offsets (in the middle of a GOP, or on an I-frame followed by the leading
+B-frames of an open GOP) must count its frames from the start time of the stream (its first PTS)
+to the last frame that ffprobe decodes, with 1 and 8 threads: the leading B-frames of an open GOP
+are before the start time, and not counted, while the frames after it whose reference frames are
+cut are counted (they fail); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
+elementary stream with B-frames has no timestamps, and its last frame has no PTS;
+MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
+not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
+still decode at its own frame.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a
