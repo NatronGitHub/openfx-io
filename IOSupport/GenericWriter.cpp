@@ -162,37 +162,6 @@ static bool gHostIsNatronVersion3OrGreater = false;
 static bool gHostIsMultiPlanar = false;
 static bool gHostIsMultiView = false;
 
-// the multi-plane suites of the host (FnOfxImageEffectPlaneSuiteV1 and V2, Nuke extensions), set at describe
-static bool gHostHasPlaneSuiteV1 = false;
-static bool gHostHasPlaneSuiteV2 = false;
-
-// The image of a plane of a clip, at a view (in bounds, if not NULL); renderView is the view that the host renders.
-// The multi-plane suites are Nuke extensions: with V1 only, there is a single view (the one rendered), and in a
-// host without them, such as an OFX 1.4 host, a clip has only the colour plane, fetched with clipGetImage
-// (OFX 1.0), at the view that the host renders.
-static Image*
-fetchPlaneImage(Clip* clip,
-                double time,
-                int view,
-                int renderView,
-                const string& plane,
-                const OfxRectD* bounds = NULL)
-{
-#ifdef OFX_EXTENSIONS_NUKE
-    if (gHostHasPlaneSuiteV2) {
-        return bounds ? clip->fetchImagePlane(time, view, plane.c_str(), *bounds) : clip->fetchImagePlane(time, view, plane.c_str());
-    }
-    if ( gHostHasPlaneSuiteV1 && (view == renderView) ) {
-        return bounds ? clip->fetchImagePlane(time, plane.c_str(), *bounds) : clip->fetchImagePlane(time, plane.c_str());
-    }
-#endif
-    if ( (plane != kFnOfxImagePlaneColour) || (view != renderView) ) {
-        return NULL; // no such plane or view
-    }
-
-    return clip->fetchImage(time, bounds);
-}
-
 template <typename T>
 static inline void
 unused(const T&)
@@ -451,7 +420,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     OfxRectD inputBounds;
     double inputPar = _inputClip->getPixelAspectRatio();
     Coords::toCanonical(renderWindow, renderScale, inputPar, &inputBounds);
-    const Image* srcImg = fetchPlaneImage(_inputClip, time, view, renderRequestedView, plane, &inputBounds);
+    const Image* srcImg = _inputClip->fetchImagePlane(time, view, plane.c_str(), inputBounds);
     *inputImage = srcImg;
     if (!srcImg) {
         if (failIfNoSrcImg) {
@@ -516,7 +485,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         // copy to dstImg if necessary
         if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
-            auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, renderRequestedView, renderRequestedView, plane));
+            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                 throwSuiteStatusException(kOfxStatFailed);
@@ -675,7 +644,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
             // copy to dstImg if necessary
             if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, renderRequestedView, renderRequestedView, plane));
+                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
                 if (!dstImg.get()) {
                     setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                     throwSuiteStatusException(kOfxStatFailed);
@@ -732,7 +701,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         } else if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
             // The render window does not intersect the source image: the temporary buffer is
             // black (it was zeroed above), and so is the output image (the writer is a no-op).
-            auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, renderRequestedView, renderRequestedView, plane));
+            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
                 if (abort()) {
                     // no data: the callers write nothing when aborted (they check abort() before encoding)
@@ -834,14 +803,8 @@ GenericWriterPlugin::getPackingOptions(bool* allCheckboxHidden,
 }
 
 void
-GenericWriterPlugin::render(const RenderArguments& hostArgs)
+GenericWriterPlugin::render(const RenderArguments& args)
 {
-    // kOfxImageEffectPropRenderPlanes is a Nuke extension: a host without it (e.g. an OFX 1.4 host) renders the
-    // colour plane
-    RenderArguments args(hostArgs);
-    if ( args.planes.empty() ) {
-        args.planes.push_back(kFnOfxImagePlaneColour);
-    }
     const double time = args.time;
 
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
@@ -1114,7 +1077,7 @@ GenericWriterPlugin::render(const RenderArguments& hostArgs)
 
             // the writer is a no-op: the output image is black too
             if (_outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(fetchPlaneImage(_outputClip, time, args.renderView, args.renderView, args.planes.front()));
+                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, args.renderView, args.planes.front().c_str()));
                 if (!dstImg.get()) {
                     if (abort()) {
                         return;
@@ -2640,9 +2603,7 @@ GenericWriterDescribe(ImageEffectDescriptor& desc,
             desc.setPassThroughForNotProcessedPlanes(ePassThroughLevelPassThroughNonRenderedPlanes);
         }
     }
-    gHostHasPlaneSuiteV1 = fetchSuite(kFnOfxImageEffectPlaneSuite, 1, true) != NULL;
-    gHostHasPlaneSuiteV2 = fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true) != NULL;
-    if (isMultiView && gHostHasPlaneSuiteV2) {
+    if (isMultiView && fetchSuite(kFnOfxImageEffectPlaneSuite, 2, true)) {
         gHostIsMultiView = true;
         desc.setIsViewAware(true);
         desc.setIsViewInvariant(eViewInvarianceAllViewsVariant);
