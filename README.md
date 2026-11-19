@@ -103,6 +103,7 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `OFX_IO_REQUIRE_ALL` | OFF | Fail if a group that is not disabled can't be built (for packagers). |
 | `SEEXPR_HOME` | empty (CMake's search paths) | SeExpr 2.11 prefix (`include/SeExpression.h`, `lib/libSeExpr`). |
 | `FFMPEG_PKG_CONFIG_PATH` | empty (pkg-config's search path) | pkg-config directory of the FFmpeg to use, e.g. `/opt/local/libexec/ffmpeg8/lib/pkgconfig` for MacPorts' [`ffmpeg8`](https://ports.macports.org/port/ffmpeg8/) port, which MacPorts' OpenImageIO links. |
+| `CMAKE_OSX_DEPLOYMENT_TARGET` | `14.0` when building natively on macOS, unless the `MACOSX_DEPLOYMENT_TARGET` environment variable is set and non-empty; no default when cross-compiling to another system. An existing build directory keeps its cached value: use a new one, or pass `-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0` | Minimum macOS version of the plug-ins ([`CMAKE_OSX_DEPLOYMENT_TARGET`](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_DEPLOYMENT_TARGET.html)). |
 | `OFX_CXX_STANDARD` | `CMAKE_CXX_STANDARD`, or 17 | C++ standard of the plug-ins and of the OFX Support library. |
 | `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: [`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh), like the Makefiles' release builds). |
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
@@ -131,7 +132,8 @@ Another common option is `BITS=32` for compiling a 32-bits version,
 binary (macOS only).
 
 The libraries are found with [`pkg-config`](https://www.freedesktop.org/wiki/Software/pkg-config/). Other useful variables are `SEEXPR_HOME` (the SeExpr 2.11
-prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). The Makefiles do not set the
+prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). On macOS, `MACOSX_DEPLOYMENT_TARGET` (default `14.0`; make variable or
+environment variable) is the minimum macOS version of the plug-ins. The Makefiles do not set the
 C++ standard: if the compiler defaults to an older one, pass it in `CXX`, e.g.
 `make CONFIG=release CXX="clang++ -std=c++17"`.
 See the file [`Makefile.master`](Makefile.master) in the toplevel directory for other useful
@@ -168,6 +170,16 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   Natron's MacPorts tree ([`tools/MacPorts`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts) in the
   Natron repository, RB-2.6 branch) and use `SEEXPR_HOME=/opt/local`; CI instead builds SeExpr 2.11 from source with that
   port's patches.
+  The plug-ins target macOS 14.0 (`MACOSX_DEPLOYMENT_TARGET` for the Makefiles and Xcode,
+  `CMAKE_OSX_DEPLOYMENT_TARGET` for CMake; see Apple's
+  [macOS Deployment Target](https://developer.apple.com/documentation/xcode/build-settings-reference#macOS-Deployment-Target)
+  setting), as Natron 2.6 does. MacPorts builds its libraries for the build machine's macOS unless the
+  `macosx_deployment_target` option (read by [`macports.tcl`](https://github.com/macports/macports-base/blob/master/src/macports1.0/macports.tcl),
+  not documented) is set in [`macports.conf`](https://guide.macports.org/chunked/internals.configuration-files.html):
+  check the `minos` of the bundled libraries with `otool -l` (`LC_BUILD_VERSION`); a library that requires a newer macOS
+  prevents the plug-ins from loading on older versions. After setting `macosx_deployment_target`, rebuild the installed ports from source
+  (`sudo port -s upgrade --force installed`). With `OFX_DEPLOY_BUNDLES`, CMake warns about such libraries, and fails with
+  `-DOFX_DEPLOY_STRICT_MINOS=ON` (recommended for release packages); the Makefile bundles (`osxDeploy.sh`) are not checked.
 - **MS Windows**: build in an [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/) shell, with the `mingw-w64-ucrt-x86_64-` packages of the
   libraries above. MSYS2 packages SeExpr 2.11 ([`mingw-w64-ucrt-x86_64-seexpr`](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-seexpr)), so `SEEXPR_HOME` is
   `$MINGW_PREFIX`, as a Windows path for CMake (with [Ninja](https://ninja-build.org)):
