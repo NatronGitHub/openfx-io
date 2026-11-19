@@ -469,8 +469,12 @@ to the last frame that ffprobe decodes, with 1 and 8 threads: the leading B-fram
 are before the start time, and not counted, while the frames after it whose reference frames are
 cut are counted (they fail); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
-MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
-not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
+MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
+display the first 2 (negative timestamps), must not count these frames; a 150-frame MPEG-TS and
+M2TS (H.264 with B-frames, AC3 audio) stream-copied with `-output_ts_offset 95440` and `95441`, so
+that their 33-bit timestamps wrap during the clip (libavformat then gives the frames before the wrap
+negative timestamps), must count all 150 frames and give exactly the images of the clean clip in
+every order, with 1 and 8 threads (issue #189: only the MOV/MP4 demuxer has edit-list pre-rolls); AVI (MPEG-4 with B-frames) has no PTS, and every frame must
 still decode at its own frame.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames

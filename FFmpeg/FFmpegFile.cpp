@@ -495,6 +495,30 @@ FFmpegFile::Stream::GetStreamAspectRatio(Stream* stream)
     return stream->_aspect;
 }
 
+// Whether the frames with a negative timestamp at the start of the stream are an edit-list pre-roll, which is not
+// displayed: only in MOV/MP4 (the "mov,mp4,m4a,3gp,3g2,mj2" demuxer, libavformat/mov.c:12205 in FFmpeg 9.0), whose
+// edit list starts after the first samples (mov_fix_index(), mov.c:4374, gives them negative timestamps and marks
+// those before the edit as AVINDEX_DISCARD_FRAME, mov.c:4567). Its timestamps have 64 bits (avpriv_set_pts_info(st,
+// 64, ...), mov.c:5353), and the demuxer does not have AVFMT_TS_DISCONT (mov.c:12209).
+// Elsewhere, negative timestamps are frames to display. In particular, libavformat unwraps the timestamps of the
+// streams with pts_wrap_bits < 63 (MPEG-TS and MPEG-PS: 33 bits, the default of avformat_new_stream(),
+// libavformat/options.c:295, and mpegts.c:954; FLV: 32 bits, flvdec.c:208), and when the first timestamp is less
+// than 60 s (or 1/8 of the range) before the wrap, it subtracts the wrap offset from the timestamps before the wrap,
+// which become negative, as does AVStream::start_time (update_wrap_reference() and update_timestamps(),
+// libavformat/demux.c:477-560 in FFmpeg 9.0 and 467-550 in 8.0, utils.c:745-898 in 4.4; wrap_timestamp(),
+// demux.c:53-66; with the correct_ts_overflow option, on by default, libavformat/options_table.h:83). The
+// demuxers with AVFMT_TS_DISCONT (MPEG-TS, MPEG-PS, live FLV: mpegts.c:3871, mpeg.c:707, flvdec.c:2009) may also
+// have timestamp discontinuities. The index entries and the timestamps read by the binary search of a seek are
+// unwrapped in the same way (ff_wrap_timestamp(), libavformat/seek.c:126 and 286).
+static bool
+NegativeStartIsPreroll(const AVFormatContext* context,
+                       const AVStream* avstream)
+{
+    const char* formatName = (context->iformat && context->iformat->name) ? context->iformat->name : "";
+    const bool isMov = std::strstr(formatName, "mov") != nullptr;
+    return isMov && (avstream->pts_wrap_bits >= 63) && !(context->iformat->flags & AVFMT_TS_DISCONT);
+}
+
 // get stream start time
 // The frames are counted from it (AVStream::start_time: the first PTS of the stream). In a stream cut on an
 // I-frame, the leading B-frames of an open GOP, which reference a frame before the cut, have a PTS before it:
@@ -519,7 +543,11 @@ FFmpegFile::getStreamStartTime(Stream& stream)
     }
 #endif
 
-    if (startPTS < 0) {
+    // A negative start time is only an edit-list pre-roll, whose frames are not displayed, in MOV/MP4 (see
+    // NegativeStartIsPreroll()): elsewhere it is the real start of the stream (e.g. an MPEG-TS whose timestamps
+    // wrap, which libavformat unwraps to negative timestamps), and its frames are counted from it.
+    const bool negativeStart = (startPTS != int64_t(AV_NOPTS_VALUE)) && (startPTS < 0) && !NegativeStartIsPreroll(_context, stream._avstream);
+    if ((startPTS < 0) && !negativeStart) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::start_time, searching frames..." << std::endl;
 #endif
@@ -574,7 +602,9 @@ FFmpegFile::getStreamStartTime(Stream& stream)
     // frame timestamp is going to match the packet which starts just before 0 and ends after 0 if that exists. Otherwise
     // it will be 0.
     // For more information please have a look at TP 162519
-    const bool isStartPTSValid = (startPTS + avPacket->duration > 0);
+    // This only applies to MOV/MP4 edit lists (see NegativeStartIsPreroll()): a negative start time of another
+    // container (e.g. an unwrapped MPEG-TS) is kept, and its frames are counted from it.
+    const bool isStartPTSValid = negativeStart || (startPTS + avPacket->duration > 0);
     if (!isStartPTSValid) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not found by searching frames, assuming ";
@@ -2247,6 +2277,19 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
     stream->clearTaint();
     ++_seekCount;
     int res = 0;
+
+    // The start of the file (seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)): timestamp 0 is at or before
+    // the first packet, unless the stream starts at a negative timestamp that is not an edit-list pre-roll (see
+    // NegativeStartIsPreroll()), e.g. an MPEG-TS whose timestamps wrap: timestamp 0 is then after the wrap, and the
+    // MPEG-TS and MPEG-PS demuxers, which have no read_seek but a read_timestamp (mpegts.c:3878, mpeg.c:712 in
+    // FFmpeg 9.0), seek to it by a binary search on the DTS (seek_frame_internal(), libavformat/seek.c:597-639,
+    // ff_seek_frame_binary(), with the timestamps unwrapped as the packets, seek.c:281-288). Seek to the first DTS
+    // of the stream instead (Stream::_startDTS, or its first PTS without B-frames), which is at or before its
+    // first packet.
+    if ((seekFlags & AVSEEK_FLAG_FRAME) && (frame == 0) && (stream->_startPTS < 0) && !NegativeStartIsPreroll(_context, stream->_avstream)) {
+        frame = (std::min)(stream->_startPTS, stream->_startDTS);
+        seekFlags = AVSEEK_FLAG_BACKWARD;
+    }
 
     // Once damage was found in the file (long-GOP codecs), a seek may land on a spurious keyframe: the Matroska
     // demuxer adds an index entry for each block whose header has the keyframe flag (libavformat/matroskadec.c:
