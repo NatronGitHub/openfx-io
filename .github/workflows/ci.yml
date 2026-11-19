@@ -177,7 +177,7 @@ jobs:
             OFX_ABI_ZLIB=99 "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
           # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
-          g++ -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
+          g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
           ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
       - name: Upload testing artifacts
         if: env.UPLOAD_BUNDLES == 'true'
@@ -301,7 +301,7 @@ jobs:
           unset DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
           # Replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
-          clang++ -std=c++17 -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
+          clang++ -std=c++17 -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
           ./verify_plugin_loads Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx
           # Loading alone doesn't prove self-containment (the /opt/local paths exist on this runner): the plug-in
           # and its bundled libraries must only reference @rpath/@loader_path libraries and system libraries.
@@ -394,7 +394,7 @@ jobs:
           "${MT_EXE}" -manifest IO.manifest -outputresource:"${BINARY_PATH}/IO.ofx;2"
           # Load check, with only the bundle and System32 on PATH, so that a DLL missing from the bundle makes it fail
           # (the checker itself is linked statically, so it needs no MSYS2 DLL).
-          g++ -static -o verify_plugin_loads .github/workflows/verify_plugin_loads.cpp openfx/HostSupport/src/ofxhBinary.cpp openfx/HostSupport/src/ofxhUtilities.cpp -I openfx/HostSupport/include/ -I openfx/include/
+          g++ -static -o verify_plugin_loads tests/verify_plugin_loads.cpp openfx/HostSupport/src/ofxhBinary.cpp openfx/HostSupport/src/ofxhUtilities.cpp -I openfx/HostSupport/include/ -I openfx/include/
           if ! ( cd ${BINARY_PATH} && PATH=".:/c/Windows/System32" ../../../../verify_plugin_loads ./IO.ofx ); then
             # Diagnostics: load each bundled DLL on its own to find unresolved imports (ERROR_PROC_NOT_FOUND etc.)
             g++ -static -o load_each_dll .github/workflows/load_each_dll.cpp
