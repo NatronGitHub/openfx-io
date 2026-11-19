@@ -2022,6 +2022,8 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         }
     }
 
+    bool draining = false; // the decoder is drained (end of the stream)
+
     // Process a frame output by the decoder. Returns true if it gives the requested frame (which is
     // then converted into avFrameOut), or if decoding should stop without a picture (hasPicture is
     // then false, and decode() retries from the start).
@@ -2043,7 +2045,20 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             // H.264 elementary packets have no timestamp.
             // See https://libav-user.ffmpeg.narkive.com/HhouRdWQ/pts-from-best-effort-timestamp
             setInternalError(-1, "FFmpeg Reader Video frames have no timestamp: ");
-            return false;
+            // When the decoder is drained, stop: a frame without a timestamp then cannot be
+            // placed (no frame was decoded since the seek), and neither can the frames after it.
+            // E.g. in AVI with MPEG-4 B-frames (no PTS), after a seek to the last reference frame,
+            // the B-frames after it are skipped, since their other reference frame is missing
+            // ("messed up order, maybe after seeking?", libavcodec/mpeg4videodec.c:3169-3173 in
+            // FFmpeg 6.1), and FFmpeg 6.1 then outputs the last reference frame twice when drained:
+            // first without a timestamp, then again with the timestamp of the last packet, that of
+            // the frame before it (libavcodec/h263dec.c:413-431 and :468, which sets
+            // skipped_last_frame for any skipped frame; FFmpeg 8 sets it only for a not coded VOP,
+            // libavcodec/mpeg4videodec.c:3316 and h263dec.c:442-460 in n8.0). Taking the second
+            // one gave the last frame for the one before it. decode() then retries from the start.
+            // (fftools/ffmpeg_dec.c:350-353 in n6.1 also extrapolates a missing timestamp from the
+            // previous frame, and has none after a seek either.)
+            return draining;
         }
 
         int64_t decodedFrameIdx = stream->ptsToFrame(decodedFrame->pts);
@@ -2161,6 +2176,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
 
     // Flush the decoder of remaining frames by sending a NULL packet (enter draining mode).
     if (res == AVERROR_EOF) {
+        draining = true;
         res = avcodec_send_packet(stream->_codecContext, nullptr);
         if ((res < 0) && (res != AVERROR_EOF)) {
             setInternalError(res, "FFmpeg Reader Failed to flush the decoder of remaining frames: ");

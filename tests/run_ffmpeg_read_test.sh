@@ -89,7 +89,11 @@ ramp() {
     echo "color=c=gray:s=128x128:r=$1,format=gray,geq=lum='16+4*N':cb=128:cr=128,format=yuv420p"
 }
 have_encoder() {
-    ffmpeg -hide_banner -h "encoder=$1" 2>/dev/null | grep -q "^Encoder $1 "
+    # Not `ffmpeg ... | grep -q`: grep -q exits at the first match, ffmpeg then gets SIGPIPE if it still
+    # writes, and with pipefail the pipeline fails, which skipped the clips of that encoder at random.
+    local help
+    help="$(ffmpeg -hide_banner -h "encoder=$1" 2>/dev/null)" || return 1
+    [[ "$help" == "Encoder $1 "* || "$help" == *$'\n'"Encoder $1 "* ]]
 }
 X264="-c:v libx264 -g 8 -bf 2 -pix_fmt yuv420p"
 
@@ -474,7 +478,8 @@ check_packets() {
         return
     fi
     local packets
-    packets=$(ffprobe -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 "$tmp/$name" | head -n 1 | tr -d ',')
+    # (sed -n 1p, not head -n 1: with pipefail, ffprobe killed by SIGPIPE after head exits would fail the script)
+    packets=$(ffprobe -v error -count_packets -select_streams v:0 -show_entries stream=nb_read_packets -of csv=p=0 "$tmp/$name" | sed -n 1p | tr -d ',')
     for threads in 1 8; do
         # shellcheck disable=SC2086
         FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames "$packets" --open-only "$@" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
@@ -498,7 +503,7 @@ check_ps_cuts() {
     for offset in "$@"; do
         echo "== $desc (cut at byte $offset) =="
         tail -c +"$offset" "$tmp/$name" > "$tmp/cut_$offset.mpg"
-        start=$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$tmp/cut_$offset.mpg" | head -n 1 | tr -d ',\r')
+        start=$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$tmp/cut_$offset.mpg" | sed -n 1p | tr -d ',\r')
         expected=$(ffprobe -v error -select_streams v:0 -show_entries frame=best_effort_timestamp_time -of csv=p=0 "$tmp/cut_$offset.mpg" 2>/dev/null | tr -d ',\r' |
             awk -v s="$start" 'BEGIN { m = -1; na = 0 } $1 == "N/A" { if (m >= 0) na++ } $1 != "N/A" { if ($1 + 0 > m) { m = $1 + 0; na = 0 } } END { printf "%d\n", int((m - s) * 25 + 1.5) + na }')
         for threads in 1 8; do
