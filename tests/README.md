@@ -519,7 +519,14 @@ frame must fail, and decoding every frame sequentially and in reverse order must
 times the file (the frames that cannot be decoded from the start of the file are not decoded again
 for each request). In a Matroska H.264 clip with a GOP of 100 and B-frames, with packets 50-150
 damaged, frames 49 and 52 (decoded before the run, and still in the decoder when it gives up after
-too many damaged packets) must decode in any order, and frames 53-200 must fail. An MPEG-TS with a continuity counter error (a packet flagged
+too many damaged packets) must decode in any order, and frames 53-200 must fail. In a 300-frame ProRes MOV with packets 10-74 and 76 damaged (a run of more than 64
+packets), frames 11-75 must fail with 1 and with 8 decoder threads (with frame threads, the
+packets after the run were already sent when the error of the 65th damaged packet came back).
+In a 12 s H.264 Matroska clip with a GOP of 100 and B-frames, where 200 bytes of the packets
+50-99, 50-113 or 80-119 are overwritten with random bytes (`perl`; the damage desynchronises the
+Matroska blocks, e.g. with keyframe flags on damaged packets), the frames of the intact GOPs
+must give exactly the images of the clean file (`--reference`), sequentially, in reverse order,
+in a random order, and with frame 120 then frame 1 in a newly opened file, with 1 and 8 threads. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to

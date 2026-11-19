@@ -678,6 +678,71 @@ check_damaged_gop() {
     done
 }
 
+# check_damaged_mkv_run NAME DESCRIPTION FROM TO REFERENCE_FRAMES
+# A 12 s H.264 Matroska clip (testsrc2, 320x240, 25 fps, GOP 100 with B-frames: keyframes at packets 0, 100 and
+# 200) where 200 bytes at offset 8 of the video packets FROM to TO (0-based, in decoding order) are overwritten
+# with random bytes (perl, seeded): the damage desynchronises the Matroska blocks (e.g. keyframe flags on
+# damaged packets). The 1-based REFERENCE_FRAMES (e.g. "1-48,101-300"), which do not depend on the damaged
+# packets, must give exactly the images of the clean file, sequentially, in reverse order, in a random order,
+# and with frame 120 then frame 1 in a newly opened file, with 1 and 8 decoder threads (--reference).
+check_damaged_mkv_run() {
+    local name="$1" desc="$2" from="$3" to="$4" frames="$5"
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v perl >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no perl or ffprobe"
+        return
+    fi
+    if [ ! -f "$tmp/clean_g100.mkv" ] &&
+        ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25,format=yuv420p -t 12 -c:v libx264 -g 100 -keyint_min 100 \
+            -sc_threshold 0 -bf 2 -b:v 600k "$tmp/clean_g100.mkv"; then
+        echo "FAIL: could not generate clean_g100.mkv"
+        rc=1
+        return
+    fi
+    cp "$tmp/clean_g100.mkv" "$tmp/$name"
+    ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of compact=p=0 "$tmp/clean_g100.mkv" > "$tmp/$name.packets"
+    if ! perl -e '
+        my ($file, $list, $from, $to) = @ARGV;
+        srand(1);
+        open(my $l, "<", $list) or die;
+        my @p;
+        while (<$l>) { my ($size) = /size=(\d+)/; my ($pos) = /pos=(\d+)/; push @p, [$pos, $size]; }
+        open(my $f, "+<:raw", $file) or die;
+        for my $i ($from .. $to) {
+            my ($pos, $size) = @{$p[$i]};
+            my $n = $size - 8 < 200 ? $size - 8 : 200;
+            next if $n <= 0;
+            seek($f, $pos + 8, 0) or die;
+            print $f pack("C*", map { int(rand(256)) } 1 .. $n);
+        }
+        close($f) or die;' "$tmp/$name" "$tmp/$name.packets" "$from" "$to"; then
+        echo "FAIL: could not damage $name"
+        rc=1
+        return
+    fi
+    local list="" range a b i threads
+    for range in ${frames//,/ }; do
+        a=${range%-*}
+        b=${range#*-}
+        for ((i = a; i <= b; i++)); do
+            list="${list:+$list,}$i"
+        done
+    done
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --reference "$tmp/clean_g100.mkv" --reference-frames "$list" \
+            --order 120,1 ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -810,6 +875,14 @@ check_damaged_gop damaged_idr_long_gop.mp4 "MP4 (H.264, GOP 300, B-frames, damag
 # decode, in any order; the frames after the run fail until the next keyframe (frame 201).
 check_damaged_gop damaged_run_long_gop.mkv "Matroska (H.264, GOP 100, B-frames, packets 50-150 damaged)" 300 "if(between(n,50,150),1,0)" 53 200 "" \
     -g 100 -bf 2 -x264-params scenecut=0:b-adapt=0
+# After a damaged run of more than 64 packets, the frames of the run fail with 1 and with 8 decoder threads (with
+# frame threads, the packets after the run were sent when the error of the 65th damaged packet came back).
+check_damaged_long ramp_damaged_run65.mov "MOV (ProRes, 300 frames, packets 10-74 and 76 damaged)" "between(n,10,74)+eq(n,76)" 11 75 "" 12
+# A damaged run in a long GOP of an H.264 Matroska clip: the frames of the intact GOPs must decode as in the
+# clean file, in any order (the decoder restarts at the next keyframe).
+check_damaged_mkv_run damaged_g100_50_99.mkv "Matroska (H.264, GOP 100, B-frames, packets 50-99 damaged)" 50 99 "1-48,101-300"
+check_damaged_mkv_run damaged_g100_50_113.mkv "Matroska (H.264, GOP 100, B-frames, packets 50-113 damaged)" 50 113 "1-48,201-300"
+check_damaged_mkv_run damaged_g100_80_119.mkv "Matroska (H.264, GOP 100, B-frames, packets 80-119 damaged)" 80 119 "1-78,201-300"
 check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
     "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.

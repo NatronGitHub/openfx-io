@@ -63,13 +63,18 @@
  *      reads at most N bytes,
  *  17. optionally (--order F1,F2,...) decodes the 1-based frames Fi in that order in a newly opened
  *      file, and checks each one against the sequential decode (or that it fails, for a --fail
- *      frame): e.g. a render order that must not make a good frame fail.
+ *      frame): e.g. a render order that must not make a good frame fail,
+ *  18. optionally (--reference CLEAN --reference-frames F1,F2,...) only checks that the 1-based
+ *      frames Fi give exactly the image of the same frame of the file CLEAN (e.g. the undamaged
+ *      file), whatever the other frames give: every frame is decoded sequentially, in reverse
+ *      order, in a random order, and in the --order frames, each in a newly opened file
+ *      (e.g. the intact GOPs of a damaged file must decode as in the clean file, in any order).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -117,7 +122,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -140,6 +145,8 @@ main(int argc, char** argv)
     long long maxSeqBytes = -1;
     long long maxReverseBytes = -1;
     std::vector<int> renderOrder; // 1-based frames to decode in that order in a newly opened file
+    std::string referenceFile; // --reference: the clean file
+    std::vector<int> referenceFrames; // --reference-frames: the 1-based frames that must be those of the clean file
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     for (int i = 2; i < argc; ++i) {
@@ -157,6 +164,16 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--reference" && i + 1 < argc) {
+            referenceFile = argv[++i];
+        } else if (a == "--reference-frames" && i + 1 < argc) {
+            std::istringstream is(argv[++i]);
+            std::string item;
+            while (std::getline(is, item, ',')) {
+                if (!item.empty()) {
+                    referenceFrames.push_back(std::atoi(item.c_str()));
+                }
+            }
         } else if (a == "--max-reverse-bytes" && i + 1 < argc) {
             maxReverseBytes = std::atoll(argv[++i]);
         } else if (a == "--order" && i + 1 < argc) {
@@ -280,6 +297,68 @@ main(int argc, char** argv)
         }
     }
     if (openOnly) {
+        std::printf("PASS\n");
+        return 0;
+    }
+
+    // --reference: the --reference-frames must be exactly those of the clean file, in every order.
+    if (!referenceFile.empty()) {
+        const size_t refBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
+        std::vector<unsigned char> refBuf(refBytes);
+        std::vector<std::vector<unsigned char>> ref(frames + 1);
+        {
+            FFmpegFile clean(referenceFile.c_str());
+            for (int f : referenceFrames) {
+                if ((f < 1) || (f > frames) || !clean.decode(nullptr, f, loadNearest, refBuf.data())) {
+                    std::fprintf(stderr, "FAIL: --reference: frame %d of %s cannot be decoded\n", f, referenceFile.c_str());
+                    return 1;
+                }
+                ref[f] = refBuf;
+            }
+        }
+        std::vector<std::pair<std::string, std::vector<int>>> orders;
+        std::vector<int> all;
+        for (int f = 1; f <= frames; ++f) {
+            all.push_back(f);
+        }
+        orders.push_back(std::make_pair(std::string("sequential"), all));
+        orders.push_back(std::make_pair(std::string("reverse"), std::vector<int>(all.rbegin(), all.rend())));
+        std::vector<int> shuffled = all;
+        uint32_t seed = 5;
+        for (size_t i = shuffled.size(); i > 1; --i) {
+            seed = seed * 1664525u + 1013904223u; // LCG: the same order on every platform
+            std::swap(shuffled[i - 1], shuffled[(seed >> 8) % i]);
+        }
+        orders.push_back(std::make_pair(std::string("random"), shuffled));
+        if (!renderOrder.empty()) {
+            orders.push_back(std::make_pair(std::string("--order"), renderOrder));
+        }
+        int refErrors = 0;
+        for (const auto& o : orders) {
+            FFmpegFile file(filename);
+            for (int f : o.second) {
+                bool ok = false;
+                std::memset(refBuf.data(), 0, refBytes);
+                try {
+                    ok = file.decode(nullptr, f, loadNearest, refBuf.data());
+                } catch (const std::exception& e) {
+                    ok = false;
+                }
+                if (ref[f].empty()) {
+                    continue; // not a reference frame: anything
+                }
+                if (!ok || (refBuf != ref[f])) {
+                    if (++refErrors <= 20) {
+                        std::printf("  REFERENCE %s order: frame %d %s\n", o.first.c_str(), f, ok ? "differs from the clean file" : "failed");
+                    }
+                }
+            }
+        }
+        std::printf("Result: referenceFrames=%zu referenceErrors=%d\n", referenceFrames.size(), refErrors);
+        if (refErrors) {
+            std::printf("FAIL\n");
+            return 1;
+        }
         std::printf("PASS\n");
         return 0;
     }

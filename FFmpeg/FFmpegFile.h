@@ -174,6 +174,7 @@ private:
         int _firstFrameAfter; // the first frame after the requested one decoded by the last demuxAndDecode() (-1 if none)
         bool _reachedEnd; // the last demuxAndDecode() drained the decoder at the end of the file, without a frame to hold
         bool _drainedEarly; // the decoder was drained after too many damaged packets: decoding further needs a seek
+        bool _damagedSinceKeyframe; // a damaged packet was dropped since the last restart of the decoder
         int _lastDamagedFrame; // the largest frame of the damaged packets found by the current decode() (-1 if none)
         int _requestDroppedPackets; // the packets dropped by all the attempts of the current decode()
         bool _noTimestamps; // the current decode() found a decoded frame without a timestamp, and stopped
@@ -246,6 +247,7 @@ private:
             , _firstFrameAfter(-1)
             , _reachedEnd(false)
             , _drainedEarly(false)
+            , _damagedSinceKeyframe(false)
             , _lastDamagedFrame(-1)
             , _requestDroppedPackets(0)
             , _noTimestamps(false)
@@ -391,6 +393,7 @@ private:
             }
             _heldFrameIsLast = false;
             _drainedEarly = false;
+            _damagedSinceKeyframe = false;
             _decodingFromStart = false;
             _nextDecodedPts = AV_NOPTS_VALUE;
         }
