@@ -164,6 +164,9 @@ private:
         // whose durations are the nominal frame duration in Matroska).
         AVFrame* _avHeldFrame; // the last decoded frame at or before the last requested frame (empty if none)
         AVFrame* _avNextFrame; // the decoded frame that follows _avHeldFrame, if already decoded (empty if not)
+        // A packet read from the demuxer that avcodec_send_packet() refused with AVERROR(EAGAIN), and whose drain gave
+        // the requested frame: it is sent first by the next sequential request (empty if none, see demuxAndDecode()).
+        AVPacket* _pendingPacket;
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
@@ -208,7 +211,8 @@ private:
         AVPixelFormat _convertCtxSrcPixelFormat;
         int _convertCtxSrcWidth;
         int _convertCtxSrcHeight;
-        int _convertCtxSrcColorRange;
+        int _convertCtxSrcRange; // the source range of the conversion: 0 = video (16..235), 1 = full (0..255)
+        int _convertCtxSwsColorspace; // the Y'CbCr coefficient table of the conversion (SWS_CS_*)
         AVPixelFormat _convertCtxDstPixelFormat;
         int _convertCtxDstWidth;
         int _convertCtxDstHeight;
@@ -231,7 +235,8 @@ private:
         int _numberOfComponents;
         enum AVPixelFormat _outputPixelFormat;
         uint8_t _componentPosition[4];
-        int _colorMatrixTypeOverride; // Option to override the default YCbCr color matrix. 0 means no override (default).
+        int _colorMatrixOverride; // the Y'CbCr matrix (eColorMatrixAuto: from the tags of the stream)
+        int _colorRangeOverride; // the Y'CbCr range (eColorRangeAuto: from the tags of the stream)
         bool _doNotAttachPrefix;
         bool _matchMetaFormat;
         int _decodeNextFrameIn; // The 0-based index of the next frame to be fed into decode. Negative before any
@@ -253,6 +258,7 @@ private:
             , _avIntermediateFrame(nullptr)
             , _avHeldFrame(nullptr)
             , _avNextFrame(nullptr)
+            , _pendingPacket(nullptr)
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
             , _invalidDataSkipped(0)
@@ -292,7 +298,8 @@ private:
             , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
             , _convertCtxSrcWidth(0)
             , _convertCtxSrcHeight(0)
-            , _convertCtxSrcColorRange(AVCOL_RANGE_UNSPECIFIED)
+            , _convertCtxSrcRange(-1)
+            , _convertCtxSwsColorspace(-1)
             , _convertCtxDstPixelFormat(AV_PIX_FMT_NONE)
             , _convertCtxDstWidth(0)
             , _convertCtxDstHeight(0)
@@ -309,7 +316,8 @@ private:
             , _bitDepth(8)
             , _numberOfComponents(3)
             , _outputPixelFormat(AV_PIX_FMT_RGB24)
-            , _colorMatrixTypeOverride(0)
+            , _colorMatrixOverride(0)
+            , _colorRangeOverride(0)
             , _doNotAttachPrefix(true)
             , _matchMetaFormat(true)
             , _decodeNextFrameIn(-1)
@@ -345,6 +353,10 @@ private:
 
             if (_avNextFrame) {
                 av_frame_free(&_avNextFrame);
+            }
+
+            if (_pendingPacket) {
+                av_packet_free(&_pendingPacket);
             }
 
             if (_codecContext) {
@@ -538,6 +550,11 @@ private:
             return f && f->buf[0];
         }
 
+        static bool hasPacket(const AVPacket* p)
+        {
+            return p && (p->data || p->side_data_elems);
+        }
+
         // Forget the decoded frames kept since the last seek. Must be called whenever the
         // demuxer or the decoder is repositioned.
         void resetHeldFrames()
@@ -547,6 +564,9 @@ private:
             }
             if (_avNextFrame) {
                 av_frame_unref(_avNextFrame);
+            }
+            if (_pendingPacket) {
+                av_packet_unref(_pendingPacket);
             }
             _heldFrameIsLast = false;
             _drainedEarly = false;
@@ -636,7 +656,14 @@ private:
 
         // Generate the conversion context used by SoftWareScaler if not already set.
         // |reset| forces recalculation of cached context.
-        SwsContext* getConvertCtx(AVPixelFormat srcPixelFormat, int srcWidth, int srcHeight, int srcColorRange, AVPixelFormat dstPixelFormat, int dstWidth, int dstHeight);
+        SwsContext* getConvertCtx(AVPixelFormat srcPixelFormat, int srcWidth, int srcHeight, int srcColorRange, int srcColorSpace, AVPixelFormat dstPixelFormat, int dstWidth, int dstHeight);
+
+        // The Y'CbCr coefficient table (SWS_CS_*) for a frame with the given matrix (AVFrame.colorspace), see getConvertCtx()
+        int getSwsColorspace(int frameColorSpace);
+
+        // The source range for sws_setColorspaceDetails() (0 = video, 1 = full) for a frame with the given pixel
+        // format and range (AVFrame.color_range), see getConvertCtx()
+        int getSwsSrcRange(AVPixelFormat srcPixelFormat, int frameColorRange) const;
 
         // Return the number of input frames needed by this stream's codec before it can produce output. We expect to have to
         // wait this many frames to receive output; any more and a decode stall is detected.
@@ -764,17 +791,36 @@ public:
 
     void setSelectedStream(int streamIndex);
 
-    void setColorMatrixTypeOverride(int colorMatrixType) const
-    {
-        if (_streams.empty()) {
-            return;
-        }
+    // The Y'CbCr matrix and range of the conversion to RGB (the ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params).
+    // Auto takes them from the tags of the stream (see Stream::getConvertCtx()).
+    enum ColorMatrixEnum {
+        eColorMatrixAuto = 0,
+        eColorMatrixRec601,
+        eColorMatrixRec709,
+        eColorMatrixRec2020,
+    };
+    enum ColorRangeEnum {
+        eColorRangeAuto = 0,
+        eColorRangeVideo,
+        eColorRangeFull,
+    };
 
-        // mov64Reader::decode always uses stream 0
-        Stream* stream = _streams[0];
-        stream->_colorMatrixTypeOverride = colorMatrixType;
-        stream->_resetConvertCtx = true;
+    // Set the Y'CbCr matrix and range of all the streams. The conversion context is rebuilt by the next decode() if
+    // they changed. Thread safe.
+    void setColorOverrides(ColorMatrixEnum matrix, ColorRangeEnum range) const
+    {
+#ifdef OFX_IO_MT_FFMPEG
+        AutoMutex guard(_lock); // decode() reads them
+#endif
+        for (Stream* stream : _streams) {
+            stream->_colorMatrixOverride = (int)matrix;
+            stream->_colorRangeOverride = (int)range;
+        }
     }
+
+    // The OCIO colorspace name written by WriteFFmpeg (or Nuke) in the kMetaKeyColorspace metadata of the file, or
+    // an empty string.
+    std::string getColorspaceMetadata() const;
 
     void setDoNotAttachPrefix(bool doNotAttachPrefix) const
     {

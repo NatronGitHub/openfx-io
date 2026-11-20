@@ -15,6 +15,8 @@
  *    support render scale (decode() always reads full-resolution pixels), so that
  *    GenericReader halves the image once per level (scalePixelData, buildMipMapLevel).
  *    Before the fix, level 2 or more dereferenced a null temporary buffer.
+ *  - refreshFrameBounds() (#163) is only called when the part of the render window in the host's RoD is out of the
+ *    frame bounds, not for a render window larger than an up-to-date RoD (e.g. a display window).
  *
  * And getClipPreferences() for an image sequence whose starting time is not its first frame
  * (issue #147): the PAR must be read from the first file of the sequence, looked up at the
@@ -58,6 +60,7 @@ using namespace OFX::IO;
 #define kPluginIdentifierFrameVarying "fr.inria.openfx.tests.ReaderHooksFrameVarying"
 #define kPluginIdentifierMultiPlanar "fr.inria.openfx.tests.ReaderHooksMultiPlanar"
 #define kPluginIdentifierMipmap "fr.inria.openfx.tests.ReaderHooksMipmap"
+#define kPluginIdentifierTiles "fr.inria.openfx.tests.ReaderHooksTiles"
 #define kSupportsRGBA true
 #define kSupportsRGB false
 #define kSupportsXY false
@@ -100,8 +103,8 @@ MipmapContent gMipmapContent; // read by the mipmap test reader instances
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
-    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false, const MipmapContent* content = nullptr)
-        : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, multiPlanar)
+    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false, const MipmapContent* content = nullptr, bool supportsTiles = kSupportsTiles)
+        : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, supportsTiles, multiPlanar)
         , _content(content)
     {
     }
@@ -110,6 +113,8 @@ public:
     std::vector<DecodeRecord> records;
     // getFrameBounds() calls: the filename and the time (the sequence time), in call order
     std::vector<std::pair<std::string, double>> frameBoundsCalls;
+    // refreshFrameBounds() calls
+    int refreshCalls = 0;
     // called from decode(), after recording
     std::function<void()> onDecode;
     // decode() throws (after recording and onDecode)
@@ -195,9 +200,19 @@ private:
         }
         *format = *bounds;
         *par = (filename.find("par2") != std::string::npos) ? 2. : ((filename.find("par0") != std::string::npos) ? 0. : 1.);
+        if (filename.find("par40_33") != std::string::npos) {
+            *par = 40. / 33.;
+        }
         *tile_width = *tile_height = 0;
 
         return true;
+    }
+
+    virtual bool refreshFrameBounds(const std::string& /*filename*/, OfxTime /*time*/, int /*view*/) OVERRIDE FINAL
+    {
+        ++refreshCalls;
+
+        return false;
     }
 
     virtual bool guessParamsFromFilename(const std::string& /*filename*/, std::string* colorspace, PreMultiplicationEnum* filePremult, PixelComponentEnum* components, int* componentCount) OVERRIDE FINAL
@@ -240,17 +255,17 @@ private:
 };
 
 void
-describeTestReader(ImageEffectDescriptor& desc, const std::vector<std::string>& extensions, const char* label, bool multiPlanar = false)
+describeTestReader(ImageEffectDescriptor& desc, const std::vector<std::string>& extensions, const char* label, bool multiPlanar = false, bool supportsTiles = kSupportsTiles)
 {
-    GenericReaderDescribe(desc, extensions, /*evaluation=*/-1, kSupportsTiles, multiPlanar);
+    GenericReaderDescribe(desc, extensions, /*evaluation=*/-1, supportsTiles, multiPlanar);
     desc.setLabel(label);
 }
 
 void
-describeTestReaderInContext(ImageEffectDescriptor& desc, ContextEnum context, bool isVideoStreamPlugin)
+describeTestReaderInContext(ImageEffectDescriptor& desc, ContextEnum context, bool isVideoStreamPlugin, bool supportsTiles = kSupportsTiles)
 {
     PageParamDescriptor* page = GenericReaderDescribeInContextBegin(desc, context, isVideoStreamPlugin,
-                                                                    kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, true);
+                                                                    kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, supportsTiles, true);
     GenericReaderDescribeInContextEnd(desc, context, page, "scene_linear", "scene_linear");
 }
 
@@ -307,6 +322,20 @@ MipmapTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, Conte
     return ret;
 }
 
+// The same, supporting tiles: the host may give it an output image larger than the RoD (e.g. a display window)
+mDeclareReaderPluginFactory(TilesTestReaderPluginFactory, {}, false);
+void TilesTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
+void TilesTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksTilesTest", false, true); }
+void TilesTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin(), true); }
+ImageEffect*
+TilesTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
+{
+    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent, true);
+    ret->restoreStateFromParams();
+
+    return ret;
+}
+
 TestReaderPluginFactory gDefaultFactory(kPluginIdentifierDefault, 1, 0);
 mRegisterPluginFactoryInstance(gDefaultFactory)
 FrameVaryingTestReaderPluginFactory gFrameVaryingFactory(kPluginIdentifierFrameVarying, 1, 0);
@@ -315,6 +344,8 @@ MultiPlanarTestReaderPluginFactory gMultiPlanarFactory(kPluginIdentifierMultiPla
 mRegisterPluginFactoryInstance(gMultiPlanarFactory)
 MipmapTestReaderPluginFactory gMipmapFactory(kPluginIdentifierMipmap, 1, 0);
 mRegisterPluginFactoryInstance(gMipmapFactory)
+TilesTestReaderPluginFactory gTilesFactory(kPluginIdentifierTiles, 1, 0);
+mRegisterPluginFactoryInstance(gTilesFactory)
 
 // ------------------------------------------------------------------ host side
 
@@ -518,6 +549,42 @@ struct Reader {
         pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, r);
 
         PropSet ra = makeRenderInArgs(t, 0, 0);
+        pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
+        int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
+        pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+
+        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+    }
+
+    // a render at scale 1 of renderWindow into an output image of the given bounds, the output clip's RoD being
+    // clipRoD (in canonical coordinates, PAR = 1), without getRegionOfDefinition (as a host that cached the RoD)
+    OfxStatus renderWithRoD(const OfxRectI& clipRoD, const OfxRectI& bounds, const OfxRectI& renderWindow)
+    {
+        const OfxRectD r = { (double)clipRoD.x1, (double)clipRoD.y1, (double)clipRoD.x2, (double)clipRoD.y2 };
+
+        return renderWithRoD(r, 1., bounds, renderWindow);
+    }
+
+    // the same, with a RoD in canonical coordinates and a PAR
+    OfxStatus renderWithRoD(const OfxRectD& clipRoD, double par, const OfxRectI& bounds, const OfxRectI& renderWindow)
+    {
+        double rs[2] = { 1., 1. };
+        const int w = bounds.x2 - bounds.x1;
+        const int h = bounds.y2 - bounds.y1;
+        const int rowBytes = w * 4 * (int)sizeof(float);
+        out->buffer.assign((size_t)rowBytes * h, 0);
+        OfxPropertySetHandle ip = PH(&out->image);
+        pSetPointer(ip, kOfxImagePropData, 0, out->buffer.data());
+        int b[4] = { bounds.x1, bounds.y1, bounds.x2, bounds.y2 };
+        pSetIntN(ip, kOfxImagePropBounds, 4, b);
+        pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, b);
+        pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
+        pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
+        double r[4] = { clipRoD.x1, clipRoD.y1, clipRoD.x2, clipRoD.y2 };
+        pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, r);
+        pSetDouble(PH(&out->props), kOfxImagePropPixelAspectRatio, 0, par);
+        pSetDouble(ip, kOfxImagePropPixelAspectRatio, 0, par);
+        PropSet ra = makeRenderInArgs(1., 0, 0);
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
         int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
@@ -926,6 +993,88 @@ testThreads(OfxPlugin* pFrameVarying, const std::string& still)
     check(afterA == 0. && afterB == 0., "after render() returned in each thread: getRenderTime() = %g, %g (0)", afterA, afterB);
 }
 
+// 4. refreshFrameBounds() (#163): only when the part of the render window in the host's RoD is out of the frame
+// bounds (the reader's cached frame bounds may be older than the file), not for a render window larger than an
+// up-to-date RoD (e.g. the display window of a cropped image), which would read the file again for each render
+void
+testRefreshFrameBounds(OfxPlugin* pTiles, const std::string& still)
+{
+    std::printf("==== refreshFrameBounds(): only for a render window in the host's RoD and out of the frame bounds (#163) ====\n");
+    const OfxRectI frame = { 3, 1, 32, 18 }; // the frame bounds (a cropped image)
+    const OfxRectI display = { 0, 0, 40, 24 }; // a larger window (its display window)
+    gMipmapContent.bounds = frame;
+    gMipmapContent.value = [](int x, int y, int c) -> float { return (float)(x + 2 * y + c); };
+    Reader r;
+    if (!r.create(pTiles, still)) {
+        ++gFailures;
+
+        return;
+    }
+    r.plugin->refreshCalls = 0;
+    for (int k = 0; k < 3; ++k) {
+        // the host's RoD is the frame bounds, the render window the display window (or the frame bounds)
+        OfxStatus st = r.renderWithRoD(frame, display, (k == 2) ? frame : display);
+        check(ok(st), "render %d with the host's RoD = the frame bounds = %d", k + 1, st);
+    }
+    check(r.plugin->refreshCalls == 0, "render windows larger than the host's RoD: refreshFrameBounds() not called (%d calls)", r.plugin->refreshCalls);
+    // the host's RoD is larger than the frame bounds (the file changed since the host got it)
+    OfxStatus st = r.renderWithRoD(display, display, display);
+    check(ok(st), "render with the host's RoD larger than the frame bounds = %d", st);
+    check(r.plugin->refreshCalls == 1, "the host's RoD is larger than the frame bounds: refreshFrameBounds() called once (%d calls)", r.plugin->refreshCalls);
+    // a render window in the host's RoD and in the frame bounds
+    r.plugin->refreshCalls = 0;
+    st = r.renderWithRoD(display, display, { 4, 2, 30, 17 });
+    check(ok(st) && r.plugin->refreshCalls == 0, "render window in the frame bounds: refreshFrameBounds() not called (%d calls)", r.plugin->refreshCalls);
+}
+
+// The same, with a PAR of 40/33 and a width of 1920: the RoD that getRegionOfDefinition() returns, x * PAR, converted
+// back to pixels (x' / PAR) is not exactly 1920 (1920.0000000000002, so 1921 pixels): an up-to-date RoD, rendered
+// whole by the host, must not call refreshFrameBounds() (it read the file again for each render)
+void
+testRefreshFrameBoundsPar(OfxPlugin* pTiles, const std::string& prefix)
+{
+    std::printf("==== refreshFrameBounds(): not for an up-to-date RoD at a PAR of 40/33 ====\n");
+    const std::string file = prefix + ".par40_33.tst";
+    if (std::FILE* fp = std::fopen(file.c_str(), "wb")) {
+        std::fclose(fp);
+    }
+    gMipmapContent.bounds = { 0, 0, 1920, 1080 };
+    gMipmapContent.value = [](int x, int y, int c) -> float { return (float)(x + 2 * y + c); };
+    {
+        Reader r;
+        if (!r.create(pTiles, file)) {
+            ++gFailures;
+            std::remove(file.c_str());
+
+            return;
+        }
+        // the RoD, as the host gets it (with the PAR of the output clip, that getClipPreferences() set)
+        pSetDouble(PH(&r.out->props), kOfxImagePropPixelAspectRatio, 0, 40. / 33.);
+        double rs[2] = { 1., 1. };
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        OfxStatus st = r.p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(r.inst), PH(&a), PH(&o));
+        double rd[4] = { 0., 0., 0., 0. };
+        pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rd);
+        check(ok(st) && rd[2] == 1920. * (40. / 33.), "getRegionOfDefinition = %d, x2 = %.17g", st, rd[2]);
+        const OfxRectD rod = { rd[0], rd[1], rd[2], rd[3] };
+        // the host converts it to pixels (x2 = ceil(2327.2727272727275 / (40 / 33)) = 1921) for the output image
+        // and the render window (a reader that supports tiles: the image may be larger than the frame bounds)
+        const OfxRectI bounds = { (int)std::floor(rd[0] / (40. / 33.)), (int)std::floor(rd[1]), (int)std::ceil(rd[2] / (40. / 33.)), (int)std::ceil(rd[3]) };
+        check(bounds.x2 == 1921, "the host's RoD in pixels: x2 = %d (1921)", bounds.x2);
+        r.plugin->refreshCalls = 0;
+        for (const OfxRectI& w : { bounds, OfxRectI{ 1900, 0, bounds.x2, 1080 }, OfxRectI{ 0, 1070, bounds.x2, 1080 } }) {
+            st = r.renderWithRoD(rod, 40. / 33., bounds, w);
+            check(ok(st), "render window %d,%d,%d,%d = %d", w.x1, w.y1, w.x2, w.y2, st);
+        }
+        check(r.plugin->refreshCalls == 0, "up-to-date RoD at a PAR of 40/33: refreshFrameBounds() not called (%d calls)", r.plugin->refreshCalls);
+    }
+    std::remove(file.c_str());
+}
+
 // 3. downscaling by GenericReader for a reader that doesn't support render scale (issue #104)
 
 // floor(a / 2^l) and ceil(a / 2^l)
@@ -1074,13 +1223,14 @@ testMipmap(OfxPlugin* pMipmap, const std::string& still)
                     check(rod.x1 == frame.x1 && rod.y1 == frame.y1 && rod.x2 == frame.x2 && rod.y2 == frame.y2 && bounds.x1 == ob.x1 && bounds.y1 == ob.y1 && bounds.x2 == ob.x2 && bounds.y2 == ob.y2,
                           "%s: RoD (%g,%g)-(%g,%g) (canonical coordinates), output bounds (%d,%d)-(%d,%d)",
                           what, rod.x1, rod.y1, rod.x2, rod.y2, bounds.x1, bounds.y1, bounds.x2, bounds.y2);
-                    // decode() was asked for the full-resolution pixels of the render window
+                    // decode() was asked for the full-resolution pixels of the render window, at render scale 1 (its
+                    // window is at full resolution, #160)
                     const OfxRectI fullRes = { (std::max)(rw.x1 * pot, frame.x1), (std::max)(rw.y1 * pot, frame.y1),
                                                (std::min)(rw.x2 * pot, frame.x2), (std::min)(rw.y2 * pot, frame.y2) };
-                    const bool decodeOk = r.plugin->records.size() == 1 && r.plugin->records[0].renderScale.x == 1. / pot && r.plugin->records[0].renderScale.y == 1. / pot
+                    const bool decodeOk = r.plugin->records.size() == 1 && r.plugin->records[0].renderScale.x == 1. && r.plugin->records[0].renderScale.y == 1.
                         && r.plugin->records[0].renderWindow.x1 == fullRes.x1 && r.plugin->records[0].renderWindow.y1 == fullRes.y1
                         && r.plugin->records[0].renderWindow.x2 == fullRes.x2 && r.plugin->records[0].renderWindow.y2 == fullRes.y2;
-                    check(decodeOk, "%s: decode() called once, for the full-resolution window (%d,%d)-(%d,%d)", what, fullRes.x1, fullRes.y1, fullRes.x2, fullRes.y2);
+                    check(decodeOk, "%s: decode() called once, for the full-resolution window (%d,%d)-(%d,%d), at scale 1", what, fullRes.x1, fullRes.y1, fullRes.x2, fullRes.y2);
 
                     int badRef = 0, badBox = 0, badOutside = 0, nBoxes = 0;
                     for (int y = ob.y1; y < ob.y2; ++y) {
@@ -1163,7 +1313,9 @@ main(int argc, char** argv)
     OfxPlugin* pMultiPlanar = loadPlugin(kPluginIdentifierMultiPlanar, descMultiPlanar);
     Effect descMipmap;
     OfxPlugin* pMipmap = loadPlugin(kPluginIdentifierMipmap, descMipmap);
-    if (!pDefault || !pFrameVarying || !pMultiPlanar || !pMipmap) {
+    Effect descTiles;
+    OfxPlugin* pTiles = loadPlugin(kPluginIdentifierTiles, descTiles);
+    if (!pDefault || !pFrameVarying || !pMultiPlanar || !pMipmap || !pTiles) {
         std::printf("FAIL: cannot load the test readers\n");
 
         return 1;
@@ -1177,11 +1329,14 @@ main(int argc, char** argv)
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);
     testMipmap(pMipmap, still);
+    testRefreshFrameBounds(pTiles, still);
+    testRefreshFrameBoundsPar(pTiles, prefix);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pFrameVarying->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pMultiPlanar->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pMipmap->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    pTiles->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::remove(still.c_str());
     std::remove(video.c_str());
 

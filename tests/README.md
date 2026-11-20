@@ -11,7 +11,7 @@ make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
-make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime() hooks
+make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
@@ -19,6 +19,7 @@ make test-runscript # RunScript: stderr line splitting (all systems); on MS Wind
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
+make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
 make test-ofx14-scan-asan # the same, built with AddressSanitizer
@@ -137,6 +138,22 @@ the real render pipeline, linked directly (no host binary):
   written at a rate close to 120000/1001 (40999/342, as the ffmpeg CLI does), and
   with the Format "Default", the format must be guessed from the filename param
   before the first render (a .m4v file has no 255 fps limit).
+* **WriteFFmpeg color tags and Y'CbCr matrix, ReadFFmpeg round trip**: encode a
+  constant color (0.8, 0.3, 0.1) with H.264 (libx264, MP4/MOV/Matroska), ProRes 4444
+  and 422 HQ, and QuickTime Animation (qtrle, RGB), with the OCIO output colorspaces
+  rec709, Rec2020, sRGB and Gamma2.2 of `test.ocio`, in SD (128x96) and 720p. The stream
+  must keep the primaries and transfer function of the OCIO colorspace (ProRes: only
+  the transfer functions of SMPTE RDD 36, so sRGB is unspecified there, and the frame
+  header must have the same codes as the stream), its Y'CbCr matrix must be BT.2020 NCL
+  with the BT.2020 primaries, else BT.709 in HD and SMPTE 170M in SD, and `gbr` (RGB) for
+  qtrle; the Y' that libavcodec decodes must be the one of that matrix
+  (Y' = Kr R + (1 - Kr - Kb) G + Kb B, video range), and ReadFFmpeg (Auto matrix and
+  range) must decode the color back within 0.01. In Matroska, the OCIO output
+  colorspace must be in the `uk.co.thefoundry.Colorspace` metadata, and ReadFFmpeg
+  must use it as its File Colorspace. DNxHR HQX and HQ (720p, Rec2020, and HQ in SD,
+  rec709) must use the BT.709 matrix, the one of the DNxHD frame header that FFmpeg's
+  encoder writes and FFmpeg's decoder uses, whatever the primaries and size; DNxHR 444
+  is RGB (`gbr`).
 * **WriteFFmpeg, output RoD changed during the render**: from the second frame
   on, the render window and the source image are smaller (64x32) or larger
   (192x160) than the movie (128x128, the RoD at `beginSequenceRender`), as when
@@ -150,9 +167,8 @@ the real render pipeline, linked directly (no host binary):
   rawvideo in QuickTime (2vuy, raw RGB and ARGB, and from FFmpeg 8 v308, v408
   and v410), Matroska, NUT and AVI. libavformat must read back the expected
   codec, tag and pixel format (and the BT.601 matrix in QuickTime and Matroska,
-  except for the files of the real v308 and v410 encoders, FFmpeg < 9, which
-  master does not tag, although FFmpeg 8 reads them back as rawvideo; video
-  range in Matroska), and ReadFFmpeg must decode the pattern exactly for
+  also for the v308 and v410 encoders of FFmpeg < 9, since #210 tags every
+  Y'CbCr stream; video range in Matroska), and ReadFFmpeg must decode the pattern exactly for
   RGB, or within the Y'CbCr conversion error. The pattern is 64x48 with values
   on the 8-bit grid, and also has values on no grid (as float, 10-bit and
   16-bit images: 16-bit RGB must be exact within 1e-4, a lower depth fails)
@@ -418,6 +434,9 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   with the RoD the host got before the rewrite, at scale 1 (straight into the output image,
   and through GenericReader's buffer) and 1/2: the whole render window is written, black
   out of the new frame bounds.
+* **a reverted file**: rewritten with a smaller data window and rendered (the header cache
+  then has the new header), then reverted to the first header, whose RoD the host still has:
+  the render is the first image, not cropped to the cached data window (#163).
 * **a truncated file**: the render must fail, with an error message.
 * **concurrent renders**: 6 instances render 2 files (3 instances per file) 8 times each
   from 6 threads at once: each render must give the same image as a single-threaded one.
@@ -433,6 +452,27 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 `make bench-exr` (optimized build) times 5 renders of 2048x1556 RGBA half files with ZIP,
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
+
+### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163)
+
+`reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
+and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
+and extends past the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM;
+8-bit RGB and RGBA PNG for ReadPNG (only if `pkg-config` finds libpng). It is built with
+[AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS Windows), and the output image is
+between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush against one of them:
+
+* **render scale 1/2**: GenericReader decodes a full-resolution window into its buffer: decode() gets a render scale
+  of 1 (ReadOIIO and ReadPFM assert it, #160).
+* **narrow render windows**: a few columns, a few rows, a box, a pixel, the edges, at scale 1 and 1/2, in an output
+  image of the RoD (and, for ReadOIIO, which supports tiles, of the window): only the window is written, with the
+  pixels of the render of the whole RoD, which are the file's at scale 1 (#163).
+* **a rewritten file**: smaller or larger, rendered with the RoD the host got before: only the window is written.
+* **concurrent renders** of narrow windows by 4 instances while another thread replaces the file by smaller and
+  larger ones: only the windows are written.
+
+`READER_WINDOW_ONLY=text` runs only the tests whose title contains `text`. `test-render` also renders narrow windows
+of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 
 ### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
 
@@ -476,7 +516,11 @@ P0,P1,...` describes a variable frame rate clip with timestamp gaps: ramp frame 
 at frame Pi, and a frame in a gap must be identical to the last ramp frame at or
 before it, as players display it (and, with `--ramp`, hold its content).
 `--max-seeks N` checks that decoding every frame sequentially seeks at most N times
-(`FFmpegFile::getSeekCount()`).
+(`FFmpegFile::getSeekCount()`). `--matrix N` and `--range N` set the Y'CbCr matrix
+(0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020) and range (0 = Auto, 1 = Video,
+2 = Full) of the conversion to RGB (`FFmpegFile::setColorOverrides()`, the ReadFFmpeg
+"YCbCr Matrix" and "YCbCr Range" params), and `--rgb R,G,B[,TOL]` checks the mean RGB
+of the first and the last frame (0-255 scale, default tolerance 1.5).
 
 `run_ffmpeg_read_test.sh` generates 40-frame gray-ramp clips (frame N luma = 16 + 4*N,
 H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 with a
@@ -510,8 +554,12 @@ to the last frame that ffprobe decodes, with 1 and 8 threads: the leading B-fram
 are before the start time, and not counted, while the frames after it whose reference frames are
 cut are counted (they fail); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
-MP4 edit lists that do not display the first 1 or 3 frames (negative timestamps) must
-not count these frames; AVI (MPEG-4 with B-frames) has no PTS, and every frame must
+MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
+display the first 2 (negative timestamps), must not count these frames; a 150-frame MPEG-TS and
+M2TS (H.264 with B-frames, AC3 audio) stream-copied with `-output_ts_offset 95440` and `95441`, so
+that their 33-bit timestamps wrap during the clip (libavformat then gives the frames before the wrap
+negative timestamps), must count all 150 frames and give exactly the images of the clean clip in
+every order, with 1 and 8 threads (issue #189: only the MOV/MP4 demuxer has edit-list pre-rolls); AVI (MPEG-4 with B-frames) has no PTS, and every frame must
 still decode at its own frame.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
@@ -581,16 +629,36 @@ in every order. In a 400-frame H.264 Matroska clip with a GOP of 5 and B-frames,
 keyframe from packet 20 damaged (the decoder then outputs frames whose best_effort_timestamp is the
 DTS of a later packet), frames 1-18 must give the clean images in every order (the others fail:
 the stream ends in damage). In an AVI with MPEG-4 B-frames (the reference frames have no PTS) with
-packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. In all-intra H.264
+packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. Clean
+48-frame VP9 clips (issue #159; 256x160, GOP 12, `libvpx-vp9` in 2 passes, since libvpx only makes
+alt-ref frames in 2 passes), in WebM and Matroska, in 8 and 10 bits, with alt-ref frames (superframes,
+which the VP9 decoder splits into a hidden and a shown frame) and without (`-auto-alt-ref 0`), and an
+AV1 clip (`libaom-av1`), must give exactly the images of their lossless copy (FFV1, or lossless VP9
+for 10 bits, which the reader decodes to 8 bits), decoded by the ffmpeg CLI with 1 thread (`--reference`), in every order, with 1, 4 and 8 decoder threads: with frame
+threads, the VP9 decoder refuses a packet with AVERROR(EAGAIN) after a superframe, and the reader lost
+it when the drain gave the requested frame. In all-intra H.264
 (`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
 (the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
-order, must read at most 6 times the file. An MPEG-TS with a continuity counter error (a packet flagged
+order, must read at most 6 times the file. Intra-only codecs that the reader finds from the codec descriptor
+(`AV_CODEC_PROP_INTRA_ONLY`; before, only ProRes, DNxHD, MJPEG, PNG, DPX, TGA and TIFF were known):
+v210 in MOV, rawvideo, HuffYUV and JPEG-LS in AVI, JPEG 2000 in Matroska and Hap in MOV, 48 frames
+with packets 10-12 and 30 damaged, must give the clean images for the other frames in every order,
+with 1 and 8 threads, and a truncated v210 MOV (faststart, cut in frame 16) must fail from frame 16, as
+ProRes and MJPEG. An MPEG-TS with a continuity counter error (a packet flagged
 as corrupt, but not at the end of the file) must decode every frame, with 1 and 8 threads.
 Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is at
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration
 (1667 ms for 40 frames) must not count a 41st frame. Clips whose encoder is missing
 from the `ffmpeg` CLI are skipped. `FFMPEG_READ_TEST_KEEP=dir` keeps the clips.
+Y'CbCr matrix and range (`check_color`): clips of a constant Y'CbCr color (Y' 120, Cb 80,
+Cr 200, written as raw yuv444p bytes with `perl`, in lossless H.264 with the tags in the
+VUI, and in 10-bit FFV1 in Matroska with the tags in the container only), tagged bt709,
+bt470bg, smpte170m, bt2020nc, fcc and smpte240m, in video and full range, and untagged
+(64x48 and 1280x720), must decode to the RGB computed by the script from the Kr and Kb of
+the matrix (ITU-T H.273) and from the range, not with FFmpeg (each clip is first checked to
+decode to the samples it was encoded from): Auto uses the tags, else Rec. 601 below 720
+lines and Rec. 709 from 720 lines, in video range, and `--matrix`/`--range` override them.
 
 Note on the `frameToPts` fix: the harness shows the reader is frame-accurate
 with and without that fix (a mis-targeted seek is recovered by the forward scan in
@@ -699,6 +767,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
+| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, render scale 1/2, rewritten files, with ASan and guard pages. |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
 | `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |
@@ -714,6 +783,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
 | `ffmpeg_syntax_check.sh`    | Compile check of the FFmpeg plug-ins against the FFmpeg found by pkg-config (for FFmpeg 4.x/5.x containers). |
 | `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
+| `verify_plugin_loads.cpp`   | Loads an `IO.ofx` with openfx's HostSupport and lists its plug-ins (ctest `io-load`, the CI load checks, `tools/compare_bundles.sh`); linked with a copy of openfx's `ofxhBinary.cpp` that uses `RTLD_NOW` instead of `RTLD_LAZY`, so that a missing symbol makes loading fail. |
 | `check_icons.cmake`         | Every plug-in of the CMake build tree's bundle has its icon, `Contents/Resources/<identifier>.png` (ctest `io-icons`). |
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim`. |

@@ -35,3 +35,4 @@ colorspaces:
   - !<ColorSpace> {name: Gamma2.2, family: gamma, bitdepth: 32f, isdata: false}
   - !<ColorSpace> {name: st2084, family: hdr, bitdepth: 32f, isdata: false}
   - !<ColorSpace> {name: AlexaV3LogC, family: log, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: Rec2020, family: rec2020, bitdepth: 32f, isdata: false}

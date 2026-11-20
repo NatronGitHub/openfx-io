@@ -33,8 +33,12 @@
 #     middle of a GOP (1 and 8 decoder threads): the end read from their last packets.
 #   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
 #     with B-frames, which has no timestamps.
-#   * MP4 with an edit list that does not display the first 1 or 3 frames (negative
-#     timestamps): they are counted in the stream's number of frames, but not displayed.
+#   * MP4 with an edit list that does not display the first 1 or 3 frames, and MOV with one that does
+#     not display the first 2 (negative timestamps): they are counted in the stream's number of frames,
+#     but not displayed.
+#   * MPEG-TS and M2TS whose 33-bit timestamps wrap during the clip (#189): libavformat gives the frames
+#     before the wrap negative timestamps, and they must be counted and displayed (only MOV/MP4 edit lists
+#     have a pre-roll that is not displayed).
 #   * AVI (MPEG-4 with B-frames), which has no PTS.
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
@@ -57,14 +61,22 @@
 #     drop them, and their frame times show the previous frame. With a damaged first GOP,
 #     its frames must fail with an error, and the other frames must decode. AV1 (libdav1d,
 #     which reports damage as AVERROR(ENOMEM) with threads) with two scrambled frames.
-#   * Truncated ProRes and MJPEG in MOV (faststart): the missing frames fail with an error,
+#   * Truncated ProRes, MJPEG and v210 in MOV (faststart): the missing frames fail with an error,
 #     sequentially and after a seek.
+#   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
+#     Hap) with damaged packets: the other frames must give the images of the clean file in every order.
 #   * MPEG-TS with a continuity counter error (a packet flagged as corrupt, but not at the end
 #     of the file): every frame must decode.
+#   * Clean VP9 (WebM and Matroska, 8 and 10 bits, with and without alt-ref frames) and AV1, with 1, 4 and 8
+#     decoder threads: every frame must be that of a lossless copy, in every order (issue #159).
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
 #     two frame times (see check_swapped).
+#   * The Y'CbCr matrix and range of the conversion to RGB (see check_color): a constant Y'CbCr color in
+#     lossless H.264 (tags in the VUI) and 10-bit FFV1 in Matroska (tags in the container), tagged bt709,
+#     bt470bg, smpte170m, bt2020nc, fcc and smpte240m, in video and full range, and untagged (SD and 720p),
+#     and the --matrix and --range overrides: the decoded RGB must be the one computed from the matrix and the range.
 # Clips whose encoder is not available in the ffmpeg CLI are skipped.
 #
 # Environment:
@@ -804,6 +816,107 @@ check_damaged_ref() {
     done
 }
 
+# check_frame_threads NAME DESCRIPTION ENCODER PIX_FMT FFMPEG_OUTPUT_ARGS...
+# A clean 48-frame clip (testsrc with a moving luma offset, 256x160, 24 fps, GOP 12, ENCODER in 2 passes, so that
+# libvpx makes alt-ref frames, which it only makes in 2 passes) must give exactly the images of its lossless copy
+# (decoded by the ffmpeg CLI with 1 thread), in every order, with 1, 4 and 8 decoder threads (--reference). Issue #159:
+# with frame threads, the VP9 decoder refuses a packet with AVERROR(EAGAIN) after a superframe (a hidden alt-ref frame
+# and a shown frame), and the reader lost that packet when the drain gave the requested frame: sequentially, the
+# frames after it decoded wrong until the next keyframe.
+check_frame_threads() {
+    local name="$1" desc="$2" encoder="$3" pixfmt="$4" all threads hidden ref
+    shift 4
+    # The lossless copy: FFV1, or for more than 8 bits lossless VP9 without alt-ref frames, which the reader also
+    # decodes to 8 bits (it takes the bit depth from bits_per_raw_sample, which FFV1 sets and VP9 does not).
+    local refargs=(-c:v ffv1)
+    ref="$tmp/ref_$name.mkv"
+    if [[ "$pixfmt" == *10* ]]; then
+        refargs=(-c:v libvpx-vp9 -lossless 1 -auto-alt-ref 0)
+        ref="$tmp/ref_$name.webm"
+    fi
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    # 48 frames from the source duration (d=2), not -frames:v 48: with an output frame limit, the ffmpeg 6.1 CLI
+    # flushes the encoder twice (when the limit is reached, and again in enc_flush()), and writes the pass-1 stats
+    # twice, so libvpx rejects pass 2 ("rc_twopass_stats_in missing EOS stats packet").
+    local src="testsrc=s=256x160:r=24:d=2,format=yuv420p,geq=lum='lum(X,Y)+2*N':cb='cb(X,Y)':cr='cr(X,Y)',format=$pixfmt"
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$src" -c:v "$encoder" -g 12 "$@" -pass 1 -passlogfile "$tmp/$name.pass" -f null - ||
+        ! ffmpeg -y -loglevel error -f lavfi -i "$src" -c:v "$encoder" -g 12 "$@" -pass 2 -passlogfile "$tmp/$name.pass" "$tmp/$name"; then
+        echo "SKIPPED: the ffmpeg CLI could not encode $name with $encoder in 2 passes"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -threads 1 -i "$tmp/$name" "${refargs[@]}" "$ref"; then
+        echo "SKIPPED: the ffmpeg CLI could not make the lossless copy of $name (${refargs[*]})"
+        return
+    fi
+    if [ "$encoder" = libvpx-vp9 ]; then
+        # the hidden frames: the packets after splitting the superframes, minus the 48 packets
+        hidden=$(ffmpeg -loglevel error -i "$tmp/$name" -c:v copy -bsf:v vp9_superframe_split -f framecrc - | grep -vc '^#') || true
+        echo "  $((hidden - 48)) hidden (alt-ref) frames"
+    fi
+    all="$(seq -s, 1 48)"
+    for threads in 1 4 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --reference "$ref" --reference-frames "$all" \
+            ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/$name.out" 2>&1; then
+            grep -E '^  REFERENCE|^FAIL' "$tmp/$name.out" | head -5 || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        else
+            echo "  $threads decoder threads: PASS"
+        fi
+    done
+}
+
+# check_ts_wrap NAME DESCRIPTION RATE OFFSET FFMPEG_OUTPUT_ARGS...
+# A 150-frame clip (testsrc2, 320x240, at RATE fps, H.264 with B-frames, and a sine audio track in AC3) in MPEG-TS
+# (FFMPEG_OUTPUT_ARGS, e.g. -mpegts_m2ts_mode 1 for M2TS), stream-copied with -output_ts_offset OFFSET (in seconds),
+# so that its 33-bit timestamps wrap (at 2^33 / 90000 = 95443.7 s) during the clip: libavformat then makes the
+# timestamps before the wrap negative, and the start time too (update_wrap_reference(), libavformat/demux.c). Every
+# frame must be counted (#189: they were counted from the first frame after the wrap, and the frames before it were
+# lost), and give exactly the image of the clean file (before the stream copy), in every order, with 1 and 8 decoder
+# threads (--reference).
+check_ts_wrap() {
+    local name="$1" desc="$2" rate="$3" offset="$4" list start threads
+    shift 4
+    echo "== $desc =="
+    if ! have_encoder libx264 || ! have_encoder ac3; then
+        echo "SKIPPED: no libx264 or ac3 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "testsrc2=s=320x240:r=$rate" -f lavfi -i sine=r=48000 -frames:v 150 \
+        -c:v libx264 -g 25 -bf 2 -pix_fmt yuv420p -c:a ac3 -shortest -f mpegts "$@" "$tmp/clean_$name" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -map 0 -c copy -output_ts_offset "$offset" -f mpegts "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # the start time must be negative, i.e. the timestamps wrap in the clip
+    start="$(ffprobe -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$tmp/$name")"
+    if [[ "$start" != -* ]]; then
+        echo "FAIL: $name: the video start time is $start, the timestamps do not wrap"
+        rc=1
+        return
+    fi
+    list="$(seq -s, 1 150)"
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames 150 --reference "$tmp/clean_$name" --reference-frames "$list" \
+            ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
 # check_swapped NAME DESCRIPTION
 # A 24-frame CFR ramp in MOV (time scale 24) where the PTS of frames 10 and 11 are swapped:
 # the decoder then outputs the timestamps 9, 11, 11, 12 (best_effort_timestamp).
@@ -867,6 +980,10 @@ check ramp_low_rate.flv "FLV (H.264, 0.5 fps, AAC audio)" libx264 0.5 \
 check_mkv_length ramp_length.mkv "Matroska (H.264, 24 fps, GOP 8, start time 0.5 s, duration written as a length, as mkvmerge does)" -g 8
 check_mkv_length ramp_length_gop.mkv "Matroska (H.264, 24 fps, default GOP, start time 0.5 s, duration written as a length)"
 check_flv_overhang ramp_overhang.flv "FLV (H.264 with B-frames, 24 fps, no duration metadata, AAC audio ending 40 ms after the video)"
+# MPEG-TS and M2TS whose 33-bit timestamps wrap during the clip (#189): the frames before the wrap have negative
+# timestamps, and must be counted and displayed.
+check_ts_wrap ts_pcrwrap.ts "MPEG-TS (H.264 with B-frames, 25 fps, the timestamps wrap during the clip)" 25 95440
+check_ts_wrap m2ts_wrap.m2ts "M2TS (H.264 with B-frames, 29.97 fps, the timestamps wrap during the clip)" 30000/1001 95441 -mpegts_m2ts_mode 1
 # MP4/MOV with B-frames and no edit list: the start time is the B-frame delay.
 check ramp_frag.mp4 "Fragmented MP4 (H.264 with B-frames, no edit list)" libx264 24 $X264 -movflags frag_keyframe+empty_moov
 check ramp_noeditlist.mov "MOV (H.264 with B-frames, no edit list)" libx264 24 $X264 -use_editlist 0
@@ -881,6 +998,8 @@ check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed
     $X264 -output_ts_offset -0.041666666666666667
 check_frames ramp_preroll3.mp4 "MP4 (H.264, edit list, first 3 frames not displayed: negative timestamps)" libx264 24 37 3 \
     $X264 -output_ts_offset -0.125
+check_frames ramp_preroll2.mov "MOV (H.264, edit list, first 2 frames not displayed: negative timestamps)" libx264 24 38 2 \
+    $X264 -output_ts_offset -0.083333333333333333
 # AVI has no PTS: the decoder gives the frames the DTS of the packet after which they are output.
 check ramp_bframes.avi "AVI (MPEG-4 with B-frames, no PTS)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
 check ramp_prores_24.mkv "Matroska (ProRes, 24 fps)" prores_ks 24 -c:v prores_ks
@@ -961,15 +1080,32 @@ check_damaged_ref damaged_g5_keys.mkv "Matroska (H.264, GOP 5, B-frames, every k
 # and after the next keyframe must decode as in the clean file, in any order.
 check_damaged_ref damaged_bframes.avi "AVI (MPEG-4, GOP 24, B-frames, packets 60-62 damaged)" mpeg4 200 \
     "if(between(n,60,62),1,0)" "1-59,73-200" -bf 2 -g 24 -q:v 3
+# Clean clips decoded with frame threads (issue #159): VP9 with alt-ref frames (superframes), in WebM and Matroska, 8 and
+# 10 bits, and without alt-ref frames; AV1.
+check_frame_threads vp9_altref.webm "WebM (VP9, GOP 12, alt-ref frames): frame threads" libvpx-vp9 yuv420p -b:v 300k -auto-alt-ref 1
+check_frame_threads vp9_altref.mkv "Matroska (VP9, GOP 12, alt-ref frames): frame threads" libvpx-vp9 yuv420p -b:v 300k -auto-alt-ref 1
+check_frame_threads vp9_altref10.webm "WebM (VP9 10 bits, GOP 12, alt-ref frames): frame threads" libvpx-vp9 yuv420p10le -b:v 300k -auto-alt-ref 1
+check_frame_threads vp9_noaltref.webm "WebM (VP9, GOP 12, no alt-ref frames): frame threads" libvpx-vp9 yuv420p -b:v 300k -auto-alt-ref 0
+check_frame_threads av1.mkv "Matroska (AV1, libaom, GOP 12): decoder threads" libaom-av1 yuv420p -b:v 300k -cpu-used 8
 # All-intra H.264 (every packet is an IDR frame) with every other packet from packet 20 damaged: decoded as an
 # intra-only stream once damage is found (not from the start of the file for each frame), bounded in bytes.
 check_damaged_gop damaged_intra_h264.mkv "Matroska (all-intra H.264, every other packet from packet 20 damaged)" 120 \
     "if(eq(mod(n,2),0)*gte(n,20),1,0)" 1 0 6 -preset ultrafast -g 1
 check_damaged_long ramp_damaged_good181.mov "MOV (ProRes, 300 frames, packets 100-179 and 181-183 damaged)" \
     "between(n,100,179)+between(n,181,183)" 101 180 "" 12 101,184,181,182
+# Intra-only codecs found from the codec descriptor (AV_CODEC_PROP_INTRA_ONLY), with packets 10-12 and 30 damaged: the
+# other frames must decode as in the clean file, in any order.
+for intra in "v210 mov -pix_fmt yuv422p10le" "rawvideo avi" "huffyuv avi -pix_fmt yuv422p" "jpeg2000 mkv" "jpegls avi -pix_fmt rgb24" \
+    "hap mov -pix_fmt rgba"; do
+    read -r codec container args <<<"$intra"
+    # shellcheck disable=SC2086
+    check_damaged_ref "damaged_$codec.$container" "Intra-only $codec in $container (packets 10-12 and 30 damaged)" "$codec" 48 \
+        "if(between(n,10,12)+eq(n,30),1,0)" "1-10,14-30,32-48" ${args:-}
+done
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
 check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+check_truncated_intra ramp_truncated_v210.mov "MOV (v210, faststart, truncated in frame 16)" 16 v210 -c:v v210 -pix_fmt yuv422p10le
 check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 \
     -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p
 
@@ -1098,6 +1234,119 @@ check_ss_copy ramp_ss_copy.mp4 "MP4 (stream copy from 1.3 s, no edit list)" 53 1
 # VFR MP4 with a one-frame gap, in the middle and before the last frame: the last frame must be counted.
 check_vfr ramp_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap)" 41 20 2 1 0 42
 check_vfr ramp_end_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap before the last frame)" 41 39 2 1 0 42
+
+# Y'CbCr matrix and range of the conversion to RGB: clips of a constant Y'CbCr color (written as raw yuv444p
+# bytes, encoded losslessly, and checked to decode to the same bytes), tagged with each matrix and range, or
+# untagged. The expected RGB is computed here from the definition of the matrix (ITU-T H.273: Kr and Kb) and of the
+# range (video: Y' = (Y - 16) / 219, Pb = (Cb - 128) / 224, full: Y' = Y / 255, Pb = (Cb - 128) / 255, scaled by
+# 2^(bits - 8)), not with FFmpeg. Auto uses the tags of the file (AVFrame.colorspace and color_range), else Rec. 601
+# below 720 lines, Rec. 709 from 720 lines, and video range; --matrix and --range override them.
+expected_rgb() {
+    # expected_rgb Y CB CR BITS MATRIX RANGE: R,G,B on a 0-255 scale; MATRIX is 601, 709, 2020, fcc or 240m;
+    # RANGE is tv or pc
+    awk -v y="$1" -v cb="$2" -v cr="$3" -v bits="$4" -v m="$5" -v r="$6" 'BEGIN {
+        if (m == "601") { kr = 0.299; kb = 0.114 } else if (m == "709") { kr = 0.2126; kb = 0.0722 }
+        else if (m == "2020") { kr = 0.2627; kb = 0.0593 } else if (m == "fcc") { kr = 0.30; kb = 0.11 }
+        else if (m == "240m") { kr = 0.212; kb = 0.087 } else { exit 1 }
+        s = 2 ^ (bits - 8)
+        if (r == "tv") { yp = (y - 16 * s) / (219 * s); pb = (cb - 128 * s) / (224 * s); pr = (cr - 128 * s) / (224 * s) }
+        else { yp = y / (255 * s); pb = (cb - 128 * s) / (255 * s); pr = (cr - 128 * s) / (255 * s) }
+        R = yp + 2 * (1 - kr) * pr; B = yp + 2 * (1 - kb) * pb; G = (yp - kr * R - kb * B) / (1 - kr - kb)
+        printf "%.2f,%.2f,%.2f\n", 255 * R, 255 * G, 255 * B
+    }'
+}
+constant_yuv() {
+    # constant_yuv W H N BITS Y CB CR: N frames of raw yuv444p (or yuv444p10le) of a constant color on stdout
+    perl -e 'my ($w, $h, $n, $bits, @v) = @ARGV; my $np = $w * $h;
+        my $f = join("", map { $bits > 8 ? pack("v", $_) x $np : chr($_) x $np } @v); print $f for 1 .. $n' "$@"
+}
+check_color() {
+    # check_color NAME DESC CODEC W H BITS Y CB CR MATRIX RANGE [TAGS -- READER_ARGS]
+    # TAGS are the ffmpeg -colorspace/-color_range/-color_primaries/-color_trc options of the clip (also given to the
+    # rawvideo input, so that ffmpeg does not convert the samples); MATRIX and RANGE are the expected conversion.
+    local name="$1" desc="$2" codec="$3" w="$4" h="$5" bits="$6" y="$7" cb="$8" cr="$9" matrix="${10}" range="${11}"
+    shift 11
+    echo "== $desc =="
+    local tags=() readerargs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        tags+=("$1")
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        shift
+        readerargs=("$@")
+    fi
+    local pixfmt=yuv444p encargs=()
+    if [ "$bits" -gt 8 ]; then
+        pixfmt=yuv444p10le
+    fi
+    case "$codec" in
+    libx264) encargs=(-c:v libx264 -qp 0 -preset ultrafast) ;;
+    ffv1) encargs=(-c:v ffv1) ;;
+    *) encargs=(-c:v "$codec") ;;
+    esac
+    if ! have_encoder "$codec"; then
+        echo "SKIPPED: no $codec encoder in the ffmpeg CLI"
+        return
+    fi
+    constant_yuv "$w" "$h" 3 "$bits" "$y" "$cb" "$cr" >"$tmp/$name.yuv"
+    if ! ffmpeg -y -loglevel error -f rawvideo -pix_fmt "$pixfmt" -s "${w}x$h" -r 24 ${tags[@]+"${tags[@]}"} -i "$tmp/$name.yuv" \
+        "${encargs[@]}" -pix_fmt "$pixfmt" ${tags[@]+"${tags[@]}"} "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # the clip must hold the constant color exactly (lossless, and not converted by ffmpeg). The samples are written
+    # in the decoder's own pixel format, without -pix_fmt: for a full-range clip, FFmpeg's H.264 decoder gives
+    # yuvj444p (libavcodec/h264_slice.c:871-877 at n6.1, :878-884 at n9.0.2), which has the layout of yuv444p, and
+    # with FFmpeg 6.1, -pix_fmt yuv444p inserts a scale filter that converts it to video range: libswscale takes
+    # yuvj444p as full range and yuv444p as video range (handle_jpeg(), libswscale/utils.c:928-964 and 2054-2055 at
+    # n6.1), and vf_scale only changes that if out_range is set (libavfilter/vf_scale.c:841-867 at n6.1). n9.0.2
+    # negotiates the range in the filter graph and keeps the frame's one (libavfilter/vf_scale.c:517-520 and 728).
+    if ! ffmpeg -loglevel error -i "$tmp/$name" -f rawvideo - | cmp -s - "$tmp/$name.yuv"; then
+        echo "FAIL: $name does not decode to the Y'CbCr samples it was encoded from"
+        rc=1
+        return
+    fi
+    ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt,color_space,color_range,color_primaries,color_transfer -of compact=p=0 "$tmp/$name" || true
+    local rgb
+    rgb="$(expected_rgb "$y" "$cb" "$cr" "$bits" "$matrix" "$range")"
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --open-only --rgb "$rgb" ${readerargs[@]+"${readerargs[@]}"} ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    rm -f "$tmp/$name.yuv"
+}
+# A saturated orange: the matrices give R values 6 to 14 levels apart (8 bits), and the ranges differ everywhere.
+CY=120 CB=80 CR=200
+check_color color_untagged_sd.mp4 "Y'CbCr matrix: untagged SD H.264 (Auto: Rec. 601, video range)" libx264 64 48 8 $CY $CB $CR 601 tv
+check_color color_untagged_hd.mp4 "Y'CbCr matrix: untagged 720p H.264 (Auto: Rec. 709, video range)" libx264 1280 720 8 $CY $CB $CR 709 tv
+check_color color_bt709_tv.mp4 "Y'CbCr matrix: SD H.264 tagged bt709, video range" libx264 64 48 8 $CY $CB $CR 709 tv \
+    -colorspace bt709 -color_range tv -color_primaries bt709 -color_trc bt709
+check_color color_bt709_pc.mp4 "Y'CbCr matrix: SD H.264 tagged bt709, full range" libx264 64 48 8 $CY $CB $CR 709 pc \
+    -colorspace bt709 -color_range pc -color_primaries bt709 -color_trc bt709
+check_color color_bt470bg_tv.mp4 "Y'CbCr matrix: 720p H.264 tagged bt470bg, video range" libx264 1280 720 8 $CY $CB $CR 601 tv \
+    -colorspace bt470bg -color_range tv -color_primaries bt470bg -color_trc gamma28
+check_color color_smpte170m_pc.mp4 "Y'CbCr matrix: 720p H.264 tagged smpte170m, full range" libx264 1280 720 8 $CY $CB $CR 601 pc \
+    -colorspace smpte170m -color_range pc -color_primaries smpte170m -color_trc smpte170m
+check_color color_bt2020nc_tv.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, video range" libx264 64 48 8 $CY $CB $CR 2020 tv \
+    -colorspace bt2020nc -color_range tv -color_primaries bt2020 -color_trc bt2020-10
+check_color color_bt2020nc_pc.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, full range" libx264 64 48 8 $CY $CB $CR 2020 pc \
+    -colorspace bt2020nc -color_range pc -color_primaries bt2020 -color_trc bt2020-10
+check_color color_fcc_tv.mp4 "Y'CbCr matrix: SD H.264 tagged fcc, video range" libx264 64 48 8 $CY $CB $CR fcc tv \
+    -colorspace fcc -color_range tv
+check_color color_smpte240m_tv.mp4 "Y'CbCr matrix: SD H.264 tagged smpte240m, video range" libx264 64 48 8 $CY $CB $CR 240m tv \
+    -colorspace smpte240m -color_range tv
+# The tags of the container only (FFV1 has none in its bitstream): Matroska Colour element, 10 bits.
+check_color color_bt2020nc_10bit.mkv "Y'CbCr matrix: SD FFV1 10-bit in Matroska tagged bt2020nc, video range" ffv1 64 48 10 \
+    $((CY * 4)) $((CB * 4)) $((CR * 4)) 2020 tv -colorspace bt2020nc -color_range tv -color_primaries bt2020 -color_trc smpte2084
+check_color color_bt709_pc_10bit.mkv "Y'CbCr matrix: SD FFV1 10-bit in Matroska tagged bt709, full range" ffv1 64 48 10 \
+    $((CY * 4)) $((CB * 4)) $((CR * 4)) 709 pc -colorspace bt709 -color_range pc
+# The params override the tags.
+check_color color_override_untagged.mp4 "Y'CbCr matrix: untagged SD H.264 read as Rec. 2020, full range (params)" libx264 64 48 8 $CY $CB $CR 2020 pc \
+    -- --matrix 3 --range 2
+check_color color_override_bt2020.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, full range, read as Rec. 709, video range (params)" libx264 64 48 8 $CY $CB $CR 709 tv \
+    -colorspace bt2020nc -color_range pc -- --matrix 2 --range 1
+check_color color_override_601.mp4 "Y'CbCr matrix: 720p H.264 tagged bt709, read as Rec. 601 (param), Auto range" libx264 1280 720 8 $CY $CB $CR 601 tv \
+    -colorspace bt709 -color_range tv -- --matrix 1
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"

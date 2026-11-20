@@ -40,6 +40,7 @@
 #define __STDC_CONSTANT_MACROS // ...or stdint.h wont' define UINT64_C, needed by libavutil
 #endif
 #include "FFmpegFile.h"
+#include "PixelFormat.h"
 // Compat: AVFrame::pkt_duration was renamed to duration in FFmpeg 6 (libavutil 58.2)
 // and removed in FFmpeg 8.
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 2, 100)
@@ -353,24 +354,100 @@ FFmpegFile::isCodecAllowedForWriting(const char* codecName)
     return (allowlistEntry && allowlistEntry->enableWriter);
 }
 
+// The Y'CbCr matrix of the conversion to RGB (the "YCbCr Matrix" param of ReadFFmpeg):
+// - Rec. 601, Rec. 709 or Rec. 2020 if the user chose one,
+// - Auto: the matrix of the frame (AVFrame.colorspace: the decoders give the one of the bitstream, e.g. the H.264/HEVC
+//   VUI, the ProRes frame header or the DNxHD frame header, which is BT.709 when FFmpeg wrote it, FFmpeg n9.0.2
+//   libavcodec/dnxhddec.c:237-242 and libavcodec/dnxhdenc.c:544, whatever the container says), or else the one of the codec context, which avcodec_parameters_to_context()
+//   copied from the container, e.g. the MOV 'colr' atom or the Matroska Colour element: fill_frame_props() in FFmpeg
+//   n9.0 libavcodec/decode.c:575-585, n4.0 libavcodec/decode.c:1717-1724), else the one of the stream
+//   (AVCodecParameters.color_space), else, if neither is a matrix that swscale has (see
+//   FFmpeg::swsColorspaceFromAVColorSpace()), the usual one for the picture size (Rec. 709 from 720 lines, else
+//   Rec. 601; JPEG is always Rec. 601: isRec709Format()), as before the tags were used.
+int
+FFmpegFile::Stream::getSwsColorspace(int frameColorSpace)
+{
+    switch (_colorMatrixOverride) {
+    case FFmpegFile::eColorMatrixRec601:
+        return SWS_CS_ITU601;
+    case FFmpegFile::eColorMatrixRec709:
+        return SWS_CS_ITU709;
+    case FFmpegFile::eColorMatrixRec2020:
+        return SWS_CS_BT2020;
+    default:
+        break;
+    }
+    int colorspace = FFmpeg::swsColorspaceFromAVColorSpace(frameColorSpace);
+    if ((colorspace < 0) && _avstream && _avstream->codecpar) {
+        colorspace = FFmpeg::swsColorspaceFromAVColorSpace(_avstream->codecpar->color_space);
+    }
+    if (colorspace < 0) {
+        colorspace = isRec709Format() ? SWS_CS_ITU709 : SWS_CS_ITU601;
+    }
+
+    return colorspace;
+}
+
+// The source range of the conversion to RGB, as the srcRange argument of sws_setColorspaceDetails() (0 = video
+// range, 16..235 for 8 bits, 1 = full range, 0..255, libswscale/swscale.h): the "YCbCr Range" param of ReadFFmpeg,
+// or Auto: the range of the frame (AVFrame.color_range), or, if it is unspecified, full range for the deprecated
+// YUVJ pixel formats (which are full range, libavutil/pixfmt.h), else video range for Y'CbCr and full range for RGB.
+int
+FFmpegFile::Stream::getSwsSrcRange(AVPixelFormat srcPixelFormat,
+                                   int frameColorRange) const
+{
+    switch (_colorRangeOverride) {
+    case FFmpegFile::eColorRangeVideo:
+        return 0;
+    case FFmpegFile::eColorRangeFull:
+        return 1;
+    default:
+        break;
+    }
+    switch (frameColorRange) {
+    case AVCOL_RANGE_MPEG:
+        return 0;
+    case AVCOL_RANGE_JPEG:
+        return 1;
+    default:
+        break;
+    }
+    switch (srcPixelFormat) {
+    case AV_PIX_FMT_YUVJ420P:
+    case AV_PIX_FMT_YUVJ422P:
+    case AV_PIX_FMT_YUVJ444P:
+    case AV_PIX_FMT_YUVJ440P:
+        return 1;
+    default:
+        break;
+    }
+
+    // If the colour range wasn't specified, set the flag according to
+    // whether the data is YUV or not.
+    return isYUV() ? 0 : 1;
+}
+
 SwsContext*
 FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
                                   int srcWidth,
                                   int srcHeight,
                                   int srcColorRange,
+                                  int srcColorSpace,
                                   AVPixelFormat dstPixelFormat,
                                   int dstWidth,
                                   int dstHeight)
 {
-    // Reset is flagged when the UI colour matrix selection is
-    // modified. This causes a new convert context to be created
-    // that reflects the UI selection. The context is also rebuilt if any of the
-    // source/destination parameters it was created for have changed since.
+    // The Y'CbCr matrix and range of the conversion, from the tags of the frame and the params: if they change, the
+    // context is rebuilt
+    const int swsColorspace = getSwsColorspace(srcColorSpace);
+    const int srcRange = getSwsSrcRange(srcPixelFormat, srcColorRange);
+    // The context is also rebuilt if any of the source/destination parameters it was created for have changed since.
     const bool paramsChanged = _convertCtx
         && (_convertCtxSrcPixelFormat != srcPixelFormat
             || _convertCtxSrcWidth != srcWidth
             || _convertCtxSrcHeight != srcHeight
-            || _convertCtxSrcColorRange != srcColorRange
+            || _convertCtxSrcRange != srcRange
+            || _convertCtxSwsColorspace != swsColorspace
             || _convertCtxDstPixelFormat != dstPixelFormat
             || _convertCtxDstWidth != dstWidth
             || _convertCtxDstHeight != dstHeight);
@@ -388,38 +465,27 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
         _convertCtxSrcPixelFormat = srcPixelFormat;
         _convertCtxSrcWidth = srcWidth;
         _convertCtxSrcHeight = srcHeight;
-        _convertCtxSrcColorRange = srcColorRange;
+        _convertCtxSrcRange = srcRange;
+        _convertCtxSwsColorspace = swsColorspace;
         _convertCtxDstPixelFormat = dstPixelFormat;
         _convertCtxDstWidth = dstWidth;
         _convertCtxDstHeight = dstHeight;
 
         // Preventing deprecated pixel format used error messages, see:
         // https://libav.org/doxygen/master/pixfmt_8h.html#a9a8e335cf3be472042bc9f0cf80cd4c5
-        // This manually sets them to the new versions of equivalent types.
+        // This manually sets them to the new versions of equivalent types (their full range is in srcRange).
         switch (srcPixelFormat) {
         case AV_PIX_FMT_YUVJ420P:
             srcPixelFormat = AV_PIX_FMT_YUV420P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         case AV_PIX_FMT_YUVJ422P:
             srcPixelFormat = AV_PIX_FMT_YUV422P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         case AV_PIX_FMT_YUVJ444P:
             srcPixelFormat = AV_PIX_FMT_YUV444P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         case AV_PIX_FMT_YUVJ440P:
             srcPixelFormat = AV_PIX_FMT_YUV440P;
-            if (srcColorRange == AVCOL_RANGE_UNSPECIFIED) {
-                srcColorRange = AVCOL_RANGE_JPEG;
-            }
             break;
         default:
             break;
@@ -431,42 +497,12 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
 
         // Set up the SoftWareScaler to convert colorspaces correctly.
         // Colorspace conversion makes no sense for RGB->RGB conversions
-        if (!isYUV()) {
+        if (!_convertCtx || !isYUV()) {
             return _convertCtx;
         }
 
-        int colorspace = isRec709Format() ? SWS_CS_ITU709 : SWS_CS_ITU601;
-        // Optional color space override
-        if (_colorMatrixTypeOverride > 0) {
-            if (_colorMatrixTypeOverride == 1) {
-                colorspace = SWS_CS_ITU709;
-            } else {
-                colorspace = SWS_CS_ITU601;
-            }
-        }
-
-        // sws_setColorspaceDetails takes a flag indicating the white-black range of the input:
-        //     0  -  mpeg, 16..235
-        //     1  -  jpeg,  0..255
-        int srcRange;
-        // Set this flag according to the color_range reported by the codec context.
-        switch (srcColorRange) {
-        case AVCOL_RANGE_MPEG:
-            srcRange = 0;
-            break;
-        case AVCOL_RANGE_JPEG:
-            srcRange = 1;
-            break;
-        case AVCOL_RANGE_UNSPECIFIED:
-        default:
-            // If the colour range wasn't specified, set the flag according to
-            // whether the data is YUV or not.
-            srcRange = isYUV() ? 0 : 1;
-            break;
-        }
-
         int result = sws_setColorspaceDetails(_convertCtx,
-                                              sws_getCoefficients(colorspace), // inv_table
+                                              sws_getCoefficients(swsColorspace), // inv_table
                                               srcRange, // srcRange -flag indicating the white-black range of the input (1=jpeg / 0=mpeg) 0 = 16..235, 1 = 0..255
                                               sws_getCoefficients(SWS_CS_DEFAULT), // table
                                               1, // dstRange - 0 = 16..235, 1 = 0..255
@@ -475,6 +511,7 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
                                               1 << 16); // saturation fixed point, with 1<<16 meaning no change);
 
         assert(result != -1);
+        (void)result;
     }
 
     return _convertCtx;
@@ -507,6 +544,30 @@ FFmpegFile::Stream::GetStreamAspectRatio(Stream* stream)
     return stream->_aspect;
 }
 
+// Whether the frames with a negative timestamp at the start of the stream are an edit-list pre-roll, which is not
+// displayed: only in MOV/MP4 (the "mov,mp4,m4a,3gp,3g2,mj2" demuxer, libavformat/mov.c:12205 in FFmpeg 9.0), whose
+// edit list starts after the first samples (mov_fix_index(), mov.c:4374, gives them negative timestamps and marks
+// those before the edit as AVINDEX_DISCARD_FRAME, mov.c:4567). Its timestamps have 64 bits (avpriv_set_pts_info(st,
+// 64, ...), mov.c:5353), and the demuxer does not have AVFMT_TS_DISCONT (mov.c:12209).
+// Elsewhere, negative timestamps are frames to display. In particular, libavformat unwraps the timestamps of the
+// streams with pts_wrap_bits < 63 (MPEG-TS and MPEG-PS: 33 bits, the default of avformat_new_stream(),
+// libavformat/options.c:295, and mpegts.c:954; FLV: 32 bits, flvdec.c:208), and when the first timestamp is less
+// than 60 s (or 1/8 of the range) before the wrap, it subtracts the wrap offset from the timestamps before the wrap,
+// which become negative, as does AVStream::start_time (update_wrap_reference() and update_timestamps(),
+// libavformat/demux.c:477-560 in FFmpeg 9.0 and 467-550 in 8.0, utils.c:745-898 in 4.4; wrap_timestamp(),
+// demux.c:53-66; with the correct_ts_overflow option, on by default, libavformat/options_table.h:83). The
+// demuxers with AVFMT_TS_DISCONT (MPEG-TS, MPEG-PS, live FLV: mpegts.c:3871, mpeg.c:707, flvdec.c:2009) may also
+// have timestamp discontinuities. The index entries and the timestamps read by the binary search of a seek are
+// unwrapped in the same way (ff_wrap_timestamp(), libavformat/seek.c:126 and 286).
+static bool
+NegativeStartIsPreroll(const AVFormatContext* context,
+                       const AVStream* avstream)
+{
+    const char* formatName = (context->iformat && context->iformat->name) ? context->iformat->name : "";
+    const bool isMov = std::strstr(formatName, "mov") != nullptr;
+    return isMov && (avstream->pts_wrap_bits >= 63) && !(context->iformat->flags & AVFMT_TS_DISCONT);
+}
+
 // get stream start time
 // The frames are counted from it (AVStream::start_time: the first PTS of the stream). In a stream cut on an
 // I-frame, the leading B-frames of an open GOP, which reference a frame before the cut, have a PTS before it:
@@ -531,7 +592,11 @@ FFmpegFile::getStreamStartTime(Stream& stream)
     }
 #endif
 
-    if (startPTS < 0) {
+    // A negative start time is only an edit-list pre-roll, whose frames are not displayed, in MOV/MP4 (see
+    // NegativeStartIsPreroll()): elsewhere it is the real start of the stream (e.g. an MPEG-TS whose timestamps
+    // wrap, which libavformat unwraps to negative timestamps), and its frames are counted from it.
+    const bool negativeStart = (startPTS != int64_t(AV_NOPTS_VALUE)) && (startPTS < 0) && !NegativeStartIsPreroll(_context, stream._avstream);
+    if ((startPTS < 0) && !negativeStart) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::start_time, searching frames..." << std::endl;
 #endif
@@ -586,7 +651,9 @@ FFmpegFile::getStreamStartTime(Stream& stream)
     // frame timestamp is going to match the packet which starts just before 0 and ends after 0 if that exists. Otherwise
     // it will be 0.
     // For more information please have a look at TP 162519
-    const bool isStartPTSValid = (startPTS + avPacket->duration > 0);
+    // This only applies to MOV/MP4 edit lists (see NegativeStartIsPreroll()): a negative start time of another
+    // container (e.g. an unwrapped MPEG-TS) is kept, and its frames are counted from it.
+    const bool isStartPTSValid = negativeStart || (startPTS + avPacket->duration > 0);
     if (!isStartPTSValid) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not found by searching frames, assuming ";
@@ -1578,6 +1645,7 @@ FFmpegFile::FFmpegFile(const string& filename)
         stream->_avIntermediateFrame = av_frame_alloc();
         stream->_avHeldFrame = av_frame_alloc();
         stream->_avNextFrame = av_frame_alloc();
+        stream->_pendingPacket = av_packet_alloc();
 
         {
             // In |engine| the output bit depth was hard coded to 16-bits.
@@ -1725,6 +1793,16 @@ FFmpegFile::setSelectedStream(int streamIndex)
         assert(false && "setSelectedStream: Invalid streamIndex");
         _selectedStream = !_streams.empty() ? _streams[0] : nullptr;
     }
+}
+
+std::string
+FFmpegFile::getColorspaceMetadata() const
+{
+    // the metadata of the format (WriteFFmpeg writes it there): its keys are not case sensitive (av_dict_get()
+    // without AV_DICT_MATCH_CASE), e.g. Matroska tags are upper case
+    const AVDictionaryEntry* t = (_context && _context->metadata) ? av_dict_get(_context->metadata, kMetaKeyColorspace, nullptr, 0) : nullptr;
+
+    return (t && t->value) ? std::string(t->value) : std::string();
 }
 
 const char*
@@ -1893,6 +1971,32 @@ FFmpegFile::isInvalid() const
     return _invalidState;
 }
 
+// Whether the codec only has keyframes: its descriptor has AV_CODEC_PROP_INTRA_ONLY ("Codec uses only intra
+// compression", libavcodec/codec_desc.h:68-72 in FFmpeg 4.4, 8.0 and 9.0), e.g. ProRes, DNxHD, MJPEG, rawvideo, v210,
+// r210, r10k, HuffYUV, FFVHuff, JPEG-LS, JPEG 2000, Hap, EXR (libavcodec/codec_desc.c), or it is in the list
+// below, which overrides the descriptor: PNG has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:470 in FFmpeg 8.0 and 9.0,
+// 463 in 4.4; animated PNG is AV_CODEC_ID_APNG), but each PNG packet is a complete image. The other codecs of the list
+// have AV_CODEC_PROP_INTRA_ONLY in FFmpeg 4.4 to 9.0: they are kept as they were before the descriptor was used.
+// AVCodecContext::gop_size does not tell: it is "unused" for decoding (libavcodec/avcodec.h:1016-1021 in FFmpeg 9.0,
+// 1000-1005 in 8.0, 726-731 in 4.4), and avcodec_alloc_context3() sets it to 12, its default (the "g" option,
+// libavcodec/options_table.h:96 in 9.0, 95 in 8.0, 88 in 4.4, set for video decoders too by init_context_defaults(),
+// libavcodec/options.c:90-110 in 8.0 and 9.0, 107-126 in 4.4), so the former gop_size == 0 test was never true when
+// decoding.
+// Not CineForm (AV_CODEC_ID_CFHD), whose descriptor has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:1530 in 9.0): it may
+// have inter frames.
+static bool
+IsIntraOnly(const AVCodecContext* ctx)
+{
+    const AVCodecID id = ctx->codec_id;
+    if ((id == AV_CODEC_ID_PRORES) || (id == AV_CODEC_ID_DNXHD) || (id == AV_CODEC_ID_MJPEG) || (id == AV_CODEC_ID_MJPEGB) ||
+        (id == AV_CODEC_ID_PNG) || (id == AV_CODEC_ID_DPX) || (id == AV_CODEC_ID_TARGA) || (id == AV_CODEC_ID_TIFF)) {
+        return true;
+    }
+    const AVCodecDescriptor* desc = avcodec_descriptor_get(id);
+
+    return desc && (desc->props & AV_CODEC_PROP_INTRA_ONLY);
+}
+
 // decode a single frame into the buffer thread safe
 bool
 FFmpegFile::decode(const ImageEffect* /*plugin*/,
@@ -1942,19 +2046,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     bool hasPicture = false;
     AVFrame* avFrameOut = stream->_avFrame;
 
-    // If gop_size == 0 then this is a intra-only encode and we can
-    // assume sequential frame output from the decoder
-    bool isIntraOnly = stream->_codecContext->gop_size ? false : true;
+    // An intra-only codec (see IsIntraOnly()): each frame is decoded from its own packet.
+    bool isIntraOnly = IsIntraOnly(stream->_codecContext);
 
     // A stream whose frames decoded so far without an error are all keyframes (e.g. all-intra H.264, -g 1) is decoded
     // as an intra-only one once damage was found: each frame is then decoded from the previous keyframes (the back-off below,
     // bounded), instead of restarting the decoder at each keyframe and decoding from the start of the file.
     if (stream->allKeyframesAfterDamage()) {
-        isIntraOnly = true;
-    }
-
-    // These codecs may still report a gop_size if incorrectly muxed.
-    if ((stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) || (stream->_codecContext->codec_id == AV_CODEC_ID_DNXHD) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEG) || (stream->_codecContext->codec_id == AV_CODEC_ID_MJPEGB) || (stream->_codecContext->codec_id == AV_CODEC_ID_PNG) || (stream->_codecContext->codec_id == AV_CODEC_ID_DPX) || (stream->_codecContext->codec_id == AV_CODEC_ID_TARGA) || (stream->_codecContext->codec_id == AV_CODEC_ID_TIFF)) {
         isIntraOnly = true;
     }
 
@@ -2206,16 +2304,6 @@ IsCleanKeyframe(const AVFrame* f)
     return key && !(f->flags & AV_FRAME_FLAG_CORRUPT) && !f->decode_error_flags;
 }
 
-// Whether the codec only has keyframes (gop_size 0, or a known intra-only codec that may still report a gop_size if
-// incorrectly muxed)
-static bool
-IsIntraOnly(const AVCodecContext* ctx)
-{
-    const AVCodecID id = ctx->codec_id;
-    return !ctx->gop_size || (id == AV_CODEC_ID_PRORES) || (id == AV_CODEC_ID_DNXHD) || (id == AV_CODEC_ID_MJPEG) || (id == AV_CODEC_ID_MJPEGB) ||
-           (id == AV_CODEC_ID_PNG) || (id == AV_CODEC_ID_DPX) || (id == AV_CODEC_ID_TARGA) || (id == AV_CODEC_ID_TIFF);
-}
-
 // After damage, the decoder is opened again instead of flushed: avcodec_flush_buffers() keeps the parameter sets
 // that the decoder parsed (in FFmpeg 9.0.2, h264_decode_flush(), libavcodec/h264dec.c:476-497, only resets the
 // pictures and the DPB; the H.264 SPS and PPS are only freed when the decoder is closed, h264dec.c:372, and parsed
@@ -2259,6 +2347,19 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
     stream->clearTaint();
     ++_seekCount;
     int res = 0;
+
+    // The start of the file (seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)): timestamp 0 is at or before
+    // the first packet, unless the stream starts at a negative timestamp that is not an edit-list pre-roll (see
+    // NegativeStartIsPreroll()), e.g. an MPEG-TS whose timestamps wrap: timestamp 0 is then after the wrap, and the
+    // MPEG-TS and MPEG-PS demuxers, which have no read_seek but a read_timestamp (mpegts.c:3878, mpeg.c:712 in
+    // FFmpeg 9.0), seek to it by a binary search on the DTS (seek_frame_internal(), libavformat/seek.c:597-639,
+    // ff_seek_frame_binary(), with the timestamps unwrapped as the packets, seek.c:281-288). Seek to the first DTS
+    // of the stream instead (Stream::_startDTS, or its first PTS without B-frames), which is at or before its
+    // first packet.
+    if ((seekFlags & AVSEEK_FLAG_FRAME) && (frame == 0) && (stream->_startPTS < 0) && !NegativeStartIsPreroll(_context, stream->_avstream)) {
+        frame = (std::min)(stream->_startPTS, stream->_startDTS);
+        seekFlags = AVSEEK_FLAG_BACKWARD;
+    }
 
     // Once damage was found in the file (long-GOP codecs), a seek may land on a spurious keyframe: the Matroska
     // demuxer adds an index entry for each block whose header has the keyframe flag (libavformat/matroskadec.c:
@@ -2696,8 +2797,16 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         return false;
     };
 
-    // Begin reading from the newly seeked position.
-    while ((res = av_read_frame(_context, avPacket.pkt())) >= 0) {
+    // Begin reading from the newly seeked position, or from the packet that the decoder refused at the previous
+    // request (Stream::_pendingPacket, see below): it is sent first, as the next packet of the stream (its checks
+    // below were made when it was read, and it was counted by Stream::packetSent()).
+    bool resendPending = Stream::hasPacket(stream->_pendingPacket);
+    if (resendPending) {
+        av_packet_move_ref(avPacket.pkt(), stream->_pendingPacket);
+    }
+    while (resendPending || ((res = av_read_frame(_context, avPacket.pkt())) >= 0)) {
+        const bool resending = resendPending;
+        resendPending = false;
         if (stream->_restartSingleThread) {
             return hasPicture; // decode() decodes again with 1 thread
         }
@@ -2715,7 +2824,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // fail, sequentially and after a seek, as before (issue #134).
         // (A packet with a transport error that happens to be the last one of the file, e.g. a TS continuity
         // counter error in the last packet, is also taken as truncated: rare.)
-        if ((avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_size(_context->pb) > 0) && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
+        if (!resending && (avPacket->flags & AV_PKT_FLAG_CORRUPT) && _context->pb && (avio_size(_context->pb) > 0) && (avio_feof(_context->pb) || (avio_tell(_context->pb) >= avio_size(_context->pb)))) {
             const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
             if (ts != int64_t(AV_NOPTS_VALUE)) {
                 const int truncatedFrame = stream->ptsToFrame(ts);
@@ -2735,7 +2844,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // next packet with the keyframe flag. If draining gives
         // the requested frame, or stops decoding, the keyframe is not sent (nor the other frames of the drain
         // used): the next requests that need more frames seek (Stream::_drainedEarly).
-        if (!acceptCorruptHeldFrame && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
+        if (!resending && !acceptCorruptHeldFrame && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
             bool stop = false;
             (void)avcodec_send_packet(stream->_codecContext, nullptr);
             for (int i = 0; i < 4 * kMaxDroppedPackets; ++i) {
@@ -2772,7 +2881,9 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
                 return hasPicture;
             }
         }
-        stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1, (avPacket->flags & AV_PKT_FLAG_KEY) != 0);
+        if (!resending) {
+            stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1, (avPacket->flags & AV_PKT_FLAG_KEY) != 0);
+        }
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
         if ((res >= 0) && !acceptCorruptHeldFrame) {
             // Long-GOP codecs (decoded with 1 thread after damage, see skipInvalidData): an accepted packet ends a
@@ -2792,6 +2903,21 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             return fail(drained, "FFmpeg Reader Failed to decode packet: ");
         }
         if (drained == 1) {
+            if (res == AVERROR(EAGAIN)) {
+                // The drain gave the requested frame, but the packet was not accepted: keep it for the next request,
+                // which sends it before reading the next one (a seek drops it, Stream::resetHeldFrames()). It was
+                // lost before, and the frames that reference it decoded wrong until the next keyframe (issue #159).
+                // E.g. VP9 with frame threads: the decoder splits a superframe (a hidden alt-ref frame and a shown
+                // frame) into two packets with its vp9_superframe_split bitstream filter (FFCodec.bsfs,
+                // libavcodec/vp9.c:1934 in FFmpeg 9.0.2, 1927 in 8.0). Its frame threads take one packet per thread
+                // and return a frame once every thread has one (ff_thread_receive_frame(), libavcodec/
+                // pthread_frame.c:565-603), so the bitstream filter may still hold the shown frame when the next
+                // packet is sent: the decoder takes that one first and keeps the sent packet in its input buffer
+                // (ff_decode_get_packet(), libavcodec/decode.c:268-283), until a later avcodec_receive_frame().
+                // A packet sent before that is refused with AVERROR(EAGAIN) (avcodec_send_packet(), decode.c:
+                // 745-747), and the frame of the drain may then be the requested one.
+                av_packet_move_ref(stream->_pendingPacket, avPacket.pkt());
+            }
             return hasPicture;
         }
 
@@ -2896,6 +3022,7 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
         avFrameIn->width,
         avFrameIn->height,
         avFrameIn->color_range,
+        avFrameIn->colorspace,
         dstPixFmt,
         avFrameOut->width,
         avFrameOut->height);

@@ -146,18 +146,22 @@ ReadPFMPlugin::~ReadPFMPlugin()
 {
 }
 
+// Copies the pixels x1..x2-1 of a line of the file (image, which starts at x = 0) to a line of the output (dstPix,
+// which starts at x = dstX1).
 template <class PIX, int srcC, int dstC>
 static void
 copyLine(PIX* image,
          int x1,
          int x2,
          int C,
-         PIX* dstPix)
+         PIX* dstPix,
+         int dstX1)
 {
     assert(srcC == C);
+    assert(dstX1 <= x1);
 
-    const PIX* srcPix = image + x1 * C;
-    dstPix += x1 * dstC;
+    const PIX* srcPix = image + (size_t)x1 * C;
+    dstPix += (size_t)(x1 - dstX1) * dstC;
 
     for (int x = x1; x < x2; ++x) {
         if (srcC == 1) {
@@ -210,6 +214,12 @@ ReadPFMPlugin::decode(const string& filename,
 
     // read PFM header
     std::FILE* const nfile = fopen_utf8(filename.c_str(), "rb");
+    if (!nfile) {
+        setPersistentMessage(Message::eMessageError, "", string("Cannot open file \"") + filename + "\".");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 
     char pfm_type, item[1024] = { 0 };
     int W = 0;
@@ -268,14 +278,36 @@ ReadPFMPlugin::decode(const string& filename,
         C = 1;
     }
 
-    std::size_t numpixels = W * C;
+    std::size_t numpixels = (std::size_t)W * C;
     vector<float> image(numpixels);
 
-    assert(0 <= renderWindow.x1 && renderWindow.x2 <= W && 0 <= renderWindow.y1 && renderWindow.y2 <= H);
-    const int x1 = renderWindow.x1;
-    const int x2 = renderWindow.x2;
+    // The render window may be any part of bounds (e.g. a few columns or rows), and may not be in the image if the
+    // file changed since getFrameBounds(): black out of the image.
+    const OfxRectI fileBounds = { 0, 0, W, H };
+    OfxRectI window;
+    const bool inFile = intersectWindow(renderWindow, fileBounds, &window);
+    if (!sameWindow(window, renderWindow)) {
+        fillWithBlack(renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
+    }
+    if (!inFile) {
+        std::fclose(nfile);
 
-    for (int y = renderWindow.y1; y < renderWindow.y2; ++y) {
+        return;
+    }
+    const int x1 = window.x1;
+    const int x2 = window.x2;
+
+    // the lines are stored from bottom (y = 0) to top: skip those below the window
+    for (int y = 0; y < window.y1; ++y) {
+        if (std::fseek(nfile, (long)(numpixels * 4), SEEK_CUR) != 0) {
+            std::fclose(nfile);
+            setPersistentMessage(Message::eMessageError, "", "could not read all the image samples needed");
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
+    }
+    for (int y = window.y1; y < window.y2; ++y) {
         std::size_t numread = std::fread(&image.front(), 4, numpixels, nfile);
         if (numread < numpixels) {
             std::fclose(nfile);
@@ -294,16 +326,16 @@ ReadPFMPlugin::decode(const string& filename,
         if (C == 1) {
             switch (pixelComponentCount) {
             case 1:
-                copyLine<float, 1, 1>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 1, 1>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             case 2:
-                copyLine<float, 1, 2>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 1, 2>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             case 3:
-                copyLine<float, 1, 3>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 1, 3>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             case 4:
-                copyLine<float, 1, 4>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 1, 4>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             default:
                 break;
@@ -311,16 +343,16 @@ ReadPFMPlugin::decode(const string& filename,
         } else if (C == 3) {
             switch (pixelComponentCount) {
             case 1:
-                copyLine<float, 3, 1>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 3, 1>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             case 2:
-                copyLine<float, 3, 2>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 3, 2>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             case 3:
-                copyLine<float, 3, 3>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 3, 3>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             case 4:
-                copyLine<float, 3, 4>(&image.front(), x1, x2, C, dstPix);
+                copyLine<float, 3, 4>(&image.front(), x1, x2, C, dstPix, bounds.x1);
                 break;
             default:
                 break;

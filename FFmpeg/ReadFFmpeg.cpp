@@ -93,6 +93,29 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamFirstTrackOnly "firstTrackOnly"
 #define kParamFirstTrackOnlyLabelAndHint "First Track Only", "Causes the reader to ignore all but the first video track it finds in the file. This should be selected in a multiview project if the file happens to contain multiple video tracks that don't correspond to different views."
 
+#define kParamColorMatrix "ycbcrMatrix"
+#define kParamColorMatrixLabel "YCbCr Matrix"
+#define kParamColorMatrixHint                                                                                                  \
+    "The Y'CbCr matrix used to convert the Y'CbCr video to RGB (RGB video is not converted).\n"                                  \
+    "Auto uses the matrix the file is tagged with (e.g. the H.264/HEVC VUI, the ProRes frame header, or the QuickTime 'colr' " \
+    "atom or Matroska Colour element), as ffprobe shows it in color_space: BT.709, BT.601 (bt470bg, smpte170m), BT.2020 "    \
+    "(bt2020nc, bt2020c: converted as bt2020nc), FCC or SMPTE 240M. An untagged file uses Rec. 709 from 720 lines, else "    \
+    "Rec. 601 (always Rec. 601 for MJPEG)."
+#define kParamColorMatrixOptionAuto "Auto", "The matrix the file is tagged with, else the usual one for the picture size.", "auto"
+#define kParamColorMatrixOptionRec601 "Rec. 601", "ITU-R BT.601 (SD video, JPEG).", "rec601"
+#define kParamColorMatrixOptionRec709 "Rec. 709", "ITU-R BT.709 (HD video).", "rec709"
+#define kParamColorMatrixOptionRec2020 "Rec. 2020", "ITU-R BT.2020 non-constant luminance (UHD and HDR video).", "rec2020"
+
+#define kParamColorRange "ycbcrRange"
+#define kParamColorRangeLabel "YCbCr Range"
+#define kParamColorRangeHint                                                                                                \
+    "The range of the Y'CbCr values of the video (RGB video is always full range).\n"                                         \
+    "Auto uses the range the file is tagged with, as ffprobe shows it in color_range (tv: video range, pc: full range). An " \
+    "untagged file is in video range, except for the full range (yuvj) pixel formats, e.g. of MJPEG."
+#define kParamColorRangeOptionAuto "Auto", "The range the file is tagged with, else video range.", "auto"
+#define kParamColorRangeOptionVideo "Video", "Video (legal, limited) range: 16-235 in 8 bits (64-940 in 10 bits) for Y'.", "video"
+#define kParamColorRangeOptionFull "Full", "Full range: 0-255 in 8 bits (0-1023 in 10 bits).", "full"
+
 #define kParamLibraryInfo "libraryInfo"
 #define kParamLibraryInfoLabel "FFmpeg Info...", "Display information about the underlying library."
 
@@ -106,6 +129,8 @@ class ReadFFmpegPlugin
     : public GenericReaderPlugin {
     FFmpegFileManager& _manager;
     BooleanParam* _firstTrackOnly;
+    ChoiceParam* _colorMatrix;
+    ChoiceParam* _colorRange;
 
 public:
     ReadFFmpegPlugin(FFmpegFileManager& manager, OfxImageEffectHandle handle, const vector<string>& extensions);
@@ -164,9 +189,14 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
     : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false)
     , _manager(manager)
     , _firstTrackOnly(NULL)
+    , _colorMatrix(NULL)
+    , _colorRange(NULL)
 {
     _firstTrackOnly = fetchBooleanParam(kParamFirstTrackOnly);
     assert(_firstTrackOnly);
+    _colorMatrix = fetchChoiceParam(kParamColorMatrix);
+    _colorRange = fetchChoiceParam(kParamColorRange);
+    assert(_colorMatrix && _colorRange);
     int originalFrameRangeMin, originalFrameRangeMax;
     _originalFrameRange->getValue(originalFrameRangeMin, originalFrameRangeMax);
     if (originalFrameRangeMin == 0) {
@@ -336,6 +366,13 @@ ReadFFmpegPlugin::guessParamsFromFilename(const string& filename,
         // hd10 in spi-anim and spi-vfx
         *colorspace = "hd10";
     }
+    // The colorspace that WriteFFmpeg (or Nuke) wrote in the metadata of the file, if the OCIO config has it (the
+    // muxers that store any metadata key keep it, e.g. Matroska and NUT, but not MOV and MP4, which only store the
+    // known keys, unless the movflags option use_metadata_tags is set)
+    const string fileColorspace = file->getColorspaceMetadata();
+    if (!fileColorspace.empty() && _ocio->hasColorspace(fileColorspace.c_str())) {
+        *colorspace = fileColorspace;
+    }
 #endif
 
     *componentCount = file->getNumberOfComponents();
@@ -397,6 +434,8 @@ ReadFFmpegPlugin::decode(const string& filename,
         view = 0;
     }
     file->setSelectedStream(view);
+    // the params do not animate
+    file->setColorOverrides((FFmpegFile::ColorMatrixEnum)_colorMatrix->getValue(), (FFmpegFile::ColorRangeEnum)_colorRange->getValue());
 
     int width, height, frames;
     double ap;
@@ -408,11 +447,14 @@ ReadFFmpegPlugin::decode(const string& filename,
     //  The renderWindow itself may or may not be the full image...
     // assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == width && renderWindow.y1 == 0 && renderWindow.y2 == height));
 
-    if (((imgBounds.x2 - imgBounds.x1) < width) || ((imgBounds.y2 - imgBounds.y1) < height)) {
-        setPersistentMessage(Message::eMessageError, "", "The host provided an image of wrong size, can't decode.");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+    // The decoded frame (top-down), and the part of the render window that it covers. The render window may be any
+    // part of imgBounds (e.g. a few columns, or GenericReader's buffer for that window).
+    const OfxRectI frameBounds = { 0, 0, width, height };
+    OfxRectI frameWindow;
+    const bool inFrame = intersectWindow(renderWindow, frameBounds, &frameWindow);
+    if (!sameWindow(frameWindow, renderWindow)) {
+        // the frame is smaller than the render window (the file changed since getFrameBounds()): black elsewhere
+        fillWithBlack(renderWindow, renderScale, pixelData, imgBounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
     }
 
     // not in FFmpeg Reader: initialize the output buffer
@@ -469,7 +511,9 @@ ReadFFmpegPlugin::decode(const string& filename,
     if (decoded) {
         // outside of the try block, so that an OFX::Exception::Suite thrown by
         // convertDepthAndComponents() (e.g. kOfxStatErrMemory) reaches the host as is
-        convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+        if (inFrame) {
+            convertDepthAndComponents(buffer, frameWindow, renderScale, frameBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+        }
 
         return;
     }
@@ -996,6 +1040,39 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setLabelAndHint(kParamFirstTrackOnlyLabelAndHint);
         param->setAnimates(false);
         param->setDefault(false);
+        param->setLayoutHint(eLayoutHintDivider);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamColorMatrix);
+        param->setLabelAndHint(kParamColorMatrixLabel, kParamColorMatrixHint);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorMatrixAuto);
+        param->appendOption(kParamColorMatrixOptionAuto);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorMatrixRec601);
+        param->appendOption(kParamColorMatrixOptionRec601);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorMatrixRec709);
+        param->appendOption(kParamColorMatrixOptionRec709);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorMatrixRec2020);
+        param->appendOption(kParamColorMatrixOptionRec2020);
+        param->setDefault((int)FFmpegFile::eColorMatrixAuto);
+        param->setAnimates(false);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamColorRange);
+        param->setLabelAndHint(kParamColorRangeLabel, kParamColorRangeHint);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorRangeAuto);
+        param->appendOption(kParamColorRangeOptionAuto);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorRangeVideo);
+        param->appendOption(kParamColorRangeOptionVideo);
+        assert(param->getNOptions() == (int)FFmpegFile::eColorRangeFull);
+        param->appendOption(kParamColorRangeOptionFull);
+        param->setDefault((int)FFmpegFile::eColorRangeAuto);
+        param->setAnimates(false);
         param->setLayoutHint(eLayoutHintDivider);
         if (page) {
             page->addChild(*param);

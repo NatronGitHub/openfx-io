@@ -499,7 +499,7 @@ ofx_deploy_bundle(IO)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tests (ctest):
-# - io-load: loads the IO.ofx of the build tree with .github/workflows/verify_plugin_loads.cpp (RTLD_NOW, as in
+# - io-load: loads the IO.ofx of the build tree with tests/verify_plugin_loads.cpp (RTLD_NOW, as in
 #   CI) and checks the number of plug-ins against the groups built;
 # - io-icons: each plug-in of the build tree's bundle has its icon, Contents/Resources/<identifier>.png
 #   (tests/check_icons.cmake);
@@ -530,7 +530,7 @@ if(BUILD_TESTING)
   string(REPLACE "RTLD_LAZY" "RTLD_NOW" _io_src "${_io_src}")
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp.new" "${_io_src}")
   configure_file("${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp.new" "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp" COPYONLY)
-  add_executable(io_verify_plugin_loads .github/workflows/verify_plugin_loads.cpp "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp")
+  add_executable(io_verify_plugin_loads tests/verify_plugin_loads.cpp "${CMAKE_CURRENT_BINARY_DIR}/ofxhBinaryStrict.cpp")
   if(WIN32)
     target_sources(io_verify_plugin_loads PRIVATE "${OPENFX_PATH}/HostSupport/src/ofxhUtilities.cpp")
   endif()
@@ -642,6 +642,8 @@ if(BUILD_TESTING)
   endif()
   if(" ${_io_groups} " MATCHES " OCIO " AND " ${_io_groups} " MATCHES " OIIO " AND " ${_io_groups} " MATCHES " FFmpeg ")
     list(APPEND _io_make_tests ofx render layers reader-hooks ocio-cdl ocio-filetransform ocio-anim oiio-threads oiio-edge)
+    # ReadOIIO, ReadPFM (always built) and ReadPNG (if tests/Makefile finds libpng): render windows and scales
+    list(APPEND _io_make_tests reader-window)
     if(" ${_io_groups} " MATCHES " EXR ")
       list(APPEND _io_make_tests exr)
       # every plug-in in an OFX 1.4-only host (with the SeExpr ones if SEEXPR_HOME has SeExpr 2.11)
