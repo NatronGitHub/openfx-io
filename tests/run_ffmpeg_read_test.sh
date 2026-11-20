@@ -82,14 +82,16 @@
 # Environment:
 #   FFMPEG_READ_TEST_KEEP=dir  generate the clips in dir and keep them
 #   FFMPEG_READ_TEST_ARGS=...  extra harness arguments (e.g. --verbose)
+#   FFMPEG_READ_TEST_BIN=path  the harness (default: ffmpeg_read_test next to this script, as tests/Makefile
+#                              builds it; ctest sets it to the one of the CMake build)
 #
 # Exit status: 0 = all passed, non-zero = a failure was detected.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-bin="$here/ffmpeg_read_test"
+bin="${FFMPEG_READ_TEST_BIN:-$here/ffmpeg_read_test}"
 if [ ! -x "$bin" ]; then
-    echo "error: $bin not built. Run 'make' first." >&2
+    echo "error: $bin not built. Run 'make' (or build the CMake build's ffmpeg_read_test) first." >&2
     exit 2
 fi
 if ! command -v ffmpeg >/dev/null 2>&1; then
