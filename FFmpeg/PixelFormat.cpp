@@ -1040,6 +1040,16 @@ namespace FFmpeg {
         case AV_PIX_FMT_AYUV64BE: ///< packed AYUV 4:4:4,64bpp (1 Cr & Cb sample per 1x1 Y & A samples), big-endian
             return 16;
             break;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 42, 100) // FFmpeg 8 (doc/APIchanges: 2024-10-08, lavu 59.42.100)
+        case AV_PIX_FMT_UYVA: ///< packed UYVA 4:4:4:4, 32bpp (1 Cr & Cb sample per 1x1 Y & A samples), UYVAUYVA...
+        case AV_PIX_FMT_VYU444: ///< packed VYU 4:4:4, 24bpp (1 Cr & Cb sample per 1x1 Y), VYUVYU...
+            return 8;
+            break;
+        case AV_PIX_FMT_V30XBE: ///< packed VYUX 4:4:4 like XV30, 32bpp, (msb)10V 10Y 10U 2X(lsb), big-endian
+        case AV_PIX_FMT_V30XLE: ///< packed VYUX 4:4:4 like XV30, 32bpp, (msb)10V 10Y 10U 2X(lsb), little-endian
+            return 10;
+            break;
+#endif
 
         case AV_PIX_FMT_P010LE: ///< like NV12, with 10bpp per component, data in the high bits, zeros in the low bits, little-endian
             return 10;
@@ -1581,6 +1591,14 @@ namespace FFmpeg {
         case AV_PIX_FMT_AYUV64BE: ///< packed AYUV 4:4:4,64bpp (1 Cr & Cb sample per 1x1 Y & A samples), big-endian
             return ePixelCodingYUV440;
             break;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 42, 100) // FFmpeg 8 (doc/APIchanges: 2024-10-08, lavu 59.42.100)
+        case AV_PIX_FMT_UYVA: ///< packed UYVA 4:4:4:4, 32bpp (1 Cr & Cb sample per 1x1 Y & A samples), UYVAUYVA...
+        case AV_PIX_FMT_VYU444: ///< packed VYU 4:4:4, 24bpp (1 Cr & Cb sample per 1x1 Y), VYUVYU...
+        case AV_PIX_FMT_V30XBE: ///< packed VYUX 4:4:4 like XV30, 32bpp, (msb)10V 10Y 10U 2X(lsb), big-endian
+        case AV_PIX_FMT_V30XLE: ///< packed VYUX 4:4:4 like XV30, 32bpp, (msb)10V 10Y 10U 2X(lsb), little-endian
+            return ePixelCodingYUV444;
+            break;
+#endif
 
         case AV_PIX_FMT_P010LE: ///< like NV12, with 10bpp per component, data in the high bits, zeros in the low bits, little-endian
             return ePixelCodingYUV420;

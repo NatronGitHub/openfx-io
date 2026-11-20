@@ -233,15 +233,27 @@ const FilterEntry kCodecAllowlist[] = {
     { "qtrle", true, true }, // QuickTime Animation (RLE) video
     { "r10k", true, UNSAFEQT&& UNSAFEVLC }, // AJA Kono 10-bit RGB - write not supported as not official qt readable without colourshifts.
     { "r210", true, UNSAFEQT&& UNSAFEVLC }, // Uncompressed RGB 10-bit - write not supported as not official qt readable with relevant 3rd party codec without colourshifts.
-    { "rawvideo", true, UNSAFEQT&& UNSAFEVLC }, // raw video - write not supported as not official qt readable.
+    // rawvideo: WriteFFmpeg only writes it in a pixel format that the container has a tag for (rawvideoPixelFormats() in
+    // WriteFFmpeg.cpp), e.g. in QuickTime 2vuy and raw (RGB24, ARGB), and from FFmpeg 8 v308, v408 and v410.
+    { "rawvideo", true, true }, // raw video
     { "svq1", true, true }, // Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1
     { "targa", true, true }, // Truevision Targa image.
     { "theora", true, false }, // Theora (decoder).
     { "tiff", true, true }, // TIFF Image
-    { "v210", true, UNSAFEQT }, // Uncompressed 4:2:2 10-bit- write not supported as not official qt readable without colourshifts.
-    { "v308", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed 4:4:4 - write not supported as not official qt readable and 8-bit only.
-    { "v408", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed QT 4:4:4:4 - write not supported as official qt can't write, so bad round trip choice and 8-bit only.
-    { "v410", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed 4:4:4 10-bit - write not supported as not official qt readable with standard codecs.
+    // v210: Uncompressed 4:2:2 10-bit. It was disabled because of QuickTime "colourshifts", which came from the missing
+    // colour tags: WriteFFmpeg tags v210 with the Y'CbCr matrix, primaries and transfer function of the usual video
+    // formats (IsYUVFromShortName()) and with video range, and always sets the write_colr movflag, so that the mov muxer
+    // writes the 'colr' atom (FFmpeg n9.0 libavformat/movenc.c:2948-2953, n4.4 movenc.c:2247). The muxer also writes
+    // the version 2 sample description, lossless spatial quality and 'clap' atom that Apple's TN2162 asks for
+    // uncompressed Y'CbCr (n9.0 movenc.c:2804-2831, 3040-3041), and the encoder pads each row to 48 pixels (128 bytes),
+    // as TN2162 requires (n9.0 libavcodec/v210enc.c:72-73).
+    { "v210", true, true },
+    // v308, v408 and v410: FFmpeg 9 removed these encoders (FFmpeg n8.0 libavcodec/allcodecs.c:354-358 lists them, n9.0
+    // does not), and from FFmpeg 8 the mov muxer writes rawvideo in the VYU444, UYVA and V30XLE pixel formats with the
+    // same tags (n8.0 libavformat/movenc.c:1963-1965): WriteFFmpeg uses rawvideo when these encoders are missing.
+    { "v308", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed 4:4:4 - 8-bit only.
+    { "v408", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed QT 4:4:4:4 - 8-bit only.
+    { "v410", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed 4:4:4 10-bit.
     { "vc2", true, UNSAFEQT0&& UNSAFEVLC }, // SMPTE VC-2 (previously BBC Dirac Pro).
     { "vp8", true, false }, // On2 VP8 (decoder)
     { "vp9", true, false }, // Google VP9 (decoder)

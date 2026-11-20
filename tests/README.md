@@ -162,6 +162,33 @@ the real render pipeline, linked directly (no host binary):
   the frame, and black elsewhere (ProRes, 16-bit buffer, and MPEG-4, 8-bit).
   WriteFFmpeg read the image as if it had the size of the movie: out of its
   buffer when it is smaller (a crash in NatronRenderer).
+* **WriteFFmpeg uncompressed codecs** (issue #170): a color pattern (with an
+  alpha ramp for the formats with alpha) is written with v210 and with
+  rawvideo in QuickTime (2vuy, raw RGB and ARGB, and from FFmpeg 8 v308, v408
+  and v410), Matroska, NUT and AVI. libavformat must read back the expected
+  codec, tag and pixel format (and the BT.601 matrix in QuickTime and Matroska,
+  also for the v308 and v410 encoders of FFmpeg < 9, since #210 tags every
+  Y'CbCr stream; video range in Matroska), and ReadFFmpeg must decode the pattern exactly for
+  RGB, or within the Y'CbCr conversion error. The pattern is 64x48 with values
+  on the 8-bit grid, and also has values on no grid (as float, 10-bit and
+  16-bit images: 16-bit RGB must be exact within 1e-4, a lower depth fails)
+  and an odd size (63x47; before FFmpeg 8, swscale read a pixel past the end
+  of the row for the last 4:2:2/4:2:0 chroma sample: WriteFFmpeg passes
+  SWS_FULL_CHR_H_INP at odd widths, which also changes the other chroma
+  columns slightly, since the chroma is then computed from the full-resolution
+  input as in FFmpeg 8, not from pairs of pixels). RGB with 10 or 16 bits in QuickTime must write
+  8-bit RGB with a warning (b48r is not written: QuickTime reads it
+  byte-swapped), Y'CbCr with 12 or 16 bits v410; RGB with an odd width in
+  QuickTime must write ARGB (FFmpeg and QuickTime do not read the padded RGB24
+  rows); v210 with an odd width must fail with an error before opening the
+  encoder. A project saved with the v308 or v410 encoder must write rawvideo
+  with the same tag when FFmpeg (9) does not have them, with a warning that is
+  still shown after the render (and UYVY with a warning in Matroska). When a
+  frame fails after a good one (another file in encode(), or an Output image
+  that can not be fetched in render()) while a warning is set, the error must
+  stay the persistent message after endSequenceRender. The last
+  frame of the NUT files is not checked: ReadFFmpeg reads one frame less from
+  NUT.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
