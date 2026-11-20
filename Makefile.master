@@ -6,7 +6,13 @@ PATHTOROOT = $(OFXPATH)/Support
 
 include $(PATHTOROOT)/Plugins/Makefile.master
 
-CXXFLAGS += -DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE -DOFX_EXTENSIONS_NATRON -I$(TOP_SRCDIR)/IOSupport -I$(OFXSEXTPATH) -I$(OFXSEXTPATH)/glad
+# C++ standard: C++17 by default (std::filesystem, OpenImageIO 3.x; some compilers, e.g. Apple clang, default to
+# C++14), unless CXX or CXXFLAGS (or CXXFLAGS_ADD/CXXFLAGS_EXTRA) already has a -std option, as in tests/Makefile.
+# E.g. `make CXXSTD=-std=c++20` or `make CXX="clang++ -std=c++20"` to compile as C++20.
+# Only C++ (and Objective-C++) compiles use CXXFLAGS; the link line does not.
+CXXSTD ?= $(if $(findstring -std=,$(CXX) $(CXXFLAGS) $(CXXFLAGS_ADD) $(CXXFLAGS_EXTRA)),,-std=c++17)
+CXXFLAGS += $(CXXSTD)
+CXXFLAGS +=-DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE -DOFX_EXTENSIONS_NATRON -I$(TOP_SRCDIR)/IOSupport -I$(OFXSEXTPATH) -I$(OFXSEXTPATH)/glad
 VPATH += $(TOP_SRCDIR)/IOSupport $(TOP_SRCDIR)/IOSupport/SequenceParsing $(OFXSEXTPATH) $(OFXSEXTPATH)/glad
 
 # Comment the following two lines to disable OpenGL support in OpenColorIO plugins

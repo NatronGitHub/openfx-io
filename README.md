@@ -133,9 +133,12 @@ binary (macOS only).
 
 The libraries are found with [`pkg-config`](https://www.freedesktop.org/wiki/Software/pkg-config/). Other useful variables are `SEEXPR_HOME` (the SeExpr 2.11
 prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). On macOS, `MACOSX_DEPLOYMENT_TARGET` (default `14.0`; make variable or
-environment variable) is the minimum macOS version of the plug-ins. The Makefiles do not set the
-C++ standard: if the compiler defaults to an older one, pass it in `CXX`, e.g.
-`make CONFIG=release CXX="clang++ -std=c++17"`.
+environment variable) is the minimum macOS version of the plug-ins. The Makefiles compile as
+C++17 by default (`-std=c++17`, so plain `make CONFIG=release` works even
+with compilers that default to an older standard, such as Apple clang),
+unless `CXX` or `CXXFLAGS` already contains a `-std=` option. To compile as
+C++20, use e.g. `make CONFIG=release CXXSTD=-std=c++20` or
+`make CONFIG=release CXX="clang++ -std=c++20"`.
 See the file [`Makefile.master`](Makefile.master) in the toplevel directory for other useful
 flags/variables.
 
