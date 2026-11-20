@@ -52,6 +52,7 @@ make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in'
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
+make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, no leak)
 make test-reader-window-host # the same readers and ReadFFmpeg in a host built on openfx's HostSupport (needs expat, oiiotool, ffmpeg)
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
@@ -537,6 +538,22 @@ then 0):
 of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders
 narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 
+### 1g1. `test-png-corrupt` — ReadPNG and WritePNG on libpng errors (#235)
+
+libpng reports an error by `longjmp()`ing to `png_jmpbuf(png)`, which must be set with `setjmp()` in the function that
+makes the libpng call ([libpng-manual.txt](https://github.com/pnggroup/libpng/blob/libpng16/libpng-manual.txt),
+"Setup"). `png_corrupt_test.cpp` (with AddressSanitizer) writes two valid 8-bit RGB PNG files with libpng (one IDAT
+chunk, and IDAT chunks of 256 bytes) in `.png_corrupt`, and reads them with ReadPNG. It then makes corrupt files from
+them: an invalid IHDR with a valid CRC (zero width, bit depth 7), a bad IHDR CRC, files truncated in the middle of IHDR
+and just after it, garbage after the signature, a bad CRC in the only IDAT chunk and in the first of several, IDAT
+data truncated, corrupt zlib data (with a valid CRC), a bad signature and an empty file. For each one, it creates a
+ReadPNG instance, asks for the Image Info, the RoD and renders it: the RoD (corrupt header) or the render (corrupt
+image data) must fail with a persistent error message that has libpng's message (`libpng error: ...`). It also
+renders an image wider than libpng's limit (1000001 pixels) with WritePNG, which must fail with libpng's message. It
+then reads all the corrupt files 8 more times, and checks that the memory allocated
+(`__sanitizer_get_current_allocated_bytes()`) and the lowest free file descriptor are the same as before. It sets
+`OCIO=test.ocio`.
+
 ### 1g2. `test-reader-window-host` — the readers in a host built on HostSupport (#232)
 
 `hostdemo/reader_window.cpp` (adapted from openfx-arena's `tests/readerwindow/reader_window.cpp`) is a host built on
@@ -854,6 +871,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, rewritten files, with ASan and guard pages. |
+| `png_corrupt_test.cpp`      | ReadPNG and WritePNG on libpng errors (`test-png-corrupt`): corrupt and truncated PNG files, an image too wide for libpng, with ASan and a leak check. |
 | `hostdemo/reader_window.cpp`, `hostdemo/reader_window.sh` | The readers' render windows in a host built on HostSupport (`test-reader-window-host`, ctest `io-reader-window`). |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |

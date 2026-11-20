@@ -37,6 +37,8 @@
 #include "ofxsMacros.h"
 #include "ofxsMultiThread.h"
 
+#include "PNGError.h"
+
 using namespace OFX;
 using namespace OFX::IO;
 #ifdef OFX_IO_USING_OCIO
@@ -163,74 +165,206 @@ swap_endian(T* f,
     }
 }
 
-/// Initializes a PNG write struct.
-/// \return empty string on success, C-string error message on failure.
-///
-inline void
-create_write_struct(png_structp& sp,
-                    png_infop& ip,
-                    int nChannels,
-                    int* color_type)
+/// A PNG file open for writing, with its png_struct, whose errors are stored in error (see PNGError.h), and its
+/// png_info. The destructor frees them and closes the file, on every path (including the exceptions of the OFX
+/// Support library).
+class PNGWriteFile {
+public:
+    PNGWriteFile()
+        : file(NULL)
+        , png(NULL)
+        , info(NULL)
+        , error()
+    {
+    }
+
+    ~PNGWriteFile() { close(); }
+
+    /// Free the PNG structures and close the file: false if the file could not be closed (e.g. the last buffered
+    /// writes failed).
+    bool close()
+    {
+        if (png) {
+            png_destroy_write_struct(&png, info ? &info : NULL);
+        }
+        png = NULL;
+        info = NULL;
+        bool ok = true;
+        if (file) {
+            ok = (std::fclose(file) == 0);
+            file = NULL;
+        }
+
+        return ok;
+    }
+
+    /// Create the file and the PNG structures. On failure, return false with the reason in *errorMessage
+    /// (everything is closed and freed by the destructor).
+    bool open(const string& filename, string* errorMessage)
+    {
+        close();
+        file = fopen_utf8(filename.c_str(), "wb");
+        if (!file) {
+            *errorMessage = "Could not open file: " + filename;
+
+            return false;
+        }
+        png = png_create_write_struct(PNG_LIBPNG_VER_STRING, &error, PNGError::errorFn, NULL);
+        if (!png) {
+            *errorMessage = "Could not create PNG write structure";
+
+            return false;
+        }
+        info = png_create_info_struct(png);
+        if (!info) {
+            *errorMessage = "Could not create PNG info structure";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    std::FILE* file;
+    png_structp png;
+    png_infop info;
+    PNGError error;
+
+private:
+    PNGWriteFile(const PNGWriteFile&); // noncopyable (error is the error pointer of png)
+    PNGWriteFile& operator=(const PNGWriteFile&);
+};
+
+/// The gamma (gAMA, or sRGB and cHRM) chunks of the file
+enum PNGGammaEnum {
+    ePNGGammaNone = 0,
+    ePNGGammasRGB, // sRGB, gAMA and cHRM
+    ePNGGamma18,
+    ePNGGamma22,
+    ePNGGammaLinear,
+};
+
+PNGGammaEnum
+pngGammaFromColorspace(const string& ocioColorspace)
 {
-    switch (nChannels) {
-    case 1:
-        *color_type = PNG_COLOR_TYPE_GRAY;
-        break;
-    case 2:
-        *color_type = PNG_COLOR_TYPE_GRAY_ALPHA;
-        break;
-    case 3:
-        *color_type = PNG_COLOR_TYPE_RGB;
-        break;
-    case 4:
-        *color_type = PNG_COLOR_TYPE_RGB_ALPHA;
-        break;
-    default:
-        throw std::runtime_error("PNG only supports 1-4 channels");
+    if ((ocioColorspace == "sRGB") || (ocioColorspace == "sRGB D65") || (ocioColorspace == "sRGB (D60 sim.)") || (ocioColorspace == "out_srgbd60sim") || (ocioColorspace == "rrt_srgb") || (ocioColorspace == "srgb8")) {
+        return ePNGGammasRGB;
+    } else if (ocioColorspace == "Gamma1.8") {
+        return ePNGGamma18;
+    } else if ((ocioColorspace == "Gamma2.2") || (ocioColorspace == "vd8") || (ocioColorspace == "vd10") || (ocioColorspace == "vd16") || (ocioColorspace == "VD16")) {
+        return ePNGGamma22;
+    } else if (
+#ifdef OFX_IO_USING_OCIO
+        (ocioColorspace == OCIO::ROLE_SCENE_LINEAR) ||
+#else
+        (ocioColorspace == "scene_linear") ||
+#endif
+        (ocioColorspace == "Linear") || (ocioColorspace == "linear") || (ocioColorspace == "ACES2065-1") || (ocioColorspace == "aces") || (ocioColorspace == "lnf") || (ocioColorspace == "ln16")) {
+        return ePNGGammaLinear;
     }
 
-    sp = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!sp) {
-        throw std::runtime_error("Could not create PNG write structure");
-    }
-
-    ip = png_create_info_struct(sp);
-    if (!ip) {
-        throw std::runtime_error("Could not create PNG info structure");
-    }
-
-    // Must call this setjmp in every function that does PNG writes
-    if (setjmp(png_jmpbuf(sp))) {
-        throw std::runtime_error("PNG library error");
-    }
+    return ePNGGammaNone;
 }
 
-/// Helper function - finalizes writing the image.
-///
-inline void
-finish_image(png_structp& sp,
-             png_infop& ip)
+/// Set the compression and write the PNG header. With its own setjmp (PNGError.h): return false after a libpng
+/// error.
+bool
+writePNGHeader(png_structp sp,
+               png_infop ip,
+               std::FILE* file,
+               int compressionLevel,
+               int compressionStrategy,
+               int color_type,
+               int x1,
+               int y1,
+               int width,
+               int height,
+               double par,
+               PNGGammaEnum gamma,
+               PNGBitDepthEnum bitdepth)
 {
-    // Must call this setjmp in every function that does PNG writes
     if (setjmp(png_jmpbuf(sp))) {
-        // error ("PNG library error");
-        return;
+        return false;
+    }
+    png_init_io(sp, file);
+    png_set_compression_level(sp, compressionLevel);
+    png_set_compression_strategy(sp, compressionStrategy);
+
+    int pixelBytes = bitdepth == ePNGBitDepthUByte ? sizeof(unsigned char) : sizeof(unsigned short);
+
+    png_set_IHDR(sp, ip, width, height, pixelBytes * 8, color_type, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    if (x1 != 0 || y1 != 0) {
+        png_set_oFFs(sp, ip, x1, y1, PNG_OFFSET_PIXEL);
+    }
+
+#if defined(PNG_GAMMA_SUPPORTED)
+    switch (gamma) {
+    case ePNGGammasRGB:
+        png_set_sRGB_gAMA_and_cHRM(sp, ip, PNG_sRGB_INTENT_ABSOLUTE);
+        break;
+    case ePNGGamma18:
+#ifdef PNG_GAMMA_MAC_18 // appeared in libpng 1.5.4
+        png_set_gAMA_fixed(sp, ip, PNG_GAMMA_MAC_18);
+#else
+        png_set_gAMA(sp, ip, 1.0f / 1.8);
+#endif
+        break;
+    case ePNGGamma22:
+        png_set_gAMA(sp, ip, 1.0f / 2.2);
+        break;
+    case ePNGGammaLinear:
+#ifdef PNG_GAMMA_LINEAR // appeared in libpng 1.5.4
+        png_set_gAMA_fixed(sp, ip, PNG_GAMMA_LINEAR);
+#else
+        png_set_gAMA_fixed(sp, ip, PNG_FP_1);
+        // png_set_gAMA(sp, ip, 1.0);
+#endif
+        break;
+    case ePNGGammaNone:
+        break;
+    }
+#endif
+
+#ifdef PNG_pHYs_SUPPORTED
+    // pHYs chunk does not need to be written (unless we has real metadata or there is a PARE)
+    if (par != 1.) {
+        // PAR values:
+        // PAL 4:3 is 59:54 or 12:11
+        // PAL 16:9 is 118:81 or 16:11
+        // NTSC 4:3 is 10:11
+        // NTSC 16:9 is 40:33
+        // HDV is 4:3
+        // We scale by the least common multiple of all the denominators, eg 9*6*9*11 = 5346
+        // in order to get integer values in most cases.
+        png_set_pHYs(sp, ip, (png_uint_32)(5346), (png_uint_32)(5346 * par + 0.5), PNG_RESOLUTION_UNKNOWN);
+    }
+#endif
+
+    png_write_info(sp, ip);
+    png_set_packing(sp); // Pack 1, 2, 4 bit into bytes
+
+    return true;
+}
+
+/// Write the rows of the image after writePNGHeader() (the rows of data are bottom-up: the last one is written
+/// first), and the end of the file. With its own setjmp (PNGError.h): return false after a libpng error.
+bool
+writePNGRows(png_structp sp,
+             png_infop ip,
+             unsigned char* data,
+             std::size_t rowBytes,
+             int height)
+{
+    if (setjmp(png_jmpbuf(sp))) {
+        return false;
+    }
+    // Y is top down in PNG, so invert it now
+    for (int y = height - 1; y >= 0; --y) {
+        png_write_row(sp, (png_byte*)data + y * rowBytes);
     }
     png_write_end(sp, ip);
-}
 
-/// Destroys a PNG write struct.
-///
-inline void
-destroy_write_struct(png_structp& sp,
-                     png_infop& ip)
-{
-    if (sp && ip) {
-        // finish_image (sp, ip); // already done! finish_image was called before destroiy_write_struct, see also https://github.com/OpenImageIO/oiio/issues/1607
-        png_destroy_write_struct(&sp, &ip);
-        sp = NULL;
-        ip = NULL;
-    }
+    return true;
 }
 
 /// Helper function - writes a single parameter.
@@ -371,23 +505,6 @@ private:
      **/
     virtual bool supportsAlpha(const std::string&) const OVERRIDE FINAL { return kSupportsRGBA; }
 
-    void openFile(const string& filename,
-                  int nChannels,
-                  png_structp* png,
-                  png_infop* info,
-                  FILE** file,
-                  int* color_type) const;
-
-    void write_info(png_structp& sp,
-                    png_infop& ip,
-                    int color_type,
-                    int x1, int y1,
-                    int width,
-                    int height,
-                    double par,
-                    const string& outputColorspace,
-                    PNGBitDepthEnum bitdepth);
-
     template <int srcNComps, int dstNComps>
     void add_dither_for_components(OfxTime time,
                                    unsigned int seed,
@@ -446,142 +563,6 @@ WritePNGPlugin::changedParam(const InstanceChangedArgs& args,
     } else {
         GenericWriterPlugin::changedParam(args, paramName);
     }
-}
-
-void
-WritePNGPlugin::openFile(const string& filename,
-                         int nChannels,
-                         png_structp* png,
-                         png_infop* info,
-                         std::FILE** file,
-                         int* color_type) const
-{
-    *file = fopen_utf8(filename.c_str(), "wb");
-    if (!*file) {
-        throw std::runtime_error("Could not open file: " + filename);
-    }
-
-    *png = NULL;
-    *info = NULL;
-
-    try {
-        create_write_struct(*png, *info, nChannels, color_type);
-    } catch (const std::exception& e) {
-        std::fclose(*file);
-        if (*png != NULL) {
-            destroy_write_struct(*png, *info);
-        }
-        throw e;
-    }
-}
-
-/// Writes PNG header according to the ImageSpec.
-///
-void
-WritePNGPlugin::write_info(png_structp& sp,
-                           png_infop& ip,
-                           int color_type,
-                           int x1,
-                           int y1,
-                           int width,
-                           int height,
-                           double par,
-                           const string& ocioColorspace,
-                           PNGBitDepthEnum bitdepth)
-{
-    int pixelBytes = bitdepth == ePNGBitDepthUByte ? sizeof(unsigned char) : sizeof(unsigned short);
-
-    png_set_IHDR(sp, ip, width, height, pixelBytes * 8, color_type, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-    if (x1 != 0 || y1 != 0) {
-        png_set_oFFs(sp, ip, x1, y1, PNG_OFFSET_PIXEL);
-    }
-
-#if defined(PNG_GAMMA_SUPPORTED)
-    if ((ocioColorspace == "sRGB") || (ocioColorspace == "sRGB D65") || (ocioColorspace == "sRGB (D60 sim.)") || (ocioColorspace == "out_srgbd60sim") || (ocioColorspace == "rrt_srgb") || (ocioColorspace == "srgb8")) {
-        png_set_sRGB_gAMA_and_cHRM(sp, ip, PNG_sRGB_INTENT_ABSOLUTE);
-    } else if (ocioColorspace == "Gamma1.8") {
-#ifdef PNG_GAMMA_MAC_18 // appeared in libpng 1.5.4
-        png_set_gAMA_fixed(sp, ip, PNG_GAMMA_MAC_18);
-#else
-        png_set_gAMA(sp, ip, 1.0f / 1.8);
-#endif
-    } else if ((ocioColorspace == "Gamma2.2") || (ocioColorspace == "vd8") || (ocioColorspace == "vd10") || (ocioColorspace == "vd16") || (ocioColorspace == "VD16")) {
-        png_set_gAMA(sp, ip, 1.0f / 2.2);
-    } else if (
-#ifdef OFX_IO_USING_OCIO
-        (ocioColorspace == OCIO::ROLE_SCENE_LINEAR) ||
-#else
-        (ocioColorspace == "scene_linear") ||
-#endif
-        (ocioColorspace == "Linear") || (ocioColorspace == "linear") || (ocioColorspace == "ACES2065-1") || (ocioColorspace == "aces") || (ocioColorspace == "lnf") || (ocioColorspace == "ln16")) {
-#ifdef PNG_GAMMA_LINEAR // appeared in libpng 1.5.4
-        png_set_gAMA_fixed(sp, ip, PNG_GAMMA_LINEAR);
-#else
-        png_set_gAMA_fixed(sp, ip, PNG_FP_1);
-        // png_set_gAMA(sp, ip, 1.0);
-#endif
-    }
-#endif
-
-#ifdef PNG_iCCP_SUPPORTED
-    // Write ICC profile, if we have anything
-    /*const ImageIOParameter* icc_profile_parameter = spec.find_attribute(ICC_PROFILE_ATTR);
-       if (icc_profile_parameter != NULL) {
-       unsigned int length = icc_profile_parameter->type().size();
-     #if OIIO_LIBPNG_VERSION > 10500 // PNG function signatures changed
-       unsigned char *icc_profile = (unsigned char*)icc_profile_parameter->data();
-       if (icc_profile && length)
-       png_set_iCCP (sp, ip, "Embedded Profile", 0, icc_profile, length);
-     #else
-       char *icc_profile = (char*)icc_profile_parameter->data();
-       if (icc_profile && length)
-       png_set_iCCP (sp, ip, (png_charp)"Embedded Profile", 0, icc_profile, length);
-     #endif
-       }*/
-#endif
-
-    /*if (false && ! spec.find_attribute("DateTime")) {
-       time_t now;
-       time (&now);
-       struct tm mytm;
-       Sysutil::get_local_time (&now, &mytm);
-       string date = Strutil::format ("%4d:%02d:%02d %2d:%02d:%02d",
-       mytm.tm_year+1900, mytm.tm_mon+1, mytm.tm_mday,
-       mytm.tm_hour, mytm.tm_min, mytm.tm_sec);
-       spec.attribute ("DateTime", date);
-       }*/
-
-#ifdef PNG_pHYs_SUPPORTED
-    // pHYs chunk does not need to be written (unless we has real metadata or there is a PARE)
-    /*string_view unitname = spec.get_string_attribute ("ResolutionUnit");
-       float xres = spec.get_float_attribute ("XResolution");
-       float yres = spec.get_float_attribute ("YResolution");*/
-    if (par != 1.) {
-        // PAR values:
-        // PAL 4:3 is 59:54 or 12:11
-        // PAL 16:9 is 118:81 or 16:11
-        // NTSC 4:3 is 10:11
-        // NTSC 16:9 is 40:33
-        // HDV is 4:3
-        // We scale by the least common multiple of all the denominators, eg 9*6*9*11 = 5346
-        // in order to get integer values in most cases.
-        png_set_pHYs(sp, ip, (png_uint_32)(5346), (png_uint_32)(5346 * par + 0.5), PNG_RESOLUTION_UNKNOWN);
-    }
-#endif
-
-    // Deal with all other params
-    /*for (size_t p = 0;  p < spec.extra_attribs.size();  ++p)
-       put_parameter (sp, ip,
-       spec.extra_attribs[p].name().string(),
-       spec.extra_attribs[p].type(),
-       spec.extra_attribs[p].data(),
-       text);*/
-
-    /*if (text.size())
-       png_set_text (sp, ip, &text[0], text.size());*/
-
-    png_write_info(sp, ip);
-    png_set_packing(sp); // Pack 1, 2, 4 bit into bytes
 }
 
 template <int srcNComps, int dstNComps>
@@ -692,43 +673,42 @@ WritePNGPlugin::encode(const string& filename,
         OFX::remove_utf8(filename.c_str());
     }
 
-    png_structp png = NULL;
-    png_infop info = NULL;
-    FILE* file = NULL;
-    int color_type = PNG_COLOR_TYPE_GRAY;
-    try {
-        openFile(filename, dstNComps, &png, &info, &file, &color_type);
-    } catch (const std::exception& e) {
-        setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-    }
+    static const int colorTypes[4] = { PNG_COLOR_TYPE_GRAY, PNG_COLOR_TYPE_GRAY_ALPHA, PNG_COLOR_TYPE_RGB, PNG_COLOR_TYPE_RGB_ALPHA };
+    const int color_type = colorTypes[dstNComps - 1];
 
-    png_init_io(png, file);
+    PNGWriteFile f; // closed and freed on every path
+    string error;
+    if (!f.open(filename, &error)) {
+        setPersistentMessage(Message::eMessageError, "", error);
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 
     int compressionLevelParam;
     _compressionLevel->getValue(compressionLevelParam);
     assert(compressionLevelParam >= 0 && compressionLevelParam <= 9);
     int compressionLevel = (std::max)((std::min)(compressionLevelParam, Z_BEST_COMPRESSION), Z_NO_COMPRESSION);
-    png_set_compression_level(png, compressionLevel);
 
     int compression_i;
     _compression->getValue(compression_i);
+    int compressionStrategy;
     switch (compression_i) {
     case 1:
-        png_set_compression_strategy(png, Z_FILTERED);
+        compressionStrategy = Z_FILTERED;
         break;
     case 2:
-        png_set_compression_strategy(png, Z_HUFFMAN_ONLY);
+        compressionStrategy = Z_HUFFMAN_ONLY;
         break;
     case 3:
-        png_set_compression_strategy(png, Z_RLE);
+        compressionStrategy = Z_RLE;
         break;
     case 4:
-        png_set_compression_strategy(png, Z_FIXED);
+        compressionStrategy = Z_FIXED;
         break;
     case 0:
     default:
-        png_set_compression_strategy(png, Z_DEFAULT_STRATEGY);
+        compressionStrategy = Z_DEFAULT_STRATEGY;
         break;
     }
 
@@ -737,7 +717,12 @@ WritePNGPlugin::encode(const string& filename,
 #ifdef OFX_IO_USING_OCIO
     _ocio->getOutputColorspace(ocioColorspace);
 #endif
-    write_info(png, info, color_type, bounds.x1, bounds.y1, bounds.x2 - bounds.x1, bounds.y2 - bounds.y1, pixelAspectRatio, ocioColorspace, pngDepth);
+    if (!writePNGHeader(f.png, f.info, f.file, compressionLevel, compressionStrategy, color_type, bounds.x1, bounds.y1, bounds.x2 - bounds.x1, bounds.y2 - bounds.y1, pixelAspectRatio, pngGammaFromColorspace(ocioColorspace), pngDepth)) {
+        setPersistentMessage(Message::eMessageError, "", "WritePNG: cannot write " + filename + ": " + f.error.text());
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 
     int bitDepthSize = ((pngDepth == ePNGBitDepthUShort) ? sizeof(unsigned short) : sizeof(unsigned char));
 
@@ -799,20 +784,18 @@ WritePNGPlugin::encode(const string& filename,
         }
     }
 
-    // Y is top down in PNG, so invert it now
-    for (int y = (bounds.y2 - bounds.y1 - 1); y >= 0; --y) {
-        if (setjmp(png_jmpbuf(png))) {
-            destroy_write_struct(png, info);
-            std::fclose(file);
-            setPersistentMessage(Message::eMessageError, "", "PNG library error");
-            throwSuiteStatusException(kOfxStatFailed);
-        }
-        png_write_row(png, (png_byte*)scratchBuffer.getData() + y * pngRowBytes);
-    }
+    if (!writePNGRows(f.png, f.info, scratchBuffer.getData(), pngRowBytes, bounds.y2 - bounds.y1)) {
+        setPersistentMessage(Message::eMessageError, "", "WritePNG: cannot write " + filename + ": " + f.error.text());
+        throwSuiteStatusException(kOfxStatFailed);
 
-    finish_image(png, info);
-    destroy_write_struct(png, info);
-    std::fclose(file);
+        return;
+    }
+    if (!f.close()) {
+        setPersistentMessage(Message::eMessageError, "", "WritePNG: cannot write " + filename + ": error closing the file");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 } // WritePNGPlugin::encode
 
 bool

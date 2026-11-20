@@ -37,6 +37,8 @@
 #include "ofxsFileOpen.h"
 #include "ofxsMacros.h"
 
+#include "PNGError.h"
+
 using namespace OFX;
 using namespace OFX::IO;
 #ifdef OFX_IO_USING_OCIO
@@ -305,9 +307,6 @@ get_background(png_structp sp,
                float* green,
                float* blue)
 {
-    if (setjmp(png_jmpbuf(sp))) {
-        return false;
-    }
     if (!png_get_valid(sp, ip, PNG_INFO_bKGD)) {
         return false;
     }
@@ -342,11 +341,148 @@ enum PNGColorSpaceEnum {
     ePNGColorSpaceGammaCorrected
 };
 
-/// Read information from a PNG file and fill the ImageSpec accordingly.
+/// A PNG file open for reading, with its png_struct, whose errors are stored in error (see PNGError.h), and its
+/// png_info. The destructor frees them and closes the file, on every path (including the exceptions of the OFX
+/// Support library).
+class PNGReadFile {
+public:
+    PNGReadFile()
+        : file(NULL)
+        , png(NULL)
+        , info(NULL)
+        , error()
+    {
+    }
+
+    ~PNGReadFile() { close(); }
+
+    void close()
+    {
+        if (png) {
+            png_destroy_read_struct(&png, info ? &info : NULL, NULL);
+        }
+        png = NULL;
+        info = NULL;
+        if (file) {
+            std::fclose(file);
+            file = NULL;
+        }
+    }
+
+    /// Open the file, check its signature and create the PNG structures. On failure, return false with the reason in
+    /// *errorMessage (everything is closed and freed by the destructor).
+    bool open(const string& filename, string* errorMessage)
+    {
+        close();
+        file = fopen_utf8(filename.c_str(), "rb");
+        if (!file) {
+            *errorMessage = "Could not open file: " + filename;
+
+            return false;
+        }
+        unsigned char sig[8];
+        if ((std::fread(sig, 1, sizeof(sig), file) != sizeof(sig)) || png_sig_cmp(sig, 0, sizeof(sig))) {
+            *errorMessage = "Not a PNG file: " + filename;
+
+            return false;
+        }
+        png = png_create_read_struct(PNG_LIBPNG_VER_STRING, &error, PNGError::errorFn, NULL);
+        if (!png) {
+            *errorMessage = "Could not create PNG read structure";
+
+            return false;
+        }
+        info = png_create_info_struct(png);
+        if (!info) {
+            *errorMessage = "Could not create PNG info structure";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    std::FILE* file;
+    png_structp png;
+    png_infop info;
+    PNGError error;
+
+private:
+    PNGReadFile(const PNGReadFile&); // noncopyable (error is the error pointer of png)
+    PNGReadFile& operator=(const PNGReadFile&);
+};
+
+/// Read the header of a PNG file opened by PNGReadFile::open() (8 bytes of signature already read), and, if
+/// transform, set the transformations of the reader (8 or 16 bits RGB(A) or grey(+alpha), native endianness,
+/// de-interlacing) and update the info. With its own setjmp (PNGError.h): return false after a libpng error.
+bool
+readPNGHeader(png_structp sp,
+              png_infop ip,
+              std::FILE* file,
+              bool transform)
+{
+    if (setjmp(png_jmpbuf(sp))) {
+        return false;
+    }
+    png_init_io(sp, file);
+    png_set_sig_bytes(sp, 8); // already read 8 bytes
+    png_read_info(sp, ip);
+    if (!transform) {
+        return true;
+    }
+
+    // Auto-convert 1-, 2-, and 4- bit images to 8 bits, palette to RGB,
+    // and transparency to alpha.
+    png_set_expand(sp);
+
+    /* Expand the grayscale to 24-bit RGB if necessary. */
+    png_set_gray_to_rgb(sp);
+
+    // PNG files are naturally big-endian
+    if (littleendian()) {
+        png_set_swap(sp);
+    }
+    png_set_interlace_handling(sp);
+
+    png_read_update_info(sp, ip);
+
+    return true;
+}
+
+/// Read the rows of the image after readPNGHeader(): if interlaced, the whole image into rowPointers, else the rows
+/// 0 to lastRow, the first firstRow ones into data, and the next ones into data + (i - firstRow) * rowBytes. With its
+/// own setjmp (PNGError.h): return false after a libpng error.
+bool
+readPNGRows(png_structp sp,
+            bool interlaced,
+            png_bytepp rowPointers,
+            png_bytep data,
+            int firstRow,
+            int lastRow,
+            std::size_t rowBytes)
+{
+    if (setjmp(png_jmpbuf(sp))) {
+        return false;
+    }
+    if (interlaced) {
+        png_read_image(sp, rowPointers);
+        png_read_end(sp, NULL);
+    } else {
+        for (int i = 0; i <= lastRow; ++i) {
+            png_read_row(sp, data + (std::size_t)(std::max)(i - firstRow, 0) * rowBytes, NULL);
+        }
+    }
+
+    return true;
+}
+
+/// Read information from a PNG file and fill the ImageSpec accordingly. Return false after a libpng error (in the
+/// PNGError of sp).
 ///
-inline void
+inline bool
 getPNGInfo(png_structp sp,
            png_infop ip,
+           std::FILE* file,
            int* x1_p,
            int* y1_p,
            int* width_p,
@@ -368,22 +504,9 @@ getPNGInfo(png_structp sp,
            string* date_p, // optional
            map<string, string>* additionalComments_p) // optional
 {
-    png_read_info(sp, ip);
-
-    // Auto-convert 1-, 2-, and 4- bit images to 8 bits, palette to RGB,
-    // and transparency to alpha.
-    png_set_expand(sp);
-
-    /* Expand the grayscale to 24-bit RGB if necessary. */
-    png_set_gray_to_rgb(sp);
-
-    // PNG files are naturally big-endian
-    if (littleendian()) {
-        png_set_swap(sp);
+    if (!readPNGHeader(sp, ip, file, true)) {
+        return false;
     }
-    png_set_interlace_handling(sp);
-
-    png_read_update_info(sp, ip);
 
     png_uint_32 width, height;
     png_get_IHDR(sp, ip, &width, &height,
@@ -562,6 +685,8 @@ getPNGInfo(png_structp sp,
     if (interlace_type_p) {
         *interlace_type_p = png_get_interlace_type(sp, ip);
     }
+
+    return true;
 } // getPNGInfo
 
 class ReadPNGPlugin
@@ -598,11 +723,6 @@ private:
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
     virtual bool guessParamsFromFilename(const string& filename, string* colorspace, PreMultiplicationEnum* filePremult, PixelComponentEnum* components, int* componentCount) OVERRIDE FINAL;
-    static void openFile(const string& filename,
-                         png_structp* png,
-                         png_infop* info,
-                         std::FILE** file);
-
     string metadata(const string& filename);
 };
 
@@ -616,14 +736,13 @@ ReadPNGPlugin::~ReadPNGPlugin()
 {
 }
 
-#define PNG_BYTES_TO_CHECK 8
-
 string
 ReadPNGPlugin::metadata(const string& filename)
 {
-    // Open the file
-    std::FILE* image = fopen_utf8(filename.c_str(), "rb");
-    if (image == NULL) {
+    PNGReadFile f; // closed and freed on every path
+    string error;
+    const bool opened = f.open(filename, &error);
+    if (!f.file) {
         setPersistentMessage(Message::eMessageError, "", string("ReadPNG: cannot open file ") + filename);
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -634,47 +753,19 @@ ReadPNGPlugin::metadata(const string& filename)
 
     ss << "file: " << filename << std::endl;
 
-    {
-        unsigned char sig[8];
-        // Check that it really is a PNG file
-        /* Read in some of the signature bytes */
-        if ((std::fread(sig, 1, PNG_BYTES_TO_CHECK, image) != PNG_BYTES_TO_CHECK) || png_sig_cmp(sig, 0, PNG_BYTES_TO_CHECK)) {
-            ss << "  This file is not a valid PNG file\n";
-            std::fclose(image);
-
-            return ss.str();
-        }
-    }
-
-    // Start decompressing
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL,
-                                             NULL, NULL);
-    if (png == NULL) {
-        ss << "Could not create a PNG read structure (out of memory?)\n";
-        std::fclose(image);
+    if (!opened) {
+        ss << "  " << error << '\n';
 
         return ss.str();
     }
-    png_infop info = png_create_info_struct(png);
-    if (info == NULL) {
-        ss << "Could not create PNG info structure (out of memory?)\n";
-        png_destroy_read_struct(&png, NULL, NULL);
-        std::fclose(image);
+    // Read the header (no transformations)
+    if (!readPNGHeader(f.png, f.info, f.file, false)) {
+        ss << "  " << f.error.text() << '\n';
 
         return ss.str();
     }
-
-    if (setjmp(png_jmpbuf(png))) {
-        png_destroy_read_struct(&png, &info, NULL);
-        ss << "Could not set PNG jump value";
-        std::fclose(image);
-
-        return ss.str();
-    }
-    // Get ready for IO and tell the API we have already read the image signature
-    png_init_io(png, image);
-    png_set_sig_bytes(png, PNG_BYTES_TO_CHECK);
-    png_read_info(png, info);
+    png_structp png = f.png;
+    png_infop info = f.info;
     png_uint_32 width;
     png_uint_32 height;
     int bit_depth;
@@ -1001,10 +1092,6 @@ ReadPNGPlugin::metadata(const string& filename)
     }
 #endif // if defined(PNG_TEXT_SUPPORTED)
 
-    // This cleans things up for us in the PNG library
-    std::fclose(image);
-    png_destroy_read_struct(&png, &info, NULL);
-
     return ss.str();
 } // ReadPNGPlugin::metadata
 
@@ -1033,57 +1120,6 @@ ReadPNGPlugin::changedParam(const InstanceChangedArgs& args,
 }
 
 void
-ReadPNGPlugin::openFile(const string& filename,
-                        png_structp* png,
-                        png_infop* info,
-                        std::FILE** file)
-{
-    *png = NULL;
-    *info = NULL;
-    *file = fopen_utf8(filename.c_str(), "rb");
-    if (!*file) {
-        throw std::runtime_error("Could not open file: " + filename);
-    }
-
-    unsigned char sig[8];
-    if (std::fread(sig, 1, sizeof(sig), *file) != sizeof(sig)) {
-        throw std::runtime_error("Not a PNG file");
-    }
-
-    if (png_sig_cmp(sig, 0, 7)) {
-        throw std::runtime_error("Not a PNG file");
-    }
-
-    *png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!*png) {
-        std::fclose(*file);
-        *file = NULL;
-
-        throw std::runtime_error("Could not create PNG read structure");
-    }
-
-    *info = png_create_info_struct(*png);
-    if (!*info) {
-        png_destroy_read_struct(png, NULL, NULL);
-        std::fclose(*file);
-        *file = NULL;
-
-        throw std::runtime_error("Could not create PNG info structure");
-    }
-    // Must call this setjmp in every function that does PNG reads
-    if (setjmp(png_jmpbuf(*png))) {
-        png_destroy_read_struct(png, info, NULL);
-        std::fclose(*file);
-        *file = NULL;
-
-        throw std::runtime_error("PNG library error");
-    }
-
-    png_init_io(*png, *file);
-    png_set_sig_bytes(*png, 8); // already read 8 bytes
-}
-
-void
 ReadPNGPlugin::decode(const string& filename,
                       OfxTime /*time*/,
                       int /*view*/,
@@ -1102,15 +1138,13 @@ ReadPNGPlugin::decode(const string& filename,
         return;
     }
 
-    png_structp png;
-    png_infop info;
-    FILE* file;
-
-    try {
-        openFile(filename, &png, &info, &file);
-    } catch (const std::exception& e) {
-        setPersistentMessage(Message::eMessageError, "", e.what());
+    PNGReadFile f; // closed and freed on every path
+    string error;
+    if (!f.open(filename, &error)) {
+        setPersistentMessage(Message::eMessageError, "", error);
         throwSuiteStatusException(kOfxStatFailed);
+
+        return;
     }
 
     int x1, y1, width, height;
@@ -1120,7 +1154,12 @@ ReadPNGPlugin::decode(const string& filename,
     int colorType;
     double par;
     int interlaceType = PNG_INTERLACE_NONE;
-    getPNGInfo(png, info, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, &interlaceType, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (!getPNGInfo(f.png, f.info, f.file, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, &interlaceType, 0, 0, 0, 0, 0, 0, 0, 0)) {
+        setPersistentMessage(Message::eMessageError, "", "ReadPNG: cannot read " + filename + ": " + f.error.text());
+        throwSuiteStatusException(kOfxStatErrFormat);
+
+        return;
+    }
 
     PixelComponentEnum srcComponents;
     switch (nChannels) {
@@ -1137,8 +1176,6 @@ ReadPNGPlugin::decode(const string& filename,
         srcComponents = ePixelComponentRGBA;
         break;
     default:
-        png_destroy_read_struct(&png, &info, NULL);
-        std::fclose(file);
         setPersistentMessage(Message::eMessageError, "", "This plug-in only supports images with 1 to 4 channels");
         throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -1151,9 +1188,6 @@ ReadPNGPlugin::decode(const string& filename,
     OfxRectI window;
     if (!clipToFile(renderWindow, srcBounds, pixelData, bounds, pixelComponentCount, eBitDepthFloat, rowBytes, &window)) {
         // nothing to read
-        png_destroy_read_struct(&png, &info, NULL);
-        std::fclose(file);
-
         return;
     }
 
@@ -1181,27 +1215,13 @@ ReadPNGPlugin::decode(const string& filename,
         }
     }
 
-    // Must call this setjmp in every function that does PNG reads
-    if (setjmp(png_jmpbuf(png))) {
-        png_destroy_read_struct(&png, &info, NULL);
-        std::fclose(file);
-        setPersistentMessage(Message::eMessageError, "", "PNG library error");
+    if (!readPNGRows(f.png, interlaced, interlaced ? &row_pointers[0] : NULL, tmpData, firstRow, lastRow, pngRowBytes)) {
+        setPersistentMessage(Message::eMessageError, "", "ReadPNG: cannot read " + filename + ": " + f.error.text());
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
     }
-    if (interlaced) {
-        png_read_image(png, &row_pointers[0]);
-        png_read_end(png, NULL);
-    } else {
-        for (int i = 0; i <= lastRow; ++i) {
-            png_read_row(png, (png_bytep)tmpData + (std::size_t)(std::max)(i - firstRow, 0) * pngRowBytes, NULL);
-        }
-    }
-
-    png_destroy_read_struct(&png, &info, NULL);
-    std::fclose(file);
-    file = NULL;
+    f.close();
 
     convertDepthAndComponents(tmpData, window, renderScale, dataBounds, srcComponents, bitdepth, pngRowBytes, pixelData, bounds, pixelComponents, rowBytes);
 } // ReadPNGPlugin::decode
@@ -1218,15 +1238,8 @@ ReadPNGPlugin::getFrameBounds(const string& filename,
                               int* tile_height)
 {
     assert(bounds && par);
-    png_structp png;
-    png_infop info;
-    FILE* file;
-
-    try {
-        openFile(filename, &png, &info, &file);
-    } catch (const std::exception& e) {
-        *error = e.what();
-
+    PNGReadFile f;
+    if (!f.open(filename, error)) {
         return false;
     }
 
@@ -1236,10 +1249,12 @@ ReadPNGPlugin::getFrameBounds(const string& filename,
     int realbitdepth;
     int colorType;
 
-    getPNGInfo(png, info, &x1, &y1, &width, &height, par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    png_destroy_read_struct(&png, &info, NULL);
-    std::fclose(file);
-    file = NULL;
+    if (!getPNGInfo(f.png, f.info, f.file, &x1, &y1, &width, &height, par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) {
+        *error = "ReadPNG: cannot read " + filename + ": " + f.error.text();
+
+        return false;
+    }
+    f.close();
 
     bounds->x1 = x1;
     bounds->y1 = y1;
@@ -1278,13 +1293,10 @@ ReadPNGPlugin::guessParamsFromFilename(const string& filename,
                                        int* componentCount)
 {
     assert(colorspace && filePremult && components && componentCount);
-    png_structp png;
-    png_infop info;
-    FILE* file;
-    try {
-        openFile(filename, &png, &info, &file);
-    } catch (const std::exception& e) {
-        // setPersistentMessage(Message::eMessageError, "", e.what());
+    PNGReadFile f;
+    string error;
+    if (!f.open(filename, &error)) {
+        // setPersistentMessage(Message::eMessageError, "", error); (getRegionOfDefinition and render report it)
 
         return false;
     }
@@ -1297,10 +1309,11 @@ ReadPNGPlugin::guessParamsFromFilename(const string& filename,
     int colorType;
     double gamma;
     PNGColorSpaceEnum pngColorspace;
-    getPNGInfo(png, info, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, &pngColorspace, &gamma, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    png_destroy_read_struct(&png, &info, NULL);
-    std::fclose(file);
-    file = NULL;
+    if (!getPNGInfo(f.png, f.info, f.file, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, &pngColorspace, &gamma, 0, 0, 0, 0, 0, 0, 0, 0, 0)) {
+        // a libpng error (getRegionOfDefinition and render report it)
+        return false;
+    }
+    f.close();
 
 #ifdef OFX_IO_USING_OCIO
     switch (pngColorspace) {
