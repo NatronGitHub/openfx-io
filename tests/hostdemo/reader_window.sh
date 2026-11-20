@@ -17,7 +17,9 @@
 #   OIIOTOOL   default: oiiotool, on PATH
 #   FFMPEG     default: ffmpeg, on PATH (without it, ReadFFmpeg is not tested)
 #   READER_WINDOW_TIMEOUT  seconds per run (default 300)
-# Exit status: 0 on success, 1 on failure, 77 if the bundle or oiiotool is missing.
+#   IO_HOSTDEMO_STRICT     1 (as in CI, and as for run.sh): a missing bundle or oiiotool, a sample that can't be
+#                          written, or no passed run fails the test instead of skipping
+# Exit status: 0 on success, 1 on failure, 77 if the bundle or oiiotool is missing (1 with IO_HOSTDEMO_STRICT=1).
 set -o pipefail
 
 if [ $# -lt 2 ]; then
@@ -38,14 +40,22 @@ else
     native() { printf '%s\n' "$1"; }
 fi
 
-if ! ls -d "$PLUGINS"/*.ofx.bundle > /dev/null 2>&1; then
-    echo "skip: no .ofx.bundle in $PLUGINS"
+STRICT=${IO_HOSTDEMO_STRICT:-0}
+# skip the whole test (77), or fail it with IO_HOSTDEMO_STRICT=1
+skipall() {
+    if [ "$STRICT" = 1 ]; then
+        echo "FAIL: $1 (IO_HOSTDEMO_STRICT=1)"
+        exit 1
+    fi
+    echo "skip: $1"
     exit 77
+}
+if ! ls -d "$PLUGINS"/*.ofx.bundle > /dev/null 2>&1; then
+    skipall "no .ofx.bundle in $PLUGINS"
 fi
 OIIOTOOL=${OIIOTOOL:-$(command -v oiiotool)}
 if [ -z "$OIIOTOOL" ]; then
-    echo "skip: oiiotool not found (set OIIOTOOL)"
-    exit 77
+    skipall "oiiotool not found (set OIIOTOOL)"
 fi
 FFMPEG=${FFMPEG:-$(command -v ffmpeg)}
 TIMEOUT_CMD=$(command -v timeout || command -v gtimeout)
@@ -143,6 +153,15 @@ done
 
 echo "$ok passed${skipped:+, skipped (file not written):$skipped}${failed:+, failed:$failed}"
 if [ -n "$failed" ]; then
+    exit 1
+fi
+# IO_HOSTDEMO_STRICT=1 (CI): every sample must be tested
+if [ "$STRICT" = 1 ] && [ -n "$skipped" ]; then
+    echo "FAIL: samples not written (IO_HOSTDEMO_STRICT=1):$skipped"
+    exit 1
+fi
+if [ "$ok" -eq 0 ]; then
+    echo "FAIL: no run passed"
     exit 1
 fi
 exit 0
