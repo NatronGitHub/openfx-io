@@ -28,6 +28,7 @@
 #include <cfloat> // DBL_MAX
 #include <climits>
 #include <cmath>
+#include <cstring> // memset
 #include <fstream>
 #include <memory>
 #if defined(DEBUG) && defined(DEBUG_READER)
@@ -1420,6 +1421,114 @@ GenericReaderPlugin::getRenderTime()
     return gRenderTime;
 }
 
+// The part of the render window of the decode() or decodePlane() call being processed by this thread that comes from
+// the file (see GenericReaderPlugin::setDecodedWindow()). gDecoding is only true during that call.
+static thread_local bool gDecoding = false;
+static thread_local bool gDecodedWindowEmpty = false;
+static thread_local OfxRectI gDecodedWindow = { 0, 0, 0, 0 };
+
+namespace {
+// Around a call to decode() or decodePlane() with the given render window: the decoded window is the whole render
+// window, unless decode() reports a smaller one. decodedWindow() is the part of renderWindow that comes from the file
+// (returns false if it is empty). The previous state is restored on exit (including on exceptions), as in
+// RenderTimeSetter, for a render nested in a decode() on the same thread.
+class DecodedWindowScope
+{
+public:
+    explicit DecodedWindowScope(const OfxRectI& renderWindow)
+        : _renderWindow(renderWindow)
+        , _previousDecoding(gDecoding)
+        , _previousEmpty(gDecodedWindowEmpty)
+        , _previousWindow(gDecodedWindow)
+    {
+        gDecoding = true;
+        gDecodedWindowEmpty = false;
+        gDecodedWindow = renderWindow;
+    }
+
+    ~DecodedWindowScope()
+    {
+        gDecoding = _previousDecoding;
+        gDecodedWindowEmpty = _previousEmpty;
+        gDecodedWindow = _previousWindow;
+    }
+
+    bool decodedWindow(OfxRectI* window) const
+    {
+        if (gDecodedWindowEmpty) {
+            return false;
+        }
+        window->x1 = (std::max)(_renderWindow.x1, gDecodedWindow.x1);
+        window->y1 = (std::max)(_renderWindow.y1, gDecodedWindow.y1);
+        window->x2 = (std::min)(_renderWindow.x2, gDecodedWindow.x2);
+        window->y2 = (std::min)(_renderWindow.y2, gDecodedWindow.y2);
+
+        return (window->x1 < window->x2) && (window->y1 < window->y2);
+    }
+
+private:
+    const OfxRectI _renderWindow;
+    const bool _previousDecoding;
+    const bool _previousEmpty;
+    const OfxRectI _previousWindow;
+};
+}
+
+void
+GenericReaderPlugin::setDecodedWindow(const OfxRectI& window)
+{
+    if (!gDecoding) {
+        return;
+    }
+    gDecodedWindow = window;
+    gDecodedWindowEmpty = (window.x1 >= window.x2) || (window.y1 >= window.y2);
+}
+
+bool
+GenericReaderPlugin::clipToFile(const OfxRectI& renderWindow,
+                                const OfxRectI& fileBounds,
+                                void* pixelData,
+                                const OfxRectI& bounds,
+                                int pixelComponentCount,
+                                BitDepthEnum bitDepth,
+                                int rowBytes,
+                                OfxRectI* window)
+{
+    assert(window);
+    // the part of the render window that is in the image (all of it, for decode()), and its part in the file
+    OfxRectI w;
+    const bool inImage = intersectWindow(renderWindow, bounds, &w);
+    const bool inFile = inImage && intersectWindow(w, fileBounds, window);
+    if (!inFile) {
+        window->x1 = window->y1 = window->x2 = window->y2 = 0;
+    }
+    setDecodedWindow(*window);
+    if (!inImage || !pixelData) {
+        return inFile;
+    }
+    if (inFile && (window->x1 == w.x1) && (window->y1 == w.y1) && (window->x2 == w.x2) && (window->y2 == w.y2)) {
+        // nothing to clear
+        return true;
+    }
+    const std::size_t pixelBytes = (std::size_t)pixelComponentCount * (std::size_t)getComponentBytes(bitDepth);
+    for (int y = w.y1; y < w.y2; ++y) {
+        // the pixel (w.x1, y) (rowBytes may be negative: signed offsets)
+        char* row = (char*)pixelData + (ptrdiff_t)(y - bounds.y1) * (ptrdiff_t)rowBytes + (ptrdiff_t)(w.x1 - bounds.x1) * (ptrdiff_t)pixelBytes;
+        if (!inFile || (y < window->y1) || (y >= window->y2)) {
+            std::memset(row, 0, (std::size_t)(w.x2 - w.x1) * pixelBytes);
+            continue;
+        }
+        if (w.x1 < window->x1) {
+            std::memset(row, 0, (std::size_t)(window->x1 - w.x1) * pixelBytes);
+        }
+        if (window->x2 < w.x2) {
+            std::memset(row + (std::size_t)(window->x2 - w.x1) * pixelBytes, 0, (std::size_t)(w.x2 - window->x2) * pixelBytes);
+        }
+    }
+
+    return inFile;
+}
+
 // Set the alpha channel of an RGBA float buffer to the white point (1) over renderWindow.
 // Used for files whose premultiplication state is Opaque: the OpenFX spec defines kOfxImageOpaque as "the image is
 // opaque and so has no premultiplication state, but the alpha component in all pixels is set to the white point".
@@ -1473,16 +1582,17 @@ GenericReaderPlugin::render(const RenderArguments& args)
         }
 #ifndef NDEBUG
         if (!_supportsTiles) {
-            // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
-            //  If a clip or plugin does not support tiled images, then the host should supply full RoD images to the effect whenever it fetches one.
+            // kOfxImageEffectPropSupportsTiles: "If a clip or plugin does not support tiled images, then the host
+            // should supply full RoD images to the effect whenever it fetches one." The image has the whole RoD; it
+            // may be larger (e.g. it covers a render window that is not clipped to the RoD).
             OfxRectI dstRod; // = dst->getRegionOfDefinition(); //  Nuke's image RoDs are wrong
             Coords::toPixelEnclosing(_outputClip->getRegionOfDefinition(args.time), args.renderScale, _outputClip->getPixelAspectRatio(), &dstRod);
             const OfxRectI& dstBounds = dstImg->getBounds();
 
-            assert(dstRod.x1 == dstBounds.x1);
-            assert(dstRod.x2 == dstBounds.x2);
-            assert(dstRod.y1 == dstBounds.y1);
-            assert(dstRod.y2 == dstBounds.y2); // crashes on Natron if kSupportsTiles=0 & kSupportsMultiResolution=1
+            assert(dstBounds.x1 <= dstRod.x1);
+            assert(dstRod.x2 <= dstBounds.x2);
+            assert(dstBounds.y1 <= dstRod.y1);
+            assert(dstRod.y2 <= dstBounds.y2); // crashes on Natron if kSupportsTiles=0 & kSupportsMultiResolution=1
         }
 #endif
 
@@ -1841,13 +1951,17 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 // no colorspace conversion, no premultiplication, no proxy, just read file
                 DBG(std::printf("decode (to dst)\n"));
 
+                DecodedWindowScope decodedWindowScope(renderWindow);
                 if (!_isMultiPlanar) {
                     decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
                 } else {
                     decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
                 }
-                if (opaqueAlpha) {
-                    setOpaqueAlpha(renderWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
+                // only where the image comes from the file: the part of the render window that is not in the file
+                // that decode() opened (e.g. rewritten smaller) is out of its RoD, and stays transparent black
+                OfxRectI decodedWindow;
+                if (opaqueAlpha && decodedWindowScope.decodedWindow(&decodedWindow)) {
+                    setOpaqueAlpha(decodedWindow, it->pixelData, firstBounds, it->numChans, it->rowBytes);
                 }
             } else {
                 int pixelBytes;
@@ -1900,16 +2014,21 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 // read file
                 DBG(std::printf("decode (to tmp)\n"));
 
-                if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
-                } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
+                OfxRectI decodedWindow;
+                bool hasDecodedWindow;
+                {
+                    DecodedWindowScope decodedWindowScope(renderWindowFullRes);
+                    if (!_isMultiPlanar) {
+                        decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
+                    } else {
+                        decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
+                    }
+                    hasDecodedWindow = decodedWindowScope.decodedWindow(&decodedWindow);
                 }
 
                 if (abort()) {
                     return;
                 }
-
 
                 /// do the color-space conversion
                 if (!isOCIOIdentity && isColor) {
@@ -1932,8 +2051,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 }
 
                 // after the colorspace conversion, which may also modify the alpha channel
-                if (opaqueAlpha) {
-                    setOpaqueAlpha(renderWindowFullRes, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
+                // (only where the image comes from the file, as above)
+                if (opaqueAlpha && hasDecodedWindow) {
+                    setOpaqueAlpha(decodedWindow, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
                 }
 
                 if (kSupportsRenderScale && (downscaleLevels > 0)) {

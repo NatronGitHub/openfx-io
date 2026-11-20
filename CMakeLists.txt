@@ -36,7 +36,9 @@
 #                           PNG SEEXPR RUNSCRIPT
 #   OFX_IO_REQUIRE_ALL      fail if a group that is not disabled can't be built (default OFF; for packagers)
 #   IO_HOSTDEMO_TESTS       build openfx's hostDemo; ctest renders every plug-in of the installed bundle with it
-#                           (io-hostdemo, tests/hostdemo/run.sh), and again with hostDemo --ofx14 (io-hostdemo-ofx14)
+#                           (io-hostdemo, tests/hostdemo/run.sh), and again with hostDemo --ofx14 (io-hostdemo-ofx14);
+#                           and renders its readers with narrow render windows, and windows out of their RoD, in a
+#                           host built on HostSupport (io-reader-window, tests/hostdemo/reader_window.sh)
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
 cmake_minimum_required(VERSION 3.21...3.31)
@@ -628,6 +630,20 @@ if(BUILD_TESTING)
                        "${CMAKE_CURRENT_BINARY_DIR}/hostdemo-ofx14")
       set_tests_properties(io-hostdemo-ofx14 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
                            ENVIRONMENT "${_io_env};HOSTDEMO_ARGS=--ofx14" RESOURCE_LOCK openfx-io-hostdemo)
+      # io-reader-window: the readers of the installed bundle, with render windows in the image and partly or
+      # entirely out of the RoD, in reader_window (tests/hostdemo/reader_window.cpp), a host built on HostSupport
+      # and hostDemo's host classes (hostDemo renders the whole RoD of a plug-in without tiles, whatever --window)
+      set(_io_hd "${OPENFX_PATH}/HostSupport/examples")
+      add_executable(io_reader_window tests/hostdemo/reader_window.cpp
+                     "${_io_hd}/hostDemoClipInstance.cpp" "${_io_hd}/hostDemoEffectInstance.cpp"
+                     "${_io_hd}/hostDemoHostDescriptor.cpp" "${_io_hd}/hostDemoParamInstance.cpp")
+      target_include_directories(io_reader_window PRIVATE "${_io_hd}")
+      target_link_libraries(io_reader_window PRIVATE OfxHost)
+      get_filename_component(_io_installed_dir "${_io_installed_bundle}" DIRECTORY)
+      add_test(NAME io-reader-window
+               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/reader_window.sh" "$<TARGET_FILE:io_reader_window>"
+                       "${_io_installed_dir}" "${CMAKE_CURRENT_BINARY_DIR}/reader-window")
+      set_tests_properties(io-reader-window PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}")
     endif()
   endif()
 

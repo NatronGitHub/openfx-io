@@ -217,25 +217,48 @@ protected:
         return true;
     }
 
-    static bool sameWindow(const OfxRectI& a,
-                           const OfxRectI& b)
-    {
-        return (a.x1 == b.x1) && (a.y1 == b.y1) && (a.x2 == b.x2) && (a.y2 == b.y2);
-    }
+    /**
+     * @brief Clips the render window of decode() or decodePlane() to the image in the file that they actually opened,
+     * and clears the rest of it. For the readers that do not write the whole render window themselves.
+     *
+     * - renderWindow, pixelData, bounds, pixelComponentCount and rowBytes are the arguments of decode() or
+     *   decodePlane() (or of an image with the same layout: any depth, e.g. eBitDepthUByte, and any rowBytes,
+     *   which may be padded or negative). bitDepth is the depth of pixelData (eBitDepthFloat for decode()).
+     * - fileBounds is the bounds of the image in the file that was opened, in the same pixel coordinates. It may
+     *   differ from the frame bounds that getFrameBounds() returned (and from which the host got the RoD) if the
+     *   file changed since.
+     * - *window is set to the part of renderWindow that is in fileBounds and in bounds: the reader writes the image
+     *   there (and only there). Everything else in renderWindow (and in bounds) is set to 0 (transparent black), on
+     *   the calling thread, with one memset per row, so that no pixel is written twice.
+     * - Returns false if *window is empty (it is then (0,0,0,0), and the whole render window was cleared): the
+     *   reader then has nothing to read.
+     * - Called from decode() or decodePlane(), on the thread that render() called them on, it also tells render()
+     *   that the image is only in *window (see setDecodedWindow()). So call it once per decode() or decodePlane(),
+     *   with their renderWindow, on that thread, and not once per tile, chunk or line of the window: the last call
+     *   (of clipToFile() or setDecodedWindow()) wins. A reader that also clears another buffer with it calls
+     *   setDecodedWindow() afterwards, with the window that it wrote in decode()'s image.
+     **/
+    static bool clipToFile(const OfxRectI& renderWindow,
+                           const OfxRectI& fileBounds,
+                           void* pixelData,
+                           const OfxRectI& bounds,
+                           int pixelComponentCount,
+                           OFX::BitDepthEnum bitDepth,
+                           int rowBytes,
+                           OfxRectI* window);
 
     /**
-     * @brief Fills the renderWindow part of dstPixelData (whose bounds are dstBounds) with transparent black.
-     * decode() and decodePlane() may use it for the part of their render window that is not in the file, e.g.
-     * after the file changed since getFrameBounds() was called.
+     * @brief Tells render() which part of the render window of decode() or decodePlane() comes from the file: the
+     * rest is transparent black, e.g. because the file was rewritten smaller since getFrameBounds(). render()
+     * then sets alpha = 1 for an Opaque file (kOfxImageOpaque) only in that window, and leaves the black area
+     * transparent. clipToFile() calls it: a reader only calls it to report a larger window than the one that
+     * clipToFile() returned (ReadOIIO: the black border that getFrameBounds() adds around the data window, which is
+     * in the RoD), or if it does not use clipToFile(). By default (a reader that calls neither), the whole render
+     * window comes from the file. It only has an effect when called from decode() or decodePlane(), on the thread
+     * that render() called them on (once per call: the last one wins). An empty window (e.g. (0,0,0,0)) means that
+     * nothing comes from the file.
      **/
-    void fillWithBlack(const OfxRectI& renderWindow,
-                       const OfxPointD& renderScale,
-                       void* dstPixelData,
-                       const OfxRectI& dstBounds,
-                       OFX::PixelComponentEnum dstPixelComponents,
-                       int dstPixelComponentCount,
-                       OFX::BitDepthEnum dstBitDepth,
-                       int dstRowBytes);
+    static void setDecodedWindow(const OfxRectI& window);
 
     /**
      * @brief Converts the renderWindow part of srcPixelData to dstPixelData (float).
@@ -360,6 +383,16 @@ private:
      * render() scales the image to the render scale itself, so renderScale is always (1,1). renderWindow may be any
      * part of bounds (e.g. a tile, a few columns or a few rows, or the RoD that the host got before the file changed):
      * decode() must only write in renderWindow, and fill the part of renderWindow that is not in the file with black.
+     * The simplest way is to open the file, then call clipToFile() with the bounds of the image in it, and write the
+     * window that it returns (nothing if it returns false):
+     *
+     *     OfxRectI window;
+     *     if (clipToFile(renderWindow, imageBounds, pixelData, bounds, pixelComponentCount, OFX::eBitDepthFloat, rowBytes, &window)) {
+     *         // write the pixels of window, e.g. with convertDepthAndComponents()
+     *     }
+     *
+     * The black part is then transparent, even for an Opaque file (see setDecodedWindow()). The same holds for
+     * decodePlane(). Both are called on the thread of the render action.
      **/
     virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
     virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
@@ -538,6 +571,19 @@ private:
     const std::vector<std::string>& _extensions;
 
 private:
+    /**
+     * @brief Fills the renderWindow part of dstPixelData (whose bounds are dstBounds) with transparent black.
+     * (decode() and decodePlane() use clipToFile() instead.)
+     **/
+    void fillWithBlack(const OfxRectI& renderWindow,
+                       const OfxPointD& renderScale,
+                       void* dstPixelData,
+                       const OfxRectI& dstBounds,
+                       OFX::PixelComponentEnum dstPixelComponents,
+                       int dstPixelComponentCount,
+                       OFX::BitDepthEnum dstBitDepth,
+                       int dstRowBytes);
+
     const bool _supportsRGBA;
     const bool _supportsRGB;
     const bool _supportsXY;

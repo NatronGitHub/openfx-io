@@ -64,3 +64,6 @@
 /reader_window_test
 /reader_window_test.dSYM/
 /.reader_window/
+/reader_window_host
+/reader_window_host.dSYM/
+/.reader_window_host/

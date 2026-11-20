@@ -17,7 +17,7 @@
  * along with openfx-io.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 /*
- * reader_window_test — render windows and render scales of ReadOIIO, ReadPFM and ReadPNG (issues #160 and #163),
+ * reader_window_test — render windows and render scales of ReadOIIO, ReadPFM and ReadPNG (issues #160, #163, #232),
  * driven by the in-process host (ofx_test_host.h). Built with AddressSanitizer (make test-reader-window), and the
  * output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it crashes.
  *
@@ -28,25 +28,38 @@
  *    GenericReader) and 1/2 (GenericReader's buffer): only the window is written, with the pixels of the whole
  *    image's render (#163). ReadOIIO supports tiles: also with an output image that is the render window only.
  *    (ReadOIIO reads with OpenImageIO's ImageInput: its ImageCache is only used in Natron < 2.2.)
+ *  - render windows partly or entirely out of the RoD, in an image that covers the RoD and the window (and, for
+ *    ReadOIIO, of the window): transparent black out of the RoD (#232)
  *  - the files: ReadOIIO, float TIFF (grey, RGB, RGBA), scanline and tiled EXR with a data window smaller than the
  *    display window, and an EXR whose data window has a negative origin and extends past the display window;
- *    ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA PNG. At scale 1, the whole image is
- *    the file's pixels (premultiplied by GenericReader for the RGBA files, read as unpremultiplied).
+ *    ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA, 16-bit grey and RGBA, interlaced
+ *    8-bit RGB and 16-bit RGBA PNG. Each one with two filePremult values: decode() writes in the output image at
+ *    scale 1 (Opaque RGB, PreMultiplied RGBA), or in GenericReader's buffer, which GenericReader then premultiplies
+ *    (UnPreMultiplied). At scale 1, the whole image is the file's pixels, and alpha is checked (1 for Opaque files,
+ *    also in the black border that ReadOIIO adds around a data window).
  *  - a file rewritten with a smaller or larger image, rendered with the RoD that the host got before (decode() then
- *    gets a render window that is not the file's): only the window is written
+ *    gets a render window that is not the file's): only the window is written, and for an Opaque file, alpha is 1 in
+ *    the new image and the rest of the window is transparent black (#232)
  *  - concurrent renders while another thread replaces the file by smaller and larger ones (#163): only the
- *    windows are written
+ *    windows are written, alpha is 1 in the image and 0 in the black (Opaque files)
  *
  * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/Makefile)
  *        $READER_WINDOW_ONLY: run only the tests whose title contains it (e.g. "ReadPFM", "rewrite", "scale 0.5")
+ *        $READER_WINDOW_MULTIPLANE=1: only the 2-part EXR test, in a Natron-like host (dynamic choices, plane suite)
+ *        $READER_WINDOW_DUMP: a directory where the render of the whole RoD of each test is written (raw RGBA float)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
 
 #include <OpenImageIO/imageio.h>
+#ifdef HAVE_PNG
+#include <png.h>
+#endif
 
 #include <atomic>
 #include <chrono>
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -225,7 +238,10 @@ struct Reader {
     float* data = nullptr;
     GuardedBuffer buffer;
 
-    bool create(OfxPlugin* plugin, const std::string& filename, bool unpremult)
+    // filePremult: 0 Opaque, 1 PreMultiplied, 2 UnPreMultiplied (the output is premultiplied)
+    // outputLayer: if not empty, ReadOIIO's output layer (its kParamChannelOutputLayerChoice string param, in a host
+    // that supports dynamic choices and multiple planes)
+    bool create(OfxPlugin* plugin, const std::string& filename, int filePremult, const std::string& outputLayer = std::string())
     {
         p = plugin;
         PropSet inArgs;
@@ -236,6 +252,9 @@ struct Reader {
             return false;
         }
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
+        if (!outputLayer.empty()) {
+            setOverrideString(&ctx, "outputLayerChoice", outputLayer);
+        }
         inst.delegate = &ctx;
         setInstanceProps(inst, 100, 100, 1, kOfxImageEffectContextReader);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
@@ -264,8 +283,9 @@ struct Reader {
 
             return false;
         }
-        // RGBA files: unpremultiplied, the output premultiplied (by GenericReader, from its buffer); RGB files: opaque
-        setOverrideInt(&ctx, "filePremult", unpremult ? 2 : 0);
+        // UnPreMultiplied: GenericReader premultiplies the image, from its buffer; Opaque or PreMultiplied (the
+        // output's premultiplication): decode() writes in the output image, at scale 1
+        setOverrideInt(&ctx, "filePremult", filePremult);
         setOverrideInt(&ctx, "outputPremult", 1);
         setOverrideInt(&ctx, "outputComponents", 0); // RGBA
         out->connected = true;
@@ -385,6 +405,14 @@ byteValue(int x,
     return (unsigned char)((x * 5 + y * 11 + c * 67) & 0xff);
 }
 
+unsigned short
+shortValue(int x,
+           int y,
+           int c)
+{
+    return (unsigned short)((byteValue(x, y, c) << 8) | ((x * 3 + y * 5 + c * 11) & 0xff));
+}
+
 enum FileKind {
     eTIFF, // float TIFF
     eEXR, // float EXR, scanlines, data window in the display window
@@ -399,8 +427,46 @@ struct File {
     int width, height; // the display window (the image of PNG, TIFF and PFM)
     int nchannels;
     int dataX, dataY, dataW, dataH; // EXR: the data window, in the display window (y down)
+    int pngBits = 8; // PNG: 8 or 16 bits
+    bool pngInterlaced = false; // PNG: Adam7 interlacing
 
     bool isFloat() const { return kind != ePNG; }
+    bool isEXR() const { return (kind == eEXR) || (kind == eEXRTiled); }
+
+    // the frame bounds of the file in OFX pixels: the image, or the data window of an EXR (y flipped), with the
+    // 1-pixel black border that ReadOIIO adds around a data window that is not the display window (Edge Pixels: Auto)
+    OfxRectI frameBounds() const
+    {
+        if (!isEXR()) {
+            return { 0, 0, width, height };
+        }
+        OfxRectI b = { dataX, height - (dataY + dataH), dataX + dataW, height - dataY };
+        if ((dataX != 0) || (dataY != 0) || (dataW != width) || (dataH != height)) {
+            b.x1 -= 1;
+            b.y1 -= 1;
+            b.x2 += 1;
+            b.y2 += 1;
+        }
+
+        return b;
+    }
+
+    // the alpha of the RGBA output of an RGB file that is not Opaque: ReadPFM sets it to 0 (see ReadPFM.cpp), the
+    // others to 1
+    float rgbAlpha() const { return (kind == ePFM) ? 0.f : 1.f; }
+
+    // the value of the file's channel c at file pixel (fx, fy) (y down), as the reader reads it
+    float fileValue(int fx, int fy, int c) const
+    {
+        if (isFloat()) {
+            return floatValue(fx, fy, c);
+        }
+        if (pngBits == 16) {
+            return shortValue(fx, fy, c) * (1.f / 65535);
+        }
+
+        return byteValue(fx, fy, c) * (1.f / 255);
+    }
     bool hasData(int fx, int fy) const
     {
         if ((kind != eEXR) && (kind != eEXRTiled)) {
@@ -410,32 +476,33 @@ struct File {
         return fx >= dataX && fx < dataX + dataW && fy >= dataY && fy < dataY + dataH;
     }
 
-    // the value of OFX pixel (x, y) at render scale 1 of the RGBA output, channel c (RGBA files: premultiplied by
-    // GenericReader; RGB files: alpha is not checked)
-    bool expected(int x, int y, int c, float* v) const
+    // the value of OFX pixel (x, y) at render scale 1 of the RGBA output, channel c, read with the given filePremult
+    // (premultiplied by GenericReader if 2)
+    float expected(int x, int y, int c, int filePremult) const
     {
         // PFM is stored bottom-up, the others top-down
         const int fx = x;
         const int fy = (kind == ePFM) ? y : height - 1 - y;
-        if ((nchannels < 4) && (c == 3)) {
-            // opaque: GenericReader sets alpha to 1
-            return false;
-        }
         if (!hasData(fx, fy)) {
-            *v = 0.f;
-
-            return true;
+            // black, out of the data window (e.g. the border that ReadOIIO adds around it): transparent, unless the
+            // file is Opaque (it is in the RoD: GenericReader sets alpha to 1)
+            return ((c == 3) && (nchannels < 4) && (filePremult == 0)) ? 1.f : 0.f;
+        }
+        // the alpha of the output
+        float alpha = 1.f;
+        if (nchannels == 4) {
+            alpha = fileValue(fx, fy, 3);
+        } else if (filePremult != 0) {
+            alpha = rgbAlpha();
+        }
+        if (c == 3) {
+            return alpha;
         }
         // a grey file (1 channel): R = G = B
         const int fc = (nchannels == 1) ? 0 : c;
-        float value = isFloat() ? floatValue(fx, fy, fc) : byteValue(fx, fy, fc) * (1.f / 255);
-        if ((nchannels == 4) && (c < 3)) {
-            const float alpha = isFloat() ? floatValue(fx, fy, 3) : byteValue(fx, fy, 3) * (1.f / 255);
-            value *= alpha;
-        }
-        *v = value;
+        const float value = fileValue(fx, fy, fc);
 
-        return true;
+        return (filePremult == 2) ? value * alpha : value;
     }
 };
 
@@ -518,10 +585,66 @@ writeOIIO(const std::string& path,
     return out->close() && written;
 }
 
+#ifdef HAVE_PNG
+// A PNG file (8 or 16 bits, interlaced or not), written with libpng (OpenImageIO does not write interlaced PNG files)
+bool
+writePNG(const std::string& path,
+         const File& f)
+{
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (!file) {
+        return false;
+    }
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    png_infop info = png ? png_create_info_struct(png) : nullptr;
+    if (!info || setjmp(png_jmpbuf(png))) {
+        png_destroy_write_struct(&png, info ? &info : nullptr);
+        std::fclose(file);
+
+        return false;
+    }
+    png_init_io(png, file);
+    static const int colorTypes[] = { PNG_COLOR_TYPE_GRAY, PNG_COLOR_TYPE_GRAY_ALPHA, PNG_COLOR_TYPE_RGB, PNG_COLOR_TYPE_RGB_ALPHA };
+    png_set_IHDR(png, info, f.width, f.height, f.pngBits, colorTypes[f.nchannels - 1],
+                 f.pngInterlaced ? PNG_INTERLACE_ADAM7 : PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+    const size_t bytes = (f.pngBits == 16) ? 2 : 1;
+    const size_t rowBytes = (size_t)f.width * f.nchannels * bytes;
+    std::vector<unsigned char> pixels(rowBytes * f.height);
+    std::vector<png_bytep> rows(f.height);
+    for (int y = 0; y < f.height; ++y) { // top-down
+        rows[y] = &pixels[rowBytes * y];
+        for (int x = 0; x < f.width; ++x) {
+            for (int c = 0; c < f.nchannels; ++c) {
+                unsigned char* px = rows[y] + ((size_t)x * f.nchannels + c) * bytes;
+                if (f.pngBits == 16) {
+                    const unsigned short v = shortValue(x, y, c);
+                    px[0] = (unsigned char)(v >> 8); // big-endian
+                    px[1] = (unsigned char)(v & 0xff);
+                } else {
+                    px[0] = byteValue(x, y, c);
+                }
+            }
+        }
+    }
+    png_write_image(png, rows.data());
+    png_write_end(png, nullptr);
+    png_destroy_write_struct(&png, &info);
+
+    return std::fclose(file) == 0;
+}
+#endif
+
 bool
 writeFile(const std::string& path,
           const File& f)
 {
+#ifdef HAVE_PNG
+    if (f.kind == ePNG) {
+        return writePNG(path, f);
+    }
+#endif
+
     return (f.kind == ePFM) ? writePFM(path, f) : writeOIIO(path, f);
 }
 
@@ -567,20 +690,49 @@ windows(const OfxRectI& r)
     return v;
 }
 
+// render windows partly or entirely out of the RoD r (in an image that covers them): the OFX spec says that "If an
+// effect is asked to render outside of its region of definition, it should fill those pixels in with black
+// transparent pixels"
+std::vector<OfxRectI>
+outsideWindows(const OfxRectI& r)
+{
+    const int w = r.x2 - r.x1;
+    const int h = r.y2 - r.y1;
+    std::vector<OfxRectI> v = {
+        { r.x1 - 3, r.y1 + h / 3, r.x1 + 2, r.y1 + h / 2 }, // across the left edge
+        { r.x2 - 2, r.y2 - 2, r.x2 + 5, r.y2 + 4 }, // across the top right corner
+        { r.x1 + w / 2, r.y1 - 4, r.x1 + w / 2 + 3, r.y2 + 3 }, // a few columns, longer than the RoD
+        { r.x1 - 4, r.y1 - 4, r.x2 + 4, r.y2 + 4 }, // the RoD and a border
+        { r.x2 + 2, r.y1, r.x2 + 6, r.y1 + 3 }, // right of the RoD
+        { r.x1, r.y1 - 5, r.x1 + 4, r.y1 - 1 }, // below the RoD
+    };
+
+    return v;
+}
+
+OfxRectI
+boundingBox(const OfxRectI& a,
+            const OfxRectI& b)
+{
+    return { (std::min)(a.x1, b.x1), (std::min)(a.y1, b.y1), (std::max)(a.x2, b.x2), (std::max)(a.y2, b.y2) };
+}
+
 // The pixels of a render of window into r's image, compared to ref (the render of the whole RoD): the same bits in
-// the window, unwritten elsewhere. Returns the number of wrong values.
+// the window (transparent black out of the RoD), unwritten elsewhere. Returns the number of wrong values.
 int
 compareWindow(const Reader& r,
               const Image& ref,
               const OfxRectI& window)
 {
     int bad = 0;
+    const float zero = 0.f;
     for (int y = r.img.y1; y < r.img.y2; ++y) {
         for (int x = r.img.x1; x < r.img.x2; ++x) {
             const bool inWindow = x >= window.x1 && x < window.x2 && y >= window.y1 && y < window.y2;
+            const bool inRoD = x >= ref.bounds.x1 && x < ref.bounds.x2 && y >= ref.bounds.y1 && y < ref.bounds.y2;
             const float* px = r.pixel(x, y);
             for (int c = 0; c < 4; ++c) {
-                const bool good = inWindow ? sameBits(&px[c], &ref.pixel(x, y)[c]) : isUnwrittenBits(&px[c]);
+                const bool good = inWindow ? sameBits(&px[c], inRoD ? &ref.pixel(x, y)[c] : &zero) : isUnwrittenBits(&px[c]);
                 if (!good) {
                     if (bad < 3) {
                         std::printf("  pixel (%d,%d) channel %d (%s the window): %.9g\n", x, y, c, inWindow ? "in" : "out of", px[c]);
@@ -592,6 +744,124 @@ compareWindow(const Reader& r,
     }
 
     return bad;
+}
+
+// $READER_WINDOW_DUMP: a directory where the whole renders are written (raw RGBA float, one file per test), to
+// compare the images of two builds bit by bit (e.g. "cmp -s").
+void
+dumpImage(const std::string& title,
+          const Image& image)
+{
+    const char* dir = std::getenv("READER_WINDOW_DUMP");
+    if (!dir || !*dir) {
+        return;
+    }
+    std::string name;
+    for (char ch : title) {
+        name.push_back((std::isalnum((unsigned char)ch) || ch == '.') ? ch : '_');
+    }
+    std::FILE* file = std::fopen((std::string(dir) + "/" + name + ".raw").c_str(), "wb");
+    if (file) {
+        std::fwrite(image.pixels.data(), sizeof(float), image.pixels.size(), file);
+        std::fclose(file);
+    }
+}
+
+void
+testFileRenders(OfxPlugin* p,
+                const std::string& path,
+                const File& f,
+                bool isOIIO,
+                int filePremult,
+                double scale,
+                int sequential)
+{
+    Reader r;
+    if (!r.create(p, path, filePremult)) {
+        check(false, "create");
+
+        return;
+    }
+    OfxStatus st = r.getRoD(scale);
+    if (!ok(st)) {
+        check(false, "getRegionOfDefinition = %d", st);
+
+        return;
+    }
+    // the whole image
+    r.setImage(r.rod, scale, true);
+    gPersistentError.clear();
+    st = r.render(r.rod, scale, sequential);
+    check(ok(st) && gPersistentError.empty(), "render %d,%d,%d,%d = %d%s%s", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2, st,
+          gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    Image ref;
+    ref.bounds = r.rod;
+    ref.pixels.assign(r.data, r.data + (size_t)(r.rod.x2 - r.rod.x1) * (r.rod.y2 - r.rod.y1) * 4);
+    dumpImage(strprintf("%s %s filePremult %d scale %g sequential %d", f.plugin + 16, path.substr(path.find_last_of("/\\") + 1).c_str(), filePremult, scale, sequential), ref);
+    if (scale == 1.) {
+        int bad = 0;
+        for (int y = r.rod.y1; y < r.rod.y2; ++y) {
+            for (int x = r.rod.x1; x < r.rod.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float v = f.expected(x, y, c, filePremult);
+                    const float* px = ref.pixel(x, y);
+                    if (!(std::fabs(px[c] - v) <= 1e-6f * (1.f + std::fabs(v)))) {
+                        if (bad < 3) {
+                            std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], v);
+                        }
+                        ++bad;
+                    }
+                }
+            }
+        }
+        check(bad == 0, "the file's pixels, and alpha (%d wrong)", bad);
+    } else {
+        int unwritten = 0;
+        for (float v : ref.pixels) {
+            unwritten += isUnwrittenBits(&v) ? 1 : 0;
+        }
+        check(unwritten == 0, "every value written (%d not)", unwritten);
+    }
+    // the windows, in an image of the RoD (flush against the guard page after or before it) and, for a
+    // reader that supports tiles, in an image of the window
+    int failed = 0, bad = 0, n = 0;
+    for (const OfxRectI& w : windows(r.rod)) {
+        for (int k = 0; k < (isOIIO ? 4 : 2); ++k) {
+            r.setImage((k < 2) ? r.rod : w, scale, (k % 2) == 0);
+            gPersistentError.clear();
+            st = r.render(w, scale, sequential);
+            failed += (ok(st) && gPersistentError.empty()) ? 0 : 1;
+            const int b = compareWindow(r, ref, w);
+            if (b) {
+                std::printf("  (window %d,%d,%d,%d, %s image%s: %d wrong)\n", w.x1, w.y1, w.x2, w.y2, (k < 2) ? "RoD" : "window",
+                            (k % 2) == 0 ? " at the end guard" : " at the start guard", b);
+            }
+            bad += b;
+            ++n;
+        }
+    }
+    check(failed == 0 && bad == 0, "%d renders of narrow windows: %d failed, %d wrong values", n, failed, bad);
+    // windows partly or entirely out of the RoD, in an image that covers the RoD and the window (a reader that does
+    // not support tiles gets an image that has the whole RoD, kOfxImageEffectPropSupportsTiles: "If a clip or plugin
+    // does not support tiled images, then the host should supply full RoD images to the effect whenever it fetches
+    // one") and, for ReadOIIO, which supports tiles, in an image of the window: transparent black out of the RoD
+    failed = bad = n = 0;
+    for (const OfxRectI& w : outsideWindows(r.rod)) {
+        for (int k = 0; k < (isOIIO ? 4 : 2); ++k) {
+            r.setImage((k < 2) ? boundingBox(r.rod, w) : w, scale, (k % 2) == 0);
+            gPersistentError.clear();
+            st = r.render(w, scale, sequential);
+            failed += (ok(st) && gPersistentError.empty()) ? 0 : 1;
+            const int b = compareWindow(r, ref, w);
+            if (b) {
+                std::printf("  (window %d,%d,%d,%d, %s image%s: %d wrong)\n", w.x1, w.y1, w.x2, w.y2, (k < 2) ? "RoD+window" : "window",
+                            (k % 2) == 0 ? " at the end guard" : " at the start guard", b);
+            }
+            bad += b;
+            ++n;
+        }
+    }
+    check(failed == 0 && bad == 0, "%d renders of windows out of the RoD: %d failed, %d wrong values", n, failed, bad);
 }
 
 void
@@ -607,78 +877,21 @@ testFile(OfxPlugin* p,
         return;
     }
     const bool isOIIO = !std::strcmp(f.plugin, "fr.inria.openfx.ReadOIIO");
-    for (double scale : { 1., 0.5 }) {
-        // (the sequential render status is decode()'s isPlayback)
-        for (int sequential = 0; sequential <= 1; ++sequential) {
-            const std::string title = strprintf("%s %s, scale %g, sequential %d", f.plugin + 16, name, scale, sequential);
-            if (!selected(title)) {
-                continue;
-            }
-            std::printf("==== %s ====\n", title.c_str());
-            Reader r;
-            if (!r.create(p, path, f.nchannels == 4)) {
-                check(false, "create");
-
-                return;
-            }
-            OfxStatus st = r.getRoD(scale);
-            if (!ok(st)) {
-                check(false, "getRegionOfDefinition = %d", st);
-
-                continue;
-            }
-            // the whole image
-            r.setImage(r.rod, scale, true);
-            gPersistentError.clear();
-            st = r.render(r.rod, scale, sequential);
-            check(ok(st) && gPersistentError.empty(), "render %d,%d,%d,%d = %d%s%s", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2, st,
-                  gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
-            Image ref;
-            ref.bounds = r.rod;
-            ref.pixels.assign(r.data, r.data + (size_t)(r.rod.x2 - r.rod.x1) * (r.rod.y2 - r.rod.y1) * 4);
-            if (scale == 1.) {
-                int bad = 0;
-                for (int y = r.rod.y1; y < r.rod.y2; ++y) {
-                    for (int x = r.rod.x1; x < r.rod.x2; ++x) {
-                        for (int c = 0; c < 4; ++c) {
-                            float v;
-                            const float* px = ref.pixel(x, y);
-                            if (f.expected(x, y, c, &v) && !(std::fabs(px[c] - v) <= 1e-6f * (1.f + std::fabs(v)))) {
-                                if (bad < 3) {
-                                    std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], v);
-                                }
-                                ++bad;
-                            }
-                        }
-                    }
+    // Both paths of GenericReader::render() at scale 1: decode() into the output image (Opaque RGB files,
+    // PreMultiplied RGBA files), and into GenericReader's buffer, which it then premultiplies (UnPreMultiplied
+    // files). At scale 1/2, decode() always writes in the buffer.
+    const int filePremults[2] = { (f.nchannels == 4) ? 2 : 0, (f.nchannels == 4) ? 1 : 2 };
+    for (int filePremult : filePremults) {
+        for (double scale : { 1., 0.5 }) {
+            // (the sequential render status is decode()'s isPlayback)
+            for (int sequential = 0; sequential <= 1; ++sequential) {
+                const std::string title = strprintf("%s %s, filePremult %d, scale %g, sequential %d", f.plugin + 16, name, filePremult, scale, sequential);
+                if (!selected(title)) {
+                    continue;
                 }
-                check(bad == 0, "the file's pixels (%d wrong)", bad);
-            } else {
-                int unwritten = 0;
-                for (float v : ref.pixels) {
-                    unwritten += isUnwrittenBits(&v) ? 1 : 0;
-                }
-                check(unwritten == 0, "every value written (%d not)", unwritten);
+                std::printf("==== %s ====\n", title.c_str());
+                testFileRenders(p, path, f, isOIIO, filePremult, scale, sequential);
             }
-            // the windows, in an image of the RoD (flush against the guard page after or before it) and, for a
-            // reader that supports tiles, in an image of the window
-            int failed = 0, bad = 0, n = 0;
-            for (const OfxRectI& w : windows(r.rod)) {
-                for (int k = 0; k < (isOIIO ? 4 : 2); ++k) {
-                    r.setImage((k < 2) ? r.rod : w, scale, (k % 2) == 0);
-                    gPersistentError.clear();
-                    st = r.render(w, scale, sequential);
-                    failed += (ok(st) && gPersistentError.empty()) ? 0 : 1;
-                    const int b = compareWindow(r, ref, w);
-                    if (b) {
-                        std::printf("  (window %d,%d,%d,%d, %s image%s: %d wrong)\n", w.x1, w.y1, w.x2, w.y2, (k < 2) ? "RoD" : "window",
-                                    (k % 2) == 0 ? " at the end guard" : " at the start guard", b);
-                    }
-                    bad += b;
-                    ++n;
-                }
-            }
-            check(failed == 0 && bad == 0, "%d renders of narrow windows: %d failed, %d wrong values", n, failed, bad);
         }
     }
 }
@@ -702,7 +915,7 @@ testRewrite(OfxPlugin* p,
             }
             std::printf("==== %s ====\n", title.c_str());
             Reader r;
-            if (!writeFile(path, a) || !r.create(p, path, a.nchannels == 4) || !ok(r.getRoD(scale))) {
+            if (!writeFile(path, a) || !r.create(p, path, (a.nchannels == 4) ? 2 : 0) || !ok(r.getRoD(scale))) {
                 check(false, "first file");
 
                 return;
@@ -715,17 +928,35 @@ testRewrite(OfxPlugin* p,
             }
             std::vector<OfxRectI> ws = windows(rod);
             ws.push_back(rod);
-            int bad = 0, n = 0;
+            // the frame bounds of the new file, in full-resolution pixels
+            const OfxRectI nb = b.frameBounds();
+            int bad = 0, badAlpha = 0, n = 0;
             for (const OfxRectI& w : ws) {
                 for (int k = 0; k < 2; ++k) {
                     r.rod = rod;
                     r.setImage(rod, scale, k == 0);
                     gPersistentError.clear();
-                    r.render(w, scale, sequential); // (the render may fail)
-                    // nothing out of the window
+                    const bool rendered = ok(r.render(w, scale, sequential)); // (the render may fail)
                     for (int y = r.img.y1; y < r.img.y2; ++y) {
                         for (int x = r.img.x1; x < r.img.x2; ++x) {
                             if (x >= w.x1 && x < w.x2 && y >= w.y1 && y < w.y2) {
+                                // An RGB file is Opaque: alpha is 1 in the new file's image, and the part of the
+                                // window out of it is transparent black (it is out of the RoD of the file). At
+                                // scale 1/2, only the pixels entirely in or out of the image.
+                                if (!rendered || (b.nchannels == 4)) {
+                                    continue;
+                                }
+                                const double fx1 = x / scale, fy1 = y / scale, fx2 = (x + 1) / scale, fy2 = (y + 1) / scale;
+                                const bool in = (fx1 >= nb.x1) && (fy1 >= nb.y1) && (fx2 <= nb.x2) && (fy2 <= nb.y2);
+                                const bool out = (fx2 <= nb.x1) || (fy2 <= nb.y1) || (fx1 >= nb.x2) || (fy1 >= nb.y2);
+                                const float* px = r.pixel(x, y);
+                                if ((in && (px[3] != 1.f)) || (out && ((px[0] != 0.f) || (px[1] != 0.f) || (px[2] != 0.f) || (px[3] != 0.f)))) {
+                                    if (badAlpha < 3) {
+                                        std::printf("  window %d,%d,%d,%d: pixel (%d,%d) %s the new image: (%g,%g,%g,%g)\n", w.x1, w.y1, w.x2, w.y2, x, y, in ? "in" : "out of",
+                                                    px[0], px[1], px[2], px[3]);
+                                    }
+                                    ++badAlpha;
+                                }
                                 continue;
                             }
                             for (int c = 0; c < 4; ++c) {
@@ -742,6 +973,9 @@ testRewrite(OfxPlugin* p,
                 }
             }
             check(bad == 0, "%d renders with the old RoD: %d values written out of the window", n, bad);
+            if (b.nchannels < 4) {
+                check(badAlpha == 0, "Opaque file: alpha = 1 in the new image, transparent black out of it (%d wrong pixels)", badAlpha);
+            }
         }
     }
 }
@@ -772,7 +1006,7 @@ testConcurrentRewrite(OfxPlugin* p,
     const int kRenders = 50;
     std::vector<Reader> readers(kThreads);
     for (Reader& r : readers) {
-        if (!r.create(p, path, a.nchannels == 4) || !ok(r.getRoD(1.))) {
+        if (!r.create(p, path, (a.nchannels == 4) ? 2 : 0) || !ok(r.getRoD(1.))) {
             check(false, "create");
 
             return;
@@ -802,7 +1036,7 @@ testConcurrentRewrite(OfxPlugin* p,
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
-    std::atomic<int> bad(0), renders(0);
+    std::atomic<int> bad(0), badAlpha(0), renders(0);
     std::vector<std::thread> threads;
     for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&, t]() {
@@ -812,10 +1046,17 @@ testConcurrentRewrite(OfxPlugin* p,
             for (int i = 0; i < kRenders; ++i) {
                 const OfxRectI& w = ws[(size_t)(i + t) % ws.size()];
                 r.setImage(rod, 1., (i % 2) == 0);
-                r.render(w, 1., (i + t) % 2); // (the render may fail)
+                const bool rendered = ok(r.render(w, 1., (i + t) % 2)); // (the render may fail)
                 for (int y = r.img.y1; y < r.img.y2; ++y) {
                     for (int x = r.img.x1; x < r.img.x2; ++x) {
                         if (x >= w.x1 && x < w.x2 && y >= w.y1 && y < w.y2) {
+                            // Opaque RGB files, whose green is never 0 (floatValue()): a pixel of one of the files
+                            // has alpha 1, the black out of the file that decode() opened (rewritten smaller since
+                            // getFrameBounds()) is transparent
+                            const float* px = r.pixel(x, y);
+                            if (rendered && (a.nchannels < 4) && (px[3] != ((px[1] != 0.f) ? 1.f : 0.f))) {
+                                ++badAlpha;
+                            }
                             continue;
                         }
                         for (int c = 0; c < 4; ++c) {
@@ -835,6 +1076,91 @@ testConcurrentRewrite(OfxPlugin* p,
     done = true;
     rewriter.join();
     check(bad == 0, "%d renders: %d values written out of the windows", (int)renders, (int)bad);
+    if (a.nchannels < 4) {
+        check(badAlpha == 0, "Opaque files: alpha = 1 in the image, 0 in the black (%d wrong pixels)", (int)badAlpha);
+    }
+}
+
+// A 2-part EXR (in a Natron-like host: dynamic choices and the plane suite): part 0 is a full-frame RGB image, part 1
+// ("aov") a smaller RGB one. ReadOIIO reads part 1 into the color plane, Opaque. The frame bounds are the union of the
+// parts' (with the black border of part 1's data window), as getFrameBounds() computes them: alpha is 1 in the whole
+// RoD, also out of part 1, and the colors are part 1's, black out of its data window (#232 review: decodePlane() must
+// not compute the frame bounds of the file from the spec that seek_subimage() wrote over subimages[0]).
+void
+testMultiPart(OfxPlugin* p,
+              const std::string& dir)
+{
+    const std::string path = dir + "/multipart.exr";
+    const int W = 61, H = 47;
+    const int ax = 9, ay = 7, aw = 23, ah = 17; // part 1's data window, in the display window (y down)
+    {
+        OIIO::ImageSpec specs[2] = { OIIO::ImageSpec(W, H, 3, OIIO::TypeDesc::FLOAT), OIIO::ImageSpec(aw, ah, 3, OIIO::TypeDesc::FLOAT) };
+        specs[0].attribute("oiio:subimagename", "rgba");
+        specs[1].x = ax;
+        specs[1].y = ay;
+        specs[1].full_x = specs[1].full_y = 0;
+        specs[1].full_width = W;
+        specs[1].full_height = H;
+        specs[1].channelnames = { "aov.R", "aov.G", "aov.B" };
+        specs[1].attribute("oiio:subimagename", "aov");
+        auto out = OIIO::ImageOutput::create(path);
+        bool written = out && out->open(path, 2, specs);
+        for (int part = 0; written && (part < 2); ++part) {
+            if (part == 1) {
+                written = out->open(path, specs[1], OIIO::ImageOutput::AppendSubimage);
+            }
+            std::vector<float> pix;
+            for (int y = 0; y < specs[part].height; ++y) {
+                for (int x = 0; x < specs[part].width; ++x) {
+                    for (int c = 0; c < 3; ++c) {
+                        pix.push_back(floatValue(x + specs[part].x, y + specs[part].y, c) + (part ? 10.f : 0.f));
+                    }
+                }
+            }
+            written = written && out->write_image(OIIO::TypeDesc::FLOAT, pix.data());
+        }
+        if (!out || !out->close() || !written) {
+            check(false, "write a 2-part EXR: %s", out ? out->geterror().c_str() : OIIO::geterror().c_str());
+
+            return;
+        }
+    }
+    for (int sequential = 0; sequential <= 1; ++sequential) {
+        const std::string title = strprintf("ReadOIIO 2-part EXR, part 1 (smaller) in the color plane, Opaque, sequential %d", sequential);
+        if (!selected(title)) {
+            continue;
+        }
+        std::printf("==== %s ====\n", title.c_str());
+        Reader r;
+        if (!r.create(p, path, 0, "aov.RGB") || !ok(r.getRoD(1.))) {
+            check(false, "create");
+
+            return;
+        }
+        check(r.rod.x1 == 0 && r.rod.y1 == 0 && r.rod.x2 == W && r.rod.y2 == H, "RoD %d,%d,%d,%d (the union of the parts)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
+        r.setImage(r.rod, 1., true);
+        gPersistentError.clear();
+        const OfxStatus st = r.render(r.rod, 1., sequential);
+        int bad = 0;
+        for (int y = r.rod.y1; y < r.rod.y2; ++y) {
+            for (int x = r.rod.x1; x < r.rod.x2; ++x) {
+                const int fy = H - 1 - y;
+                const bool inAOV = (x >= ax) && (x < ax + aw) && (fy >= ay) && (fy < ay + ah);
+                const float* px = r.pixel(x, y);
+                for (int c = 0; c < 4; ++c) {
+                    const float v = (c == 3) ? 1.f : inAOV ? floatValue(x, fy, c) + 10.f : 0.f;
+                    if (!(std::fabs(px[c] - v) <= 1e-6f * (1.f + std::fabs(v)))) {
+                        if (bad < 3) {
+                            std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], v);
+                        }
+                        ++bad;
+                    }
+                }
+            }
+        }
+        check(ok(st) && gPersistentError.empty() && bad == 0, "render = %d%s%s: part 1's pixels, alpha 1 in the whole RoD (%d wrong)", st,
+              gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str(), bad);
+    }
 }
 
 } // namespace
@@ -851,6 +1177,12 @@ main(int argc,
     const std::string dir = argv[1];
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // (the output before a crash)
     initHost();
+    // $READER_WINDOW_MULTIPLANE=1: a Natron-like host (dynamic choices, multiple planes), for the 2-part EXR test only
+    const bool multiPlane = std::getenv("READER_WINDOW_MULTIPLANE") && !std::strcmp(std::getenv("READER_WINDOW_MULTIPLANE"), "1");
+    if (multiPlane) {
+        pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+        pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    }
     std::vector<const char*> ids = { "fr.inria.openfx.ReadOIIO", "fr.inria.openfx.ReadPFM" };
 #ifdef HAVE_PNG
     ids.push_back("fr.inria.openfx.ReadPNG");
@@ -872,6 +1204,15 @@ main(int argc,
     }
     OfxPlugin* oiio = findPlugin("fr.inria.openfx.ReadOIIO");
     OfxPlugin* pfm = findPlugin("fr.inria.openfx.ReadPFM");
+    if (multiPlane) {
+        testMultiPart(oiio, dir);
+        for (size_t i = 0; i < ids.size(); ++i) {
+            findPlugin(ids[i])->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+        }
+        std::printf("%s (%d failure%s)\n", gFailures ? "FAIL" : "PASS", gFailures, gFailures == 1 ? "" : "s");
+
+        return gFailures ? 1 : 0;
+    }
 
     // (odd sizes: the windows at scale 1/2 are rounded)
     const File tiffRGB = { "fr.inria.openfx.ReadOIIO", eTIFF, 61, 47, 3, 0, 0, 0, 0 };
@@ -896,6 +1237,15 @@ main(int argc,
     const File pngRGBA = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 4, 0, 0, 0, 0 };
     testFile(png, dir, "rgb", pngRGB);
     testFile(png, dir, "rgba", pngRGBA);
+    // read row by row, only down to the window, unless interlaced (read whole)
+    const File pngGrey16 = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 1, 0, 0, 0, 0, 16 };
+    const File pngRGBA16 = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 4, 0, 0, 0, 0, 16 };
+    const File pngInterlaced = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 3, 0, 0, 0, 0, 8, true };
+    const File pngInterlaced16 = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 4, 0, 0, 0, 0, 16, true };
+    testFile(png, dir, "grey16", pngGrey16);
+    testFile(png, dir, "rgba16", pngRGBA16);
+    testFile(png, dir, "interlaced", pngInterlaced);
+    testFile(png, dir, "interlaced16", pngInterlaced16);
 #endif
 
     // files rewritten: smaller, then larger
@@ -905,6 +1255,9 @@ main(int argc,
     testRewrite(oiio, dir, "rewrite-larger", tiffRGB, tiffLarge);
     const File exrSmall = { "fr.inria.openfx.ReadOIIO", eEXR, 80, 60, 4, 20, 15, 11, 9 };
     testRewrite(oiio, dir, "rewrite-datawindow", exr, exrSmall);
+    // RGB (Opaque): alpha = 1 in the black border of the data window, which is in the RoD
+    const File exrTiledSmall = { "fr.inria.openfx.ReadOIIO", eEXRTiled, 80, 60, 3, 20, 15, 11, 9 };
+    testRewrite(oiio, dir, "rewrite-datawindow-rgb", exrTiled, exrTiledSmall);
     const File pfmSmall = { "fr.inria.openfx.ReadPFM", ePFM, 23, 19, 3, 0, 0, 0, 0 };
     const File pfmLarge = { "fr.inria.openfx.ReadPFM", ePFM, 97, 71, 3, 0, 0, 0, 0 };
     testRewrite(pfm, dir, "rewrite-smaller", pfmRGB, pfmSmall);
@@ -914,6 +1267,8 @@ main(int argc,
     const File pngLarge = { "fr.inria.openfx.ReadPNG", ePNG, 97, 71, 3, 0, 0, 0, 0 };
     testRewrite(png, dir, "rewrite-smaller", pngRGB, pngSmall);
     testRewrite(png, dir, "rewrite-larger", pngRGB, pngLarge);
+    const File pngInterlacedSmall = { "fr.inria.openfx.ReadPNG", ePNG, 23, 19, 3, 0, 0, 0, 0, 8, true };
+    testRewrite(png, dir, "rewrite-interlaced-smaller", pngInterlaced, pngInterlacedSmall);
 #endif
     testConcurrentRewrite(oiio, dir, "concurrent", tiffSmall, tiffLarge);
     testConcurrentRewrite(pfm, dir, "concurrent", pfmSmall, pfmLarge);

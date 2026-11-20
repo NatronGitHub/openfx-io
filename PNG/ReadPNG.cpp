@@ -1120,59 +1120,8 @@ ReadPNGPlugin::decode(const string& filename,
     int realbitdepth;
     int colorType;
     double par;
-    getPNGInfo(png, info, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-
-    std::size_t pngRowBytes = nChannels * width;
-    if (bitdepth == eBitDepthUShort) {
-        pngRowBytes *= sizeof(unsigned short);
-    }
-
-    RamBuffer scratchBuffer(pngRowBytes * height);
-    unsigned char* tmpData = scratchBuffer.getData();
-
-    // if (interlace_type != 0) {
-    vector<unsigned char*> row_pointers(height);
-    for (int i = 0; i < height; ++i) {
-        row_pointers[i] = tmpData + i * pngRowBytes;
-    }
-
-    // Must call this setjmp in every function that does PNG reads
-    if (setjmp(png_jmpbuf(png))) {
-        png_destroy_read_struct(&png, &info, NULL);
-        std::fclose(file);
-        setPersistentMessage(Message::eMessageError, "", "PNG library error");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
-    }
-    png_read_image(png, &row_pointers[0]);
-    png_read_end(png, NULL);
-    /*
-       } else {
-        for (int y = 0; y < height; ++y) {
-            // Must call this setjmp in every function that does PNG reads
-            if (setjmp (png_jmpbuf (png))) {
-                png_destroy_read_struct(&png, &info, NULL);
-                std::fclose(file);
-                setPersistentMessage(Message::eMessageError, "", "PNG library error");
-                throwSuiteStatusException(kOfxStatErrFormat);
-
-                return;
-            }
-            png_read_row (png, (png_bytep)tmpData + y * pngRowBytes, NULL);
-        }
-       }
-     */
-
-    png_destroy_read_struct(&png, &info, NULL);
-    std::fclose(file);
-    file = NULL;
-
-    OfxRectI srcBounds;
-    srcBounds.x1 = x1;
-    srcBounds.y1 = y1;
-    srcBounds.x2 = x1 + width;
-    srcBounds.y2 = y1 + height;
+    int interlaceType = PNG_INTERLACE_NONE;
+    getPNGInfo(png, info, &x1, &y1, &width, &height, &par, &nChannels, &bitdepth, &realbitdepth, &colorType, 0, 0, &interlaceType, 0, 0, 0, 0, 0, 0, 0, 0);
 
     PixelComponentEnum srcComponents;
     switch (nChannels) {
@@ -1189,6 +1138,8 @@ ReadPNGPlugin::decode(const string& filename,
         srcComponents = ePixelComponentRGBA;
         break;
     default:
+        png_destroy_read_struct(&png, &info, NULL);
+        std::fclose(file);
         setPersistentMessage(Message::eMessageError, "", "This plug-in only supports images with 1 to 4 channels");
         throwSuiteStatusException(kOfxStatErrFormat);
 
@@ -1197,14 +1148,63 @@ ReadPNGPlugin::decode(const string& filename,
 
     // The render window may be any part of bounds, and may not be in srcBounds if the file changed since
     // getFrameBounds(): black out of the file's bounds.
+    const OfxRectI srcBounds = { x1, y1, x1 + width, y1 + height };
     OfxRectI window;
-    const bool inFile = intersectWindow(renderWindow, srcBounds, &window);
-    if (!sameWindow(window, renderWindow)) {
-        fillWithBlack(renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
+    if (!clipToFile(renderWindow, srcBounds, pixelData, bounds, pixelComponentCount, eBitDepthFloat, rowBytes, &window)) {
+        // nothing to read
+        png_destroy_read_struct(&png, &info, NULL);
+        std::fclose(file);
+
+        return;
     }
-    if (inFile) {
-        convertDepthAndComponents(tmpData, window, renderScale, srcBounds, srcComponents, bitdepth, pngRowBytes, pixelData, bounds, pixelComponents, rowBytes);
+
+    std::size_t pngRowBytes = nChannels * width;
+    if (bitdepth == eBitDepthUShort) {
+        pngRowBytes *= sizeof(unsigned short);
     }
+
+    // The rows of a PNG file are stored from the top (y = srcBounds.y2 - 1) down. An interlaced (Adam7) file is read
+    // whole. Otherwise, the rows are read one by one down to the last one that the window needs (firstRow..lastRow),
+    // and the rest of the file is not read; only the rows of the window are kept (the rows above it are read into the
+    // first one, which is then overwritten).
+    const bool interlaced = (interlaceType != PNG_INTERLACE_NONE);
+    const int firstRow = interlaced ? 0 : (srcBounds.y2 - window.y2);
+    const int lastRow = interlaced ? (height - 1) : (srcBounds.y2 - 1 - window.y1);
+    // the bounds of the rows in the buffer (top-down, as convertDepthAndComponents() expects)
+    const OfxRectI dataBounds = { srcBounds.x1, srcBounds.y2 - 1 - lastRow, srcBounds.x2, srcBounds.y2 - firstRow };
+    RamBuffer scratchBuffer(pngRowBytes * (std::size_t)(lastRow - firstRow + 1));
+    unsigned char* tmpData = scratchBuffer.getData();
+    vector<unsigned char*> row_pointers;
+    if (interlaced) {
+        row_pointers.resize(height);
+        for (int i = 0; i < height; ++i) {
+            row_pointers[i] = tmpData + i * pngRowBytes;
+        }
+    }
+
+    // Must call this setjmp in every function that does PNG reads
+    if (setjmp(png_jmpbuf(png))) {
+        png_destroy_read_struct(&png, &info, NULL);
+        std::fclose(file);
+        setPersistentMessage(Message::eMessageError, "", "PNG library error");
+        throwSuiteStatusException(kOfxStatErrFormat);
+
+        return;
+    }
+    if (interlaced) {
+        png_read_image(png, &row_pointers[0]);
+        png_read_end(png, NULL);
+    } else {
+        for (int i = 0; i <= lastRow; ++i) {
+            png_read_row(png, (png_bytep)tmpData + (std::size_t)(std::max)(i - firstRow, 0) * pngRowBytes, NULL);
+        }
+    }
+
+    png_destroy_read_struct(&png, &info, NULL);
+    std::fclose(file);
+    file = NULL;
+
+    convertDepthAndComponents(tmpData, window, renderScale, dataBounds, srcComponents, bitdepth, pngRowBytes, pixelData, bounds, pixelComponents, rowBytes);
 } // ReadPNGPlugin::decode
 
 bool

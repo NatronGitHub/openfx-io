@@ -17,6 +17,9 @@
  *    Before the fix, level 2 or more dereferenced a null temporary buffer.
  *  - refreshFrameBounds() (#163) is only called when the part of the render window in the host's RoD is out of the
  *    frame bounds, not for a render window larger than an up-to-date RoD (e.g. a display window).
+ *  - clipToFile() (#232) clears the part of the window out of the file, with any depth and row bytes; an Opaque file
+ *    rewritten smaller between getFrameBounds() and decode() gets alpha = 1 only where decode() wrote the image
+ *    (clipToFile()'s window, or the one reported with setDecodedWindow()), transparent black elsewhere.
  *
  * And getClipPreferences() for an image sequence whose starting time is not its first frame
  * (issue #147): the PAR must be read from the first file of the sequence, looked up at the
@@ -61,6 +64,7 @@ using namespace OFX::IO;
 #define kPluginIdentifierMultiPlanar "fr.inria.openfx.tests.ReaderHooksMultiPlanar"
 #define kPluginIdentifierMipmap "fr.inria.openfx.tests.ReaderHooksMipmap"
 #define kPluginIdentifierTiles "fr.inria.openfx.tests.ReaderHooksTiles"
+#define kPluginIdentifierClip "fr.inria.openfx.tests.ReaderHooksClip"
 #define kSupportsRGBA true
 #define kSupportsRGB false
 #define kSupportsXY false
@@ -97,16 +101,33 @@ struct MipmapContent {
 };
 MipmapContent gMipmapContent; // read by the mipmap test reader instances
 
+// The clip test reader (#232): getFrameBounds() returns gMipmapContent.bounds, but the file that decode() opens has
+// the image fileBounds (as if it had been rewritten smaller in between). decode() calls clipToFile() with it, writes
+// gMipmapContent.value() in the window that it returns (alpha 0.5), and, if reportFrameBounds, then reports the whole
+// frame bounds with setDecodedWindow() (as ReadOIIO does for the black border of a data window).
+struct ClipContent {
+    OfxRectI fileBounds;
+    bool reportFrameBounds;
+};
+ClipContent gClipContent;
+
 // A reader of fake files: "video" files (whose name contains "video") have kVideoRange frames,
 // others are still images or image sequences. The file only needs to exist. Files whose name
 // contains "par2" have a pixel aspect ratio of 2, and those whose name contains "par0" an invalid pixel aspect ratio of 0.
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
-    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false, const MipmapContent* content = nullptr, bool supportsTiles = kSupportsTiles)
+    TestReaderPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions, bool multiPlanar = false, const MipmapContent* content = nullptr, bool supportsTiles = kSupportsTiles, const ClipContent* clip = nullptr)
         : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, supportsTiles, multiPlanar)
         , _content(content)
+        , _clip(clip)
     {
+    }
+
+    // clipToFile() is protected
+    static bool clip(const OfxRectI& renderWindow, const OfxRectI& fileBounds, void* pixelData, const OfxRectI& bounds, int pixelComponentCount, BitDepthEnum bitDepth, int rowBytes, OfxRectI* window)
+    {
+        return clipToFile(renderWindow, fileBounds, pixelData, bounds, pixelComponentCount, bitDepth, rowBytes, window);
     }
 
     // what decode() or decodePlane() saw, in call order
@@ -156,6 +177,26 @@ private:
     {
         const double t = getRenderTime();
         records.push_back({ t, time, plane, renderWindow, renderScale });
+        if (_clip) {
+            OfxRectI window;
+            if (clipToFile(renderWindow, _clip->fileBounds, pixelData, bounds, pixelComponentCount, eBitDepthFloat, rowBytes, &window)) {
+                for (int y = window.y1; y < window.y2; ++y) {
+                    float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes) + (ptrdiff_t)(window.x1 - bounds.x1) * pixelComponentCount;
+                    for (int x = window.x1; x < window.x2; ++x, pix += pixelComponentCount) {
+                        for (int c = 0; c < pixelComponentCount; ++c) {
+                            pix[c] = (c == 3) ? 0.5f : _content->value(x, y, c);
+                        }
+                    }
+                }
+            }
+            if (_clip->reportFrameBounds) {
+                OfxRectI frameWindow;
+                intersectWindow(renderWindow, _content->bounds, &frameWindow);
+                setDecodedWindow(frameWindow);
+            }
+
+            return;
+        }
         if (_content) {
             // a reader that doesn't support render scale: whatever the render scale, the render
             // window and the pixels are at full resolution, and GenericReader downscales them
@@ -226,6 +267,7 @@ private:
     }
 
     const MipmapContent* _content; // if not null: the mipmap test reader's image
+    const ClipContent* _clip; // if not null: the clip test reader's file
 };
 
 // Same, but the output may change over time even for a still image (e.g. an animated param)
@@ -336,6 +378,20 @@ TilesTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, Contex
     return ret;
 }
 
+// Reads gMipmapContent with getFrameBounds(), and the smaller gClipContent in decode()
+mDeclareReaderPluginFactory(ClipTestReaderPluginFactory, {}, false);
+void ClipTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
+void ClipTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksClipTest"); }
+void ClipTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
+ImageEffect*
+ClipTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
+{
+    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent, false, &gClipContent);
+    ret->restoreStateFromParams();
+
+    return ret;
+}
+
 TestReaderPluginFactory gDefaultFactory(kPluginIdentifierDefault, 1, 0);
 mRegisterPluginFactoryInstance(gDefaultFactory)
 FrameVaryingTestReaderPluginFactory gFrameVaryingFactory(kPluginIdentifierFrameVarying, 1, 0);
@@ -346,6 +402,8 @@ MipmapTestReaderPluginFactory gMipmapFactory(kPluginIdentifierMipmap, 1, 0);
 mRegisterPluginFactoryInstance(gMipmapFactory)
 TilesTestReaderPluginFactory gTilesFactory(kPluginIdentifierTiles, 1, 0);
 mRegisterPluginFactoryInstance(gTilesFactory)
+ClipTestReaderPluginFactory gClipFactory(kPluginIdentifierClip, 1, 0);
+mRegisterPluginFactoryInstance(gClipFactory)
 
 // ------------------------------------------------------------------ host side
 
@@ -1075,6 +1133,137 @@ testRefreshFrameBoundsPar(OfxPlugin* pTiles, const std::string& prefix)
     std::remove(file.c_str());
 }
 
+// 5. clipToFile() (#232): the part of the window out of the file is cleared, only once per pixel, whatever the depth
+// and the row bytes (padded, negative), and the rest is untouched
+void
+testClipToFileHelper()
+{
+    std::printf("==== clipToFile(): float and 8-bit images, padded and negative row bytes ====\n");
+    const OfxRectI bounds = { -3, 2, 14, 11 }; // the image
+    const OfxRectI window = { -1, 3, 12, 10 }; // the render window, in bounds
+    struct Case {
+        OfxRectI file;
+        bool inFile;
+        OfxRectI expected;
+    };
+    const Case cases[] = {
+        { { 2, 5, 9, 8 }, true, { 2, 5, 9, 8 } }, // in the window
+        { { -10, -10, 50, 50 }, true, { -1, 3, 12, 10 } }, // larger than the window: nothing cleared
+        { { 0, 0, 5, 6 }, true, { 0, 3, 5, 6 } }, // across a corner
+        { { 20, 3, 30, 10 }, false, { 0, 0, 0, 0 } }, // out of the window: all cleared
+        { { 3, 4, 3, 9 }, false, { 0, 0, 0, 0 } }, // empty
+    };
+    for (BitDepthEnum depth : { eBitDepthFloat, eBitDepthUByte }) {
+        const int nComps = (depth == eBitDepthFloat) ? 4 : 3;
+        const int compBytes = (depth == eBitDepthFloat) ? 4 : 1;
+        const int pixelBytes = nComps * compBytes;
+        const int w = bounds.x2 - bounds.x1;
+        const int h = bounds.y2 - bounds.y1;
+        for (int negative = 0; negative <= 1; ++negative) {
+            const int stride = w * pixelBytes + 7; // padded
+            for (const Case& k : cases) {
+                std::vector<unsigned char> buf((size_t)stride * h, 0xab);
+                // bottom-up, or top-down with negative row bytes (data points to the bottom row, the last one in memory)
+                unsigned char* data = negative ? &buf[(size_t)stride * (h - 1)] : &buf[0];
+                const int rowBytes = negative ? -stride : stride;
+                OfxRectI got = { 1, 2, 3, 4 };
+                const bool r = TestReaderPlugin::clip(window, k.file, data, bounds, nComps, depth, rowBytes, &got);
+                int bad = 0;
+                for (int y = bounds.y1; y < bounds.y2; ++y) {
+                    const unsigned char* row = data + (ptrdiff_t)(y - bounds.y1) * rowBytes;
+                    for (int x = bounds.x1; x < bounds.x2 + 1; ++x) { // (and the padding)
+                        const bool inWindow = (x >= window.x1) && (x < window.x2) && (y >= window.y1) && (y < window.y2);
+                        const bool inGot = (x >= got.x1) && (x < got.x2) && (y >= got.y1) && (y < got.y2);
+                        const unsigned char expected = (inWindow && !inGot) ? 0 : 0xab;
+                        const int n = (x < bounds.x2) ? pixelBytes : 7;
+                        for (int i = 0; i < n; ++i) {
+                            bad += (row[(ptrdiff_t)(x - bounds.x1) * pixelBytes + i] != expected) ? 1 : 0;
+                        }
+                    }
+                }
+                const bool sameRect = (got.x1 == k.expected.x1) && (got.y1 == k.expected.y1) && (got.x2 == k.expected.x2) && (got.y2 == k.expected.y2);
+                check(r == k.inFile && sameRect && bad == 0, "%s, row bytes %d, file %d,%d,%d,%d: %d, window %d,%d,%d,%d, %d wrong bytes",
+                      (depth == eBitDepthFloat) ? "float RGBA" : "8-bit RGB", rowBytes, k.file.x1, k.file.y1, k.file.x2, k.file.y2, (int)r, got.x1, got.y1, got.x2, got.y2, bad);
+            }
+        }
+    }
+}
+
+// 6. An Opaque file rewritten smaller between getFrameBounds() and decode() (#232, the known issue of #225): alpha
+// is 1 only where decode() wrote the image (the window that clipToFile() returned, or the one it reported with
+// setDecodedWindow()), the rest of the render window is transparent black. Scale 1 (decode() writes in the output
+// image) and 1/2 (in GenericReader's buffer).
+void
+testOpaqueClip(OfxPlugin* pClip, const std::string& still)
+{
+    const OfxRectI frame = { 0, 0, 13, 9 }; // the frame bounds, from which the host got the RoD
+    const OfxRectI file = { 2, 1, 8, 6 }; // the image in the file that decode() opened
+    gMipmapContent.bounds = frame;
+    gMipmapContent.value = [](int x, int y, int c) -> float { return 0.1f + 0.01f * (float)(x + 16 * y + 4 * c); };
+    for (int reportFrameBounds = 0; reportFrameBounds <= 1; ++reportFrameBounds) {
+        std::printf("==== Opaque file rewritten smaller during a render: alpha%s (#232) ====\n",
+                    reportFrameBounds ? " = 1 in the window reported by setDecodedWindow()" : " = 1 only in the file");
+        gClipContent.fileBounds = file;
+        gClipContent.reportFrameBounds = reportFrameBounds != 0;
+        Reader r;
+        if (!r.create(pClip, still)) {
+            ++gFailures;
+
+            return;
+        }
+        setParamInt(r.ctx, "filePremult", 0); // Opaque
+        setParamInt(r.ctx, "outputPremult", 1);
+        // where alpha must be 1, in full-resolution pixels
+        const OfxRectI opaque = reportFrameBounds ? frame : file;
+        for (unsigned int level = 0; level <= 1; ++level) {
+            const int s = 1 << level;
+            const OfxRectI windows[] = {
+                { 0, 0, (13 + s - 1) / s, (9 + s - 1) / s }, // the RoD
+                { 1 / s, 2 / s, 10 / s, 5 / s }, // across the file's bounds
+                { 9 / s, 0, 13 / s, 9 / s }, // out of the file
+            };
+            for (const OfxRectI& w : windows) {
+                OfxRectD rod;
+                OfxRectI bounds;
+                const float fill = -7.f;
+                OfxStatus st = r.renderAtScale(1., level, w, fill, &rod, &bounds);
+                int bad = 0;
+                for (int y = bounds.y1; y < bounds.y2; ++y) {
+                    for (int x = bounds.x1; x < bounds.x2; ++x) {
+                        const bool inWindow = (x >= w.x1) && (x < w.x2) && (y >= w.y1) && (y < w.y2);
+                        // the full-resolution pixels of this one
+                        const int fx1 = x * s, fy1 = y * s, fx2 = fx1 + s, fy2 = fy1 + s;
+                        const bool inFile = (fx1 >= file.x1) && (fy1 >= file.y1) && (fx2 <= file.x2) && (fy2 <= file.y2);
+                        const bool inOpaque = (fx1 >= opaque.x1) && (fy1 >= opaque.y1) && (fx2 <= opaque.x2) && (fy2 <= opaque.y2);
+                        const bool outOpaque = (fx2 <= opaque.x1) || (fy2 <= opaque.y1) || (fx1 >= opaque.x2) || (fy1 >= opaque.y2);
+                        const bool outFile = (fx2 <= file.x1) || (fy2 <= file.y1) || (fx1 >= file.x2) || (fy1 >= file.y2);
+                        for (int c = 0; c < 4; ++c) {
+                            const float v = r.outputPixel(bounds, x, y, c);
+                            bool good = true;
+                            if (!inWindow) {
+                                good = (v == fill);
+                            } else if (c == 3) {
+                                good = inOpaque ? (v == 1.f) : outOpaque ? (v == 0.f) : true;
+                            } else if (outFile) {
+                                good = (v == 0.f);
+                            } else if (inFile && (level == 0)) {
+                                good = (v == gMipmapContent.value(x, y, c));
+                            }
+                            if (!good) {
+                                if (bad < 3) {
+                                    std::printf("  pixel (%d,%d) channel %d: %g\n", x, y, c, v);
+                                }
+                                ++bad;
+                            }
+                        }
+                    }
+                }
+                check(ok(st) && bad == 0, "scale 1/%d, window %d,%d,%d,%d: render = %d, %d wrong values", s, w.x1, w.y1, w.x2, w.y2, st, bad);
+            }
+        }
+    }
+}
+
 // 3. downscaling by GenericReader for a reader that doesn't support render scale (issue #104)
 
 // floor(a / 2^l) and ceil(a / 2^l)
@@ -1315,7 +1504,9 @@ main(int argc, char** argv)
     OfxPlugin* pMipmap = loadPlugin(kPluginIdentifierMipmap, descMipmap);
     Effect descTiles;
     OfxPlugin* pTiles = loadPlugin(kPluginIdentifierTiles, descTiles);
-    if (!pDefault || !pFrameVarying || !pMultiPlanar || !pMipmap || !pTiles) {
+    Effect descClip;
+    OfxPlugin* pClip = loadPlugin(kPluginIdentifierClip, descClip);
+    if (!pDefault || !pFrameVarying || !pMultiPlanar || !pMipmap || !pTiles || !pClip) {
         std::printf("FAIL: cannot load the test readers\n");
 
         return 1;
@@ -1331,12 +1522,15 @@ main(int argc, char** argv)
     testMipmap(pMipmap, still);
     testRefreshFrameBounds(pTiles, still);
     testRefreshFrameBoundsPar(pTiles, prefix);
+    testClipToFileHelper();
+    testOpaqueClip(pClip, still);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pFrameVarying->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pMultiPlanar->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pMipmap->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pTiles->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    pClip->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::remove(still.c_str());
     std::remove(video.c_str());
 

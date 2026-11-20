@@ -450,12 +450,10 @@ ReadFFmpegPlugin::decode(const string& filename,
     // The decoded frame (top-down), and the part of the render window that it covers. The render window may be any
     // part of imgBounds (e.g. a few columns, or GenericReader's buffer for that window).
     const OfxRectI frameBounds = { 0, 0, width, height };
+    // If the frame is smaller than the render window (the file changed since getFrameBounds()): black elsewhere.
+    // The frame is decoded even if the render window is not in it, so that errors and missing frames are reported.
     OfxRectI frameWindow;
-    const bool inFrame = intersectWindow(renderWindow, frameBounds, &frameWindow);
-    if (!sameWindow(frameWindow, renderWindow)) {
-        // the frame is smaller than the render window (the file changed since getFrameBounds()): black elsewhere
-        fillWithBlack(renderWindow, renderScale, pixelData, imgBounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
-    }
+    const bool inFrame = clipToFile(renderWindow, frameBounds, pixelData, imgBounds, pixelComponentCount, eBitDepthFloat, rowBytes, &frameWindow);
 
     // not in FFmpeg Reader: initialize the output buffer
     // TODO: use avpicture_get_size? see WriteFFmpeg
