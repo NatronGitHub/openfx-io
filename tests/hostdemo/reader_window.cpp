@@ -61,20 +61,23 @@
 #include "nuke/fnOfxExtensions.h"
 #endif
 
+// (HostSupport's headers are not self-contained: in this order, as in hostDemo.cpp)
+// clang-format off
 #include "ofxhBinary.h"
+#include "ofxhPropertySuite.h"
 #include "ofxhClip.h"
-#include "ofxhHost.h"
-#include "ofxhImageEffect.h"
-#include "ofxhImageEffectAPI.h"
-#include "ofxhMemory.h"
 #include "ofxhParam.h"
+#include "ofxhMemory.h"
+#include "ofxhImageEffect.h"
 #include "ofxhPluginAPICache.h"
 #include "ofxhPluginCache.h"
-#include "ofxhPropertySuite.h"
+#include "ofxhHost.h"
+#include "ofxhImageEffectAPI.h"
 
-#include "hostDemoClipInstance.h"
-#include "hostDemoEffectInstance.h"
 #include "hostDemoHostDescriptor.h"
+#include "hostDemoEffectInstance.h"
+#include "hostDemoClipInstance.h"
+// clang-format on
 
 namespace {
 

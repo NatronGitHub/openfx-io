@@ -290,6 +290,50 @@ if(TARGET io_tests_ofx)
                   DEFINITIONS ${_io_defs} INCLUDES ${S}/PFM ${S}/PNG SANITIZE ${_io_asan} LIBS ${_io_libs})
   io_test(test-reader-window DIR "${B}/.reader_window" ENV "${_io_ocio_env}" "${_io_asan_env}"
           COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window")
+  # the 2-part EXR test, in a Natron-like host (tests/Makefile's second run of reader_window_test)
+  io_test(test-reader-window-multiplane DIR "${B}/.reader_window_multiplane" ENV "${_io_ocio_env}" "${_io_asan_env}"
+          READER_WINDOW_MULTIPLANE=1 COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window_multiplane")
+
+  # test-reader-window-host: the same readers and ReadFFmpeg, in a bundle of their own, rendered by reader_window_host
+  # (hostdemo/reader_window.cpp), a host built on HostSupport (OfxHost: with IO_HOSTDEMO_TESTS, or
+  # OFX_BUILD_HOSTSUPPORT) and hostDemo's host classes; hostdemo/reader_window.sh writes the files with oiiotool and
+  # ffmpeg (skipped without oiiotool)
+  if(TARGET OfxHost AND IO_BASH)
+    set(_io_hd "${S}/openfx/HostSupport/examples")
+    add_executable(reader_window_host ${T}/hostdemo/reader_window.cpp "${_io_hd}/hostDemoClipInstance.cpp"
+                   "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
+                   "${_io_hd}/hostDemoParamInstance.cpp")
+    target_compile_options(reader_window_host PRIVATE -O0 -g)
+    target_include_directories(reader_window_host PRIVATE "${_io_hd}")
+    target_link_libraries(reader_window_host PRIVATE OfxHost)
+    set_target_properties(reader_window_host PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
+                          CXX_EXTENSIONS OFF)
+    # the bundle (tests/Makefile's RW_BUNDLE_BINARY), with the flags of the tests that link the plug-ins
+    set(_io_rw_bundle "${B}/.reader_window_host/plugins/ReaderWindow.ofx.bundle/Contents/${ARCHDIR}")
+    add_library(io_reader_window_plugins MODULE ${_io_srcs} ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp
+                ${S}/FFmpeg/PixelFormat.cpp ${_io_reader_srcs} ${_io_ofx_support})
+    target_compile_options(io_reader_window_plugins PRIVATE -O0 -g)
+    target_compile_definitions(io_reader_window_plugins PRIVATE ${_io_defs})
+    target_include_directories(io_reader_window_plugins PRIVATE ${S}/PFM ${S}/PNG)
+    target_link_libraries(io_reader_window_plugins PRIVATE io_tests_ofx ${_io_libs})
+    if(_io_t_libraw AND "${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIBRARIES}" MATCHES "openmp|(^|;)-?l?gomp(;|$)|(^|;)-?l?omp(;|$)")
+      ofx_target_openmp(io_reader_window_plugins)
+    endif()
+    set_target_properties(io_reader_window_plugins PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
+                          CXX_EXTENSIONS OFF PREFIX "" SUFFIX ".ofx" OUTPUT_NAME ReaderWindow
+                          LIBRARY_OUTPUT_DIRECTORY "${_io_rw_bundle}" RUNTIME_OUTPUT_DIRECTORY "${_io_rw_bundle}")
+    foreach(_c ${CMAKE_CONFIGURATION_TYPES})
+      string(TOUPPER "${_c}" _c)
+      set_target_properties(io_reader_window_plugins PROPERTIES LIBRARY_OUTPUT_DIRECTORY_${_c} "${_io_rw_bundle}"
+                            RUNTIME_OUTPUT_DIRECTORY_${_c} "${_io_rw_bundle}")
+    endforeach()
+    io_test(test-reader-window-host ENV "${_io_ocio_env}"
+            COMMAND "${IO_BASH}" "${T}/hostdemo/reader_window.sh" $<TARGET_FILE:reader_window_host>
+                    "${B}/.reader_window_host/plugins" "${B}/.reader_window_host/work")
+    set_tests_properties(test-reader-window-host PROPERTIES SKIP_RETURN_CODE 77)
+  else()
+    message(STATUS "tests: no test-reader-window-host (it needs HostSupport, e.g. IO_HOSTDEMO_TESTS=ON, and bash)")
+  endif()
 
   if(_io_t_exr)
     # test-exr: ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders

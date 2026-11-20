@@ -550,8 +550,9 @@ OFX spec allows such windows: "A host can ask an effect to render an arbitrary w
 should be clipped to an effect's region of definition, however, depending on the host, they may not be. [...] If an
 effect is asked to render outside of its region of definition, it should fill those pixels in with black transparent
 pixels" ([ofxRendering.rst](https://github.com/AcademySoftwareFoundation/openfx/blob/main/Documentation/sources/Reference/ofxRendering.rst)).
-It is skipped without `oiiotool`, and ReadFFmpeg without `ffmpeg`. With CMake (`-DIO_HOSTDEMO_TESTS=ON`),
-`io-reader-window` runs the same script on the installed `IO.ofx` bundle.
+It is skipped without `oiiotool`, and ReadFFmpeg without `ffmpeg`. ctest runs it as `test-reader-window-host` when
+the build has HostSupport (`-DIO_HOSTDEMO_TESTS=ON`, as in CI), and `io-reader-window` runs the same script on the
+installed `IO.ofx` bundle. The 2-part EXR run of `test-reader-window` is `test-reader-window-multiplane`.
 
 ### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
 
