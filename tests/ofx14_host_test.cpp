@@ -13,6 +13,9 @@
  * (and the overlay's), GetClipPreferences, GetTimeDomain, GetRegionOfDefinition, GetRegionsOfInterest,
  * GetFramesNeeded, IsIdentity, BeginSequenceRender, Render of one frame, EndSequenceRender, DestroyInstance, Unload.
  * Each action must succeed, the plug-in must post no error message, and:
+ *   - the obsolete plug-ins (ReadEXR, WriteEXR, OIIOText, OIIOResize v1) must set kOfxImageEffectPluginPropObsolete
+ *     to 1 (not in the OFX 1.4-only host, which doesn't know it), and no plug-in may set Natron's
+ *     kNatronOfxImageEffectPropDeprecated;
  *   - a filter or reader must write its whole output image;
  *   - a writer writes a file (in the work directory), which the readers then read: WritePNG -> ReadPNG and ReadOIIO,
  *     WriteEXR -> ReadEXR, WritePFM -> ReadPFM, WriteOIIO (TIFF) -> ReadOIIO, WriteFFmpeg (MOV) -> ReadFFmpeg;
@@ -370,6 +373,23 @@ testPlugin(OfxPlugin* p,
         fail("Describe = %d", st);
         p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
         return;
+    }
+    {
+        // obsolete plug-ins (#237): kOfxImageEffectPluginPropObsolete (OFX 1.5), which the OFX 1.4-only host
+        // rejects as unknown (the plug-in must still describe), replaces Natron's kNatronOfxImageEffectPropDeprecated
+        const char* id = p->pluginIdentifier;
+        const bool expected = !gOfx14Only
+                              && (!std::strcmp(id, "fr.inria.openfx.ReadEXR") || !std::strcmp(id, "fr.inria.openfx.WriteEXR")
+                                  || !std::strcmp(id, "fr.inria.openfx.OIIOText")
+                                  || (!std::strcmp(id, "fr.inria.openfx.OIIOResize") && p->pluginVersionMajor < 2));
+        auto it = desc.props.props.find(kOfxImageEffectPluginPropObsolete);
+        const bool obsolete = it != desc.props.props.end() && !it->second.i.empty() && it->second.i[0];
+        if (obsolete != expected) {
+            fail("kOfxImageEffectPluginPropObsolete = %d, expected %d", int(obsolete), int(expected));
+        }
+        if (desc.props.props.count("NatronOfxImageEffectPropDeprecated")) {
+            fail("sets NatronOfxImageEffectPropDeprecated (use kOfxImageEffectPluginPropObsolete)");
+        }
     }
     {
         // honour the plug-in's kOfxImageEffectPropSupportsMultiResolution (default 1), unless OFX14_FORCESCALE
