@@ -10,7 +10,7 @@ with the compiler, C++ standard (`OFX_CXX_STANDARD`) and FFmpeg (`FFMPEG_PKG_CON
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ...   # from the repository root
 cmake --build build -j4
 ctest --test-dir build --output-on-failure          # everything (with io-load, io-icons, io-hostdemo: ../README.md)
-ctest --test-dir build -R '^test-ofx14'              # the runs of `make test-ofx14`
+ctest --test-dir build -R '^test-ofx14(-11|-gl|-full)?$'   # the runs of `make test-ofx14`
 ```
 
 They are the programs of `tests/Makefile`, with the same sources, defines and flags (`-O0 -g` for those that link the
@@ -26,6 +26,7 @@ SeExpr of the build). The programs run in `build/tests`, where they write their 
 
 * `IO_TESTS_WITH_LIBRAW` (ON): the tests that link ReadOIIO also build its RAW support, when the bundle has it
   (`make WITH_LIBRAW=1`);
+* `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
 * `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
 * `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
   `test-exr-tsan-debug` and `test-reader-hooks-tsan-debug`, which `make test` doesn't run either.

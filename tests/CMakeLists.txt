@@ -10,6 +10,7 @@
 # Options:
 #   IO_TESTS_WITH_LIBRAW  the tests that link ReadOIIO also build its RAW support (OFX_IO_USING_LIBRAW), when the bundle
 #                         has it (as tests/Makefile's WITH_LIBRAW=1); default ON
+#   IO_TESTS_TIMEOUT      time limit of each test, in seconds (test-ffmpeg: twice as much); default 1800
 #   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
 #   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
 #                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug (needs a compiler
@@ -133,16 +134,22 @@ function(io_test_program name)
   target_link_libraries(${name} PRIVATE ${P_LIBS})
 endfunction()
 
-# io_test(<name> [DIR <work directory>] [ENV <var=value>...] COMMAND <program> [<arguments>...])
-# A ctest test, run in build/tests. DIR: removed and created again before the run (tests/run_test.cmake).
+# io_test(<name> [DIR <work directory>] [TIMEOUT <seconds>] [ENV <var=value>...] COMMAND <program> [<arguments>...])
+# A ctest test, run in build/tests. DIR: removed and created again before the run (tests/run_test.cmake). TIMEOUT
+# (default IO_TESTS_TIMEOUT): a hung test fails instead of running into the CI job's time limit.
+set(IO_TESTS_TIMEOUT 1800 CACHE STRING "Time limit of each test-* ctest test, in seconds (test-ffmpeg: twice as much)")
 function(io_test name)
-  cmake_parse_arguments(PARSE_ARGV 1 P "" "DIR" "ENV;COMMAND")
+  cmake_parse_arguments(PARSE_ARGV 1 P "" "DIR;TIMEOUT" "ENV;COMMAND")
+  if(NOT P_TIMEOUT)
+    set(P_TIMEOUT ${IO_TESTS_TIMEOUT})
+  endif()
   if(P_DIR)
     add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" "-DDIR=${P_DIR}" -P "${T}/run_test.cmake" -- ${P_COMMAND}
              WORKING_DIRECTORY "${B}")
   else()
     add_test(NAME ${name} COMMAND ${P_COMMAND} WORKING_DIRECTORY "${B}")
   endif()
+  set_tests_properties(${name} PROPERTIES TIMEOUT ${P_TIMEOUT})
   if(P_ENV)
     set_tests_properties(${name} PROPERTIES ENVIRONMENT "${P_ENV}")
   endif()
@@ -161,7 +168,9 @@ if(_io_t_ffmpeg)
              ${S}/openfx/Support/include
     LIBS PkgConfig::FFMPEG)
   if(IO_BASH)
-    io_test(test-ffmpeg ENV "FFMPEG_READ_TEST_BIN=$<TARGET_FILE:ffmpeg_read_test>"
+    # (about 290 s on a recent Mac; MS Windows runners are much slower)
+    math(EXPR _io_t "${IO_TESTS_TIMEOUT} * 2")
+    io_test(test-ffmpeg TIMEOUT ${_io_t} ENV "FFMPEG_READ_TEST_BIN=$<TARGET_FILE:ffmpeg_read_test>"
             COMMAND "${IO_BASH}" "${T}/run_ffmpeg_read_test.sh")
   endif()
 endif()

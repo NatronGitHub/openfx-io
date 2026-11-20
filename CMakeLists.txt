@@ -631,6 +631,13 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  # (a few seconds each: a hung load fails)
+  foreach(_t io-load io-icons io-load-installed)
+    if(TEST ${_t})
+      set_tests_properties(${_t} PROPERTIES TIMEOUT 300)
+    endif()
+  endforeach()
+
   # the tests of tests/Makefile, built and run by CMake and ctest (tests/CMakeLists.txt)
   add_subdirectory(tests)
 endif()
