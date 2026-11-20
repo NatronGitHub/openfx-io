@@ -164,6 +164,9 @@ private:
         // whose durations are the nominal frame duration in Matroska).
         AVFrame* _avHeldFrame; // the last decoded frame at or before the last requested frame (empty if none)
         AVFrame* _avNextFrame; // the decoded frame that follows _avHeldFrame, if already decoded (empty if not)
+        // A packet read from the demuxer that avcodec_send_packet() refused with AVERROR(EAGAIN), and whose drain gave
+        // the requested frame: it is sent first by the next sequential request (empty if none, see demuxAndDecode()).
+        AVPacket* _pendingPacket;
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
@@ -253,6 +256,7 @@ private:
             , _avIntermediateFrame(nullptr)
             , _avHeldFrame(nullptr)
             , _avNextFrame(nullptr)
+            , _pendingPacket(nullptr)
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
             , _invalidDataSkipped(0)
@@ -345,6 +349,10 @@ private:
 
             if (_avNextFrame) {
                 av_frame_free(&_avNextFrame);
+            }
+
+            if (_pendingPacket) {
+                av_packet_free(&_pendingPacket);
             }
 
             if (_codecContext) {
@@ -538,6 +546,11 @@ private:
             return f && f->buf[0];
         }
 
+        static bool hasPacket(const AVPacket* p)
+        {
+            return p && (p->data || p->side_data_elems);
+        }
+
         // Forget the decoded frames kept since the last seek. Must be called whenever the
         // demuxer or the decoder is repositioned.
         void resetHeldFrames()
@@ -547,6 +560,9 @@ private:
             }
             if (_avNextFrame) {
                 av_frame_unref(_avNextFrame);
+            }
+            if (_pendingPacket) {
+                av_packet_unref(_pendingPacket);
             }
             _heldFrameIsLast = false;
             _drainedEarly = false;

@@ -557,7 +557,14 @@ in every order. In a 400-frame H.264 Matroska clip with a GOP of 5 and B-frames,
 keyframe from packet 20 damaged (the decoder then outputs frames whose best_effort_timestamp is the
 DTS of a later packet), frames 1-18 must give the clean images in every order (the others fail:
 the stream ends in damage). In an AVI with MPEG-4 B-frames (the reference frames have no PTS) with
-packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. In all-intra H.264
+packets 60-62 damaged, frames 1-59 and 73-200 must give the clean images in every order. Clean
+48-frame VP9 clips (issue #159; 256x160, GOP 12, `libvpx-vp9` in 2 passes, since libvpx only makes
+alt-ref frames in 2 passes), in WebM and Matroska, in 8 and 10 bits, with alt-ref frames (superframes,
+which the VP9 decoder splits into a hidden and a shown frame) and without (`-auto-alt-ref 0`), and an
+AV1 clip (`libaom-av1`), must give exactly the images of their lossless copy (FFV1, or lossless VP9
+for 10 bits, which the reader decodes to 8 bits), decoded by the ffmpeg CLI with 1 thread (`--reference`), in every order, with 1, 4 and 8 decoder threads: with frame
+threads, the VP9 decoder refuses a packet with AVERROR(EAGAIN) after a superframe, and the reader lost
+it when the drain gave the requested frame. In all-intra H.264
 (`-g 1`, 120 frames) with every other packet from packet 20 damaged, every frame must decode
 (the damaged ones show the previous frame), and decoding every frame sequentially, and in reverse
 order, must read at most 6 times the file. Intra-only codecs that the reader finds from the codec descriptor
