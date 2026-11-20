@@ -2,6 +2,38 @@
 
 Runnable, dependency-light test harnesses for the IO reader/writer code.
 
+The CMake build builds them ([`CMakeLists.txt`](CMakeLists.txt), with `BUILD_TESTING`, the default) in `build/tests`,
+with the compiler, C++ standard (`OFX_CXX_STANDARD`) and FFmpeg (`FFMPEG_PKG_CONFIG_PATH`) of the build, and
+[`ctest`](https://cmake.org/cmake/help/latest/manual/ctest.1.html) runs them, as CI does:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ...   # from the repository root
+cmake --build build -j4
+ctest --test-dir build --output-on-failure          # everything (with io-load, io-icons, io-hostdemo: ../README.md)
+ctest --test-dir build -R '^test-ofx14(-11|-gl|-full)?$'   # the runs of `make test-ofx14`
+```
+
+They are the programs of `tests/Makefile`, with the same sources, defines and flags (`-O0 -g` for those that link the
+plug-ins, `-O2 -g -Wall` for the others, and `assert()` enabled, whatever the build type), and the same runs:
+each ctest test is one run of a `make` target, named after it (`test-<target>`, plus a suffix when the target runs
+the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `make test-ofx`; `test-ocio-anim`,
+`test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
+`test-ofx14-11`, `test-ofx14-gl` and `test-ofx14-full` are `make test-ofx14`; `test-ofx14-scan` and
+`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32` and `test-runscript-output` are
+`make test-runscript`). A test is only added if the bundle has the plug-ins it links (e.g. `test-seexpr`, with the
+SeExpr of the build). The programs run in `build/tests`, where they write their files. CMake options (see
+[`CMakeLists.txt`](CMakeLists.txt)):
+
+* `IO_TESTS_WITH_LIBRAW` (ON): the tests that link ReadOIIO also build its RAW support, when the bundle has it
+  (`make WITH_LIBRAW=1`);
+* `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
+* `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
+* `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
+  `test-exr-tsan-debug` and `test-reader-hooks-tsan-debug`, which `make test` doesn't run either.
+
+`make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
+with `pkg-config`:
+
 ```sh
 cd tests
 make test          # builds + runs everything
@@ -31,8 +63,9 @@ make test-seexpr   # SeExpr's frames needed and cpixel() domain, SeNoise/SeGrain
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
 
-Requires: a C++17 compiler, `pkg-config`, and dev libs for FFmpeg, OpenColorIO,
-OpenImageIO (+ `fmt`), plus the `ffmpeg` and `oiiotool` CLIs for the media harnesses.
+Requires: a C++17 compiler, `pkg-config` (or CMake), and dev libs for FFmpeg, OpenColorIO,
+OpenImageIO (+ `fmt`), plus the `ffmpeg` and `oiiotool` CLIs for the media harnesses (`test-ffmpeg`, `test-oiio`,
+bash scripts; `FFMPEG_READ_TEST_BIN`: the `ffmpeg_read_test` to run, default the one next to the script).
 
 ## Correction to an earlier assumption
 
@@ -70,8 +103,8 @@ No `.ofx` bundle, no `dlopen`, no external host.
   asserting each returns `kOfxStatOK`/`kOfxStatReplyDefault`.
 
 Current result: all four plugins pass Load/Describe/DescribeInContext/Unload.
-RAW support (LibRaw) is intentionally excluded from the test build to avoid an
-OpenMP dependency — it is not needed to exercise the entry points.
+RAW support (LibRaw) is only built with `make WITH_LIBRAW=1` (which may need OpenMP), or in the CMake build when the
+bundle has it (`IO_TESTS_WITH_LIBRAW`); it is not needed to exercise the entry points.
 
 `kOfxActionCreateInstance` + the render action are covered by `test-render`
 (section 1b), which drives a full encode/decode round-trip through the plugins.
@@ -523,7 +556,7 @@ It is skipped without `oiiotool`, and ReadFFmpeg without `ffmpeg`. With CMake (`
 ### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
 
 `seexpr_test.cpp` links `SeExpr.cpp`, `SeNoise.cpp` and `SeGrain.cpp` with SeExpr 2.11 (the SeExpr 1 API, found in
-`SEEXPR_HOME`, as for the plug-ins; the test is skipped if it is not there; ctest runs it as `tests-make-seexpr`
+`SEEXPR_HOME`, as for the plug-ins; the test is skipped if it is not there; ctest runs it as `test-seexpr`
 with the SeExpr of the CMake build), in the Filter context:
 
 * **frames needed**: the frames that `cpixel()` fetches, at frame 10, are found by an analysis of the parse tree
@@ -833,7 +866,9 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `verify_plugin_loads.cpp`   | Loads an `IO.ofx` with openfx's HostSupport and lists its plug-ins (ctest `io-load`, the CI load checks, `tools/compare_bundles.sh`); linked with a copy of openfx's `ofxhBinary.cpp` that uses `RTLD_NOW` instead of `RTLD_LAZY`, so that a missing symbol makes loading fail. |
 | `check_icons.cmake`         | Every plug-in of the CMake build tree's bundle has its icon, `Contents/Resources/<identifier>.png` (ctest `io-icons`). |
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim`. |
+| `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
+| `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 

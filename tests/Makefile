@@ -384,9 +384,9 @@ exr_read_bench: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT
 	$(CXX) $(OFX_CXXFLAGS) -O2 $(EXR_READ_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
 # SeExpr.cpp, SeNoise.cpp and SeGrain.cpp and their in-repo dependencies, with SeExpr 2.11 (the SeExpr 1 API) from SEEXPR_HOME,
-# as in ../Makefile.master. test-seexpr is skipped if they are not found there, or fails if SEEXPR_REQUIRED=1 (ctest sets
-# it). SEEXPR_LIBDIR: the directory of libSeExpr (default: the first of lib, lib64 and lib/<multiarch> in SEEXPR_HOME
-# that has it; ctest sets it to the directory of the library that CMake found).
+# as in ../Makefile.master. test-seexpr is skipped if they are not found there, or fails if SEEXPR_REQUIRED=1.
+# SEEXPR_LIBDIR: the directory of libSeExpr (default: the first of lib, lib64 and lib/<multiarch> in SEEXPR_HOME
+# that has it).
 # SEEXPR_HOME: its default is set above, for test-ofx14.
 SEEXPR_REQUIRED ?= 0
 SEEXPR_MULTIARCH := $(shell $(CXX) -print-multiarch 2>/dev/null)
