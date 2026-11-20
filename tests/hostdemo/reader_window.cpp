@@ -62,19 +62,19 @@
 #endif
 
 #include "ofxhBinary.h"
-#include "ofxhPropertySuite.h"
 #include "ofxhClip.h"
-#include "ofxhParam.h"
-#include "ofxhMemory.h"
+#include "ofxhHost.h"
 #include "ofxhImageEffect.h"
+#include "ofxhImageEffectAPI.h"
+#include "ofxhMemory.h"
+#include "ofxhParam.h"
 #include "ofxhPluginAPICache.h"
 #include "ofxhPluginCache.h"
-#include "ofxhHost.h"
-#include "ofxhImageEffectAPI.h"
+#include "ofxhPropertySuite.h"
 
-#include "hostDemoHostDescriptor.h"
-#include "hostDemoEffectInstance.h"
 #include "hostDemoClipInstance.h"
+#include "hostDemoEffectInstance.h"
+#include "hostDemoHostDescriptor.h"
 
 namespace {
 
@@ -123,7 +123,8 @@ setParam(OFX::Host::ImageEffect::Instance* instance, const std::string& assignme
     } else if (OFX::Host::Param::ChoiceInstance* c = dynamic_cast<OFX::Host::Param::ChoiceInstance*>(p)) {
         st = (parseInts(value, iv) && iv.size() == 1) ? c->set(iv[0]) : kOfxStatErrValue;
     } else if (OFX::Host::Param::BooleanInstance* b = dynamic_cast<OFX::Host::Param::BooleanInstance*>(p)) {
-        st = (value == "1" || value == "true") ? b->set(true) : (value == "0" || value == "false") ? b->set(false) : kOfxStatErrValue;
+        st = (value == "1" || value == "true") ? b->set(true) : (value == "0" || value == "false") ? b->set(false)
+                                                                                                   : kOfxStatErrValue;
     } else if (OFX::Host::Param::DoubleInstance* d = dynamic_cast<OFX::Host::Param::DoubleInstance*>(p)) {
         char* end = NULL;
         const double v = std::strtod(value.c_str(), &end);

@@ -233,7 +233,10 @@ protected:
      * - Returns false if *window is empty (it is then (0,0,0,0), and the whole render window was cleared): the
      *   reader then has nothing to read.
      * - Called from decode() or decodePlane(), on the thread that render() called them on, it also tells render()
-     *   that the image is only in *window (see setDecodedWindow()).
+     *   that the image is only in *window (see setDecodedWindow()). So call it once per decode() or decodePlane(),
+     *   with their renderWindow, on that thread, and not once per tile, chunk or line of the window: the last call
+     *   (of clipToFile() or setDecodedWindow()) wins. A reader that also clears another buffer with it calls
+     *   setDecodedWindow() afterwards, with the window that it wrote in decode()'s image.
      **/
     static bool clipToFile(const OfxRectI& renderWindow,
                            const OfxRectI& fileBounds,
@@ -252,7 +255,8 @@ protected:
      * clipToFile() returned (ReadOIIO: the black border that getFrameBounds() adds around the data window, which is
      * in the RoD), or if it does not use clipToFile(). By default (a reader that calls neither), the whole render
      * window comes from the file. It only has an effect when called from decode() or decodePlane(), on the thread
-     * that render() called them on. An empty window (e.g. (0,0,0,0)) means that nothing comes from the file.
+     * that render() called them on (once per call: the last one wins). An empty window (e.g. (0,0,0,0)) means that
+     * nothing comes from the file.
      **/
     static void setDecodedWindow(const OfxRectI& window);
 

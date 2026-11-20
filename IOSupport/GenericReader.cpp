@@ -1430,19 +1430,28 @@ static thread_local OfxRectI gDecodedWindow = { 0, 0, 0, 0 };
 namespace {
 // Around a call to decode() or decodePlane() with the given render window: the decoded window is the whole render
 // window, unless decode() reports a smaller one. decodedWindow() is the part of renderWindow that comes from the file
-// (returns false if it is empty).
+// (returns false if it is empty). The previous state is restored on exit (including on exceptions), as in
+// RenderTimeSetter, for a render nested in a decode() on the same thread.
 class DecodedWindowScope
 {
 public:
     explicit DecodedWindowScope(const OfxRectI& renderWindow)
         : _renderWindow(renderWindow)
+        , _previousDecoding(gDecoding)
+        , _previousEmpty(gDecodedWindowEmpty)
+        , _previousWindow(gDecodedWindow)
     {
         gDecoding = true;
         gDecodedWindowEmpty = false;
         gDecodedWindow = renderWindow;
     }
 
-    ~DecodedWindowScope() { gDecoding = false; }
+    ~DecodedWindowScope()
+    {
+        gDecoding = _previousDecoding;
+        gDecodedWindowEmpty = _previousEmpty;
+        gDecodedWindow = _previousWindow;
+    }
 
     bool decodedWindow(OfxRectI* window) const
     {
@@ -1459,6 +1468,9 @@ public:
 
 private:
     const OfxRectI _renderWindow;
+    const bool _previousDecoding;
+    const bool _previousEmpty;
+    const OfxRectI _previousWindow;
 };
 }
 
@@ -2017,7 +2029,6 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 if (abort()) {
                     return;
                 }
-
 
                 /// do the color-space conversion
                 if (!isOCIOIdentity && isColor) {

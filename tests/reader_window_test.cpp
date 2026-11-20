@@ -45,6 +45,7 @@
  *
  * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/Makefile)
  *        $READER_WINDOW_ONLY: run only the tests whose title contains it (e.g. "ReadPFM", "rewrite", "scale 0.5")
+ *        $READER_WINDOW_MULTIPLANE=1: only the 2-part EXR test, in a Natron-like host (dynamic choices, plane suite)
  *        $READER_WINDOW_DUMP: a directory where the render of the whole RoD of each test is written (raw RGBA float)
  * Exit status: 0 = all checks passed.
  */
@@ -238,7 +239,9 @@ struct Reader {
     GuardedBuffer buffer;
 
     // filePremult: 0 Opaque, 1 PreMultiplied, 2 UnPreMultiplied (the output is premultiplied)
-    bool create(OfxPlugin* plugin, const std::string& filename, int filePremult)
+    // outputLayer: if not empty, ReadOIIO's output layer (its kParamChannelOutputLayerChoice string param, in a host
+    // that supports dynamic choices and multiple planes)
+    bool create(OfxPlugin* plugin, const std::string& filename, int filePremult, const std::string& outputLayer = std::string())
     {
         p = plugin;
         PropSet inArgs;
@@ -249,6 +252,9 @@ struct Reader {
             return false;
         }
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
+        if (!outputLayer.empty()) {
+            setOverrideString(&ctx, "outputLayerChoice", outputLayer);
+        }
         inst.delegate = &ctx;
         setInstanceProps(inst, 100, 100, 1, kOfxImageEffectContextReader);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
@@ -1075,6 +1081,88 @@ testConcurrentRewrite(OfxPlugin* p,
     }
 }
 
+// A 2-part EXR (in a Natron-like host: dynamic choices and the plane suite): part 0 is a full-frame RGB image, part 1
+// ("aov") a smaller RGB one. ReadOIIO reads part 1 into the color plane, Opaque. The frame bounds are the union of the
+// parts' (with the black border of part 1's data window), as getFrameBounds() computes them: alpha is 1 in the whole
+// RoD, also out of part 1, and the colors are part 1's, black out of its data window (#232 review: decodePlane() must
+// not compute the frame bounds of the file from the spec that seek_subimage() wrote over subimages[0]).
+void
+testMultiPart(OfxPlugin* p,
+              const std::string& dir)
+{
+    const std::string path = dir + "/multipart.exr";
+    const int W = 61, H = 47;
+    const int ax = 9, ay = 7, aw = 23, ah = 17; // part 1's data window, in the display window (y down)
+    {
+        OIIO::ImageSpec specs[2] = { OIIO::ImageSpec(W, H, 3, OIIO::TypeDesc::FLOAT), OIIO::ImageSpec(aw, ah, 3, OIIO::TypeDesc::FLOAT) };
+        specs[0].attribute("oiio:subimagename", "rgba");
+        specs[1].x = ax;
+        specs[1].y = ay;
+        specs[1].full_x = specs[1].full_y = 0;
+        specs[1].full_width = W;
+        specs[1].full_height = H;
+        specs[1].channelnames = { "aov.R", "aov.G", "aov.B" };
+        specs[1].attribute("oiio:subimagename", "aov");
+        auto out = OIIO::ImageOutput::create(path);
+        bool written = out && out->open(path, 2, specs);
+        for (int part = 0; written && (part < 2); ++part) {
+            if (part == 1) {
+                written = out->open(path, specs[1], OIIO::ImageOutput::AppendSubimage);
+            }
+            std::vector<float> pix;
+            for (int y = 0; y < specs[part].height; ++y) {
+                for (int x = 0; x < specs[part].width; ++x) {
+                    for (int c = 0; c < 3; ++c) {
+                        pix.push_back(floatValue(x + specs[part].x, y + specs[part].y, c) + (part ? 10.f : 0.f));
+                    }
+                }
+            }
+            written = written && out->write_image(OIIO::TypeDesc::FLOAT, pix.data());
+        }
+        if (!out || !out->close() || !written) {
+            check(false, "write a 2-part EXR: %s", out ? out->geterror().c_str() : OIIO::geterror().c_str());
+
+            return;
+        }
+    }
+    for (int sequential = 0; sequential <= 1; ++sequential) {
+        const std::string title = strprintf("ReadOIIO 2-part EXR, part 1 (smaller) in the color plane, Opaque, sequential %d", sequential);
+        if (!selected(title)) {
+            continue;
+        }
+        std::printf("==== %s ====\n", title.c_str());
+        Reader r;
+        if (!r.create(p, path, 0, "aov.RGB") || !ok(r.getRoD(1.))) {
+            check(false, "create");
+
+            return;
+        }
+        check(r.rod.x1 == 0 && r.rod.y1 == 0 && r.rod.x2 == W && r.rod.y2 == H, "RoD %d,%d,%d,%d (the union of the parts)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
+        r.setImage(r.rod, 1., true);
+        gPersistentError.clear();
+        const OfxStatus st = r.render(r.rod, 1., sequential);
+        int bad = 0;
+        for (int y = r.rod.y1; y < r.rod.y2; ++y) {
+            for (int x = r.rod.x1; x < r.rod.x2; ++x) {
+                const int fy = H - 1 - y;
+                const bool inAOV = (x >= ax) && (x < ax + aw) && (fy >= ay) && (fy < ay + ah);
+                const float* px = r.pixel(x, y);
+                for (int c = 0; c < 4; ++c) {
+                    const float v = (c == 3) ? 1.f : inAOV ? floatValue(x, fy, c) + 10.f : 0.f;
+                    if (!(std::fabs(px[c] - v) <= 1e-6f * (1.f + std::fabs(v)))) {
+                        if (bad < 3) {
+                            std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], v);
+                        }
+                        ++bad;
+                    }
+                }
+            }
+        }
+        check(ok(st) && gPersistentError.empty() && bad == 0, "render = %d%s%s: part 1's pixels, alpha 1 in the whole RoD (%d wrong)", st,
+              gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str(), bad);
+    }
+}
+
 } // namespace
 
 int
@@ -1089,6 +1177,12 @@ main(int argc,
     const std::string dir = argv[1];
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // (the output before a crash)
     initHost();
+    // $READER_WINDOW_MULTIPLANE=1: a Natron-like host (dynamic choices, multiple planes), for the 2-part EXR test only
+    const bool multiPlane = std::getenv("READER_WINDOW_MULTIPLANE") && !std::strcmp(std::getenv("READER_WINDOW_MULTIPLANE"), "1");
+    if (multiPlane) {
+        pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+        pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    }
     std::vector<const char*> ids = { "fr.inria.openfx.ReadOIIO", "fr.inria.openfx.ReadPFM" };
 #ifdef HAVE_PNG
     ids.push_back("fr.inria.openfx.ReadPNG");
@@ -1110,6 +1204,15 @@ main(int argc,
     }
     OfxPlugin* oiio = findPlugin("fr.inria.openfx.ReadOIIO");
     OfxPlugin* pfm = findPlugin("fr.inria.openfx.ReadPFM");
+    if (multiPlane) {
+        testMultiPart(oiio, dir);
+        for (size_t i = 0; i < ids.size(); ++i) {
+            findPlugin(ids[i])->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+        }
+        std::printf("%s (%d failure%s)\n", gFailures ? "FAIL" : "PASS", gFailures, gFailures == 1 ? "" : "s");
+
+        return gFailures ? 1 : 0;
+    }
 
     // (odd sizes: the windows at scale 1/2 are rounded)
     const File tiffRGB = { "fr.inria.openfx.ReadOIIO", eTIFF, 61, 47, 3, 0, 0, 0, 0 };

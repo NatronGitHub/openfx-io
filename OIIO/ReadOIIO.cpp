@@ -2582,7 +2582,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     }
 #endif
 
-    if (img.get() && !img->seek_subimage(subImageIndex, 0, subimages[0])) {
+    // (into a local spec: subimages must stay the specs of all the subimages, see getFrameBoundsOfSpecs() below)
+    ImageSpec seekSpec;
+    if (img.get() && !img->seek_subimage(subImageIndex, 0, seekSpec)) {
         stringstream ss;
         ss << "Cannot seek subimage " << subImageIndex << " in " << filename;
         setPersistentMessage(Message::eMessageError, "", ss.str());

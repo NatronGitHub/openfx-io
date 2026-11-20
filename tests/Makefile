@@ -322,6 +322,7 @@ clean: clean-reader-window
 test-reader-window: reader_window_test
 	rm -rf .reader_window && mkdir -p .reader_window
 	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" ./reader_window_test $(CURDIR)/.reader_window
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" READER_WINDOW_MULTIPLANE=1 ./reader_window_test $(CURDIR)/.reader_window
 clean-reader-window:
 	rm -rf reader_window_test reader_window_test.dSYM .reader_window
 

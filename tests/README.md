@@ -493,6 +493,10 @@ then 0):
   larger ones: only the windows are written, and alpha is 1 in the image, 0 in the black (the green of these files is
   never 0).
 
+* **a 2-part EXR** (`READER_WINDOW_MULTIPLANE=1`, a second run in a Natron-like host: dynamic choices and the plane
+  suite): part 1, smaller than part 0, read into the color plane as Opaque: alpha is 1 in the whole RoD (the union of
+  the parts), also out of part 1.
+
 `READER_WINDOW_ONLY=text` runs only the tests whose title contains `text`. `READER_WINDOW_DUMP=dir` writes the render
 of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders
 narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
