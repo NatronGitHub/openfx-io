@@ -53,7 +53,10 @@ to checkout a given tag.
 The [CI workflow](.github/workflows/ci.yml) builds and tests the plug-ins on Linux (Ubuntu packages),
 on Windows with [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/), and on macOS with
 [Xcode](https://developer.apple.com/xcode/)'s clang and [MacPorts](https://www.macports.org). It is the reference for the
-packages to install and the commands to run on each platform.
+packages to install and the commands to run on each platform. It builds with [CMake](https://cmake.org) and tests with
+[`ctest`](https://cmake.org/cmake/help/latest/manual/ctest.1.html): a Release C++17 build on every push and pull
+request, and nightly also a Debug C++20 build, with the same tests. The Makefiles are only checked nightly on Linux
+(a Release build of the plug-ins).
 [Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 9 (see [Linux runtime requirements](#linux-runtime-requirements)), on macOS 14 and later (arm64), and on
 MSYS2 UCRT64.
 
@@ -109,8 +112,11 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
 | `OFX_PLUGIN_RPATH` | empty | Extra install rpath directories of the plug-in (`;`-separated; ignored on Windows). |
 | `OFX_USE_OPENMP` | ON | Link [OpenMP](https://www.openmp.org) when LibRaw's pkg-config file asks for it. |
-| `BUILD_TESTING` | ON | `ctest` runs the tests of [`tests/Makefile`](tests/Makefile) (`IO_TESTS_MAKE_ARGS`: extra `make` arguments, e.g. `WITH_LIBRAW=1`). |
-| `IO_TESTS_CXX` | `CMAKE_CXX_COMPILER` | C++ compiler for `tests/Makefile`. |
+| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt), the same as [`tests/Makefile`](tests/Makefile)'s), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load` and `io-icons`). See [tests/README.md](tests/README.md). |
+| `IO_TESTS_WITH_LIBRAW` | ON | The tests that link ReadOIIO also build its RAW support, when the bundle has it (`tests/Makefile`'s `WITH_LIBRAW=1`). |
+| `IO_TESTS_TIMEOUT` | 1800 | Time limit of each `test-*` test, in seconds (`test-ffmpeg`: twice as much), so that a hung test fails. |
+| `IO_TESTS_FUZZ_OPS` | 2000 | Operations of each short fuzz run of `test-ocio-anim` (`tests/Makefile`'s `FUZZ_OPS`). |
+| `IO_TESTS_SANITIZERS` | OFF | Also build and run the sanitizer variants that `make test` doesn't run: `test-ofx14-scan-asan`, `test-exr-tsan`, `test-exr-ubsan` and `test-exr-tsan-debug` (not with MinGW). |
 | `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [hostDemo](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples); `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `hostDemo --ofx14` (`io-hostdemo-ofx14`). Needs `BUILD_TESTING`. |
 
 ## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
@@ -204,8 +210,9 @@ following definitions in Xcode's settings
 ## Testing
 
 The tests in [`tests/`](tests) link the plug-in sources with a minimal in-process host and need no OFX host
-application:
-`cd tests; make test`. See [tests/README.md](tests/README.md).
+application. The CMake build builds them (`BUILD_TESTING`, above), and `ctest` runs them, as CI does:
+`ctest --test-dir build --output-on-failure`. Without CMake: `cd tests; make test`. See
+[tests/README.md](tests/README.md).
 
 [`tools/compare_bundles.sh`](tools/compare_bundles.sh) `BUNDLE_A BUNDLE_B` compares two bundles on Linux or macOS, e.g. the `IO.ofx.bundle`
 built by the Makefiles and the one installed by CMake: file list, `Info.plist`, resources, exported

@@ -30,7 +30,8 @@
 #   FFMPEG_PKG_CONFIG_PATH  pkg-config directory of the FFmpeg to use (e.g. /opt/local/libexec/ffmpeg8/lib/pkgconfig)
 #   OFX_DEPLOY_BUNDLES      install step that makes the bundle self-contained (macOS: osxDeploy.sh, like the
 #                           Makefile's release builds)
-#   BUILD_TESTING           ctest runs the tests of tests/Makefile (IO_TESTS_MAKE_ARGS: extra make arguments)
+#   BUILD_TESTING           build the tests of tests/ (tests/CMakeLists.txt, the programs of tests/Makefile), and run
+#                           them with ctest; IO_TESTS_WITH_LIBRAW, IO_TESTS_FUZZ_OPS, IO_TESTS_SANITIZERS: see there
 #   OFX_IO_WITH_<group>     build the group if its libraries are found (default ON): OCIO EXR FFMPEG OIIO LIBRAW
 #                           PNG SEEXPR RUNSCRIPT
 #   OFX_IO_REQUIRE_ALL      fail if a group that is not disabled can't be built (default OFF; for packagers)
@@ -505,8 +506,9 @@ ofx_deploy_bundle(IO)
 #   (tests/check_icons.cmake);
 # - io-load-installed (macOS, OFX_DEPLOY_BUNDLES): the same on the installed, deployed bundle, without DYLD_*
 #   variables: run it after cmake --install;
-# - tests-make-*: the tests of tests/Makefile (which builds them in tests/, with its own flags), with this build's
-#   compiler and FFmpeg, when their libraries were found. IO_TESTS_MAKE_ARGS: extra make arguments, e.g. WITH_LIBRAW=1.
+# - test-*: the tests of tests/Makefile, built by CMake in build/tests with this build's compiler, C++ standard and
+#   FFmpeg, when the libraries they link were found (tests/CMakeLists.txt: the same programs, sources and flags as
+#   tests/Makefile, one ctest test per run of `make test`).
 option(BUILD_TESTING "Build and run the tests with ctest" ON)
 if(IO_HOSTDEMO_TESTS AND NOT BUILD_TESTING)
   message(FATAL_ERROR "IO_HOSTDEMO_TESTS needs BUILD_TESTING")
@@ -629,72 +631,13 @@ if(BUILD_TESTING)
     endif()
   endif()
 
-  find_program(IO_MAKE_PROGRAM NAMES gmake make mingw32-make)
-  set(IO_TESTS_MAKE_ARGS "" CACHE STRING "Extra arguments for tests/Makefile (e.g. WITH_LIBRAW=1)")
-  set(IO_TESTS_CXX "${CMAKE_CXX_COMPILER}" CACHE STRING "C++ compiler for tests/Makefile")
-  # tests/Makefile's targets and what they need (OCIO+OIIO+FFmpeg: its OFX_PKGS)
-  set(_io_make_tests "")
-  if(" ${_io_groups} " MATCHES " FFmpeg ")
-    list(APPEND _io_make_tests ffmpeg)
-  endif()
-  if(" ${_io_groups} " MATCHES " OIIO ")
-    list(APPEND _io_make_tests oiio)
-  endif()
-  if(" ${_io_groups} " MATCHES " OCIO " AND " ${_io_groups} " MATCHES " OIIO " AND " ${_io_groups} " MATCHES " FFmpeg ")
-    list(APPEND _io_make_tests ofx render layers reader-hooks ocio-cdl ocio-filetransform ocio-anim oiio-threads oiio-edge)
-    # ReadOIIO, ReadPFM (always built) and ReadPNG (if tests/Makefile finds libpng): render windows and scales
-    list(APPEND _io_make_tests reader-window)
-    if(" ${_io_groups} " MATCHES " EXR ")
-      list(APPEND _io_make_tests exr)
-      # every plug-in in an OFX 1.4-only host (with the SeExpr ones if SEEXPR_HOME has SeExpr 2.11)
-      list(APPEND _io_make_tests ofx14)
+  # (a few seconds each: a hung load fails)
+  foreach(_t io-load io-icons io-load-installed)
+    if(TEST ${_t})
+      set_tests_properties(${_t} PROPERTIES TIMEOUT 300)
     endif()
-  endif()
-  # SeExpr and SeNoise (seexpr_test, which also needs tests/Makefile's OFX_PKGS), with the SeExpr of this build
-  set(_io_seexpr_home "")
-  if(" ${_io_groups} " MATCHES " SeExpr " AND " ${_io_groups} " MATCHES " OCIO " AND " ${_io_groups} " MATCHES " OIIO "
-     AND " ${_io_groups} " MATCHES " FFmpeg ")
-    list(APPEND _io_make_tests seexpr)
-    get_filename_component(_io_seexpr_home "${SEEXPR_INCLUDE_DIR}" DIRECTORY)
-  endif()
-  # RunScript's MS Windows process launching (a no-op elsewhere)
-  if(" ${_io_groups} " MATCHES " RunScript ")
-    list(APPEND _io_make_tests runscript)
-  endif()
-  if(IO_MAKE_PROGRAM AND _io_make_tests)
-    set(_io_test_env "")
-    if(FFMPEG_PKG_CONFIG_PATH)
-      if(CMAKE_HOST_WIN32)
-        list(APPEND _io_test_env "PKG_CONFIG_PATH=${FFMPEG_PKG_CONFIG_PATH}\;$ENV{PKG_CONFIG_PATH}")
-      else()
-        list(APPEND _io_test_env "PKG_CONFIG_PATH=${FFMPEG_PKG_CONFIG_PATH}:$ENV{PKG_CONFIG_PATH}")
-      endif()
-    endif()
-    if(SEEXPR_HOME)
-      list(APPEND _io_test_env "SEEXPR_HOME=${SEEXPR_HOME}")
-    endif()
-    if(APPLE AND CMAKE_OSX_SYSROOT)
-      # CMake resolves the compiler to the toolchain's clang++, which needs the SDK (/usr/bin/clang++ finds it)
-      list(APPEND _io_test_env "SDKROOT=${CMAKE_OSX_SYSROOT}")
-    endif()
-    separate_arguments(_io_make_args NATIVE_COMMAND "${IO_TESTS_MAKE_ARGS}")
-    foreach(_t ${_io_make_tests})
-      set(_io_t_args ${_io_make_args})
-      if(_t STREQUAL "seexpr")
-        # the SeExpr that CMake found: test-seexpr fails (instead of being skipped) if tests/Makefile does not find it
-        get_filename_component(_io_seexpr_libdir "${SEEXPR_LIBRARY}" DIRECTORY)
-        list(APPEND _io_t_args "SEEXPR_HOME=${_io_seexpr_home}" "SEEXPR_LIBDIR=${_io_seexpr_libdir}" "SEEXPR_REQUIRED=1")
-      endif()
-      add_test(NAME tests-make-${_t}
-               COMMAND "${IO_MAKE_PROGRAM}" -C "${PROJECT_SOURCE_DIR}/tests" test-${_t}
-                       "CXX=${IO_TESTS_CXX}" ${_io_t_args})
-      # the tests are built in the source tree: one at a time
-      set_tests_properties(tests-make-${_t} PROPERTIES RESOURCE_LOCK openfx-io-tests-dir)
-      if(_io_test_env)
-        set_tests_properties(tests-make-${_t} PROPERTIES ENVIRONMENT "${_io_test_env}")
-      endif()
-    endforeach()
-  elseif(NOT IO_MAKE_PROGRAM)
-    message(STATUS "make not found: no tests-make-* tests")
-  endif()
+  endforeach()
+
+  # the tests of tests/Makefile, built and run by CMake and ctest (tests/CMakeLists.txt)
+  add_subdirectory(tests)
 endif()
