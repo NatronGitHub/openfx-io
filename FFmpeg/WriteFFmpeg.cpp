@@ -1647,6 +1647,7 @@ private:
     void updateBitrateToleranceRange();
     bool isRec709Format(const int height) const;
     bool isPalFormat(const AVRational& displayRatio) const;
+    void setColorTags(AVCodecContext* avCodecContext, AVStream* avStream, AVPixelFormat pixelFormat) const;
     static bool IsYUVFromShortName(const char* shortName, int codecProfile);
     static AVPixelFormat GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
     static void GetCodecSupportedParams(const AVCodec* codec, CodecParams* p);
@@ -2057,11 +2058,101 @@ WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
     return isPAL;
 }
 
+// Set the color tags of the video stream, once its pixel format is known. configureVideoStream() set the primaries
+// and transfer function of the OCIO output colorspace (getColorInfo()), which are kept.
+// - For the usual video codecs (IsYUVFromShortName()), the primaries and transfer function that getColorInfo() does not
+//   give are those of the usual video formats: BT.709 primaries for HD, EBU 3213 (BT.470BG) for PAL and SMPTE C (SMPTE
+//   170M) for other SD formats, and the BT.709 transfer function.
+// - ProRes: the frame header (where prores_ks writes the transfer function of the frame as is, FFmpeg n9.0
+//   libavcodec/proresenc_kostya.c:786-788) only allows the transfer_characteristic codes 0, 1 (BT.709), 2
+//   (unspecified), 16 (PQ) and 18 (HLG) (SMPTE RDD 36): the BT.601 and BT.2020 transfer functions are the BT.709 one
+//   (ITU-T H.273 codes 6, 14 and 15 are "functionally the same" as code 1), the others (sRGB, linear, log, gamma 2.2)
+//   are unspecified.
+// - The Y'CbCr matrix (AVCodecContext.colorspace, which the encoders and muxers write, e.g. libx264 in the VUI, FFmpeg
+//   n9.0 libavcodec/libx264.c:1340-1341, and the mov muxer in the 'colr' atom, libavformat/movenc.c:2648-2650) is the
+//   one that colourSpaceConvert() converts with: for a Y'CbCr pixel format, BT.2020 non-constant luminance with the
+//   BT.2020 primaries (except for JPEG, which is always BT.601, and DNxHD/DNxHR, which is always BT.709, see
+//   below), else BT.709 for HD and BT.601 (SMPTE 170M) for SD, and for an RGB pixel format, AVCOL_SPC_RGB
+//   (libavutil/pixfmt.h: "order of coefficients is actually GBR").
+//   Before, the matrix was only set for the codecs of IsYUVFromShortName(), so the other Y'CbCr streams (e.g.
+//   H.264) were untagged, and the RGB ones too.
+void
+WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
+                                AVStream* avStream,
+                                AVPixelFormat pixelFormat) const
+{
+    const int codec = _codec->getValue();
+    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
+    int dnxhdCodecProfile_i = 0;
+    _dnxhdCodecProfile->getValue(dnxhdCodecProfile_i);
+    const bool isYUVCodec = (codec >= 0) && (codec < (int)codecsShortNames.size()) && IsYUVFromShortName(codecsShortNames[codec].c_str(), dnxhdCodecProfile_i);
+    const bool isHD = isRec709Format(avCodecContext->height); // false for JPEG
+
+    if (isYUVCodec) {
+        if (avCodecContext->color_primaries == AVCOL_PRI_UNSPECIFIED) {
+            const AVRational displayRatio = { avCodecContext->width, avCodecContext->height };
+            if (isHD) {
+                avCodecContext->color_primaries = AVCOL_PRI_BT709; // kQTPrimaries_ITU_R709_2
+            } else if (isPalFormat(displayRatio)) {
+                avCodecContext->color_primaries = AVCOL_PRI_BT470BG; // kQTPrimaries_EBU_3213
+            } else {
+                avCodecContext->color_primaries = AVCOL_PRI_SMPTE170M; // kQTPrimaries_SMPTE_C
+            }
+        }
+        if (avCodecContext->color_trc == AVCOL_TRC_UNSPECIFIED) {
+            avCodecContext->color_trc = AVCOL_TRC_BT709; // kQTTransferFunction_ITU_R709_2
+        }
+    }
+    if (avCodecContext->codec_id == AV_CODEC_ID_PRORES) {
+        switch (avCodecContext->color_trc) {
+        case AVCOL_TRC_BT709:
+        case AVCOL_TRC_UNSPECIFIED:
+        case AVCOL_TRC_SMPTE2084:
+        case AVCOL_TRC_ARIB_STD_B67:
+            break;
+        case AVCOL_TRC_SMPTE170M:
+        case AVCOL_TRC_BT2020_10:
+        case AVCOL_TRC_BT2020_12:
+            avCodecContext->color_trc = AVCOL_TRC_BT709;
+            break;
+        default:
+            avCodecContext->color_trc = AVCOL_TRC_UNSPECIFIED;
+            break;
+        }
+    }
+
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixelFormat);
+    if (FFmpeg::pixelFormatIsYUV(pixelFormat)) {
+        const bool isJpeg = IsJpeg(_codec, codec);
+        if (avCodecContext->codec_id == AV_CODEC_ID_DNXHD) {
+            // DNxHD/DNxHR: the matrix is in the frame header, which FFmpeg's encoder always writes as BT.709 (bits 1-2
+            // of byte 0x2c are 0, FFmpeg n8.0 libavcodec/dnxhdenc.c:545, n9.0.2 :544), and FFmpeg's decoder sets
+            // the frame's matrix from it (n8.0 and n9.0.2 libavcodec/dnxhddec.c:237-242), so the stream's one (the
+            // MOV 'colr' atom) is ignored: fill_frame_props() only uses it if the frame's is unspecified (n8.0
+            // libavcodec/decode.c:564-565, n9.0.2 :582-583). So the BT.709 matrix, at all sizes and with the
+            // BT.2020 primaries too: the one every decoder assumes for this file.
+            avCodecContext->colorspace = AVCOL_SPC_BT709;
+        } else if ((avCodecContext->color_primaries == AVCOL_PRI_BT2020) && !isJpeg) {
+            avCodecContext->colorspace = AVCOL_SPC_BT2020_NCL;
+        } else {
+            avCodecContext->colorspace = isHD ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        }
+    } else if (desc && (desc->flags & AV_PIX_FMT_FLAG_RGB)) {
+        avCodecContext->colorspace = AVCOL_SPC_RGB;
+    }
+
+    if (isYUVCodec && _writeNCLC->getValue()) {
+        // the codes as decimal numbers (they may have two digits, e.g. 13 for the sRGB transfer function)
+        av_dict_set_int(&avStream->metadata, kNCLCPrimariesKey, (int64_t)avCodecContext->color_primaries, 0);
+        av_dict_set_int(&avStream->metadata, kNCLCTransferKey, (int64_t)avCodecContext->color_trc, 0);
+        av_dict_set_int(&avStream->metadata, kNCLCMatrixKey, (int64_t)avCodecContext->colorspace, 0);
+    }
+} // WriteFFmpegPlugin::setColorTags
+
 // Figure out if a codec is definitely YUV based from its shortname.
-// This decides whether the Y'CbCr matrix, primaries and transfer function of the stream are set for the
-// usual video formats (BT.709 for HD, BT.601 for SD), which also gives the QuickTime 'colr' (nclc) atom.
-// The transfer function is then BT.709, whatever getColorInfo() gives (e.g. sRGB or linear): the ProRes frame
-// header only allows 0, 1 (BT.709), 2 (unspecified), 16 (PQ) and 18 (HLG) (SMPTE RDD 36).
+// This decides whether the primaries and transfer function of the stream, if getColorInfo() does not give them,
+// are those of the usual video formats (BT.709 for HD, BT.601 for SD, see setColorTags()), which also gives the
+// QuickTime 'colr' (nclc) atom.
 // All the ProRes profiles are Y'CbCr: 4:2:2, or 4:4:4 for ProRes 4444 and 4444 XQ (SMPTE RDD 36), and
 // FFmpeg's prores_ks encoder only accepts yuv422p10, yuv444p10 and yuva444p10.
 /*static*/
@@ -3340,55 +3431,32 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     avCodecContext->width = (_rodPixel.x2 - _rodPixel.x1);
     avCodecContext->height = (_rodPixel.y2 - _rodPixel.y1);
 
+    // the primaries and transfer function of the OCIO output colorspace (if it is one that getColorInfo() knows),
+    // which setColorTags() completes once the pixel format is known
     getColorInfo(&avCodecContext->color_primaries, &avCodecContext->color_trc);
 
     av_dict_set(&_formatContext->metadata, kMetaKeyApplication, kPluginIdentifier, 0);
 
     av_dict_set(&_formatContext->metadata, kMetaKeyApplicationVersion, STR(kPluginVersionMajor) "." STR(kPluginVersionMinor), 0);
 
-    // const char* lutName = GetLutName(lut());
-    // if (lutName)
-    //     av_dict_set(&_formatContext->metadata, kMetaKeyColorspace, lutName, 0);
+#ifdef OFX_IO_USING_OCIO
+    // The OCIO output colorspace, which ReadFFmpeg uses as its File Colorspace if its OCIO config has it
+    // (FFmpegFile::getColorspaceMetadata()). The muxers that store any metadata key keep it (e.g. Matroska and
+    // NUT); MOV and MP4 only store the keys they know (libavformat/movenc.c mov_write_udta_tag()), unless the
+    // movflags option use_metadata_tags is set.
+    {
+        string outputColorspace;
+        _ocio->getOutputColorspace(outputColorspace);
+        if (_ocio->getConfig() && !outputColorspace.empty() && _ocio->hasColorspace(outputColorspace.c_str())) {
+            av_dict_set(&_formatContext->metadata, kMetaKeyColorspace, outputColorspace.c_str(), 0);
+        }
+    }
+#endif
 
     av_dict_set(&_formatContext->metadata, kMetaKeyWriter, kMetaValueWriter64, 0);
 
-    int codec = _codec->getValue();
-    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
     int dnxhdCodecProfile_i = 0;
     _dnxhdCodecProfile->getValue(dnxhdCodecProfile_i);
-    // Write the NCLC atom in the case the underlying storage is YUV.
-    if (IsYUVFromShortName(codecsShortNames[codec].c_str(), dnxhdCodecProfile_i)) {
-        bool writeNCLC = _writeNCLC->getValue();
-
-        const AVRational displayRatio = { avCodecContext->width, avCodecContext->height };
-
-        const bool isHD = isRec709Format(avCodecContext->height);
-        const bool isPAL = isPalFormat(displayRatio);
-        if (isHD) {
-            avCodecContext->color_primaries = AVCOL_PRI_BT709; // kQTPrimaries_ITU_R709_2
-            avCodecContext->color_trc = AVCOL_TRC_BT709; // kQTTransferFunction_ITU_R709_2
-        } else if (isPAL) {
-            avCodecContext->color_primaries = AVCOL_PRI_BT470BG; // kQTPrimaries_EBU_3213
-            avCodecContext->color_trc = AVCOL_TRC_BT709; // kQTTransferFunction_ITU_R709_2
-        } else {
-            avCodecContext->color_primaries = AVCOL_PRI_SMPTE170M; // kQTPrimaries_SMPTE_C
-            avCodecContext->color_trc = AVCOL_TRC_BT709; // kQTTransferFunction_ITU_R709_2
-        }
-
-        avCodecContext->colorspace = isHD ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
-
-        if (writeNCLC) {
-            char nclc_color_primaries[2] = { 0, 0 };
-            nclc_color_primaries[0] = '0' + (int)avCodecContext->color_primaries;
-            av_dict_set(&avStream->metadata, kNCLCPrimariesKey, nclc_color_primaries, 0);
-            char nclc_color_trc[2] = { 0, 0 };
-            nclc_color_trc[0] = '0' + (int)avCodecContext->color_trc;
-            av_dict_set(&avStream->metadata, kNCLCTransferKey, nclc_color_trc, 0);
-            char nclc_colorspace[2] = { 0, 0 };
-            nclc_colorspace[0] = '0' + (int)avCodecContext->colorspace;
-            av_dict_set(&avStream->metadata, kNCLCMatrixKey, nclc_colorspace, 0);
-        }
-    }
 
     avStream->sample_aspect_ratio.num = 1;
     avStream->sample_aspect_ratio.den = 1;
@@ -4091,7 +4159,11 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
         // Only apply colorspace conversions for YUV.
         if (FFmpeg::pixelFormatIsYUV(dstPixelFormat)) {
             // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
-            const int colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
+            // The Y'CbCr matrix the stream is tagged with (setColorTags())
+            int colorspace = FFmpeg::swsColorspaceFromAVColorSpace(avCodecContext->colorspace);
+            if (colorspace < 0) {
+                colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
+            }
             // The range of the stream (e.g. the DNxHD Output Range), or full range for MJPEG
             const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
 
@@ -4299,10 +4371,10 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     outputFrame_->height = avCodecContext->height;
                     outputFrame_->format = avCodecContext->pix_fmt;
                     // Encoders that write the color properties in each frame (e.g. ProRes, in its frame header) take
-                    // them from the frame, not from the codec context. Only for the Y'CbCr codecs, which get the
-                    // matrix of the usual video formats (IsYUVFromShortName()): other encoders that read them, e.g.
-                    // png (sRGB, cICP, cHRM and gAMA chunks), keep writing what they wrote before.
-                    if (avCodecContext->colorspace != AVCOL_SPC_UNSPECIFIED) {
+                    // them from the frame, not from the codec context. Only for the Y'CbCr pixel formats, which get a
+                    // matrix (setColorTags()): the encoders of RGB formats that read them, e.g. png (sRGB, cICP, cHRM
+                    // and gAMA chunks, FFmpeg n9.0 libavcodec/pngenc.c:433-481), keep writing what they wrote before.
+                    if ((avCodecContext->colorspace != AVCOL_SPC_UNSPECIFIED) && (avCodecContext->colorspace != AVCOL_SPC_RGB)) {
                         outputFrame_->color_primaries = avCodecContext->color_primaries;
                         outputFrame_->color_trc = avCodecContext->color_trc;
                         outputFrame_->colorspace = avCodecContext->colorspace;
@@ -4717,6 +4789,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
         AVCodecContext* avCodecContext = _streamVideo.codecContext;
         avCodecContext->pix_fmt = targetPixelFormat;
+        setColorTags(avCodecContext, _streamVideo.stream, targetPixelFormat);
 
         avCodecContext->bits_per_raw_sample = FFmpeg::pixelFormatBitDepth(targetPixelFormat);
         avCodecContext->sample_aspect_ratio = av_d2q(pixelAspectRatio, 255);

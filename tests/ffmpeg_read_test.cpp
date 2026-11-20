@@ -69,13 +69,18 @@
  *      file), whatever the other frames give: every frame is decoded sequentially, in reverse
  *      order, in a random order, and in the --order frames, each in a newly opened file, and each
  *      frame in its own newly opened file
- *      (e.g. the intact GOPs of a damaged file must decode as in the clean file, in any order).
+ *      (e.g. the intact GOPs of a damaged file must decode as in the clean file, in any order),
+ *  19. optionally (--matrix N, --range N) sets the Y'CbCr matrix (0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020)
+ *      and range (0 = Auto, 1 = Video, 2 = Full) of the conversion to RGB (FFmpegFile::setColorOverrides(), the
+ *      ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params), and (--rgb R,G,B[,TOL]) checks that the mean of each
+ *      component of the first and the last frame is R, G and B (on a 0-255 scale) within TOL (default 1.5): e.g. a
+ *      clip of a constant Y'CbCr color, whose RGB value is computed from its matrix and range by the script.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
@@ -97,7 +102,7 @@
 namespace {
 
 double
-meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeOfData)
+meanComponent(const unsigned char* buf, int w, int h, int nComps, int sizeOfData, int comp, double scale16)
 {
     const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
     if (n == 0) {
@@ -107,15 +112,22 @@ meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeO
     if (sizeOfData == 2) {
         const uint16_t* p = reinterpret_cast<const uint16_t*>(buf);
         for (size_t i = 0; i < n; ++i) {
-            sum += p[i * nComps];
+            sum += p[i * nComps + comp];
         }
     } else {
         for (size_t i = 0; i < n; ++i) {
-            sum += buf[i * nComps];
+            sum += buf[i * nComps + comp];
         }
     }
-    // on a 0-255 scale, whatever the bit depth, so that --tol and --ramp do not depend on it
-    return sum / static_cast<double>(n) / (sizeOfData == 2 ? 256.0 : 1.0);
+    // on a 0-255 scale, whatever the bit depth, so that --tol, --ramp and --rgb do not depend on it (16 bits are
+    // divided by scale16)
+    return sum / static_cast<double>(n) / (sizeOfData == 2 ? scale16 : 1.0);
+}
+
+double
+meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeOfData)
+{
+    return meanComponent(buf, w, h, nComps, sizeOfData, 0, 256.0);
 }
 
 } // namespace
@@ -124,7 +136,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -151,9 +163,31 @@ main(int argc, char** argv)
     std::vector<int> referenceFrames; // --reference-frames: the 1-based frames that must be those of the clean file
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
+    int colorMatrix = 0; // --matrix: FFmpegFile::ColorMatrixEnum
+    int colorRange = 0; // --range: FFmpegFile::ColorRangeEnum
+    double expectedRgb[3] = { -1., -1., -1. }; // --rgb
+    double rgbTol = 1.5;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--tol" && i + 1 < argc) {
+        if (a == "--matrix" && i + 1 < argc) {
+            colorMatrix = std::atoi(argv[++i]);
+            if (colorMatrix < 0 || colorMatrix > 3) {
+                std::fprintf(stderr, "bad --matrix value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--range" && i + 1 < argc) {
+            colorRange = std::atoi(argv[++i]);
+            if (colorRange < 0 || colorRange > 2) {
+                std::fprintf(stderr, "bad --range value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--rgb" && i + 1 < argc) {
+            const int n = std::sscanf(argv[++i], "%lf,%lf,%lf,%lf", &expectedRgb[0], &expectedRgb[1], &expectedRgb[2], &rgbTol);
+            if (n < 3) {
+                std::fprintf(stderr, "bad --rgb value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--tol" && i + 1 < argc) {
             tol = std::atof(argv[++i]);
         } else if (a == "--monotonic") {
             checkMonotonic = true;
@@ -244,6 +278,7 @@ main(int argc, char** argv)
         std::fprintf(stderr, "FAIL: open failed: %s\n", file.getError().c_str());
         return 1;
     }
+    file.setColorOverrides((FFmpegFile::ColorMatrixEnum)colorMatrix, (FFmpegFile::ColorRangeEnum)colorRange);
 
     int w = 0, h = 0, frames = 0;
     double aspect = 1.0;
@@ -296,6 +331,34 @@ main(int argc, char** argv)
         if (!ok || (bytes > maxSeekBytes)) {
             std::fprintf(stderr, "FAIL: decoding frame %d after the open %s, and read %lld bytes, expected at most %lld\n", seekBytesFrame, ok ? "succeeded" : "failed", bytes, maxSeekBytes);
             return 1;
+        }
+    }
+    if (expectedRgb[0] >= 0.) {
+        // --rgb: the first frame, then the last one (after a seek)
+        std::vector<unsigned char> rgbBuf(static_cast<size_t>(w) * h * nComps * sizeOfData);
+        for (int f : { 1, frames }) {
+            bool ok = false;
+            std::string error;
+            try {
+                ok = file.decode(nullptr, f, loadNearest, rgbBuf.data(), &error);
+            } catch (const std::exception& e) {
+                error = e.what();
+            }
+            if (!ok) {
+                std::fprintf(stderr, "FAIL: --rgb: frame %d failed to decode: %s\n", f, error.c_str());
+                return 1;
+            }
+            double rgb[3];
+            for (int c = 0; c < 3; ++c) {
+                rgb[c] = meanComponent(rgbBuf.data(), w, h, nComps, sizeOfData, c, 257.0); // 65535 is 255
+            }
+            std::printf("  frame %d: mean RGB %.2f %.2f %.2f (expected %.2f %.2f %.2f +-%.2f)\n", f, rgb[0], rgb[1], rgb[2], expectedRgb[0], expectedRgb[1], expectedRgb[2], rgbTol);
+            for (int c = 0; c < 3; ++c) {
+                if (std::fabs(rgb[c] - expectedRgb[c]) > rgbTol) {
+                    std::fprintf(stderr, "FAIL: --rgb: frame %d: component %d is %.2f, expected %.2f +-%.2f\n", f, c, rgb[c], expectedRgb[c], rgbTol);
+                    return 1;
+                }
+            }
         }
     }
     if (openOnly) {
