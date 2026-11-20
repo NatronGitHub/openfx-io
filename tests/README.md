@@ -11,7 +11,7 @@ make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
-make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds() hooks
+make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
@@ -20,6 +20,7 @@ make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in'
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
+make test-reader-window-host # the same readers and ReadFFmpeg in a host built on openfx's HostSupport (needs expat, oiiotool, ffmpeg)
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
 make test-ofx14-scan-asan # the same, built with AddressSanitizer
@@ -224,6 +225,14 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   `decode()`) each see their own render time.
 * The same through `decodePlane()`, with a multi-planar test reader (the host
   then declares `kFnOfxImageEffectPropMultiPlanar`).
+* **`clipToFile()`** (#232), called directly: float RGBA and 8-bit RGB images, with padded and negative row bytes,
+  and files in, larger than, across, out of the render window, or empty: it returns the part of the window in the
+  file, clears the rest of the window, and leaves everything else (and the row padding) untouched.
+* **An Opaque file rewritten smaller between `getFrameBounds()` and `decode()`** (#232, the known issue of #225): a
+  test reader whose `getFrameBounds()` is larger than the image that `decode()` reads, at scale 1 (`decode()` writes in
+  the output image) and 1/2 (in GenericReader's buffer): alpha is 1 only where `decode()` wrote the image (the window
+  that `clipToFile()` returned, or the one it reported with `setDecodedWindow()`), and the rest of the render window
+  is transparent black.
 
 Like `test-render`, it sets `OCIO=test.ocio`.
 
@@ -453,26 +462,59 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
-### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163)
+### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #232)
 
 `reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
-and extends past the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM;
-8-bit RGB and RGBA PNG for ReadPNG (only if `pkg-config` finds libpng). It is built with
-[AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS Windows), and the output image is
-between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush against one of them:
+and extends past the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM; 8-bit RGB and RGBA, 16-bit
+grey and RGBA, and interlaced (Adam7) 8-bit RGB and 16-bit RGBA PNG, with libpng, for ReadPNG (only if `pkg-config`
+finds libpng). It is built with [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS
+Windows), and the output image is between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush
+against one of them. Each file is read with two `filePremult` values, for both paths of `GenericReader::render()` at
+scale 1: `decode()` into the output image (Opaque RGB files, PreMultiplied RGBA files), and into GenericReader's
+buffer, which it then premultiplies (UnPreMultiplied files; ReadPFM sets alpha to 0 for RGB files, so its colours are
+then 0):
 
 * **render scale 1/2**: GenericReader decodes a full-resolution window into its buffer: decode() gets a render scale
   of 1 (ReadOIIO and ReadPFM assert it, #160).
+* **the file's pixels** at scale 1, including alpha: the file's alpha for RGBA files, 1 for Opaque RGB files (also in
+  the black border that ReadOIIO adds around a data window, which is in the RoD), 0 out of the data window otherwise.
 * **narrow render windows**: a few columns, a few rows, a box, a pixel, the edges, at scale 1 and 1/2, in an output
   image of the RoD (and, for ReadOIIO, which supports tiles, of the window): only the window is written, with the
-  pixels of the render of the whole RoD, which are the file's at scale 1 (#163).
-* **a rewritten file**: smaller or larger, rendered with the RoD the host got before: only the window is written.
+  pixels of the render of the whole RoD (#163). ReadPNG reads a non-interlaced file only down to the last row of the
+  window: these pixels are bit-identical to those of the whole image.
+* **windows partly or entirely out of the RoD** (across an edge or a corner, longer than the RoD, the RoD with a
+  border, beside it), in an image that covers the RoD and the window (and, for ReadOIIO, of the window only): the
+  part in the RoD is the render of the whole RoD, the rest transparent black (#232).
+* **a rewritten file**: smaller or larger, rendered with the RoD the host got before: only the window is written; for
+  an Opaque RGB file (also a tiled EXR with a smaller data window, and an interlaced PNG), alpha is 1 in the new image
+  and the rest of the window is transparent black.
 * **concurrent renders** of narrow windows by 4 instances while another thread replaces the file by smaller and
-  larger ones: only the windows are written.
+  larger ones: only the windows are written, and alpha is 1 in the image, 0 in the black (the green of these files is
+  never 0).
 
-`READER_WINDOW_ONLY=text` runs only the tests whose title contains `text`. `test-render` also renders narrow windows
-of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
+`READER_WINDOW_ONLY=text` runs only the tests whose title contains `text`. `READER_WINDOW_DUMP=dir` writes the render
+of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders
+narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
+
+### 1g2. `test-reader-window-host` — the readers in a host built on HostSupport (#232)
+
+`hostdemo/reader_window.cpp` (adapted from openfx-arena's `tests/readerwindow/reader_window.cpp`) is a host built on
+openfx's HostSupport and hostDemo's host classes (`openfx/HostSupport/examples`; hostDemo itself renders the whole RoD
+of a plug-in without tiles, whatever its `--window`). `make test-reader-window-host` builds it (with expat, from
+`pkg-config`) and a bundle of ReadOIIO, ReadPFM, ReadPNG and ReadFFmpeg (`.reader_window_host/plugins`), then
+`hostdemo/reader_window.sh` writes files with `oiiotool` (8-bit RGB and 16-bit RGBA PNG, PFM, float RGB and RGBA TIFF,
+an EXR with a data window, a tiled EXR) and `ffmpeg` (a ProRes MOV), and renders each reader with both `filePremult`
+paths, at scale 1 and 1/2. A reference render of the whole RoD, then windows in the image (the middle, edges, a row,
+a column, a pixel) and partly or entirely out of the RoD, each in a new image of the RoD and the window (and, for a
+reader that supports tiles, of the window only), filled with hostDemo's NaN sentinel: the window must have the
+reference's bits in the RoD and transparent black out of it, and nothing outside the window may be written. The
+OFX spec allows such windows: "A host can ask an effect to render an arbitrary window of pixels, generally these
+should be clipped to an effect's region of definition, however, depending on the host, they may not be. [...] If an
+effect is asked to render outside of its region of definition, it should fill those pixels in with black transparent
+pixels" ([ofxRendering.rst](https://github.com/AcademySoftwareFoundation/openfx/blob/main/Documentation/sources/Reference/ofxRendering.rst)).
+It is skipped without `oiiotool`, and ReadFFmpeg without `ffmpeg`. With CMake (`-DIO_HOSTDEMO_TESTS=ON`),
+`io-reader-window` runs the same script on the installed `IO.ofx` bundle.
 
 ### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
 
@@ -763,11 +805,12 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ofx_test_host.h`           | Minimal in-process OFX host (suites, param values, image clips) shared by the render and reader-hook tests. |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
 | `seexpr_test.cpp`           | SeExpr's frames needed and `cpixel()` domain, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
-| `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()` and `getRenderTime()` hooks, on test readers. |
+| `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()`, `getRenderTime()`, `refreshFrameBounds()` and `clipToFile()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
-| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, render scale 1/2, rewritten files, with ASan and guard pages. |
+| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, rewritten files, with ASan and guard pages. |
+| `hostdemo/reader_window.cpp`, `hostdemo/reader_window.sh` | The readers' render windows in a host built on HostSupport (`test-reader-window-host`, ctest `io-reader-window`). |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
 | `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |

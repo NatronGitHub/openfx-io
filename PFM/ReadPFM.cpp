@@ -24,6 +24,10 @@
 
 #include <algorithm>
 #include <cstdio> // fopen, fread...
+#include <limits>
+#if !defined(_WIN32)
+#include <sys/types.h> // off_t, fseeko
+#endif
 
 #include "GenericOCIO.h"
 #include "GenericReader.h"
@@ -190,6 +194,22 @@ copyLine(PIX* image,
     }
 }
 
+// Moves the position of file forward by offset bytes, which may be more than a long holds (32 bits on MS Windows).
+static bool
+seekForward(std::FILE* file,
+            unsigned long long offset)
+{
+#if defined(_WIN32)
+    return _fseeki64(file, (__int64)offset, SEEK_CUR) == 0;
+#else
+    if (offset > (unsigned long long)std::numeric_limits<off_t>::max()) {
+        return false;
+    }
+
+    return fseeko(file, (off_t)offset, SEEK_CUR) == 0;
+#endif
+}
+
 void
 ReadPFMPlugin::decode(const string& filename,
                       OfxTime /*time*/,
@@ -285,11 +305,7 @@ ReadPFMPlugin::decode(const string& filename,
     // file changed since getFrameBounds(): black out of the image.
     const OfxRectI fileBounds = { 0, 0, W, H };
     OfxRectI window;
-    const bool inFile = intersectWindow(renderWindow, fileBounds, &window);
-    if (!sameWindow(window, renderWindow)) {
-        fillWithBlack(renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
-    }
-    if (!inFile) {
+    if (!clipToFile(renderWindow, fileBounds, pixelData, bounds, pixelComponentCount, eBitDepthFloat, rowBytes, &window)) {
         std::fclose(nfile);
 
         return;
@@ -297,15 +313,14 @@ ReadPFMPlugin::decode(const string& filename,
     const int x1 = window.x1;
     const int x2 = window.x2;
 
-    // the lines are stored from bottom (y = 0) to top: skip those below the window
-    for (int y = 0; y < window.y1; ++y) {
-        if (std::fseek(nfile, (long)(numpixels * 4), SEEK_CUR) != 0) {
-            std::fclose(nfile);
-            setPersistentMessage(Message::eMessageError, "", "could not read all the image samples needed");
-            throwSuiteStatusException(kOfxStatFailed);
+    // the lines are stored from bottom (y = 0) to top: skip those below the window, in one seek (64-bit: up to
+    // 65535 lines of 65535 RGB pixels)
+    if ((window.y1 > 0) && !seekForward(nfile, (unsigned long long)window.y1 * numpixels * 4)) {
+        std::fclose(nfile);
+        setPersistentMessage(Message::eMessageError, "", "could not read all the image samples needed");
+        throwSuiteStatusException(kOfxStatFailed);
 
-            return;
-        }
+        return;
     }
     for (int y = window.y1; y < window.y2; ++y) {
         std::size_t numread = std::fread(&image.front(), 4, numpixels, nfile);

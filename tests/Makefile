@@ -325,6 +325,48 @@ test-reader-window: reader_window_test
 clean-reader-window:
 	rm -rf reader_window_test reader_window_test.dSYM .reader_window
 
+# The same readers and ReadFFmpeg in a real OFX host (#232): reader_window_host (hostdemo/reader_window.cpp) is built
+# on openfx's HostSupport and hostDemo's host classes (with expat, from pkg-config), and loads them from a bundle built
+# here (ReaderWindow.ofx.bundle, like IO.ofx but with the readers only). hostdemo/reader_window.sh writes the files
+# with oiiotool and ffmpeg, and renders windows in the image and partly or entirely out of its RoD, at scale 1 and
+# 1/2, with both filePremult paths. It is skipped (exit status 77) without oiiotool. CMake's io-reader-window runs the
+# same script on the installed IO.ofx bundle. (Added to test and clean here, on lines of their own.)
+RW_HOST_SRCS := hostdemo/reader_window.cpp $(wildcard ../openfx/HostSupport/src/*.cpp) \
+    ../openfx/HostSupport/examples/hostDemoClipInstance.cpp ../openfx/HostSupport/examples/hostDemoEffectInstance.cpp \
+    ../openfx/HostSupport/examples/hostDemoHostDescriptor.cpp ../openfx/HostSupport/examples/hostDemoParamInstance.cpp
+RW_HOST_CXXFLAGS := $(CXXSTD) -O0 -g -DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE -DOFX_EXTENSIONS_NATRON \
+    -I../openfx/include -I../openfx/HostSupport/include -I../openfx/HostSupport/examples $(shell $(PKGCONF) --cflags expat 2>/dev/null)
+RW_HOST_LIBS := $(shell $(PKGCONF) --libs expat 2>/dev/null || echo -lexpat) $(if $(filter Windows_NT,$(OS)),,-ldl)
+# the folder of the binary in the bundle (as in openfx's Support/Plugins/Makefile.master)
+ifeq ($(OS),Windows_NT)
+  RW_ARCH := Win64
+else ifeq ($(shell uname -s),Darwin)
+  RW_ARCH := MacOS
+else ifeq ($(shell uname -m),x86_64)
+  RW_ARCH := Linux-x86-64
+else
+  RW_ARCH := Linux-$(shell uname -m)
+endif
+RW_BUNDLE_BINARY := .reader_window_host/plugins/ReaderWindow.ofx.bundle/Contents/$(RW_ARCH)/ReaderWindow.ofx
+RW_PLUGIN_SRCS := $(filter-out $(READER_HOOKS_SRCS),$(READER_WINDOW_SRCS)) \
+    ../FFmpeg/ReadFFmpeg.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp $(READER_HOOKS_SRCS)
+
+reader_window_host: $(RW_HOST_SRCS) ../openfx/HostSupport/examples/hostDemoClipInstance.h ../openfx/HostSupport/examples/hostDemoEffectInstance.h
+	$(CXX) $(RW_HOST_CXXFLAGS) $(filter %.cpp,$^) $(RW_HOST_LIBS) -o $@
+
+$(RW_BUNDLE_BINARY): $(RW_PLUGIN_SRCS) $(OFX_SUPPORT)
+	mkdir -p $(@D)
+	$(CXX) $(OFX_CXXFLAGS) -I../PFM -I../PNG $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) -fPIC -shared $^ $(OFX_LIBS) $(READER_WINDOW_LIBS) -o $@
+
+.PHONY: test-reader-window-host clean-reader-window-host
+test: test-reader-window-host
+clean: clean-reader-window-host
+test-reader-window-host: reader_window_host $(RW_BUNDLE_BINARY)
+	OCIO=$(CURDIR)/test.ocio bash hostdemo/reader_window.sh ./reader_window_host .reader_window_host/plugins .reader_window_host/work; \
+	    st=$$?; if [ $$st -eq 77 ]; then echo "test-reader-window-host: SKIPPED"; else exit $$st; fi
+clean-reader-window-host:
+	rm -rf reader_window_host reader_window_host.dSYM .reader_window_host
+
 # DEBUG builds of exr_read_test and reader_hooks_test with ThreadSanitizer: -DDEBUG enables the Support
 # library's property validation and logging, which run on the threads that describe/create instances while
 # other threads render (openfx #144: races on PropertySet::_gPropLogging and PropertyDescription::_exists)

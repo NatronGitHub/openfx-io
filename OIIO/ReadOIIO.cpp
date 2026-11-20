@@ -2300,6 +2300,113 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
     } // switch
 } // ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName
 
+// The frame bounds and the format of an image whose subimages are specs (see ReadOIIOPlugin::getFrameBounds()): the
+// union of the data windows (with the black border of edgePixelsMode), and the intersection of the display windows.
+static void
+getFrameBoundsOfSpecs(const vector<ImageSpec>& specs,
+                      bool offsetNegativeDisplayWindow,
+                      EdgePixelsEnum edgePixelsMode,
+                      OfxRectI* bounds,
+                      OfxRectI* format)
+{
+    // Union bounds across all specs to get the RoD
+    // Intersect formats across all specs to get the format
+    OfxRectI mergeBounds = { 0, 0, 0, 0 }; // start with empty bounds - rectBoundingBox grows them
+    OfxRectI formatIntersection = { 0, 0, 0, 0 };
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+        const ImageSpec& spec = specs[i];
+        OfxRectI specFormat;
+        // OpenFX requires format to start at 0,0 but EXR does not. User has choice to offset both
+        // data window + display window over by the negative amount or to consider the negative display window
+        // area as overscan and remove it from the format on all sides.
+        specFormat.x1 = specFormat.y1 = 0;
+        specFormat.x2 = spec.full_x + spec.full_width;
+
+        // EXR origin is top left, but OpenFX expects lower left
+        // keep data where it is and set spec.full_height at y = 0
+        specFormat.y2 = spec.full_height;
+
+        int dataOffset = 0;
+        if (spec.full_x != 0) {
+            if (!offsetNegativeDisplayWindow && (spec.full_x < 0)) {
+                // Leave data where it is and shrink the format by the negative
+                // amount on both sides so that it starts at (0,0)
+                specFormat.x2 = spec.full_width + spec.full_x - (-spec.full_x);
+            } else {
+                // Shift both to get dispwindow over to 0,0.
+                dataOffset = -spec.full_x;
+                specFormat.x2 = spec.full_width;
+            }
+        }
+
+        // Remember that exr boxes start at top left, and OpenFX at bottom left
+        // so we need to flip the bbox relative to the frame.
+        OfxRectI specBounds;
+        specBounds.x1 = spec.x + dataOffset;
+        specBounds.y1 = spec.full_y + spec.full_height - (spec.y + spec.height);
+        specBounds.x2 = spec.x + spec.width + dataOffset;
+        specBounds.y2 = spec.full_y + spec.full_height - spec.y;
+
+        switch (edgePixelsMode) {
+        case eEdgePixelsAuto:
+            if ((spec.x != spec.full_x) || (spec.y != spec.full_y) || (spec.width != spec.full_width) || (spec.height != spec.full_height)) {
+                specBounds.x1 -= 1;
+                specBounds.y1 -= 1;
+                specBounds.x2 += 1;
+                specBounds.y2 += 1;
+            }
+            break;
+        case eEdgePixelsEdgeDetect:
+            if ((spec.x != spec.full_x) && (spec.y != spec.full_y) && (spec.width != spec.full_width) && (spec.height != spec.full_height)) {
+                specBounds.x1 -= 1;
+                specBounds.y1 -= 1;
+                specBounds.x2 += 1;
+                specBounds.y2 += 1;
+            } else {
+                if (spec.x != spec.full_x) {
+                    specBounds.x1 -= 1;
+                }
+                if (spec.width != spec.full_width) {
+                    specBounds.x2 += 1;
+                }
+                if (spec.y != spec.full_y) {
+                    specBounds.y2 += 1;
+                }
+                if (spec.height != spec.full_height) {
+                    specBounds.y1 -= 1;
+                }
+            }
+            break;
+        case eEdgePixelsRepeat:
+            // Don't add any black pixels
+            break;
+        case eEdgePixelsBlack:
+            // Always add black pixels around the edges of the box.
+            specBounds.x1 -= 1;
+            specBounds.y1 -= 1;
+            specBounds.x2 += 1;
+            specBounds.y2 += 1;
+            break;
+        }
+
+        if (i == 0) {
+            mergeBounds = specBounds;
+            formatIntersection = specFormat;
+        } else {
+            Coords::rectBoundingBox(specBounds, mergeBounds, &mergeBounds);
+            Coords::rectIntersection(specFormat, formatIntersection, &formatIntersection);
+        }
+    }
+    bounds->x1 = mergeBounds.x1;
+    bounds->x2 = mergeBounds.x2;
+    bounds->y1 = mergeBounds.y1;
+    bounds->y2 = mergeBounds.y2;
+    format->x1 = formatIntersection.x1;
+    format->x2 = formatIntersection.x2;
+    format->y1 = formatIntersection.y1;
+    format->y2 = formatIntersection.y2;
+}
+
 void
 ReadOIIOPlugin::decodePlane(const string& filename,
                             OfxTime /*time*/,
@@ -2507,29 +2614,36 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     specBounds.x2 = spec.x + spec.width + dataOffset;
     specBounds.y2 = spec.full_y + spec.full_height - spec.y;
 
-    // Where to write the data in the buffer, everything outside of that is black
-    // It depends on the extra padding we added in getFrameBounds.
-    // The render window may be any part of bounds (e.g. a few columns or rows), and may not be in the data window if
-    // the file changed since getFrameBounds().
+    // Where to write the data in the buffer, everything outside of that is black (including the extra padding we
+    // added in getFrameBounds). The render window may be any part of bounds (e.g. a few columns or rows), and may not
+    // be in the data window if the file changed since getFrameBounds().
     OfxRectI renderWindowUnPadded;
-    const bool inData = intersectWindow(renderWindow, specBounds, &renderWindowUnPadded);
+    const bool inData = clipToFile(renderWindow, specBounds, pixelData, bounds, numChannels, eBitDepthFloat, rowBytes, &renderWindowUnPadded);
+    {
+        // The image of this file is its frame bounds, as getFrameBounds() computes them, which include the black
+        // padding (that black is in the RoD: for an Opaque file, its alpha is 1, as elsewhere in the RoD). Out of
+        // them, e.g. if the file was rewritten smaller since getFrameBounds(), the black is transparent.
+        EdgePixelsEnum edgePixelsMode;
+        {
+            int edgeMode_i;
+            _edgePixels->getValue(edgeMode_i);
+            edgePixelsMode = (EdgePixelsEnum)edgeMode_i;
+        }
+        OfxRectI fileBounds, fileFormat;
+        getFrameBoundsOfSpecs(subimages, offsetNegativeDisplayWindow, edgePixelsMode, &fileBounds, &fileFormat);
+        OfxRectI fileWindow;
+        intersectWindow(renderWindow, fileBounds, &fileWindow);
+        setDecodedWindow(fileWindow);
+    }
+    if (!inData) {
+        // nothing to read
+
+        return;
+    }
 
     const int pixelBytes = numChannels * getComponentBytes(eBitDepthFloat);
     const int xStride = pixelBytes;
     const int yStride = -rowBytes;
-
-    // Byte offset to the first pixel of the render window
-    const size_t renderWindowDataOffset = (size_t)(renderWindow.y1 - bounds.y1) * rowBytes + (size_t)(renderWindow.x1 - bounds.x1) * pixelBytes;
-
-    if (!inData) {
-        // nothing to read
-        char* yptr = (char*)pixelData + renderWindowDataOffset;
-        for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
-            std::memset(yptr, 0, (size_t)pixelBytes * (renderWindow.x2 - renderWindow.x1));
-        }
-
-        return;
-    }
 
     // The renderWindowUnPadded must be contained in the original render Window
     assert(renderWindowUnPadded.x1 >= renderWindow.x1 && renderWindowUnPadded.x2 <= renderWindow.x2 && renderWindowUnPadded.y1 >= renderWindow.y1 && renderWindowUnPadded.y2 <= renderWindow.y2);
@@ -2553,27 +2667,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     size_t bottomScanLineDataStartOffset = (size_t)(renderWindowUnPadded.y1 - bounds.y1) * rowBytes + (size_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes;
     // Pixel offset to the start of the last line of the render window
     size_t topScanLineDataStartOffset = (size_t)(renderWindowUnPadded.y2 - 1 - bounds.y1) * rowBytes + (size_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes; // offset for line y2-1
-
-    if (!sameWindow(renderWindowUnPadded, renderWindow)) {
-        // Clear any padding we added outside of renderWindowUnPadded to black
-        // Clear scanlines out of data window to black
-        assert(bounds.y1 <= renderWindow.y1 && bounds.x1 <= renderWindow.x1);
-        assert(bounds.y2 >= renderWindow.y2 && bounds.x2 >= renderWindow.x2);
-        char* yptr = (char*)pixelData + renderWindowDataOffset;
-        for (int y = renderWindow.y1; y < renderWindow.y2; ++y, yptr += rowBytes) {
-            if ((y < renderWindowUnPadded.y1) || (y >= renderWindowUnPadded.y2)) {
-                memset(yptr, 0, pixelBytes * (renderWindow.x2 - renderWindow.x1));
-                continue;
-            }
-
-            if (renderWindow.x1 < renderWindowUnPadded.x1) {
-                memset(yptr, 0, pixelBytes * (renderWindowUnPadded.x1 - renderWindow.x1));
-            }
-            if (renderWindow.x2 > renderWindowUnPadded.x2) {
-                memset(yptr + (renderWindowUnPadded.x2 - renderWindow.x1) * pixelBytes, 0, pixelBytes * (renderWindow.x2 - renderWindowUnPadded.x2));
-            }
-        }
-    }
 
     std::size_t incr; // number of channels processed
     for (std::size_t i = 0; i < channels.size(); i += incr) {
@@ -2856,102 +2949,7 @@ ReadOIIOPlugin::getFrameBounds(const string& filename,
         edgePixelsMode = (EdgePixelsEnum)edgeMode_i;
     }
 
-    // Union bounds across all specs to get the RoD
-    // Intersect formats across all specs to get the format
-    OfxRectI mergeBounds = { 0, 0, 0, 0 }; // start with empty bounds - rectBoundingBox grows them
-    OfxRectI formatIntersection = { 0, 0, 0, 0 };
-    for (std::size_t i = 0; i < specs.size(); ++i) {
-        const ImageSpec& spec = specs[i];
-        OfxRectI specFormat;
-        // OpenFX requires format to start at 0,0 but EXR does not. User has choice to offset both
-        // data window + display window over by the negative amount or to consider the negative display window
-        // area as overscan and remove it from the format on all sides.
-        specFormat.x1 = specFormat.y1 = 0;
-        specFormat.x2 = spec.full_x + spec.full_width;
-
-        // EXR origin is top left, but OpenFX expects lower left
-        // keep data where it is and set spec.full_height at y = 0
-        specFormat.y2 = spec.full_height;
-
-        int dataOffset = 0;
-        if (spec.full_x != 0) {
-            if (!offsetNegativeDisplayWindow && (spec.full_x < 0)) {
-                // Leave data where it is and shrink the format by the negative
-                // amount on both sides so that it starts at (0,0)
-                specFormat.x2 = spec.full_width + spec.full_x - (-spec.full_x);
-            } else {
-                // Shift both to get dispwindow over to 0,0.
-                dataOffset = -spec.full_x;
-                specFormat.x2 = spec.full_width;
-            }
-        }
-
-        // Remember that exr boxes start at top left, and OpenFX at bottom left
-        // so we need to flip the bbox relative to the frame.
-        OfxRectI specBounds;
-        specBounds.x1 = spec.x + dataOffset;
-        specBounds.y1 = spec.full_y + spec.full_height - (spec.y + spec.height);
-        specBounds.x2 = spec.x + spec.width + dataOffset;
-        specBounds.y2 = spec.full_y + spec.full_height - spec.y;
-
-        switch (edgePixelsMode) {
-        case eEdgePixelsAuto:
-            if ((spec.x != spec.full_x) || (spec.y != spec.full_y) || (spec.width != spec.full_width) || (spec.height != spec.full_height)) {
-                specBounds.x1 -= 1;
-                specBounds.y1 -= 1;
-                specBounds.x2 += 1;
-                specBounds.y2 += 1;
-            }
-            break;
-        case eEdgePixelsEdgeDetect:
-            if ((spec.x != spec.full_x) && (spec.y != spec.full_y) && (spec.width != spec.full_width) && (spec.height != spec.full_height)) {
-                specBounds.x1 -= 1;
-                specBounds.y1 -= 1;
-                specBounds.x2 += 1;
-                specBounds.y2 += 1;
-            } else {
-                if (spec.x != spec.full_x) {
-                    specBounds.x1 -= 1;
-                }
-                if (spec.width != spec.full_width) {
-                    specBounds.x2 += 1;
-                }
-                if (spec.y != spec.full_y) {
-                    specBounds.y2 += 1;
-                }
-                if (spec.height != spec.full_height) {
-                    specBounds.y1 -= 1;
-                }
-            }
-            break;
-        case eEdgePixelsRepeat:
-            // Don't add any black pixels
-            break;
-        case eEdgePixelsBlack:
-            // Always add black pixels around the edges of the box.
-            specBounds.x1 -= 1;
-            specBounds.y1 -= 1;
-            specBounds.x2 += 1;
-            specBounds.y2 += 1;
-            break;
-        }
-
-        if (i == 0) {
-            mergeBounds = specBounds;
-            formatIntersection = specFormat;
-        } else {
-            Coords::rectBoundingBox(specBounds, mergeBounds, &mergeBounds);
-            Coords::rectIntersection(specFormat, formatIntersection, &formatIntersection);
-        }
-    }
-    bounds->x1 = mergeBounds.x1;
-    bounds->x2 = mergeBounds.x2;
-    bounds->y1 = mergeBounds.y1;
-    bounds->y2 = mergeBounds.y2;
-    format->x1 = formatIntersection.x1;
-    format->x2 = formatIntersection.x2;
-    format->y1 = formatIntersection.y1;
-    format->y2 = formatIntersection.y2;
+    getFrameBoundsOfSpecs(specs, offsetNegativeDisplayWindow, edgePixelsMode, bounds, format);
     if (specs.size() > 0) {
         *tile_width = specs[0].tile_width;
         *tile_height = specs[0].tile_height;
