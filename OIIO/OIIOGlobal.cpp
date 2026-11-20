@@ -29,7 +29,6 @@
 
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
-#include <OpenImageIO/imagecache.h>
 #include <OpenImageIO/imageio.h>
 GCC_DIAG_ON(unused-parameter)
 // clang-format on

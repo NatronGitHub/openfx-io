@@ -529,6 +529,9 @@ then 0):
 * **a 2-part EXR** (`READER_WINDOW_MULTIPLANE=1`, a second run in a Natron-like host: dynamic choices and the plane
   suite): part 1, smaller than part 0, read into the color plane as Opaque: alpha is 1 in the whole RoD (the union of
   the parts), also out of part 1.
+* **no dependence on `kOfxImageEffectPropSequentialRenderStatus`**: the render of the whole RoD is the same, bit for
+  bit, with a sequential render status of 1. The spec says it is "set to indicate whether the effect is currently
+  being rendered in frame order on a single effect instance", not playback, and the readers don't read it (#200).
 
 `READER_WINDOW_ONLY=text` runs only the tests whose title contains `text`. `READER_WINDOW_DUMP=dir` writes the render
 of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders

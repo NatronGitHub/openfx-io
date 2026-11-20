@@ -39,7 +39,7 @@
 #include "OIIOGlobal.h"
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
-#include <OpenImageIO/imagecache.h>
+#include <OpenImageIO/imageio.h>
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 
@@ -105,14 +105,7 @@ typedef OFX::MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
 }
 #endif
 
-#define OFX_READ_OIIO_USES_CACHE
 #define OFX_READ_OIIO_SUPPORTS_SUBIMAGES
-
-// Not working
-
-#ifdef OFX_READ_OIIO_USES_CACHE
-#define OFX_READ_OIIO_SHARED_CACHE
-#endif
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -156,12 +149,8 @@ typedef ImageInput* ImageInputPtr;
 #define kSupportsRGB true
 #define kSupportsXY true
 #define kSupportsAlpha true
-#ifdef OFX_READ_OIIO_USES_CACHE
+// (the default of the descriptor: an instance supports tiles only for a tiled file, see setSupportsTiles() below)
 #define kSupportsTiles true
-#else
-// It is more efficient to read full frames if no cache is used.
-#define kSupportsTiles false
-#endif
 #define kIsMultiPlanar true
 
 #define kParamShowMetadata "showMetadata"
@@ -421,15 +410,13 @@ class ReadOIIOPlugin
 
 public:
     ReadOIIOPlugin(OfxImageEffectHandle handle,
-                   const vector<string>& extensions,
-                   bool useOIIOCache); // does the host prefer images to be cached by OIIO (e.g. Natron < 2.2)?
+                   const vector<string>& extensions);
 
     virtual ~ReadOIIOPlugin();
 
     virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
     virtual OfxStatus getClipComponents(const ClipComponentsArguments& args, ClipComponentsSetter& clipComponents) OVERRIDE FINAL;
     virtual void getClipPreferences(ClipPreferencesSetter& clipPreferences) OVERRIDE FINAL;
-    virtual void clearAnyCache() OVERRIDE FINAL;
 
     /**
      * @brief Restore any state from the parameters set
@@ -468,7 +455,6 @@ private:
     virtual void decode(const string& filename,
                         OfxTime time,
                         int view,
-                        bool isPlayback,
                         const OfxRectI& renderWindow,
                         const OfxPointD& renderScale,
                         float* pixelData,
@@ -494,24 +480,22 @@ private:
 
             return;
         }
-        decodePlane(filename, time, view, isPlayback, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponents, pixelComponentCount, rawComps, rowBytes);
+        decodePlane(filename, time, view, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponents, pixelComponentCount, rawComps, rowBytes);
     }
 
-    virtual void decodePlane(const string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const string& filename, OfxTime time, int view, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              PixelComponentEnum pixelComponents, PixelComponentEnum remappedComponents,
                              int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
 
     void getOIIOChannelIndexesFromLayerName(const string& filename, int view, const string& layerName, PixelComponentEnum pixelComponents, const vector<ImageSpec>& subimages, vector<int>& channels, int& numChannels, int& subImageIndex);
 
-    void openFile(const string& filename, bool useCache, ImageInputPtr* img, vector<ImageSpec>* subimages);
+    void openFile(const string& filename, ImageInputPtr* img, vector<ImageSpec>* subimages);
 
     virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     string metadata(const string& filename);
 
     void getSpecsFromImageInput(const ImageInputPtr& img, vector<ImageSpec>* subimages) const;
-
-    void getSpecsFromCache(const string& filename, vector<ImageSpec>* subimages) const;
 
     void getSpecs(const string& filename, vector<ImageSpec>* subimages, string* error = 0) const;
 
@@ -526,13 +510,6 @@ private:
 
     // retrieve the config used to open the file
     void getConfig(ImageSpec* config) const;
-
-    //// OIIO image cache
-#if OIIO_VERSION >= 30000
-    std::shared_ptr<ImageCache> _cache;
-#else
-    ImageCache* _cache;
-#endif
 
     BooleanParam* _rawAutoBright;
     BooleanParam* _rawUseCameraWB;
@@ -559,19 +536,12 @@ private:
     BooleanParam* _offsetNegativeDispWindow;
     ChoiceParam* _edgePixels;
 
-    // We keep the name of the last file read when not in playback so that
-    // if it changes we can invalidate the last file read from the OIIO cache since it is no longer useful.
-    // The host cache will back it up on most case. The only useful case for the OIIO cache is when there are
-    // multiple threads trying to read the same image.
-    Mutex _lastFileReadNoPlaybackMutex;
-    string _lastFileReadNoPlayback;
     Mutex _outputLayerMenuMutex;
     LayersUnionVect _outputLayerMenu;
 };
 
 ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
-                               const vector<string>& extensions,
-                               bool useOIIOCache) // does the host prefer images to be cached by OIIO (e.g. Natron < 2.2)?
+                               const vector<string>& extensions)
     : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles,
 #ifdef OFX_EXTENSIONS_NUKE
                           (getImageEffectHostDescription() && getImageEffectHostDescription()->isMultiPlanar) ? kIsMultiPlanar : false
@@ -579,33 +549,14 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
                           false
 #endif
                           )
-    , _cache(NULL)
     , _outputLayer(NULL)
     , _outputLayerString(NULL)
     , _availableViews(NULL)
     , _offsetNegativeDispWindow(NULL)
     , _edgePixels(NULL)
-    , _lastFileReadNoPlaybackMutex()
-    , _lastFileReadNoPlayback()
     , _outputLayerMenuMutex()
     , _outputLayerMenu()
 {
-#ifdef OFX_READ_OIIO_USES_CACHE
-    if (useOIIOCache) {
-#ifdef OFX_READ_OIIO_SHARED_CACHE
-        _cache = ImageCache::create(true); // shared cache
-#else
-        _cache = ImageCache::create(false); // non-shared cache
-#endif
-        // Always keep unassociated alpha.
-        // Don't let OIIO premultiply, because if the image is 8bits,
-        // it multiplies in 8bits (see TIFFInput::unassalpha_to_assocalpha()),
-        // which causes a lot of precision loss.
-        // see also https://github.com/OpenImageIO/oiio/issues/960
-        _cache->attribute("unassociatedalpha", 1);
-    }
-#endif
-
     if (gHostSupportsDynamicChoices && gHostSupportsMultiPlane) {
         _outputLayer = fetchChoiceParam(kParamChannelOutputLayer);
         _outputLayerString = fetchStringParam(kParamChannelOutputLayerChoice);
@@ -641,24 +592,6 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 
 ReadOIIOPlugin::~ReadOIIOPlugin()
 {
-    if (_cache) {
-#if OIIO_VERSION >= 30000
-        _cache.reset(); // OIIO 3.x: shared_ptr manages lifetime (ImageCache::destroy removed)
-#elif defined(OFX_READ_OIIO_SHARED_CACHE)
-        ImageCache::destroy(_cache); // don't teardown if it's a shared cache
-#else
-        ImageCache::destroy(_cache, true); // teardown non-shared cache
-#endif
-    }
-}
-
-void
-ReadOIIOPlugin::clearAnyCache()
-{
-    if (_cache) {
-        /// flush the OIIO cache
-        _cache->invalidate_all(true);
-    }
 }
 
 static string
@@ -770,18 +703,7 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs& args,
                (paramName == kParamRawAber) ||
 #endif
                (paramName == kParamRawDemosaic)) {
-        // advanced parameters changed, invalidate the cache entries for the whole sequence
-        if (_cache) {
-            OfxRangeD range;
-            getTimeDomain(range); // the host time domain
-            for (int t = (int)range.min; t <= (int)range.max; ++t) {
-                string filename;
-                OfxStatus st = getFilenameAtTime(t, &filename); // t is a host time
-                if (st == kOfxStatOK) {
-                    _cache->invalidate(ustring(filename));
-                }
-            }
-        }
+        // advanced (RAW) parameters: nothing to do here, they are read when the file is opened (getConfig())
     } else {
         GenericReaderPlugin::changedParam(args, paramName);
     }
@@ -1411,44 +1333,12 @@ ReadOIIOPlugin::getSpecsFromImageInput(const ImageInputPtr& img,
 }
 
 void
-ReadOIIOPlugin::getSpecsFromCache(const string& filename,
-                                  vector<ImageSpec>* subimages) const
-{
-    subimages->clear();
-    assert(_cache);
-    if (!_cache) {
-        return;
-    }
-
-    // make sure we use the right config for this file
-    ImageSpec config;
-    getConfig(&config);
-    _cache->add_file(ustring(filename), NULL, &config);
-
-    ImageSpec spec;
-    int subImageIndex = 0;
-    // use the thread-safe version of get_imagespec (i.e: make a copy of the imagespec)
-    while (_cache->get_imagespec(ustring(filename), spec, subImageIndex)) {
-        subimages->push_back(spec);
-        ++subImageIndex;
-#ifndef OFX_READ_OIIO_SUPPORTS_SUBIMAGES
-        break;
-#endif
-    }
-}
-
-void
 ReadOIIOPlugin::getSpecs(const string& filename,
                          vector<ImageSpec>* subimages,
                          string* error) const
 {
     subimages->clear();
-    bool gotSpec = false;
-    if (_cache) {
-        getSpecsFromCache(filename, subimages);
-        gotSpec = true;
-    }
-    if (!gotSpec) {
+    {
         // use the right config
         ImageSpec config;
         getConfig(&config);
@@ -2123,16 +2013,9 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
 
 void
 ReadOIIOPlugin::openFile(const string& filename,
-                         bool useCache,
                          ImageInputPtr* img,
                          vector<ImageSpec>* subimages)
 {
-    if (_cache && useCache) {
-        getSpecsFromCache(filename, subimages);
-
-        return;
-    }
-
     // use the right config
     ImageSpec config;
     getConfig(&config);
@@ -2411,7 +2294,6 @@ void
 ReadOIIOPlugin::decodePlane(const string& filename,
                             OfxTime /*time*/,
                             int view,
-                            bool isPlayback,
                             const OfxRectI& renderWindow,
                             const OfxPointD& renderScale,
                             float* pixelData,
@@ -2425,14 +2307,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     assert(renderScale.x == 1. && renderScale.y == 1.);
     unused(renderScale);
     unused(pixelComponentCount);
-#if OIIO_VERSION >= 10605
-    // Use cache only if not during playback because the OIIO cache eats too much RAM when playing scaline-based EXRs.
-    // Do not use cache in OIIO 1.5.x because it does not support channel ranges correctly.
-    const bool useCache = _cache && !isPlayback;
-#else
-    const bool useCache = false;
-#endif
-
     // assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == spec.full_width && renderWindow.y1 == 0 && renderWindow.y2 == spec.full_height));
     // assert((renderWindow.x2 - renderWindow.x1) <= spec.width && (renderWindow.y2 - renderWindow.y1) <= spec.height);
     assert(bounds.x1 <= renderWindow.x1 && renderWindow.x1 <= renderWindow.x2 && renderWindow.x2 <= bounds.x2);
@@ -2457,7 +2331,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     vector<ImageSpec> subimages;
 
     ImageInputPtr rawImg = 0;
-    openFile(filename, useCache, &rawImg, &subimages);
+    openFile(filename, &rawImg, &subimages);
     if (rawImg) {
 #if OIIO_PLUGIN_VERSION >= 22
         img.swap(rawImg);
@@ -2715,215 +2589,180 @@ ReadOIIOPlugin::decodePlane(const string& filename,
             // Start on the last line to invert Y with a negative stride
             // Pass to OIIO the pointer to the first pixel of the last scan-line of the render window.
             float* topScanLineDataStartPtr = (float*)((char*)pixelData + topScanLineDataStartOffset) + outputChannelBegin;
-            bool gotPixels = false;
-            if (_cache && useCache) {
-                gotPixels = _cache->get_pixels(ustring(filename),
-                                               subImageIndex, // subimage
-                                               0, // miplevel
-                                               xbegin, // x begin
-                                               xend, // x end
-                                               ybegin, // y begin
-                                               yend, // y end
-                                               zbegin, // z begin
-                                               zend, // z end
-                                               chbegin, // chan begin
-                                               chend, // chan end
-                                               TypeDesc::FLOAT, // data type
-                                               topScanLineDataStartPtr, // output buffer
-                                               xStride, // x stride
-                                               yStride, // y stride < make it invert Y
-                                               AutoStride // z stride
-#if OIIO_VERSION >= 10605
-                                               ,
-                                               chbegin, // only cache these channels
-                                               chend
-#endif
-                );
-                if (!gotPixels) {
-                    setPersistentMessage(Message::eMessageError, "", _cache->geterror());
+            // We clamp to the valid scanlines portion.
+            int ybeginClamped = (std::min)((std::max)(spec.y, ybegin), spec.y + spec.height);
+            int yendClamped = (std::min)((std::max)(spec.y, yend), spec.y + spec.height);
+            int xbeginClamped = (std::min)((std::max)(spec.x, xbegin), spec.x + spec.width);
+            int xendClamped = (std::min)((std::max)(spec.x, xend), spec.x + spec.width);
+
+            // Do not call valid_tile_range because a tiled file can only be read with read_tiles with OpenImageIO.
+            // Otherwise it will give the following error: called OpenEXRInput::read_native_scanlines without an open file
+            if ((spec.tile_width == 0) && (xbeginClamped == spec.x) && (xendClamped == spec.x + spec.width)) {
+                // Read by scanlines: read_scanlines() reads whole lines of the data window, here as wide as the
+                // render window
+
+                if (!img->read_scanlines(subImageIndex, 0, ybeginClamped, // y begin
+                                         yendClamped, // y end
+                                         zbegin, // z
+                                         chbegin, // chan begin
+                                         chend, // chan end
+                                         TypeDesc::FLOAT, // data type
+                                         topScanLineDataStartPtr,
+                                         xStride, // x stride
+                                         yStride)) { // y stride < make it invert Y;
+                    setPersistentMessage(Message::eMessageError, "", img->geterror());
                     throwSuiteStatusException(kOfxStatFailed);
 
                     return;
                 }
-            }
-            if (!gotPixels) { // !useCache
-                // We clamp to the valid scanlines portion.
-                int ybeginClamped = (std::min)((std::max)(spec.y, ybegin), spec.y + spec.height);
-                int yendClamped = (std::min)((std::max)(spec.y, yend), spec.y + spec.height);
-                int xbeginClamped = (std::min)((std::max)(spec.x, xbegin), spec.x + spec.width);
-                int xendClamped = (std::min)((std::max)(spec.x, xend), spec.x + spec.width);
-
-                // Do not call valid_tile_range because a tiled file can only be read with read_tiles with OpenImageIO.
-                // Otherwise it will give the following error: called OpenEXRInput::read_native_scanlines without an open file
-                if ((spec.tile_width == 0) && (xbeginClamped == spec.x) && (xendClamped == spec.x + spec.width)) {
-                    // Read by scanlines: read_scanlines() reads whole lines of the data window, here as wide as the
-                    // render window
-
-                    if (!img->read_scanlines(subImageIndex, 0, ybeginClamped, // y begin
-                                             yendClamped, // y end
-                                             zbegin, // z
-                                             chbegin, // chan begin
-                                             chend, // chan end
-                                             TypeDesc::FLOAT, // data type
-                                             topScanLineDataStartPtr,
-                                             xStride, // x stride
-                                             yStride)) { // y stride < make it invert Y;
+            } else if (spec.tile_width == 0) {
+                // Read by scanlines, the render window is narrower than the data window: read_scanlines() reads
+                // whole lines, so read blocks of lines into a buffer, and copy the render window part of them.
+                const int nch = chend - chbegin;
+                const std::size_t lineFloats = (std::size_t)spec.width * nch;
+                // at most 256 lines, and at most 16 MB (but at least one line)
+                const int kBlockLines = 256;
+                const std::size_t kBlockBytes = 16 << 20;
+                const int blockLines = (std::max)(1, (int)(std::min)((std::size_t)(std::min)(kBlockLines, yendClamped - ybeginClamped), kBlockBytes / (lineFloats * sizeof(float))));
+                vector<float> lines(lineFloats * blockLines);
+                char* dstLine = (char*)topScanLineDataStartPtr; // the line ybeginClamped (the top line)
+                for (int yb = ybeginClamped; yb < yendClamped; yb += blockLines) {
+                    const int ye = (std::min)(yb + blockLines, yendClamped);
+                    if (!img->read_scanlines(subImageIndex, 0, yb, ye, zbegin, chbegin, chend, TypeDesc::FLOAT, &lines.front(), AutoStride, AutoStride)) {
                         setPersistentMessage(Message::eMessageError, "", img->geterror());
                         throwSuiteStatusException(kOfxStatFailed);
 
                         return;
                     }
-                } else if (spec.tile_width == 0) {
-                    // Read by scanlines, the render window is narrower than the data window: read_scanlines() reads
-                    // whole lines, so read blocks of lines into a buffer, and copy the render window part of them.
-                    const int nch = chend - chbegin;
-                    const std::size_t lineFloats = (std::size_t)spec.width * nch;
-                    // at most 256 lines, and at most 16 MB (but at least one line)
-                    const int kBlockLines = 256;
-                    const std::size_t kBlockBytes = 16 << 20;
-                    const int blockLines = (std::max)(1, (int)(std::min)((std::size_t)(std::min)(kBlockLines, yendClamped - ybeginClamped), kBlockBytes / (lineFloats * sizeof(float))));
-                    vector<float> lines(lineFloats * blockLines);
-                    char* dstLine = (char*)topScanLineDataStartPtr; // the line ybeginClamped (the top line)
-                    for (int yb = ybeginClamped; yb < yendClamped; yb += blockLines) {
-                        const int ye = (std::min)(yb + blockLines, yendClamped);
-                        if (!img->read_scanlines(subImageIndex, 0, yb, ye, zbegin, chbegin, chend, TypeDesc::FLOAT, &lines.front(), AutoStride, AutoStride)) {
-                            setPersistentMessage(Message::eMessageError, "", img->geterror());
-                            throwSuiteStatusException(kOfxStatFailed);
-
-                            return;
-                        }
-                        for (int y = yb; y < ye; ++y, dstLine -= rowBytes) {
-                            const float* srcPtr = &lines.front() + (std::size_t)(y - yb) * lineFloats + (std::size_t)(xbeginClamped - spec.x) * nch;
-                            float* dstPtr = (float*)dstLine;
-                            for (int x = xbeginClamped; x < xendClamped; ++x, srcPtr += nch, dstPtr += numChannels) {
-                                for (int c = 0; c < nch; ++c) {
-                                    dstPtr[c] = srcPtr[c];
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // If the region to read is not a multiple of tile size we must provide a buffer
-                    // with the appropriate size.
-                    float* tiledBuffer = topScanLineDataStartPtr;
-                    vector<float> tiledBufferStorage; // (freed on all paths, also if read_tiles() fails)
-                    int tiledXBegin = xbeginClamped;
-                    int tiledYBegin = ybeginClamped;
-                    int tiledXEnd = xendClamped;
-                    int tiledYEnd = yendClamped;
-                    bool validRange = spec.valid_tile_range(xbegin, xend, ybegin, yend, zbegin, zend);
-
-                    // This is the number of extra pixels we decoded on the left
-                    int xBeginPadToTileSize = 0;
-                    // This is the numner of extra pixels we decoded on the bottom
-                    int yBeginPadToTileSize = 0;
-                    std::size_t tiledBufferRowSize = rowBytes;
-                    std::size_t tiledBufferPixelSize = xStride;
-                    if (!validRange) {
-                        // If the tile range is invalid, expand to the closest enclosing valid tile range.
-
-                        // tiledXBegin must be at a valid multiple of tile_width from spec.x
-                        tiledXBegin = spec.x + (int)std::floor((double)(xbeginClamped - spec.x) / spec.tile_width) * spec.tile_width;
-
-                        // tiledYBegin must be at a valid multiple of tile_height from spec.y
-                        tiledYBegin = spec.y + (int)std::floor((double)(ybeginClamped - spec.y) / spec.tile_height) * spec.tile_height;
-
-                        // tiledXEnd must be at a valid multiple of tile_width from spec.x
-                        tiledXEnd = spec.x + (int)std::ceil((double)(xendClamped - spec.x) / spec.tile_width) * spec.tile_width;
-
-                        // tiledYEnd must be at a valid multiple of tile_height from spec.y
-                        tiledYEnd = spec.y + (int)std::ceil((double)(yendClamped - spec.y) / spec.tile_height) * spec.tile_height;
-
-                        tiledXBegin = (std::max)(spec.x, tiledXBegin);
-                        tiledYBegin = (std::max)(spec.y, tiledYBegin);
-                        tiledXEnd = (std::min)(spec.x + spec.width, tiledXEnd);
-                        tiledYEnd = (std::min)(spec.y + spec.height, tiledYEnd);
-
-                        // Check that we made up a correct tile range
-                        assert(spec.valid_tile_range(tiledXBegin, tiledXEnd, tiledYBegin, tiledYEnd, zbegin, zend));
-
-                        xBeginPadToTileSize = xbeginClamped - tiledXBegin;
-                        yBeginPadToTileSize = ybeginClamped - tiledYBegin;
-
-                        tiledBufferPixelSize = getComponentBytes(eBitDepthFloat) * (chend - chbegin);
-                        tiledBufferRowSize = (tiledXEnd - tiledXBegin) * tiledBufferPixelSize;
-                        std::size_t nBytes = tiledBufferRowSize * (tiledYEnd - tiledYBegin);
-                        try {
-                            tiledBufferStorage.resize((nBytes + sizeof(float) - 1) / sizeof(float));
-                        } catch (const std::bad_alloc&) {
-                            throwSuiteStatusException(kOfxStatErrMemory);
-
-                            return;
-                        }
-                        char* tiledBufferStart = (char*)&tiledBufferStorage.front();
-
-                        // Make tile buffer point to the first pixel of the last scan-line of our temporary tile-adjusted buffer.
-                        tiledBuffer = (float*)(tiledBufferStart + (tiledYEnd - tiledYBegin - 1) * tiledBufferRowSize);
-                    }
-
-                    // Pass the valid tile range and buffer to OIIO and decode with a negative Y stride from
-                    // top to bottom
-                    if (!img->read_tiles(subImageIndex, 0, tiledXBegin, // x begin
-                                         tiledXEnd, // x end
-                                         tiledYBegin, // y begin
-                                         tiledYEnd, // y end
-                                         zbegin, // z begin
-                                         zend, // z end
-                                         chbegin, // chan begin
-                                         chend, // chan end
-                                         TypeDesc::FLOAT, // data type
-                                         tiledBuffer,
-                                         tiledBufferPixelSize, // x stride
-                                         -tiledBufferRowSize, // y stride < make it invert Y
-                                         AutoStride)) { // z stride
-                        setPersistentMessage(Message::eMessageError, "", img->geterror());
-                        throwSuiteStatusException(kOfxStatFailed);
-
-                        return;
-                    }
-
-                    if (!validRange) {
-                        // If we allocated a temporary tile-adjusted buffer, we must copy it back into the pixelData buffer.
-
-                        // This points to the start of the first pixel of the last scan-line of the render window
-                        char* dst_pix = (char*)topScanLineDataStartPtr;
-
-                        // Copy each scan-line from our temporary buffer to the final buffer. Since each buffer is pointing to the last
-                        // scan-line at the begining, we pass negative pixel offsets in the iteration loop.
-
-                        // Position the tiled buffer to the start of the content that should have been read in the original range.
-                        // To retrieve the position of the original range, we substract the number of extra lines that were decoded
-                        // from the tiledBuffer: tiledBuffer points to tiledYend - tiledYBegin - 1, so we make it point to tiledYend - tiledYbegin - 1 - yEndPadToTileSize
-
-                        assert((tiledYBegin + yBeginPadToTileSize) == ybeginClamped);
-                        assert((tiledXBegin + xBeginPadToTileSize) == xbeginClamped);
-                        const char* src_pix = (const char*)((char*)tiledBuffer - yBeginPadToTileSize * tiledBufferRowSize + xBeginPadToTileSize * tiledBufferPixelSize);
-
-                        for (int y = ybeginClamped; y < yendClamped;
-                             ++y,
-                                 src_pix -= tiledBufferRowSize,
-                                 dst_pix -= rowBytes) {
-
-                            const float* srcPtr = (const float*)src_pix;
-                            float* dstPtr = (float*)dst_pix;
-                            for (int x = xbeginClamped; x < xendClamped;
-                                 ++x,
-                                     srcPtr += (chend - chbegin),
-                                     dstPtr += numChannels) {
-                                for (int c = 0; c < (chend - chbegin); ++c) {
-                                    dstPtr[c] = srcPtr[c];
-                                }
+                    for (int y = yb; y < ye; ++y, dstLine -= rowBytes) {
+                        const float* srcPtr = &lines.front() + (std::size_t)(y - yb) * lineFloats + (std::size_t)(xbeginClamped - spec.x) * nch;
+                        float* dstPtr = (float*)dstLine;
+                        for (int x = xbeginClamped; x < xendClamped; ++x, srcPtr += nch, dstPtr += numChannels) {
+                            for (int c = 0; c < nch; ++c) {
+                                dstPtr[c] = srcPtr[c];
                             }
                         }
                     }
                 }
-            } // !useCache
+            } else {
+                // If the region to read is not a multiple of tile size we must provide a buffer
+                // with the appropriate size.
+                float* tiledBuffer = topScanLineDataStartPtr;
+                vector<float> tiledBufferStorage; // (freed on all paths, also if read_tiles() fails)
+                int tiledXBegin = xbeginClamped;
+                int tiledYBegin = ybeginClamped;
+                int tiledXEnd = xendClamped;
+                int tiledYEnd = yendClamped;
+                bool validRange = spec.valid_tile_range(xbegin, xend, ybegin, yend, zbegin, zend);
+
+                // This is the number of extra pixels we decoded on the left
+                int xBeginPadToTileSize = 0;
+                // This is the numner of extra pixels we decoded on the bottom
+                int yBeginPadToTileSize = 0;
+                std::size_t tiledBufferRowSize = rowBytes;
+                std::size_t tiledBufferPixelSize = xStride;
+                if (!validRange) {
+                    // If the tile range is invalid, expand to the closest enclosing valid tile range.
+
+                    // tiledXBegin must be at a valid multiple of tile_width from spec.x
+                    tiledXBegin = spec.x + (int)std::floor((double)(xbeginClamped - spec.x) / spec.tile_width) * spec.tile_width;
+
+                    // tiledYBegin must be at a valid multiple of tile_height from spec.y
+                    tiledYBegin = spec.y + (int)std::floor((double)(ybeginClamped - spec.y) / spec.tile_height) * spec.tile_height;
+
+                    // tiledXEnd must be at a valid multiple of tile_width from spec.x
+                    tiledXEnd = spec.x + (int)std::ceil((double)(xendClamped - spec.x) / spec.tile_width) * spec.tile_width;
+
+                    // tiledYEnd must be at a valid multiple of tile_height from spec.y
+                    tiledYEnd = spec.y + (int)std::ceil((double)(yendClamped - spec.y) / spec.tile_height) * spec.tile_height;
+
+                    tiledXBegin = (std::max)(spec.x, tiledXBegin);
+                    tiledYBegin = (std::max)(spec.y, tiledYBegin);
+                    tiledXEnd = (std::min)(spec.x + spec.width, tiledXEnd);
+                    tiledYEnd = (std::min)(spec.y + spec.height, tiledYEnd);
+
+                    // Check that we made up a correct tile range
+                    assert(spec.valid_tile_range(tiledXBegin, tiledXEnd, tiledYBegin, tiledYEnd, zbegin, zend));
+
+                    xBeginPadToTileSize = xbeginClamped - tiledXBegin;
+                    yBeginPadToTileSize = ybeginClamped - tiledYBegin;
+
+                    tiledBufferPixelSize = getComponentBytes(eBitDepthFloat) * (chend - chbegin);
+                    tiledBufferRowSize = (tiledXEnd - tiledXBegin) * tiledBufferPixelSize;
+                    std::size_t nBytes = tiledBufferRowSize * (tiledYEnd - tiledYBegin);
+                    try {
+                        tiledBufferStorage.resize((nBytes + sizeof(float) - 1) / sizeof(float));
+                    } catch (const std::bad_alloc&) {
+                        throwSuiteStatusException(kOfxStatErrMemory);
+
+                        return;
+                    }
+                    char* tiledBufferStart = (char*)&tiledBufferStorage.front();
+
+                    // Make tile buffer point to the first pixel of the last scan-line of our temporary tile-adjusted buffer.
+                    tiledBuffer = (float*)(tiledBufferStart + (tiledYEnd - tiledYBegin - 1) * tiledBufferRowSize);
+                }
+
+                // Pass the valid tile range and buffer to OIIO and decode with a negative Y stride from
+                // top to bottom
+                if (!img->read_tiles(subImageIndex, 0, tiledXBegin, // x begin
+                                     tiledXEnd, // x end
+                                     tiledYBegin, // y begin
+                                     tiledYEnd, // y end
+                                     zbegin, // z begin
+                                     zend, // z end
+                                     chbegin, // chan begin
+                                     chend, // chan end
+                                     TypeDesc::FLOAT, // data type
+                                     tiledBuffer,
+                                     tiledBufferPixelSize, // x stride
+                                     -tiledBufferRowSize, // y stride < make it invert Y
+                                     AutoStride)) { // z stride
+                    setPersistentMessage(Message::eMessageError, "", img->geterror());
+                    throwSuiteStatusException(kOfxStatFailed);
+
+                    return;
+                }
+
+                if (!validRange) {
+                    // If we allocated a temporary tile-adjusted buffer, we must copy it back into the pixelData buffer.
+
+                    // This points to the start of the first pixel of the last scan-line of the render window
+                    char* dst_pix = (char*)topScanLineDataStartPtr;
+
+                    // Copy each scan-line from our temporary buffer to the final buffer. Since each buffer is pointing to the last
+                    // scan-line at the begining, we pass negative pixel offsets in the iteration loop.
+
+                    // Position the tiled buffer to the start of the content that should have been read in the original range.
+                    // To retrieve the position of the original range, we substract the number of extra lines that were decoded
+                    // from the tiledBuffer: tiledBuffer points to tiledYend - tiledYBegin - 1, so we make it point to tiledYend - tiledYbegin - 1 - yEndPadToTileSize
+
+                    assert((tiledYBegin + yBeginPadToTileSize) == ybeginClamped);
+                    assert((tiledXBegin + xBeginPadToTileSize) == xbeginClamped);
+                    const char* src_pix = (const char*)((char*)tiledBuffer - yBeginPadToTileSize * tiledBufferRowSize + xBeginPadToTileSize * tiledBufferPixelSize);
+
+                    for (int y = ybeginClamped; y < yendClamped;
+                         ++y,
+                             src_pix -= tiledBufferRowSize,
+                             dst_pix -= rowBytes) {
+
+                        const float* srcPtr = (const float*)src_pix;
+                        float* dstPtr = (float*)dst_pix;
+                        for (int x = xbeginClamped; x < xendClamped;
+                             ++x,
+                                 srcPtr += (chend - chbegin),
+                                 dstPtr += numChannels) {
+                            for (int c = 0; c < (chend - chbegin); ++c) {
+                                dstPtr[c] = srcPtr[c];
+                            }
+                        }
+                    }
+                }
+            }
         } // if (channels[i] < kXChannelFirst) {
     } // for (std::size_t i = 0; i < channels.size(); i+=incr) {
 
-    if (!useCache) {
-        img->close();
-    }
+    img->close();
 } // ReadOIIOPlugin::decodePlane
 
 bool
@@ -2977,7 +2816,7 @@ ReadOIIOPlugin::metadata(const string& filename)
     auto_ptr<ImageInput> img;
 #endif
 
-    if (!_cache) {
+    {
         // use the right config
         ImageSpec config;
         getConfig(&config);
@@ -3110,10 +2949,8 @@ ReadOIIOPlugin::metadata(const string& filename)
             ss << std::endl;
         }
     }
-    if (!_cache) {
-        assert(img.get());
-        img->close();
-    }
+    assert(img.get());
+    img->close();
 
     return ss.str();
 } // ReadOIIOPlugin::metadata
@@ -3276,23 +3113,6 @@ void
 ReadOIIOPluginFactory::unload()
 {
     _extensions.clear();
-
-#ifdef OFX_READ_OIIO_SHARED_CACHE
-    // get the shared image cache (may be shared with other plugins using OIIO)
-#if OIIO_VERSION >= 30000
-    std::shared_ptr<ImageCache> sharedcache = ImageCache::create(true);
-    // purge it: close its files and free its tiles (destroy() invalidates the shared cache, reset() would not), so
-    // that a later load of this binary (OpenImageIO may stay in memory) does not get the images of files that
-    // changed in between
-    // teardown is dangerous if there are other users
-    ImageCache::destroy(sharedcache);
-#else
-    ImageCache* sharedcache = ImageCache::create(true);
-    // purge it
-    // teardown is dangerous if there are other users
-    ImageCache::destroy(sharedcache);
-#endif
-#endif
 
     // stop OpenImageIO's thread pool if this was the last OIIO plug-in loaded
     OIIOPluginUnloaded(getUID());
@@ -3683,10 +3503,7 @@ ImageEffect*
 ReadOIIOPluginFactory::createInstance(OfxImageEffectHandle handle,
                                       ContextEnum /*context*/)
 {
-    const ImageEffectHostDescription* h = getImageEffectHostDescription();
-    // use OIIO Cache exclusively on Natron < 2.2 (renderscale support has been disabled since Natron 2.2.6)
-    bool useOIIOCache = h->isNatron && (h->versionMajor < 2 || (h->versionMajor == 2 && h->versionMinor < 2));
-    ReadOIIOPlugin* ret = new ReadOIIOPlugin(handle, _extensions, useOIIOCache);
+    ReadOIIOPlugin* ret = new ReadOIIOPlugin(handle, _extensions);
 
     ret->restoreStateFromParams();
 

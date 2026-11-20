@@ -103,7 +103,7 @@ private:
     // the purge caches action: forget the headers of the files read
     virtual void clearAnyCache() OVERRIDE FINAL;
 
-    virtual void decode(const string& filename, OfxTime time, int /*view*/, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    virtual void decode(const string& filename, OfxTime time, int /*view*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
     virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     // the render window is in the host's RoD but out of the cached frame bounds: read the header again (the file may
@@ -595,7 +595,6 @@ void
 ReadEXRPlugin::decode(const string& filename,
                       OfxTime /*time*/,
                       int /*view*/,
-                      bool /*isPlayback*/,
                       const OfxRectI& renderWindow,
                       const OfxPointD& renderScale,
                       float* pixelData,
