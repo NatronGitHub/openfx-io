@@ -6,7 +6,8 @@
 #
 # Usage: tests/hostdemo/reader_window.sh <reader_window> <dir with the bundle> [work dir]
 #
-# The files are written in the work directory by oiiotool (PNG, TIFF, EXR, PFM) and ffmpeg (MOV). Each reader is
+# The files are written in the work directory by oiiotool (PNG, TIFF, EXR), reader_window --write-pfm (PFM: not every
+# oiiotool writes it) and ffmpeg (MOV); a file that can't be written is skipped, with its reason. Each reader is
 # rendered with both filePremult values that select the two paths of GenericReader::render() at scale 1: decode()
 # straight into the output image (an Opaque RGB file, a PreMultiplied RGBA file), and decode() into a temporary
 # image that GenericReader then premultiplies (UnPreMultiplied); and at scale 1/2 (decode() into the temporary image,
@@ -61,35 +62,39 @@ export HOME="$WORK" XDG_CACHE_HOME="$WORK"
 FILES="$WORK/files"
 # files that differ along x and y, of odd sizes (the windows at scale 1/2 are rounded)
 GRADIENT="fill:topleft=0.9,0.1,0.2,1:topright=0.1,0.8,0.3,0.5:bottomleft=0.2,0.3,0.9,0.25:bottomright=0.7,0.6,0.1,0.75"
+# skip <file> <reason>: the file could not be written, its tests are skipped
+skipped=""
+skip() {
+    echo "skip $1: $2"
+    skipped="$skipped $1"
+}
 mk() { # <file> <channels> <oiiotool options...>
     local f=$1 n=$2
     shift 2
-    if ! "$OIIOTOOL" --pattern "$GRADIENT" 61x47 "$n" "$@" -o "$(native "$FILES/$f")" < /dev/null > "$WORK/logs/oiiotool-$f.log" 2>&1; then
-        sed 's/^/     | /' "$WORK/logs/oiiotool-$f.log"
-        return 1
+    if ! "$OIIOTOOL" --pattern "$GRADIENT" 61x47 "$n" "$@" -o "$(native "$FILES/$f")" < /dev/null > "$WORK/logs/oiiotool-$f.log" 2>&1 \
+        || [ ! -s "$FILES/$f" ]; then
+        sed 's/^/     | /' "$WORK/logs/oiiotool-$f.log" | head -5
+        skip "$f" "oiiotool could not write it"
     fi
 }
-status=0
-mk rgb.png 3 -d uint8 || status=1
-mk rgba16.png 4 -d uint16 || status=1
-mk rgb.pfm 3 -d float || status=1
-mk rgb.tif 3 -d float || status=1
-mk rgba.tif 4 -d float || status=1
+mk rgb.png 3 -d uint8
+mk rgba16.png 4 -d uint16
+mk rgb.tif 3 -d float
+mk rgba.tif 4 -d float
 # an EXR whose data window is smaller than its display window
-mk datawindow.exr 3 -d half --crop 40x30+7+5 --fullsize 61x47+0+0 || status=1
+mk datawindow.exr 3 -d half --crop 40x30+7+5 --fullsize 61x47+0+0
 # a tiled RGBA EXR (ReadOIIO then supports tiles: it also gets images of the render window only)
-mk tiled.exr 4 -d half --tile 16 16 || status=1
-MOV=""
-if [ -n "$FFMPEG" ]; then
-    if "$FFMPEG" -v error -nostdin -f lavfi -i testsrc=size=62x46:rate=24 -frames:v 3 -c:v prores_ks -pix_fmt yuv422p10le \
-        -y "$(native "$FILES/testsrc.mov")" > "$WORK/logs/ffmpeg.log" 2>&1; then
-        MOV=testsrc.mov
-    else
-        sed 's/^/     | /' "$WORK/logs/ffmpeg.log"
-        status=1
-    fi
-else
-    echo "skip ReadFFmpeg: ffmpeg not found (set FFMPEG)"
+mk tiled.exr 4 -d half --tile 16 16
+if ! "$RW" --write-pfm "$(native "$FILES/rgb.pfm")" 61 47 > "$WORK/logs/write-pfm.log" 2>&1 || [ ! -s "$FILES/rgb.pfm" ]; then
+    sed 's/^/     | /' "$WORK/logs/write-pfm.log" | head -5
+    skip rgb.pfm "reader_window --write-pfm could not write it"
+fi
+if [ -z "$FFMPEG" ]; then
+    skip testsrc.mov "ffmpeg not found (set FFMPEG)"
+elif ! "$FFMPEG" -v error -nostdin -f lavfi -i testsrc=size=62x46:rate=24 -frames:v 3 -c:v prores_ks -pix_fmt yuv422p10le \
+    -y "$(native "$FILES/testsrc.mov")" > "$WORK/logs/ffmpeg.log" 2>&1 || [ ! -s "$FILES/testsrc.mov" ]; then
+    sed 's/^/     | /' "$WORK/logs/ffmpeg.log" | head -5
+    skip testsrc.mov "ffmpeg could not write it"
 fi
 
 ok=0
@@ -98,6 +103,9 @@ failed=""
 check() {
     local id=$1 major=$2 file=$3
     shift 3
+    case " $skipped " in
+    *" $file "*) return ;;
+    esac
     local name="${id#fr.inria.openfx.}-$file${*:+ $*}"
     local log="$WORK/logs/$(printf '%s' "$name" | tr -c 'A-Za-z0-9.=-' '_').log"
     local cmd=("$RW" "$id" "$major" "filename=$(native "$FILES/$file")" "$@")
@@ -129,14 +137,12 @@ for scale in 1 0.5; do
     check fr.inria.openfx.ReadOIIO 2 datawindow.exr --scale $scale filePremult=2
     check fr.inria.openfx.ReadOIIO 2 tiled.exr --scale $scale filePremult=1
     check fr.inria.openfx.ReadOIIO 2 tiled.exr --scale $scale filePremult=2
-    if [ -n "$MOV" ]; then
-        check fr.inria.openfx.ReadFFmpeg 1 "$MOV" --scale $scale --time 1 filePremult=0
-        check fr.inria.openfx.ReadFFmpeg 1 "$MOV" --scale $scale --time 1 filePremult=2
-    fi
+    check fr.inria.openfx.ReadFFmpeg 1 testsrc.mov --scale $scale --time 1 filePremult=0
+    check fr.inria.openfx.ReadFFmpeg 1 testsrc.mov --scale $scale --time 1 filePremult=2
 done
 
-echo "$ok passed${failed:+, failed:$failed}"
-if [ -n "$failed" ] || [ $status -ne 0 ]; then
+echo "$ok passed${skipped:+, skipped (file not written):$skipped}${failed:+, failed:$failed}"
+if [ -n "$failed" ]; then
     exit 1
 fi
 exit 0

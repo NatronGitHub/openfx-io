@@ -23,6 +23,10 @@
  * openfx-arena's tests/readerwindow/reader_window.cpp (openfx-arena #105).
  *
  *   reader_window <identifier> <major> [--scale s] [--time t] [name=value...] [--window x1,y1,x2,y2]...
+ *   reader_window --write-pfm <file> <width> <height>
+ *
+ * --write-pfm writes an RGB PFM file (a gradient that differs along x and y) for reader_window.sh, and exits: not every
+ * oiiotool writes PFM (OpenImageIO 2.4, in Ubuntu 24.04, doesn't).
  *
  * The OFX spec only says that a plug-in without tiles gets full RoD images (kOfxImageEffectPropSupportsTiles: "If a
  * clip or plugin does not support tiled images, then the host should supply full RoD images to the effect whenever
@@ -227,11 +231,48 @@ isSentinel(const unsigned char* p)
     return std::memcmp(p, &quietNaNBits, sizeof(float)) == 0;
 }
 
+// An RGB PFM file of width x height pixels, little-endian (a negative scale), stored bottom-up
+int
+writePFM(const char* path, int width, int height)
+{
+    if (width <= 0 || height <= 0) {
+        std::fprintf(stderr, "Error: --write-pfm <file> <width> <height>\n");
+
+        return 2;
+    }
+    std::FILE* f = std::fopen(path, "wb");
+    if (!f) {
+        std::fprintf(stderr, "Error: cannot write %s\n", path);
+
+        return 1;
+    }
+    std::fprintf(f, "PF\n%d %d\n-1.0\n", width, height);
+    std::vector<unsigned char> line((size_t)width * 3 * 4);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const float v[3] = { 0.1f + 0.8f * x / width, 0.9f - 0.8f * y / height, 0.25f + 0.5f * ((x + 2 * y) % 7) / 7.f };
+            for (int c = 0; c < 3; ++c) {
+                unsigned int bits;
+                std::memcpy(&bits, &v[c], 4);
+                for (int k = 0; k < 4; ++k) { // little-endian, whatever the host's byte order
+                    line[((size_t)x * 3 + c) * 4 + k] = (unsigned char)(bits >> (8 * k));
+                }
+            }
+        }
+        std::fwrite(&line[0], 1, line.size(), f);
+    }
+
+    return (std::fclose(f) == 0) ? 0 : 1;
+}
+
 } // namespace
 
 int
 main(int argc, char** argv)
 {
+    if (argc == 5 && std::strcmp(argv[1], "--write-pfm") == 0) {
+        return writePFM(argv[2], std::atoi(argv[3]), std::atoi(argv[4]));
+    }
     if (argc < 3) {
         std::fprintf(stderr, "Usage: %s <identifier> <major> [--scale s] [--time t] [name=value...] [--window x1,y1,x2,y2]...\n", argv[0]);
 

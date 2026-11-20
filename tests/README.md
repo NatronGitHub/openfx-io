@@ -540,8 +540,9 @@ narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 openfx's HostSupport and hostDemo's host classes (`openfx/HostSupport/examples`; hostDemo itself renders the whole RoD
 of a plug-in without tiles, whatever its `--window`). `make test-reader-window-host` builds it (with expat, from
 `pkg-config`) and a bundle of ReadOIIO, ReadPFM, ReadPNG and ReadFFmpeg (`.reader_window_host/plugins`), then
-`hostdemo/reader_window.sh` writes files with `oiiotool` (8-bit RGB and 16-bit RGBA PNG, PFM, float RGB and RGBA TIFF,
-an EXR with a data window, a tiled EXR) and `ffmpeg` (a ProRes MOV), and renders each reader with both `filePremult`
+`hostdemo/reader_window.sh` writes files with `oiiotool` (8-bit RGB and 16-bit RGBA PNG, float RGB and RGBA TIFF, an
+EXR with a data window, a tiled EXR), `reader_window --write-pfm` (an RGB PFM: OpenImageIO 2.4's oiiotool, in Ubuntu
+24.04, has no PFM writer) and `ffmpeg` (a ProRes MOV); a file that can't be written is skipped, with the reason. It renders each reader with both `filePremult`
 paths, at scale 1 and 1/2. A reference render of the whole RoD, then windows in the image (the middle, edges, a row,
 a column, a pixel) and partly or entirely out of the RoD, each in a new image of the RoD and the window (and, for a
 reader that supports tiles, of the window only), filled with hostDemo's NaN sentinel: the window must have the
