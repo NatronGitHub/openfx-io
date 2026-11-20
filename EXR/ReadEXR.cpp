@@ -941,7 +941,7 @@ ReadEXRPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setPluginDescription("Read EXR images using OpenEXR.");
     // (GenericReaderDescribe() declares eRenderFullySafe: see Exr::FileManager and Exr::InputFile)
 
-    desc.setIsDeprecated(true); // This plugin was superseeded by ReadOIIO
+    desc.setIsObsolete(true); // This plugin was superseded by ReadOIIO
 }
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */

@@ -544,7 +544,11 @@ int checkTimecode(const std::string& file, const char* expected)
 // Issue #110: the frame rate of the video stream and of the timecode (tmcd) track of a movie, as
 // ffprobe shows them (r_frame_rate of the video stream, and the timecode track's frame duration in
 // its time base, which is the tmcd sample description's timescale and frame duration).
-// If tolerance > 0, the frame rates must only be within this relative tolerance of num/den, and equal.
+// If tolerance > 0, the video frame rate must only be within this relative tolerance of num/den (a
+// codec whose time base is limited, such as MPEG-4 part 2, has the closest representable rate), and the
+// tmcd track must be at num/den (FFmpeg >= 9.1, which derives the tmcd timescale from the timecode rate,
+// libavformat/movenc.c: mov_create_timecode_track()) or at the video frame rate (FFmpeg < 9.1, which
+// copies the video track's timescale).
 int checkFrameRate(const std::string& file, int num, int den, double tolerance = 0.)
 {
     AVFormatContext* fc = nullptr;
@@ -561,7 +565,7 @@ int checkFrameRate(const std::string& file, int num, int den, double tolerance =
     avformat_close_input(&fc);
     std::printf("  %s: video stream at %d/%d fps, tmcd track at %d/%d (expected %d/%d)\n", file.c_str(), video.num, video.den, tmcd.num, tmcd.den, num, den);
     const AVRational expected = { num, den };
-    const bool close = tolerance > 0. && video.den > 0 && std::fabs(av_q2d(video) / av_q2d(expected) - 1.) <= tolerance && av_cmp_q(tmcd, video) == 0;
+    const bool close = tolerance > 0. && video.den > 0 && std::fabs(av_q2d(video) / av_q2d(expected) - 1.) <= tolerance && (av_cmp_q(tmcd, expected) == 0 || av_cmp_q(tmcd, video) == 0);
     if (!close && (av_cmp_q(video, expected) != 0 || av_cmp_q(tmcd, expected) != 0)) { std::printf("  FAIL (frame rate)\n"); return 1; }
     std::printf("  PASS (frame rate)\n");
     return 0;
@@ -2322,13 +2326,19 @@ main(int argc, char** argv)
             failures += f;
             if (!f) failures += checkFrameRate(outFile + ".i110.mov", c.num, 1001);
         }
-        // MPEG-4 part 2 can not have a time base denominator above 65535: the frame rate is reduced, as
-        // the ffmpeg CLI does (40999/342 for 120000/1001), and drop-frame is still valid
-        std::printf("==== WriteFFmpeg mov, MPEG-4 part 2 at 119.88 fps, drop-frame: close to 120000/1001 fps (issue #110) ====\n");
-        {
+        // MPEG-4 part 2 can not have a time base denominator above 65535: the frame rate of the video is
+        // reduced, as the ffmpeg CLI does (40999/342 for 120000/1001), drop-frame is still valid, and the
+        // tmcd track is at 120000/1001 with FFmpeg >= 9.1 (also non-drop-frame: with the reduced rate as the
+        // stream's avg_frame_rate, FFmpeg 9.1 would write it at 120/1), or at 40999/342 with FFmpeg < 9.1
+        const struct { const char* tc; const char* expected; } mp4vCases[] = {
+            { "01:00:00;00", "01:00:00;000" },
+            { "01:00:00:00", "01:00:00:000" },
+        };
+        for (const auto& c : mp4vCases) {
+            std::printf("==== WriteFFmpeg mov, MPEG-4 part 2 at 119.88 fps, start timecode \"%s\": close to 120000/1001 fps (issue #110) ====\n", c.tc);
             WriterParams wp;
             wp.strings = { { "codecShortName", "mpeg4" } };
-            const int f = testStartTimecode(outFile + ".i110.mp4v.mov", "01:00:00;00", 119.88, "01:00:00;000", wp);
+            const int f = testStartTimecode(outFile + ".i110.mp4v.mov", c.tc, 119.88, c.expected, wp);
             failures += f;
             if (!f) failures += checkFrameRate(outFile + ".i110.mp4v.mov", 120000, 1001, 1e-6);
             int n = 0, nI = 0;
