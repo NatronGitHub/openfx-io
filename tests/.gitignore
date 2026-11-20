@@ -61,3 +61,6 @@
 /.exr_read_tsan_debug/
 /.reader_hooks_tsan_debug.still.tst
 /.reader_hooks_tsan_debug.video.tst
+/reader_window_test
+/reader_window_test.dSYM/
+/.reader_window/

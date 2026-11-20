@@ -642,6 +642,8 @@ if(BUILD_TESTING)
   endif()
   if(" ${_io_groups} " MATCHES " OCIO " AND " ${_io_groups} " MATCHES " OIIO " AND " ${_io_groups} " MATCHES " FFmpeg ")
     list(APPEND _io_make_tests ofx render layers reader-hooks ocio-cdl ocio-filetransform ocio-anim oiio-threads oiio-edge)
+    # ReadOIIO, ReadPFM (always built) and ReadPNG (if tests/Makefile finds libpng): render windows and scales
+    list(APPEND _io_make_tests reader-window)
     if(" ${_io_groups} " MATCHES " EXR ")
       list(APPEND _io_make_tests exr)
       # every plug-in in an OFX 1.4-only host (with the SeExpr ones if SEEXPR_HOME has SeExpr 2.11)

@@ -447,11 +447,14 @@ ReadFFmpegPlugin::decode(const string& filename,
     //  The renderWindow itself may or may not be the full image...
     // assert(kSupportsTiles || (renderWindow.x1 == 0 && renderWindow.x2 == width && renderWindow.y1 == 0 && renderWindow.y2 == height));
 
-    if (((imgBounds.x2 - imgBounds.x1) < width) || ((imgBounds.y2 - imgBounds.y1) < height)) {
-        setPersistentMessage(Message::eMessageError, "", "The host provided an image of wrong size, can't decode.");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+    // The decoded frame (top-down), and the part of the render window that it covers. The render window may be any
+    // part of imgBounds (e.g. a few columns, or GenericReader's buffer for that window).
+    const OfxRectI frameBounds = { 0, 0, width, height };
+    OfxRectI frameWindow;
+    const bool inFrame = intersectWindow(renderWindow, frameBounds, &frameWindow);
+    if (!sameWindow(frameWindow, renderWindow)) {
+        // the frame is smaller than the render window (the file changed since getFrameBounds()): black elsewhere
+        fillWithBlack(renderWindow, renderScale, pixelData, imgBounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
     }
 
     // not in FFmpeg Reader: initialize the output buffer
@@ -508,7 +511,9 @@ ReadFFmpegPlugin::decode(const string& filename,
     if (decoded) {
         // outside of the try block, so that an OFX::Exception::Suite thrown by
         // convertDepthAndComponents() (e.g. kOfxStatErrMemory) reaches the host as is
-        convertDepthAndComponents(buffer, renderWindow, renderScale, imgBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+        if (inFrame) {
+            convertDepthAndComponents(buffer, frameWindow, renderScale, frameBounds, numComponents == 3 ? ePixelComponentRGB : ePixelComponentRGBA, sizeOfData == sizeof(unsigned char) ? eBitDepthUByte : eBitDepthUShort, srcRowBytes, pixelData, imgBounds, pixelComponents, rowBytes);
+        }
 
         return;
     }

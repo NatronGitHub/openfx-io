@@ -303,6 +303,28 @@ test-exr-ubsan: exr_read_test_ubsan
 clean-exr-ubsan:
 	rm -rf exr_read_test_ubsan exr_read_test_ubsan.dSYM .exr_read_ubsan
 
+# ReadOIIO, ReadPFM and ReadPNG (if pkg-config finds libpng): render windows narrower than the image, render scale
+# 1/2, files rewritten while rendering (#160, #163). With AddressSanitizer (not on MS Windows, as OCIO_FT_ASAN), and
+# guard pages around the output image. -pthread: the test uses std::thread. (Added to test and clean here, on lines of
+# their own.)
+READER_WINDOW_SRCS := ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp ../PFM/ReadPFM.cpp $(if $(HAVE_PNG),../PNG/ReadPNG.cpp,) \
+    $(READER_HOOKS_SRCS)
+READER_WINDOW_CXXFLAGS := -I../PFM -I../PNG -pthread $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer) \
+    $(if $(HAVE_PNG),-DHAVE_PNG $(shell $(PKGCONF) --cflags libpng),)
+READER_WINDOW_LIBS := $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,)
+
+reader_window_test: reader_window_test.cpp ofx_test_host.h $(READER_WINDOW_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(READER_WINDOW_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(READER_WINDOW_LIBS) -o $@
+
+.PHONY: test-reader-window clean-reader-window
+test: test-reader-window
+clean: clean-reader-window
+test-reader-window: reader_window_test
+	rm -rf .reader_window && mkdir -p .reader_window
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" ./reader_window_test $(CURDIR)/.reader_window
+clean-reader-window:
+	rm -rf reader_window_test reader_window_test.dSYM .reader_window
+
 # DEBUG builds of exr_read_test and reader_hooks_test with ThreadSanitizer: -DDEBUG enables the Support
 # library's property validation and logging, which run on the threads that describe/create instances while
 # other threads render (openfx #144: races on PropertySet::_gPropLogging and PropertyDescription::_exists)

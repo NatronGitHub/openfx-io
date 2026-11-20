@@ -1019,10 +1019,53 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
         prev = mean;
     }
 
+    // Render windows narrower than the frame (#163), at frame 1, at render scale 1 and 1/2: the pixels of the whole
+    // frame in the window, nothing written out of it (the rest of the image keeps a sentinel value, compared on its
+    // bits). At scale 1/2, GenericReader decodes into its buffer, of the size of the window, which used to fail ("The
+    // host provided an image of wrong size").
+    int wfail = 0;
+    for (double scale : { 1., 0.5 }) {
+        const int OW = (int)(W * scale), OH = (int)(H * scale); // the output image, at the render scale
+        setupClipImage(out, OW, OH, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+        double rs[2] = { scale, scale };
+        pSetDoubleN(PH(&out->image), kOfxImageEffectPropRenderScale, 2, rs);
+        // the clip's RoD is in canonical coordinates (independent of the render scale)
+        double clipRod[4] = { 0., 0., (double)W, (double)H };
+        pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, clipRod);
+        float* op = reinterpret_cast<float*>(out->buffer.data());
+        const uint32_t sentinelBits = 0xc49a5a5au;
+        const size_t nValues = out->buffer.size() / sizeof(float);
+        std::vector<float> ref;
+        const OfxRectI wins[] = { { 0, 0, OW, OH }, { OW / 2, 0, OW / 2 + 3, OH }, { 0, OH / 2, OW, OH / 2 + 2 }, { OW / 4, OH / 4, OW / 2, OH / 2 }, { OW - 1, OH - 1, OW, OH } };
+        for (const OfxRectI& w : wins) {
+            for (size_t i = 0; i < nValues; ++i) std::memcpy(op + i, &sentinelBits, sizeof(sentinelBits));
+            PropSet a = makeRenderInArgs(1., OW, OH);
+            int win[4] = { w.x1, w.y1, w.x2, w.y2 };
+            pSetIntN(PH(&a), kOfxImageEffectPropRenderWindow, 4, win);
+            pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+            gPersistentError.clear();
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+            if (!ok(st)) { std::printf("  FAIL: scale %g, render window %d,%d,%d,%d = %d %s\n", scale, w.x1, w.y1, w.x2, w.y2, st, gPersistentError.c_str()); ++wfail; continue; }
+            if (ref.empty()) { ref.assign(op, op + nValues); continue; }
+            int bad = 0;
+            for (int y = 0; y < OH; ++y) {
+                for (int x = 0; x < OW; ++x) {
+                    const bool in = x >= w.x1 && x < w.x2 && y >= w.y1 && y < w.y2;
+                    for (int c = 0; c < outComps; ++c) {
+                        const size_t i = ((size_t)y * OW + x) * outComps + c;
+                        bad += in ? (std::memcmp(op + i, &ref[i], sizeof(float)) != 0) : (std::memcmp(op + i, &sentinelBits, sizeof(float)) != 0);
+                    }
+                }
+            }
+            if (bad) { std::printf("  FAIL: scale %g, render window %d,%d,%d,%d: %d wrong values\n", scale, w.x1, w.y1, w.x2, w.y2, bad); ++wfail; }
+        }
+    }
+    if (!wfail) std::printf("  PASS: render windows narrower than the frame, at scale 1 and 1/2\n");
+
     p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
-    if (rfail || vfail) { std::printf("  FAIL (decode: renderFails=%d monotonicViolations=%d)\n", rfail, vfail); return 1; }
+    if (rfail || vfail || wfail) { std::printf("  FAIL (decode: renderFails=%d monotonicViolations=%d windowFails=%d)\n", rfail, vfail, wfail); return 1; }
     std::printf("  PASS (decode round-trip)\n");
     return 0;
 }
