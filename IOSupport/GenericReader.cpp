@@ -1953,9 +1953,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
                 DecodedWindowScope decodedWindowScope(renderWindow);
                 if (!_isMultiPlanar) {
-                    decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
+                    decode(filename, sequenceTime, args.renderView, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, it->numChans, it->rowBytes);
                 } else {
-                    decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
+                    decodePlane(filename, sequenceTime, args.renderView, renderWindow, fileScale, it->pixelData, firstBounds, it->comps, remappedComponents, it->numChans, it->rawComps, it->rowBytes);
                 }
                 // only where the image comes from the file: the part of the render window that is not in the file
                 // that decode() opened (e.g. rewritten smaller) is out of its RoD, and stays transparent black
@@ -2019,9 +2019,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 {
                     DecodedWindowScope decodedWindowScope(renderWindowFullRes);
                     if (!_isMultiPlanar) {
-                        decode(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
+                        decode(filename, sequenceTime, args.renderView, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, it->numChans, tmpRowBytes);
                     } else {
-                        decodePlane(filename, sequenceTime, args.renderView, args.sequentialRenderStatus, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
+                        decodePlane(filename, sequenceTime, args.renderView, renderWindowFullRes, fileScale, tmpPixelData, renderWindowFullRes, it->comps, remappedComponents, it->numChans, it->rawComps, tmpRowBytes);
                     }
                     hasDecodedWindow = decodedWindowScope.decodedWindow(&decodedWindow);
                 }
@@ -2117,7 +2117,6 @@ void
 GenericReaderPlugin::decode(const string& /*filename*/,
                             OfxTime /*time*/,
                             int /*view*/,
-                            bool /*isPlayback*/,
                             const OfxRectI& /*renderWindow*/,
                             const OfxPointD& /*renderScale*/,
                             float* /*pixelData*/,
@@ -2133,7 +2132,6 @@ void
 GenericReaderPlugin::decodePlane(const string& /*filename*/,
                                  OfxTime /*time*/,
                                  int /*view*/,
-                                 bool /*isPlayback*/,
                                  const OfxRectI& /*renderWindow*/,
                                  const OfxPointD& /*renderScale*/,
                                  float* /*pixelData*/,

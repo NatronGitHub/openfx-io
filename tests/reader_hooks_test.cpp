@@ -160,13 +160,13 @@ private:
         return true;
     }
 
-    virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
+    virtual void decode(const std::string& /*filename*/, OfxTime time, int /*view*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum /*pixelComponents*/, int pixelComponentCount, int rowBytes) OVERRIDE FINAL
     {
         decodeImpl(time, false, renderWindow, renderScale, pixelData, bounds, pixelComponentCount, rowBytes);
     }
 
     // called instead of decode() by multi-planar readers
-    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, bool /*isPlayback*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+    virtual void decodePlane(const std::string& /*filename*/, OfxTime time, int /*view*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              PixelComponentEnum /*pixelComponents*/, PixelComponentEnum /*remappedComponents*/,
                              int pixelComponentCount, const std::string& /*rawComponents*/, int rowBytes) OVERRIDE FINAL
     {

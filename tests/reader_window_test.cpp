@@ -27,7 +27,7 @@
  *    (decode() writes in the output image, or in GenericReader's buffer if the image is premultiplied by
  *    GenericReader) and 1/2 (GenericReader's buffer): only the window is written, with the pixels of the whole
  *    image's render (#163). ReadOIIO supports tiles: also with an output image that is the render window only.
- *    (ReadOIIO reads with OpenImageIO's ImageInput: its ImageCache is only used in Natron < 2.2.)
+ *    (ReadOIIO reads with OpenImageIO's ImageInput.)
  *  - render windows partly or entirely out of the RoD, in an image that covers the RoD and the window (and, for
  *    ReadOIIO, of the window): transparent black out of the RoD (#232)
  *  - the files: ReadOIIO, float TIFF (grey, RGB, RGBA), scanline and tiled EXR with a data window smaller than the
@@ -773,8 +773,7 @@ testFileRenders(OfxPlugin* p,
                 const File& f,
                 bool isOIIO,
                 int filePremult,
-                double scale,
-                int sequential)
+                double scale)
 {
     Reader r;
     if (!r.create(p, path, filePremult)) {
@@ -791,13 +790,24 @@ testFileRenders(OfxPlugin* p,
     // the whole image
     r.setImage(r.rod, scale, true);
     gPersistentError.clear();
-    st = r.render(r.rod, scale, sequential);
+    st = r.render(r.rod, scale, false);
     check(ok(st) && gPersistentError.empty(), "render %d,%d,%d,%d = %d%s%s", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2, st,
           gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
     Image ref;
     ref.bounds = r.rod;
     ref.pixels.assign(r.data, r.data + (size_t)(r.rod.x2 - r.rod.x1) * (r.rod.y2 - r.rod.y1) * 4);
-    dumpImage(strprintf("%s %s filePremult %d scale %g sequential %d", f.plugin + 16, path.substr(path.find_last_of("/\\") + 1).c_str(), filePremult, scale, sequential), ref);
+    dumpImage(strprintf("%s %s filePremult %d scale %g", f.plugin + 16, path.substr(path.find_last_of("/\\") + 1).c_str(), filePremult, scale), ref);
+    // the readers don't depend on kOfxImageEffectPropSequentialRenderStatus ("whether the effect is currently being
+    // rendered in frame order on a single effect instance", not playback): the same image with 1
+    {
+        r.setImage(r.rod, scale, false);
+        st = r.render(r.rod, scale, true);
+        int differ = 0;
+        for (size_t k = 0; k < ref.pixels.size(); ++k) {
+            differ += sameBits(&ref.pixels[k], &r.data[k]) ? 0 : 1;
+        }
+        check(ok(st) && differ == 0, "the same render with a sequential render status of 1 (%d values differ)", differ);
+    }
     if (scale == 1.) {
         int bad = 0;
         for (int y = r.rod.y1; y < r.rod.y2; ++y) {
@@ -829,7 +839,7 @@ testFileRenders(OfxPlugin* p,
         for (int k = 0; k < (isOIIO ? 4 : 2); ++k) {
             r.setImage((k < 2) ? r.rod : w, scale, (k % 2) == 0);
             gPersistentError.clear();
-            st = r.render(w, scale, sequential);
+            st = r.render(w, scale, false);
             failed += (ok(st) && gPersistentError.empty()) ? 0 : 1;
             const int b = compareWindow(r, ref, w);
             if (b) {
@@ -850,7 +860,7 @@ testFileRenders(OfxPlugin* p,
         for (int k = 0; k < (isOIIO ? 4 : 2); ++k) {
             r.setImage((k < 2) ? boundingBox(r.rod, w) : w, scale, (k % 2) == 0);
             gPersistentError.clear();
-            st = r.render(w, scale, sequential);
+            st = r.render(w, scale, false);
             failed += (ok(st) && gPersistentError.empty()) ? 0 : 1;
             const int b = compareWindow(r, ref, w);
             if (b) {
@@ -883,15 +893,12 @@ testFile(OfxPlugin* p,
     const int filePremults[2] = { (f.nchannels == 4) ? 2 : 0, (f.nchannels == 4) ? 1 : 2 };
     for (int filePremult : filePremults) {
         for (double scale : { 1., 0.5 }) {
-            // (the sequential render status is decode()'s isPlayback)
-            for (int sequential = 0; sequential <= 1; ++sequential) {
-                const std::string title = strprintf("%s %s, filePremult %d, scale %g, sequential %d", f.plugin + 16, name, filePremult, scale, sequential);
-                if (!selected(title)) {
-                    continue;
-                }
-                std::printf("==== %s ====\n", title.c_str());
-                testFileRenders(p, path, f, isOIIO, filePremult, scale, sequential);
+            const std::string title = strprintf("%s %s, filePremult %d, scale %g", f.plugin + 16, name, filePremult, scale);
+            if (!selected(title)) {
+                continue;
             }
+            std::printf("==== %s ====\n", title.c_str());
+            testFileRenders(p, path, f, isOIIO, filePremult, scale);
         }
     }
 }
@@ -908,74 +915,72 @@ testRewrite(OfxPlugin* p,
 {
     const std::string path = dir + "/" + name + extension(a.kind);
     for (double scale : { 1., 0.5 }) {
-        for (int sequential = 0; sequential <= 1; ++sequential) {
-            const std::string title = strprintf("%s %s, file rewritten, scale %g, sequential %d", a.plugin + 16, name, scale, sequential);
-            if (!selected(title)) {
-                continue;
-            }
-            std::printf("==== %s ====\n", title.c_str());
-            Reader r;
-            if (!writeFile(path, a) || !r.create(p, path, (a.nchannels == 4) ? 2 : 0) || !ok(r.getRoD(scale))) {
-                check(false, "first file");
+        const std::string title = strprintf("%s %s, file rewritten, scale %g", a.plugin + 16, name, scale);
+        if (!selected(title)) {
+            continue;
+        }
+        std::printf("==== %s ====\n", title.c_str());
+        Reader r;
+        if (!writeFile(path, a) || !r.create(p, path, (a.nchannels == 4) ? 2 : 0) || !ok(r.getRoD(scale))) {
+            check(false, "first file");
 
-                return;
-            }
-            const OfxRectI rod = r.rod;
-            if (!writeFile(path, b)) {
-                check(false, "second file");
+            return;
+        }
+        const OfxRectI rod = r.rod;
+        if (!writeFile(path, b)) {
+            check(false, "second file");
 
-                return;
-            }
-            std::vector<OfxRectI> ws = windows(rod);
-            ws.push_back(rod);
-            // the frame bounds of the new file, in full-resolution pixels
-            const OfxRectI nb = b.frameBounds();
-            int bad = 0, badAlpha = 0, n = 0;
-            for (const OfxRectI& w : ws) {
-                for (int k = 0; k < 2; ++k) {
-                    r.rod = rod;
-                    r.setImage(rod, scale, k == 0);
-                    gPersistentError.clear();
-                    const bool rendered = ok(r.render(w, scale, sequential)); // (the render may fail)
-                    for (int y = r.img.y1; y < r.img.y2; ++y) {
-                        for (int x = r.img.x1; x < r.img.x2; ++x) {
-                            if (x >= w.x1 && x < w.x2 && y >= w.y1 && y < w.y2) {
-                                // An RGB file is Opaque: alpha is 1 in the new file's image, and the part of the
-                                // window out of it is transparent black (it is out of the RoD of the file). At
-                                // scale 1/2, only the pixels entirely in or out of the image.
-                                if (!rendered || (b.nchannels == 4)) {
-                                    continue;
-                                }
-                                const double fx1 = x / scale, fy1 = y / scale, fx2 = (x + 1) / scale, fy2 = (y + 1) / scale;
-                                const bool in = (fx1 >= nb.x1) && (fy1 >= nb.y1) && (fx2 <= nb.x2) && (fy2 <= nb.y2);
-                                const bool out = (fx2 <= nb.x1) || (fy2 <= nb.y1) || (fx1 >= nb.x2) || (fy1 >= nb.y2);
-                                const float* px = r.pixel(x, y);
-                                if ((in && (px[3] != 1.f)) || (out && ((px[0] != 0.f) || (px[1] != 0.f) || (px[2] != 0.f) || (px[3] != 0.f)))) {
-                                    if (badAlpha < 3) {
-                                        std::printf("  window %d,%d,%d,%d: pixel (%d,%d) %s the new image: (%g,%g,%g,%g)\n", w.x1, w.y1, w.x2, w.y2, x, y, in ? "in" : "out of",
-                                                    px[0], px[1], px[2], px[3]);
-                                    }
-                                    ++badAlpha;
-                                }
+            return;
+        }
+        std::vector<OfxRectI> ws = windows(rod);
+        ws.push_back(rod);
+        // the frame bounds of the new file, in full-resolution pixels
+        const OfxRectI nb = b.frameBounds();
+        int bad = 0, badAlpha = 0, n = 0;
+        for (const OfxRectI& w : ws) {
+            for (int k = 0; k < 2; ++k) {
+                r.rod = rod;
+                r.setImage(rod, scale, k == 0);
+                gPersistentError.clear();
+                const bool rendered = ok(r.render(w, scale, false)); // (the render may fail)
+                for (int y = r.img.y1; y < r.img.y2; ++y) {
+                    for (int x = r.img.x1; x < r.img.x2; ++x) {
+                        if (x >= w.x1 && x < w.x2 && y >= w.y1 && y < w.y2) {
+                            // An RGB file is Opaque: alpha is 1 in the new file's image, and the part of the
+                            // window out of it is transparent black (it is out of the RoD of the file). At
+                            // scale 1/2, only the pixels entirely in or out of the image.
+                            if (!rendered || (b.nchannels == 4)) {
                                 continue;
                             }
-                            for (int c = 0; c < 4; ++c) {
-                                if (!isUnwrittenBits(&r.pixel(x, y)[c])) {
-                                    if (bad < 3) {
-                                        std::printf("  window %d,%d,%d,%d: pixel (%d,%d) channel %d out of the window was written\n", w.x1, w.y1, w.x2, w.y2, x, y, c);
-                                    }
-                                    ++bad;
+                            const double fx1 = x / scale, fy1 = y / scale, fx2 = (x + 1) / scale, fy2 = (y + 1) / scale;
+                            const bool in = (fx1 >= nb.x1) && (fy1 >= nb.y1) && (fx2 <= nb.x2) && (fy2 <= nb.y2);
+                            const bool out = (fx2 <= nb.x1) || (fy2 <= nb.y1) || (fx1 >= nb.x2) || (fy1 >= nb.y2);
+                            const float* px = r.pixel(x, y);
+                            if ((in && (px[3] != 1.f)) || (out && ((px[0] != 0.f) || (px[1] != 0.f) || (px[2] != 0.f) || (px[3] != 0.f)))) {
+                                if (badAlpha < 3) {
+                                    std::printf("  window %d,%d,%d,%d: pixel (%d,%d) %s the new image: (%g,%g,%g,%g)\n", w.x1, w.y1, w.x2, w.y2, x, y, in ? "in" : "out of",
+                                                px[0], px[1], px[2], px[3]);
                                 }
+                                ++badAlpha;
+                            }
+                            continue;
+                        }
+                        for (int c = 0; c < 4; ++c) {
+                            if (!isUnwrittenBits(&r.pixel(x, y)[c])) {
+                                if (bad < 3) {
+                                    std::printf("  window %d,%d,%d,%d: pixel (%d,%d) channel %d out of the window was written\n", w.x1, w.y1, w.x2, w.y2, x, y, c);
+                                }
+                                ++bad;
                             }
                         }
                     }
-                    ++n;
                 }
+                ++n;
             }
-            check(bad == 0, "%d renders with the old RoD: %d values written out of the window", n, bad);
-            if (b.nchannels < 4) {
-                check(badAlpha == 0, "Opaque file: alpha = 1 in the new image, transparent black out of it (%d wrong pixels)", badAlpha);
-            }
+        }
+        check(bad == 0, "%d renders with the old RoD: %d values written out of the window", n, bad);
+        if (b.nchannels < 4) {
+            check(badAlpha == 0, "Opaque file: alpha = 1 in the new image, transparent black out of it (%d wrong pixels)", badAlpha);
         }
     }
 }
@@ -1125,42 +1130,46 @@ testMultiPart(OfxPlugin* p,
             return;
         }
     }
-    for (int sequential = 0; sequential <= 1; ++sequential) {
-        const std::string title = strprintf("ReadOIIO 2-part EXR, part 1 (smaller) in the color plane, Opaque, sequential %d", sequential);
-        if (!selected(title)) {
-            continue;
-        }
-        std::printf("==== %s ====\n", title.c_str());
-        Reader r;
-        if (!r.create(p, path, 0, "aov.RGB") || !ok(r.getRoD(1.))) {
-            check(false, "create");
+    const std::string title = "ReadOIIO 2-part EXR, part 1 (smaller) in the color plane, Opaque";
+    if (!selected(title)) {
+        return;
+    }
+    std::printf("==== %s ====\n", title.c_str());
+    Reader r;
+    if (!r.create(p, path, 0, "aov.RGB") || !ok(r.getRoD(1.))) {
+        check(false, "create");
 
-            return;
-        }
-        check(r.rod.x1 == 0 && r.rod.y1 == 0 && r.rod.x2 == W && r.rod.y2 == H, "RoD %d,%d,%d,%d (the union of the parts)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
-        r.setImage(r.rod, 1., true);
-        gPersistentError.clear();
-        const OfxStatus st = r.render(r.rod, 1., sequential);
-        int bad = 0;
-        for (int y = r.rod.y1; y < r.rod.y2; ++y) {
-            for (int x = r.rod.x1; x < r.rod.x2; ++x) {
-                const int fy = H - 1 - y;
-                const bool inAOV = (x >= ax) && (x < ax + aw) && (fy >= ay) && (fy < ay + ah);
-                const float* px = r.pixel(x, y);
-                for (int c = 0; c < 4; ++c) {
-                    const float v = (c == 3) ? 1.f : inAOV ? floatValue(x, fy, c) + 10.f : 0.f;
-                    if (!(std::fabs(px[c] - v) <= 1e-6f * (1.f + std::fabs(v)))) {
-                        if (bad < 3) {
-                            std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], v);
-                        }
-                        ++bad;
+        return;
+    }
+    check(r.rod.x1 == 0 && r.rod.y1 == 0 && r.rod.x2 == W && r.rod.y2 == H, "RoD %d,%d,%d,%d (the union of the parts)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
+    r.setImage(r.rod, 1., true);
+    gPersistentError.clear();
+    const OfxStatus st = r.render(r.rod, 1., false);
+    {
+        Image image;
+        image.bounds = r.rod;
+        image.pixels.assign(r.data, r.data + (size_t)(r.rod.x2 - r.rod.x1) * (r.rod.y2 - r.rod.y1) * 4);
+        dumpImage("ReadOIIO multipart.exr aov", image);
+    }
+    int bad = 0;
+    for (int y = r.rod.y1; y < r.rod.y2; ++y) {
+        for (int x = r.rod.x1; x < r.rod.x2; ++x) {
+            const int fy = H - 1 - y;
+            const bool inAOV = (x >= ax) && (x < ax + aw) && (fy >= ay) && (fy < ay + ah);
+            const float* px = r.pixel(x, y);
+            for (int c = 0; c < 4; ++c) {
+                const float v = (c == 3) ? 1.f : inAOV ? floatValue(x, fy, c) + 10.f : 0.f;
+                if (!(std::fabs(px[c] - v) <= 1e-6f * (1.f + std::fabs(v)))) {
+                    if (bad < 3) {
+                        std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px[c], v);
                     }
+                    ++bad;
                 }
             }
         }
-        check(ok(st) && gPersistentError.empty() && bad == 0, "render = %d%s%s: part 1's pixels, alpha 1 in the whole RoD (%d wrong)", st,
-              gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str(), bad);
     }
+    check(ok(st) && gPersistentError.empty() && bad == 0, "render = %d%s%s: part 1's pixels, alpha 1 in the whole RoD (%d wrong)", st,
+          gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str(), bad);
 }
 
 } // namespace

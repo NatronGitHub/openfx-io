@@ -393,9 +393,13 @@ private:
      *
      * The black part is then transparent, even for an Opaque file (see setDecodedWindow()). The same holds for
      * decodePlane(). Both are called on the thread of the render action.
+     *
+     * They don't get kOfxImageEffectPropSequentialRenderStatus: the OFX spec says it is "set to indicate whether the
+     * effect is currently being rendered in frame order on a single effect instance", which says nothing about
+     * playback or interactivity, and a reader's output must not depend on it.
      **/
-    virtual void decode(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
-    virtual void decodePlane(const std::string& filename, OfxTime time, int view, bool isPlayback, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+    virtual void decode(const std::string& filename, OfxTime time, int view, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
+    virtual void decodePlane(const std::string& filename, OfxTime time, int view, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
                              OFX::PixelComponentEnum pixelComponents, OFX::PixelComponentEnum remappedComponents,
                              int pixelComponentCount, const std::string& rawComponents, int rowBytes);
 
