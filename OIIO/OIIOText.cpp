@@ -574,7 +574,7 @@ OIIOTextPluginFactory::describe(ImageEffectDescriptor& desc)
 
     ofxsSetOverlayInteractDescriptorV2(desc, new PositionOverlayDescriptorV2<PositionInteractParam>);
 
-    desc.setIsDeprecated(true); // this effect was superseeded by the text plugin in openfx-arena
+    desc.setIsObsolete(true); // this effect was superseded by the text plugin in openfx-arena
 }
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */

@@ -327,7 +327,7 @@ WriteEXRPluginFactory::describe(ImageEffectDescriptor& desc)
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription);
 
-    desc.setIsDeprecated(true); // This plugin was superseeded by WriteOIIO
+    desc.setIsObsolete(true); // This plugin was superseded by WriteOIIO
 }
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */

@@ -850,7 +850,7 @@ void
 OIIOResizePluginFactory<majorVersion>::describe(ImageEffectDescriptor& desc)
 {
     if (majorVersion < kPluginVersionMajor) {
-        desc.setIsDeprecated(true);
+        desc.setIsObsolete(true);
     }
     // basic labels
     desc.setLabel(kPluginName);
@@ -884,8 +884,7 @@ OIIOResizePluginFactory<majorVersion>::describe(ImageEffectDescriptor& desc)
     desc.setPassThroughForNotProcessedPlanes(ePassThroughLevelRenderAllRequestedPlanes);
 #endif
 
-    // Openfx-misc got the Reformat node which is much faster, but Resize still gives better quality
-    // desc.setIsDeprecated(true);
+    // Not obsolete: openfx-misc's Reformat is much faster, but Resize still gives better quality
 }
 
 /** @brief The describe in context function, passed a plugin descriptor and a context */
