@@ -331,6 +331,14 @@ main(int argc, char** argv)
     OFX::Host::ImageEffect::PluginCache imageEffectPluginCache(&myHost);
     imageEffectPluginCache.registerInCache(*OFX::Host::PluginCache::getPluginCache());
     OFX::Host::PluginCache::getPluginCache()->scanPluginFiles();
+    // Unload the plug-ins (kOfxActionUnload, then the binary) before main() returns, as hostDemo does, on every
+    // return path (declared after the caches and before the instance: the instance is destroyed first). Without
+    // it, the plug-ins never get kOfxActionUnload, where the OIIO plug-ins stop OpenImageIO's and OpenEXR's thread
+    // pools (OIIOGlobal.cpp): their threads would then be joined at process exit, by the static destructors of the
+    // DLLs, under the loader lock, which hangs on MS Windows (#244).
+    struct UnloadPlugins {
+        ~UnloadPlugins() { OFX::Host::PluginCache::clearPluginCache(); }
+    } unloadPlugins;
     OFX::Host::ImageEffect::ImageEffectPlugin* plugin = imageEffectPluginCache.getPluginById(pluginId, pluginMajor);
     if (!plugin) {
         std::fprintf(stderr, "Error: %s not found in OFX_PLUGIN_PATH\n", what.c_str());
