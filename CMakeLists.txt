@@ -39,7 +39,7 @@
 #                           (io-hostdemo, tests/hostdemo/run.sh), and again with hostDemo --ofx14 (io-hostdemo-ofx14)
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
-cmake_minimum_required(VERSION 3.16...3.31)
+cmake_minimum_required(VERSION 3.21...3.31)
 # Minimum macOS version of the plug-ins (Natron 2.6 supports macOS 14 and later); must be set before project().
 # Override it with -DCMAKE_OSX_DEPLOYMENT_TARGET=... or the MACOSX_DEPLOYMENT_TARGET environment variable; not set when cross-compiling (same guard as openfx).
 if(CMAKE_HOST_APPLE AND NOT CMAKE_TOOLCHAIN_FILE AND (NOT CMAKE_SYSTEM_NAME OR CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET AND "$ENV{MACOSX_DEPLOYMENT_TARGET}" STREQUAL "")

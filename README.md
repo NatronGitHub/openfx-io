@@ -82,7 +82,7 @@ of Ubuntu 24.04 or later.
 
 ## Compiling with CMake
 
-[CMake](https://cmake.org) (3.16 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as
+[CMake](https://cmake.org) (3.21 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as
 the Makefiles. It needs an out-of-tree build directory:
 
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
