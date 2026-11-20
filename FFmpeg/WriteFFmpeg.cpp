@@ -858,13 +858,15 @@ bitrateToleranceMin(double bitrate,
     return (tolerance < maxTolerance) ? tolerance : maxTolerance;
 }
 
-// The frame rate of the video stream, as encoded with the given codec.
+// The frame rate of the encoded video (the inverse of the codec and stream time bases).
 // MPEG-4 part 2 can not have a time base denominator above 65535 (libavcodec/mpeg4videoenc.c:
 // "timebase %d/%d not supported by MPEG 4 standard, the maximum admitted value for the timebase
 // denominator is 65535"), e.g. 120000/1001 for 119.88 fps. The frame rate is then reduced as the
 // ffmpeg CLI does (fftools/ffmpeg_filter.c: "reduce frame rate for mpeg4 to be within the spec
 // limits", framerate_clip = 65535, then av_reduce(&fr.num, &fr.den, fr.num, fr.den, framerate_clip)),
 // e.g. to 40999/342 for 120000/1001.
+// The stream's avg_frame_rate stays the unreduced frameRateFromFps(): the mov muxer derives the
+// timecode (tmcd) track from it (see configureVideoStream()).
 static AVRational
 clipFrameRate(AVRational rate,
               AVCodecID codecId)
@@ -943,8 +945,7 @@ parseTimecode(const string& str,
     // the timecode frame rate, as computed by libavutil/timecode.c
     const int64_t fps = (rate.num > 0 && rate.den > 0) ? (rate.num + rate.den / 2LL) / rate.den : 0;
     // FFmpeg only checks that the rounded frame rate is a multiple of 30, but drop-frame timecode is
-    // only meaningful at the NTSC rates, 30000/1001 and its multiples (or a close approximation, such
-    // as 40999/342 for 120000/1001, see clipFrameRate())
+    // only meaningful at the NTSC rates, 30000/1001 and its multiples (or a close approximation)
     if (dropFrame && ((fps <= 0) || (fps % 30 != 0) || (std::fabs(av_q2d(rate) * 1001. / (fps * 1000.) - 1.) > 1e-6))) {
         *error = "\"" + str + "\" is not valid at " + rateStr + " fps (drop-frame timecodes require 29.97 fps or a multiple of it)";
 
@@ -2545,13 +2546,8 @@ WriteFFmpegPlugin::getStartTimecode(const AVOutputFormat* fmt,
         return true;
     }
     str = str.substr(first, str.find_last_not_of(whitespace) - first + 1);
-    // the frame rate of the video stream (see configureVideoStream()), which the muxer uses for the timecode
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    const AVCodec* videoCodec = nullptr;
-    if (!fmt || !initCodec(fmt, codecId, videoCodec)) {
-        codecId = AV_CODEC_ID_NONE;
-    }
-    const AVRational rate = clipFrameRate(frameRateFromFps(_fps->getValue()), codecId);
+    // the avg_frame_rate of the video stream (see configureVideoStream()), which the muxer uses for the timecode
+    const AVRational rate = frameRateFromFps(_fps->getValue());
     if (!parseTimecode(str, rate, writesTimecodeTrack(fmt) ? fmt->name : nullptr, canonical, error)) {
         *error = string("Invalid ") + kParamStartTimecodeLabel + ": " + *error;
 
@@ -3803,11 +3799,20 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // avCodecContext->time_base.den = (int)(fps * CONVERSION_FACTOR);
 
     int frameRate = (0.0 < fps) ? (int)fps : 0;
-    AVRational frame_rate = clipFrameRate(frameRateFromFps(fps), avCodec->id);
-    AVRational time_base = av_inv_q(frame_rate);
+    const AVRational frame_rate = frameRateFromFps(fps);
+    AVRational time_base = av_inv_q(clipFrameRate(frame_rate, avCodec->id));
     // copy timebase while removing common factors
     const AVRational zero = { 0, 1 };
     avStream->time_base = av_add_q(time_base, zero);
+    // The requested frame rate, even if the codec's time base is reduced (MPEG-4 part 2, see clipFrameRate()):
+    // the mov muxer initializes the timecode from it (libavformat/movenc.c: mov_check_timecode_track() calls
+    // av_timecode_init_from_string() with src_st->avg_frame_rate), and since FFmpeg 9.1 (commit 30359442a7,
+    // "avformat/movenc: always derive timecode timescale from timecode rate") the tmcd track's timescale
+    // is fps * 1000 for drop-frame, rate.num if rate.den is 1001, else fps (mov_create_timecode_track()),
+    // and its frame duration is that timescale divided by avg_frame_rate, rounded (mov_write_tmcd_tag()).
+    // With the reduced 40999/342, a 119.88 fps non-drop-frame timecode would be written at 120/1 fps.
+    // FFmpeg < 9.1 copies the video track's timescale (c5f7919a2c, also new in 9.1, had kept that for video
+    // timescales up to 100000), which gives the video frame rate (40999/342) in both cases.
     avStream->avg_frame_rate = frame_rate; // see ffmpeg.c:2894 from ffmpeg 3.2.2 - may be set before avformat_write_header
 
     // Although it is marked as deprecated, if we don't don't set time_base in the codec context if fails
