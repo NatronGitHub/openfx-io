@@ -198,19 +198,14 @@ the real render pipeline, linked directly (no host binary):
   buffer when it is smaller (a crash in NatronRenderer).
 * **WriteFFmpeg uncompressed codecs** (issue #170): a color pattern (with an
   alpha ramp for the formats with alpha) is written with v210 and with
-  rawvideo in QuickTime (2vuy, raw RGB and ARGB, and from FFmpeg 8 v308, v408
-  and v410), Matroska, NUT and AVI. libavformat must read back the expected
+  rawvideo in QuickTime (2vuy, raw RGB and ARGB, v308, v408 and v410), Matroska, NUT and AVI. libavformat must read back the expected
   codec, tag and pixel format (and the BT.601 matrix in QuickTime and Matroska,
   also for the v308 and v410 encoders of FFmpeg < 9, since #210 tags every
   Y'CbCr stream; video range in Matroska), and ReadFFmpeg must decode the pattern exactly for
   RGB, or within the Y'CbCr conversion error. The pattern is 64x48 with values
   on the 8-bit grid, and also has values on no grid (as float, 10-bit and
   16-bit images: 16-bit RGB must be exact within 1e-4, a lower depth fails)
-  and an odd size (63x47; before FFmpeg 8, swscale read a pixel past the end
-  of the row for the last 4:2:2/4:2:0 chroma sample: WriteFFmpeg passes
-  SWS_FULL_CHR_H_INP at odd widths, which also changes the other chroma
-  columns slightly, since the chroma is then computed from the full-resolution
-  input as in FFmpeg 8, not from pairs of pixels). RGB with 10 or 16 bits in QuickTime must write
+  and an odd size (63x47). RGB with 10 or 16 bits in QuickTime must write
   8-bit RGB with a warning (b48r is not written: QuickTime reads it
   byte-swapped), Y'CbCr with 12 or 16 bits v410; RGB with an odd width in
   QuickTime must write ARGB (FFmpeg and QuickTime do not read the padded RGB24
@@ -661,8 +656,7 @@ decode, identically after a seek except at the two swapped frame times
 (`--no-seek-check`): there, FFmpeg 8 gives timestamps after a seek that depend on the
 timestamps decoded before, since `avcodec_flush_buffers()` does not reset its
 best_effort_timestamp heuristic.
-Damaged packets (issue #151): the `noise` bitstream filter (with expressions, FFmpeg 5.1 or
-later) modifies every byte of chosen packets, which the decoder rejects with
+Damaged packets (issue #151): the `noise` bitstream filter (with expressions) modifies every byte of chosen packets, which the decoder rejects with
 AVERROR_INVALIDDATA: an H.264 P-frame, IDR frame or B-frame in Matroska, two B-frames in a VFR
 Matroska clip, and two frames of ProRes (MOV) and MJPEG (AVI), each with 1 and 8 decoder
 threads (`FFMPEG_READ_TEST_THREADS`, read by `ofx_stubs.cpp`). The reader must drop them and
@@ -818,24 +812,22 @@ With `-DIO_HOSTDEMO_TESTS=ON`, the CMake configuration fails if the test can't b
 Not tested: ReadOIIO's RAW support (LibRaw). No RAW file can be generated at test time (no writer makes camera RAW
 files), and real camera RAW or DNG files are much larger than the few KB a test file may take.
 
-### 5. FFmpeg version compile check (FFmpeg 4.x and 5.x)
+### 5. FFmpeg version compile check
 
-The FFmpeg plug-ins support FFmpeg 4.0 and later, but CI and the other tests use a recent FFmpeg. Some API
-changes only show when compiling against an old version, e.g. `avformat_alloc_output_context2()` takes a non-const
-`AVOutputFormat*` before libavformat 59 (FFmpeg 5.0, #141). `ffmpeg_syntax_check.sh` compiles `WriteFFmpeg.cpp`,
-`ReadFFmpeg.cpp`, `FFmpegFile.cpp` and `PixelFormat.cpp` with `-fsyntax-only` against the FFmpeg found by
-`pkg-config`. Run it in a container after changing the FFmpeg plug-ins, from the repository root (with the
-submodules), e.g. with podman (or docker):
+The FFmpeg plug-ins support [FFmpeg](https://ffmpeg.org) 8.0 and later (libavcodec 62.11.100, libavformat 62.3.100,
+libavutil 60.8.100 and libswscale 9.1.100, the versions of the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)):
+`FFmpeg/FFmpegFile.h` stops with an `#error` with an older FFmpeg, and the CMake configuration and the Makefiles with
+an error message. CI builds with FFmpeg 8.0 (Linux, [Ubuntu 26.04](https://packages.ubuntu.com/resolute/libavcodec-dev))
+and 9 (macOS and Windows). `ffmpeg_syntax_check.sh` compiles `WriteFFmpeg.cpp`, `ReadFFmpeg.cpp`, `FFmpegFile.cpp` and
+`PixelFormat.cpp` with `-fsyntax-only` against the FFmpeg found by `pkg-config`, e.g. to check a given FFmpeg version
+after changing the FFmpeg plug-ins. Run it from the repository root (with the submodules), with `PKG_CONFIG_PATH` set
+to the FFmpeg to check, or in a container, e.g. with [podman](https://podman.io) (or docker):
 
 ```sh
-# FFmpeg 4.4 (RPM Fusion) on Rocky Linux 8, with GCC 14 as for Natron
-podman run --rm -v "$PWD":/src:ro -w /src docker.io/rockylinux/rockylinux:8 sh -c '
-  dnf -y -q install epel-release dnf-plugins-core && dnf config-manager --set-enabled powertools &&
-  dnf -y -q install https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm &&
-  dnf -y -q install ffmpeg-devel gcc-toolset-14-gcc-c++ pkgconf-pkg-config &&
-  . /opt/rh/gcc-toolset-14/enable && sh tests/ffmpeg_syntax_check.sh g++'
-# FFmpeg 5.1 on Debian 12
-podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
+# a local FFmpeg build, installed in $prefix
+PKG_CONFIG_PATH=$prefix/lib/pkgconfig sh tests/ffmpeg_syntax_check.sh c++
+# FFmpeg 8.0 on Ubuntu 26.04
+podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
   apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends g++ pkg-config \
     libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev &&
   sh tests/ffmpeg_syntax_check.sh g++'
@@ -868,7 +860,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/debian:12 sh -c '
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
-| `ffmpeg_syntax_check.sh`    | Compile check of the FFmpeg plug-ins against the FFmpeg found by pkg-config (for FFmpeg 4.x/5.x containers). |
+| `ffmpeg_syntax_check.sh`    | Compile check of the FFmpeg plug-ins against the FFmpeg found by pkg-config (e.g. a given FFmpeg version). |
 | `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
 | `verify_plugin_loads.cpp`   | Loads an `IO.ofx` with openfx's HostSupport and lists its plug-ins (ctest `io-load`, the CI load checks, `tools/compare_bundles.sh`); linked with a copy of openfx's `ofxhBinary.cpp` that uses `RTLD_NOW` instead of `RTLD_LAZY`, so that a missing symbol makes loading fail. |
 | `check_icons.cmake`         | Every plug-in of the CMake build tree's bundle has its icon, `Contents/Resources/<identifier>.png` (ctest `io-icons`). |

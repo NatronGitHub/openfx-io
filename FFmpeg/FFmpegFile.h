@@ -54,6 +54,14 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+// FFmpeg 8.0 or later: the versions of the libraries in the n8.0 release (their libavcodec/version.h,
+// libavformat/version.h, libavutil/version.h and libswscale/version.h). CMakeLists.txt and Makefile.master check
+// the same versions with pkg-config.
+#if (LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)) || (LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(62, 3, 100)) \
+    || (LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 8, 100)) || (LIBSWSCALE_VERSION_INT < AV_VERSION_INT(9, 1, 100))
+#error "The FFmpeg plug-ins require FFmpeg 8.0 or later (libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100, libswscale 9.1.100)"
+#endif
+
 #include "ofxsMultiThread.h"
 #ifndef OFX_USE_MULTITHREAD_MUTEX
 // some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
@@ -734,11 +742,6 @@ private:
 
     // The number of frames of the stream that are not displayed
     int64_t getDiscardedFrames(Stream& stream);
-
-#if LIBAVFORMAT_VERSION_MAJOR < 59
-    // The largest timestamp in the index of the stream, in AV_TIME_BASE units (lavf 58: fragmented MP4)
-    int64_t getLastIndexTimestamp(Stream& stream);
-#endif
 
     // The end of the movie (in AV_TIME_BASE units) and the largest PTS of the video stream, from the last packets
     bool probeEnd(Stream& stream, int64_t& movieEnd, int64_t& lastVideoPts);

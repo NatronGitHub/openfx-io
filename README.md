@@ -44,8 +44,10 @@ to checkout a given tag.
 - [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
   [LibRaw](https://www.libraw.org) for the RAW formats
 - [OpenEXR](https://openexr.com) and [Imath](https://github.com/AcademySoftwareFoundation/Imath)
-- [FFmpeg](https://ffmpeg.org) 4.0 to 9 ([`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins
-  compile against a given FFmpeg version)
+- [FFmpeg](https://ffmpeg.org) 8.0 to 9 (the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)'s
+  libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100 and libswscale 9.1.100, or later: the build stops with an
+  older FFmpeg; [`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins compile
+  against a given FFmpeg version)
 - [libpng](http://www.libpng.org/pub/png/libpng.html)
 - [SeExpr](https://github.com/wdas/SeExpr) [2.11](https://github.com/wdas/SeExpr/releases/tag/v2.11), which has the SeExpr 1 API (`SeExpression.h`); SeExpr 3.x
   (the SeExpr2 API) does not work

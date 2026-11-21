@@ -357,20 +357,6 @@ check_ss_copy() {
     "$bin" "$tmp/$name" --tol 3 --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
-# noise_takes_expressions: true if the noise bitstream filter takes expressions (FFmpeg 5.1 or later),
-# tried once on a known-good clip
-noise_expressions=""
-noise_takes_expressions() {
-    if [ -z "$noise_expressions" ]; then
-        noise_expressions=no
-        if ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=16x16:r=24" -frames:v 2 -c:v mpeg4 "$tmp/noise_probe.mkv" &&
-            ffmpeg -y -loglevel error -i "$tmp/noise_probe.mkv" -c copy -bsf:v "noise=amount=if(eq(n\,0)\,1\,0)" "$tmp/noise_probe_out.mkv" 2>/dev/null; then
-            noise_expressions=yes
-        fi
-    fi
-    [ "$noise_expressions" = yes ]
-}
-
 # check_damaged NAME DESCRIPTION ENCODER SETPTS PACKETS GAPS CONCEALED FAIL FFMPEG_OUTPUT_ARGS...
 # A 40-frame gray ramp at 24 fps, with the timestamps SETPTS (a setpts expression in frames, or N
 # for CFR), where the packets PACKETS (0-based, in decoding order, e.g. "13 27") are damaged: the
@@ -405,10 +391,6 @@ check_damaged() {
     if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" ${vf[@]+"${vf[@]}"} "$@" "$tmp/clean_$name"; then
         echo "FAIL: could not generate clean_$name"
         rc=1
-        return
-    fi
-    if ! noise_takes_expressions; then
-        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
         return
     fi
     local expr="0" n
@@ -623,10 +605,6 @@ check_damaged_long() {
         echo "SKIPPED: no prores_ks encoder in the ffmpeg CLI"
         return
     fi
-    if ! noise_takes_expressions; then
-        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
-        return
-    fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25:d=12 -c:v prores_ks -profile:v 2 "$tmp/clean_$name" ||
         ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount='$amount'" "$tmp/$name"; then
         echo "FAIL: could not generate $name"
@@ -662,10 +640,6 @@ check_damaged_gop() {
     echo "== $desc =="
     if ! have_encoder libx264; then
         echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
-        return
-    fi
-    if ! noise_takes_expressions; then
-        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=160x120:r=25 -frames:v "$frames" -c:v libx264 -pix_fmt yuv420p "$@" "$tmp/clean_$name" ||
@@ -788,10 +762,6 @@ check_damaged_ref() {
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
-        return
-    fi
-    if ! noise_takes_expressions; then
-        echo "SKIPPED: the noise bitstream filter does not take expressions (FFmpeg < 5.1)"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v "$frames" -c:v "$encoder" -pix_fmt yuv420p "$@" "$tmp/clean_$name" ||
@@ -1300,11 +1270,8 @@ check_color() {
     fi
     # the clip must hold the constant color exactly (lossless, and not converted by ffmpeg). The samples are written
     # in the decoder's own pixel format, without -pix_fmt: for a full-range clip, FFmpeg's H.264 decoder gives
-    # yuvj444p (libavcodec/h264_slice.c:871-877 at n6.1, :878-884 at n9.0.2), which has the layout of yuv444p, and
-    # with FFmpeg 6.1, -pix_fmt yuv444p inserts a scale filter that converts it to video range: libswscale takes
-    # yuvj444p as full range and yuv444p as video range (handle_jpeg(), libswscale/utils.c:928-964 and 2054-2055 at
-    # n6.1), and vf_scale only changes that if out_range is set (libavfilter/vf_scale.c:841-867 at n6.1). n9.0.2
-    # negotiates the range in the filter graph and keeps the frame's one (libavfilter/vf_scale.c:517-520 and 728).
+    # yuvj444p (libavcodec/h264_slice.c:878-884 at n9.0.2), which has the layout of yuv444p, and a -pix_fmt would
+    # insert a scale filter.
     if ! ffmpeg -loglevel error -i "$tmp/$name" -f rawvideo - | cmp -s - "$tmp/$name.yuv"; then
         echo "FAIL: $name does not decode to the Y'CbCr samples it was encoded from"
         rc=1
