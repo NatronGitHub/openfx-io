@@ -472,6 +472,11 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   are read as before (not converted).
 * **render windows**: narrower than the data window (decode()'s buffer, in blocks of
   256 lines): exact inside, nothing written outside; render scale 1/2.
+* **alpha 1 for files without alpha** (#234): an RGB and a grey PFM, TIFF, and an RGB PNG, read as RGBA with each
+  `filePremult` (Opaque, PreMultiplied, UnPreMultiplied), without and with an OCIO conversion (from `x2` to `x1` of
+  `swap.ocio`, next to `$OCIO`, which multiplies the colours by 2, so that GenericReader unpremultiplies, converts and
+  premultiplies a PreMultiplied file): the colours are the file's (times 2 with OCIO), and alpha is 1. ReadPFM used
+  to write alpha = 0, so with UnPreMultiplied, or PreMultiplied and OCIO, its colours were 0.
 * **a rewritten file**: with larger and smaller windows, the next RoD and image are the new
   file's (the next render updates the header cache; so does the purge caches action); and
   with the RoD the host got before the rewrite, at scale 1 (straight into the output image,
@@ -496,18 +501,17 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
-### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #232)
+### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #232, #234)
 
 `reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
-and extends past the display window, with OpenImageIO, for ReadOIIO; a PFM for ReadPFM; 8-bit RGB and RGBA, 16-bit
+and extends past the display window, with OpenImageIO, for ReadOIIO; an RGB and a grey PFM for ReadPFM; 8-bit RGB and RGBA, 16-bit
 grey and RGBA, and interlaced (Adam7) 8-bit RGB and 16-bit RGBA PNG, with libpng, for ReadPNG (only if `pkg-config`
 finds libpng). It is built with [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS
 Windows), and the output image is between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush
 against one of them. Each file is read with two `filePremult` values, for both paths of `GenericReader::render()` at
 scale 1: `decode()` into the output image (Opaque RGB files, PreMultiplied RGBA files), and into GenericReader's
-buffer, which it then premultiplies (UnPreMultiplied files; ReadPFM sets alpha to 0 for RGB files, so its colours are
-then 0):
+buffer, which it then premultiplies (UnPreMultiplied files):
 
 * **render scale 1/2**: GenericReader decodes a full-resolution window into its buffer: decode() gets a render scale
   of 1 (ReadOIIO and ReadPFM assert it, #160).

@@ -180,13 +180,10 @@ copyLine(PIX* image,
             }
         }
         if (dstC == 4) {
-            // Alpha is 0 on RGBA images to allow adding alpha using a Roto node.
-            // Alpha is set to 0 and premult is set to Opaque.
-            // That way, the Roto node can be conveniently used to draw a mask. This shouldn't
-            // disturb anything else in the process, since Opaque premult means that alpha should
-            // be considered as being 1 everywhere, whatever the actual alpha value is.
-            // see GenericWriterPlugin::render, if (userPremult == eImageOpaque...
-            dstPix[3] = 0.f; // alpha
+            // PFM files have no alpha: they are opaque, as in ReadOIIO and ReadPNG. GenericReader premultiplies by
+            // this alpha if the user sets File Premult to UnPreMultiplied, or to PreMultiplied with an OCIO
+            // conversion (#234).
+            dstPix[3] = 1.f; // alpha
         }
 
         srcPix += srcC;
