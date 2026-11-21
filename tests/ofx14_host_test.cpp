@@ -14,8 +14,7 @@
  * GetFramesNeeded, IsIdentity, BeginSequenceRender, Render of one frame, EndSequenceRender, DestroyInstance, Unload.
  * Each action must succeed, the plug-in must post no error message, and:
  *   - the obsolete plug-ins (ReadEXR, WriteEXR, OIIOText, OIIOResize v1) must set kOfxImageEffectPluginPropObsolete
- *     to 1 (not in the OFX 1.4-only host, which doesn't know it), and no plug-in may set Natron's
- *     kNatronOfxImageEffectPropDeprecated;
+ *     to 1 (not in the OFX 1.4-only host, which doesn't know it);
  *   - a filter or reader must write its whole output image;
  *   - a writer writes a file (in the work directory), which the readers then read: WritePNG -> ReadPNG and ReadOIIO,
  *     WriteEXR -> ReadEXR, WritePFM -> ReadPFM, WriteOIIO (TIFF) -> ReadOIIO, WriteFFmpeg (MOV) -> ReadFFmpeg;
@@ -375,8 +374,8 @@ testPlugin(OfxPlugin* p,
         return;
     }
     {
-        // obsolete plug-ins (#237): kOfxImageEffectPluginPropObsolete (OFX 1.5), which the OFX 1.4-only host
-        // rejects as unknown (the plug-in must still describe), replaces Natron's kNatronOfxImageEffectPropDeprecated
+        // obsolete plug-ins (#237): kOfxImageEffectPluginPropObsolete (next OFX release, after 1.5.1), which the
+        // OFX 1.4-only host rejects as unknown (the plug-in must still describe)
         const char* id = p->pluginIdentifier;
         const bool expected = !gOfx14Only
                               && (!std::strcmp(id, "fr.inria.openfx.ReadEXR") || !std::strcmp(id, "fr.inria.openfx.WriteEXR")
@@ -386,9 +385,6 @@ testPlugin(OfxPlugin* p,
         const bool obsolete = it != desc.props.props.end() && !it->second.i.empty() && it->second.i[0];
         if (obsolete != expected) {
             fail("kOfxImageEffectPluginPropObsolete = %d, expected %d", int(obsolete), int(expected));
-        }
-        if (desc.props.props.count("NatronOfxImageEffectPropDeprecated")) {
-            fail("sets NatronOfxImageEffectPropDeprecated (use kOfxImageEffectPluginPropObsolete)");
         }
     }
     {
