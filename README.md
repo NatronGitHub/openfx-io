@@ -79,8 +79,8 @@ Release builds target [Rocky Linux](https://rockylinux.org) [9](https://docs.roc
 so the plug-ins still only need the system's libstdc++. Their symbol versions must not be newer than those of Rocky
 Linux 9: `GLIBC_2.34` (Rocky Linux 9's glibc 2.34 also has a few backported `GLIBC_2.35` symbols, e.g. `__memcmpeq`),
 `GLIBCXX_3.4.29` and `CXXABI_1.3.13` (libstdc++), `GCC_7.0.0` (libgcc_s, x86-64), `GOMP_5.0.1` and `OMP_5.0.1`
-(libgomp). The Linux bundle built by CI is an Ubuntu 24.04 testing build, not a release: it needs the system libraries
-of Ubuntu 24.04 or later.
+(libgomp). The Linux bundle built by CI is an Ubuntu 26.04 testing build, not a release: it needs the system libraries
+of Ubuntu 26.04 or later.
 
 ## Compiling with CMake
 
@@ -167,7 +167,7 @@ compiling:
 See the [CI workflow](.github/workflows/ci.yml) for the complete package lists and build commands.
 
 - **Linux**: install the development packages of the libraries above from the distribution. On [Ubuntu
-  24.04](https://packages.ubuntu.com/noble/): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
+  26.04](https://packages.ubuntu.com/resolute/) (whose [FFmpeg](https://packages.ubuntu.com/resolute/libavcodec-dev) is 8.0): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
   libpng-dev libwebp-dev libtiff-dev libopenjp2-7-dev libavcodec-dev libavformat-dev libavutil-dev
   libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools` for the tests and hostDemo.
   Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with [`bison`](https://www.gnu.org/software/bison/) and [`flex`](https://github.com/westes/flex)) and passes its
