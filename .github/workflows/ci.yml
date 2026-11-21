@@ -279,9 +279,9 @@ jobs:
         run: |
           git clone -q --depth 1 -b "$FFMPEG_VERSION" https://github.com/FFmpeg/FFmpeg.git FFmpegSrc
           cd FFmpegSrc
-          # shellcheck disable=SC2086
           # an absolute prefix without "..": it is written into the .pc files, and on a cache hit FFmpegSrc doesn't
           # exist, so FFmpegSrc/../FFmpegBuild wouldn't resolve
+          # shellcheck disable=SC2086
           ./configure --prefix="$GITHUB_WORKSPACE/FFmpegBuild" $FFMPEG_CONFIGURE
           make -j4
           make install
