@@ -42,6 +42,7 @@ make test-ffmpeg   # FFmpeg reader-core: frame-accuracy + seek validation
 make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
+make test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's encoder must not abort (#267)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -230,6 +231,12 @@ the real render pipeline, linked directly (no host binary):
   window (all four R/G/B/A checkboxes checked, so the channels are packed):
   the written PNG and the output image must be black (run under ASan to
   catch the out-of-bounds read this used to cause).
+
+`test-dnxhr444-noise` (issue #267) runs `ofx_render_test OUT --dnxhr444-noise`: WriteFFmpeg encodes two
+256x120 frames of binary RGB noise in DNxHR 444. FFmpeg's dnxhd encoder stores the qscale of each macroblock
+in a `uint8_t` (`libavcodec/dnxhdenc.h:101`) while its default qmax is 1024, so on such images it used to
+abort (`put_bits.h` assertion), which killed the host; WriteFFmpeg now limits qmax to 256. The frames must
+encode, or fail with "Cannot encode frame". It is a test of its own, so that an abort only fails it.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
@@ -942,7 +949,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 
