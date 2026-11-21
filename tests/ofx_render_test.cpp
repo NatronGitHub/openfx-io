@@ -2281,6 +2281,7 @@ int testDNxHR444Noise(const std::string& outFile)
     WriterParams wp;
     wp.strings = { { "codecShortName", "dnxhd" } };
     wp.ints = { { "DNxHDCodecProfile", 0 } }; // DNxHR 444
+    // relies on WriteFFmpeg writing DNxHR 444 as gbrp10: in yuv444p10, this noise only needs a qscale of about 35
     wp.pattern = 3;
     wp.allowEncodeFailure = true;
     const int failures = testWriteFFmpeg(outFile, 256, 120, 2, wp); // 256x120: the smallest DNxHR size

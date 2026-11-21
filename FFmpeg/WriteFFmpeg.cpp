@@ -721,7 +721,7 @@ enum X26xSpeedEnum {
 
 #define kParamDNxHDCodecProfile "DNxHDCodecProfile"
 #define kParamDNxHDCodecProfileLabel "DNxHD Codec Profile"
-#define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. The stream may be resized to 1920x1080 if resolution is not supported. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it.\nA frame that FFmpeg cannot fit in the bit rate (e.g. noise in DNxHR 444) fails to encode. Do not follow FFmpeg's advice to increase qmax in Codec Options: above 256, FFmpeg may crash (issue #267)."
+#define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. The stream may be resized to 1920x1080 if resolution is not supported. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it.\nA frame that does not fit in the bit rate (e.g. noise in DNxHR 444) fails to encode. Do not set qmax above 256 in Codec Options: FFmpeg's encoder may crash."
 #define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (10 bit, RGB, 4.5:1 compression)", "dnxhr444"
 #define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (10 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
 #define kParamDNxHDCodecProfileOptionHRHQ "DNxHR HQ", "DNxHR High Quality (8 bit, 4:2:2 chroma sub-sampling, 4.5:1 compression)", "dnxhrhq"
@@ -4036,7 +4036,8 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
         // #267: FFmpeg's dnxhd encoder stores the qscale of each macroblock in a uint8_t (libavcodec/dnxhdenc.h:101,
         // mb_qscale), but its default qmax is 1024: a qscale above 255 wraps, the slices overflow, and libavcodec
         // aborts (put_bits.h assertion) on high-entropy images (e.g. binary noise in DNxHR 444). 256 is the largest
-        // safe value. A frame that does not fit then fails cleanly; a frame that encodes is encoded exactly as before.
+        // safe value. A frame that needs a qscale near 255 or more then fails cleanly (a few that FFmpeg could encode
+        // at 250-254 fail too); a frame that encodes is encoded exactly as before.
         // A qmax in Codec Options still overrides this (it is applied by avcodec_open2()).
         // There is no fixed FFmpeg version yet: once upstream fixes it, apply this only below that LIBAVCODEC_VERSION.
         if (avCodecContext->qmax > 256) {
