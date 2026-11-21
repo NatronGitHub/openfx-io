@@ -421,6 +421,16 @@ private:
     void timeDomainFromSequenceTimeDomain(const OfxRangeI& sequenceTimeDomain, int startingTime, OfxRangeI* timeDomain);
 
     /**
+     * @brief Sets kParamTimeOffset to kParamStartingTime - kParamFirstFrame, if it differs.
+     * The time domain and the clip preferences use kParamStartingTime, render, the RoD and isIdentity
+     * use kParamTimeOffset (getSequenceTime()), so the two must agree. Call it whenever the plug-in
+     * itself sets kParamStartingTime or kParamFirstFrame: the host may not call instanceChanged for
+     * these changes (OFX 1.4 hosts don't have to), and the kParamStartingTime handler only syncs the
+     * time offset on a user edit.
+     **/
+    void syncTimeOffset();
+
+    /**
      * @brief Should return true if the file indicated by filename is a video-stream and not
      * a single image file.
      **/

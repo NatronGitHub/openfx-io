@@ -463,7 +463,7 @@ ReadPFMPlugin::getFrameBounds(const string& filename,
  * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
  **/
 bool
-ReadPFMPlugin::guessParamsFromFilename(const string& /*newFile*/,
+ReadPFMPlugin::guessParamsFromFilename(const string& newFile,
                                        string* colorspace,
                                        PreMultiplicationEnum* filePremult,
                                        PixelComponentEnum* components,
@@ -474,16 +474,19 @@ ReadPFMPlugin::guessParamsFromFilename(const string& /*newFile*/,
     // Unless otherwise specified, pfm files are assumed to be linear.
     *colorspace = OCIO::ROLE_SCENE_LINEAR;
 #endif
-    int startingTime = getStartingTime();
-    string filename;
-    OfxStatus st = getFilenameAtTime(startingTime, &filename);
-    if ((st != kOfxStatOK) || filename.empty()) {
+    // the file to guess from (the first file of the sequence), rather than the file at the starting time,
+    // which goes through the time offset (#154)
+    const string& filename = newFile;
+    if (filename.empty()) {
         return false;
     }
     stringstream ss;
 
     // read PFM header
     std::FILE* const nfile = std::fopen(filename.c_str(), "rb");
+    if (!nfile) {
+        return false;
+    }
 
     char pfm_type = 0;
     char item[1024] = { 0 };

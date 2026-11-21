@@ -526,6 +526,17 @@ GenericReaderPlugin::timeDomainFromSequenceTimeDomain(const OfxRangeI& sequenceT
     timeDomain->max = startingTime + (sequenceTimeDomain.max - sequenceTimeDomain.min);
 }
 
+void
+GenericReaderPlugin::syncTimeOffset()
+{
+    const int offset = _startingTime->getValue() - _firstFrame->getValue();
+
+    // only set it if it changes, so that the instance is not modified for nothing
+    if (_timeOffset->getValue() != offset) {
+        _timeOffset->setValue(offset);
+    }
+}
+
 GenericReaderPlugin::GetSequenceTimeRetEnum
 GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
                                            BeforeAfterEnum beforeChoice,
@@ -2213,6 +2224,14 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
         _lastFrame->setValue(sequenceTimeDomain.max);
         _lastFrame->setDefault(sequenceTimeDomain.max);
         _startingTime->setDefault(sequenceTimeDomain.min);
+        if (!_guessedParams->getValue()) {
+            // the first file: the sequence starts at its first frame
+            _startingTime->setValue(timeDomain.min);
+        }
+        // the first frame changed: keep the time offset in sync with the starting time (#154). If the
+        // params were already guessed, the starting time is kept (Natron already set it to the first
+        // frame from kParamOriginalFrameRange).
+        syncTimeOffset();
     }
 
     // restore state! let the derived class (which calls GenericReaderPlugin::restoreStateFromParams()) initialize any other parameters or structures
@@ -2220,8 +2239,6 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
 
     // should we guess some parameters? only if it's user-set and it's the first time
     if ((args.reason == eChangeUserEdit) && !_guessedParams->getValue()) {
-        _startingTime->setValue(timeDomain.min);
-
         /// We call guessParamsFromFilename with the first frame of the sequence so we're almost sure it will work
         /// unless the user did a mistake. We are also safe to assume that images specs are the same for
         /// all the sequence
@@ -2413,6 +2430,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
 
         _startingTime->setValue(oFirst);
         _startingTime->setDefault(oFirst);
+        syncTimeOffset(); // the time offset is now 0 (#154)
     } else if ((paramName == kParamFirstFrame) && (args.reason == eChangeUserEdit)) {
         int first;
         int oFirst, oLast;

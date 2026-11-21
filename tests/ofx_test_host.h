@@ -81,6 +81,7 @@ struct ParamRec {
     Value ov;                 // host override value (optional)
     bool hasOv = false;
     std::function<std::string(double)> stringAtTime; // string param: the value returned by getValueAtTime() (optional)
+    int nSet = 0;             // number of paramSetValue/paramSetValueAtTime calls by the plug-in
 };
 
 struct Clip {
@@ -347,6 +348,7 @@ OfxStatus prmSetV(OfxParamHandle ph, va_list ap)
     ParamRec* r = reinterpret_cast<ParamRec*>(ph);
     const std::string& t = r->type;
     r->hasOv = true;
+    ++r->nSet;
     if (t == kOfxParamTypeString) { const char* v = va_arg(ap, const char*); r->ov.s = { v ? v : "" }; }
     else if (t == kOfxParamTypeDouble) { r->ov.d = { va_arg(ap, double) }; }
     else if (t == kOfxParamTypeDouble2D) { double a = va_arg(ap, double); double b = va_arg(ap, double); r->ov.d = { a, b }; }
