@@ -374,8 +374,8 @@ testPlugin(OfxPlugin* p,
         return;
     }
     {
-        // obsolete plug-ins (#237): kOfxImageEffectPluginPropObsolete (OFX 1.5), which the OFX 1.4-only host
-        // rejects as unknown (the plug-in must still describe)
+        // obsolete plug-ins (#237): kOfxImageEffectPluginPropObsolete (next OFX release, after 1.5.1), which the
+        // OFX 1.4-only host rejects as unknown (the plug-in must still describe)
         const char* id = p->pluginIdentifier;
         const bool expected = !gOfx14Only
                               && (!std::strcmp(id, "fr.inria.openfx.ReadEXR") || !std::strcmp(id, "fr.inria.openfx.WriteEXR")
