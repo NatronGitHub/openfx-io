@@ -19,7 +19,6 @@
 #include "OIIOGlobal.h"
 
 #include "ofxsMacros.h"
-#include <atomic>
 #include <cstring>
 #include <iostream>
 #include <mutex>
@@ -228,33 +227,28 @@ collectOpenMPRuntimes(struct dl_phdr_info* info, size_t /*size*/, void* data)
 } // namespace
 #endif
 
-namespace {
-// true once an OpenMP runtime was pinned: until then, pinOpenMPRuntime() tries again (cheap)
-std::atomic<bool> gOpenMPPinned(false);
-}
-
 void
 pinOpenMPRuntime()
 {
-    if (gOpenMPPinned.load(std::memory_order_acquire)) {
-        return;
-    }
+    // Every runtime that is loaded is pinned, and only once: the ones pinned so far (a runtime may be loaded after
+    // another one was pinned, e.g. libgomp after vcomp140). Called at load and after RAW reads: the cost is fine.
     static std::mutex* m = new std::mutex; // never destroyed
+    static std::set<std::string>* pinnedRuntimes = new std::set<std::string>;
     std::lock_guard<std::mutex> lock(*m);
-    if (gOpenMPPinned.load(std::memory_order_relaxed)) {
-        return;
-    }
-    bool pinned = false;
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
     // MinGW's libgomp, LLVM's libomp, Intel's libiomp5 and MSVC's vcomp140: GetModuleHandleExW() only finds a module
     // that is already loaded, and pins it (it stays loaded until the process exits)
     static const wchar_t* const names[] = { L"libgomp-1.dll", L"libomp.dll", L"libiomp5md.dll", L"vcomp140.dll" };
-    for (const wchar_t* name : names) {
+    static const char* const namesA[] = { "libgomp-1.dll", "libomp.dll", "libiomp5md.dll", "vcomp140.dll" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
         HMODULE h;
-        pinned = (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, name, &h) != 0) || pinned;
+        if (!pinnedRuntimes->count(namesA[i]) && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, names[i], &h)) {
+            pinnedRuntimes->insert(namesA[i]);
+        }
     }
-#elif defined(__APPLE__)
+#else
     std::vector<std::string> paths;
+#if defined(__APPLE__)
     const uint32_t n = _dyld_image_count();
     for (uint32_t i = 0; i < n; ++i) {
         const char* path = _dyld_get_image_name(i);
@@ -262,18 +256,14 @@ pinOpenMPRuntime()
             paths.push_back(path);
         }
     }
-    for (const std::string& path : paths) {
-        pinned = pinLibrary(path.c_str()) || pinned;
-    }
 #else
-    std::vector<std::string> paths;
     dl_iterate_phdr(collectOpenMPRuntimes, &paths);
+#endif
     // (after dl_iterate_phdr() returned, see collectOpenMPRuntimes())
     for (const std::string& path : paths) {
-        pinned = pinLibrary(path.c_str()) || pinned;
+        if (!pinnedRuntimes->count(path) && pinLibrary(path.c_str())) {
+            pinnedRuntimes->insert(path);
+        }
     }
 #endif
-    if (pinned) {
-        gOpenMPPinned.store(true, std::memory_order_release);
-    }
 }

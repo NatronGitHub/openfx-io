@@ -2324,6 +2324,19 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         return;
     }
 
+    // After a RAW file was read (with LibRaw, which uses OpenMP), on every exit of this function, including the error
+    // paths: pin the OpenMP runtime. An OpenImageIO built with non-embedded plug-ins loads its raw reader, LibRaw and
+    // OpenMP only on the first RAW read, after ReadOIIO's load action pinned what was loaded then (#239).
+    struct PinOpenMPAfterRawRead {
+        bool raw = false;
+        ~PinOpenMPAfterRawRead()
+        {
+            if (raw) {
+                pinOpenMPRuntime();
+            }
+        }
+    } pinOpenMPAfterRawRead;
+
     vector<int> channels;
     int numChannels = 0;
 #if OIIO_PLUGIN_VERSION >= 22
@@ -2341,6 +2354,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 #else
         img.reset(rawImg);
 #endif
+    }
+    if (img.get() && !std::strcmp(img->format_name(), "raw")) {
+        pinOpenMPAfterRawRead.raw = true;
     }
 
     if (subimages.empty()) {
@@ -2766,9 +2782,6 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     } // for (std::size_t i = 0; i < channels.size(); i+=incr) {
 
     img->close();
-    // an OpenImageIO built with non-embedded plug-ins loads LibRaw (and its OpenMP runtime) on the first RAW read:
-    // pin the runtime now if it wasn't loaded at load (cheap once done, #239)
-    pinOpenMPRuntime();
 } // ReadOIIOPlugin::decodePlane
 
 bool

@@ -412,13 +412,15 @@ outlive the render: ReadOIIO keeps the OpenMP runtime loaded (`pinOpenMPRuntime(
 * the OpenMP runtime loaded after the render is still loaded after the unload (the main check: an unloaded runtime does
   not always crash within the run); without one, the run prints a note, and fails with `IO_HOSTDEMO_STRICT=1` on Linux
   and MS Windows, where LibRaw uses OpenMP (so that the test can't silently stop exercising anything);
-* the render was demosaiced by LibRaw (R, G and B not all equal; a TIFF reader would read the CFA as one grey channel);
+* the render was demosaiced by LibRaw: RGB or RGBA output, with R, G and B not all equal (a TIFF reader reads the CFA
+  as one channel, which ReadOIIO outputs as Alpha);
 * no crash, within the 3 s after the unload or at exit.
 
 It also prints the thread counts (Linux, MS Windows) and whether the plug-in binary is still mapped after the unload: if
 it is (e.g. its GNU unique symbols make `dlclose()` a no-op on Linux), the runtime stays loaded whatever the pin does.
-macOS does not exercise the fix: MacPorts' LibRaw has no OpenMP, and with `WITH_LIBRAW=1` the test bundle links libomp
-itself (`tests/Makefile`), which then stays loaded with or without the pin.
+macOS does not exercise the fix: MacPorts' LibRaw has no OpenMP; with `WITH_LIBRAW=1` the test bundle links libomp
+itself (`tests/Makefile`), so the pin runs, but libomp then stays loaded with or without it; and the plug-in binary stays
+mapped after `dlclose()` there, as on Linux ([#264](https://github.com/NatronGitHub/openfx-io/issues/264)).
 The DNG file is written by `raw_unload --write-dng`: an uncompressed 16-bit RGGB CFA DNG with the minimal DNG tags,
 which LibRaw reads (OpenImageIO's `raw` reader), since no RAW file can be committed, and a download would make the
 test depend on the network.

@@ -169,14 +169,21 @@ findOfx(struct dl_phdr_info* info, size_t /*size*/, void* data)
 }
 #endif
 
-// A plug-in binary (*.ofx) mapped in this process (its path), or "" if none is (or it can't be told)
+// A plug-in binary (*.ofx) mapped in this process (its path), "" if none is, or "?" if it can't be told
 std::string
 mappedPluginBinary()
 {
 #if defined(_WIN32)
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    HANDLE snap = INVALID_HANDLE_VALUE;
+    // (CreateToolhelp32Snapshot() may fail with ERROR_BAD_LENGTH while modules are being loaded or unloaded: retry)
+    for (int attempt = 0; attempt < 10 && snap == INVALID_HANDLE_VALUE; ++attempt) {
+        snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+        if ((snap == INVALID_HANDLE_VALUE) && (GetLastError() != ERROR_BAD_LENGTH)) {
+            break;
+        }
+    }
     if (snap == INVALID_HANDLE_VALUE) {
-        return std::string();
+        return "?";
     }
     MODULEENTRY32 me;
     me.dwSize = sizeof(me);
@@ -511,21 +518,30 @@ main(int argc, char** argv)
             ++failures;
         } else {
             std::printf("ok   render of (%d,%d,%d,%d)\n", rod.x1, rod.y1, rod.x2, rod.y2);
-            // decoded by LibRaw (OpenImageIO's raw reader) and demosaiced: R, G and B differ. (A TIFF reader would
-            // read the CFA as one grey channel: R = G = B.)
+            // decoded by LibRaw (OpenImageIO's raw reader) and demosaiced: RGB or RGBA output, where R, G and B differ.
+            // (A TIFF reader reads the CFA as one channel: ReadOIIO then outputs Alpha.)
             MyHost::MyImage* img = outputClip->getOutputImage();
-            long colored = 0;
-            for (int y = rod.y1; y < rod.y2; ++y) {
-                for (int x = rod.x1; x < rod.x2; ++x) {
-                    const float* p = reinterpret_cast<const float*>(img->getPixelData(x, y));
-                    colored += (std::memcmp(&p[0], &p[1], sizeof(float)) != 0 || std::memcmp(&p[1], &p[2], sizeof(float)) != 0) ? 1 : 0;
-                }
-            }
-            if (colored == 0) {
-                std::printf("FAIL: the render is grey (R = G = B everywhere): the DNG file was not demosaiced by LibRaw\n");
+            const std::string comps = outputClip->getComponents();
+            const int nComps = img->getNComponents();
+            if (((comps != kOfxImageComponentRGBA) && (comps != kOfxImageComponentRGB)) || (nComps < 3)) {
+                std::printf("FAIL: the output components are %s (%d per pixel), not RGBA or RGB: the DNG file was not "
+                            "demosaiced by LibRaw\n",
+                            comps.c_str(), nComps);
                 ++failures;
             } else {
-                std::printf("ok   demosaiced: %ld pixels with R, G, B not all equal\n", colored);
+                long colored = 0;
+                for (int y = rod.y1; y < rod.y2; ++y) {
+                    for (int x = rod.x1; x < rod.x2; ++x) {
+                        const float* p = reinterpret_cast<const float*>(img->getPixelData(x, y)); // nComps floats
+                        colored += (std::memcmp(&p[0], &p[1], sizeof(float)) != 0 || std::memcmp(&p[1], &p[2], sizeof(float)) != 0) ? 1 : 0;
+                    }
+                }
+                if (colored == 0) {
+                    std::printf("FAIL: the render is grey (R = G = B everywhere): the DNG file was not demosaiced by LibRaw\n");
+                    ++failures;
+                } else {
+                    std::printf("ok   demosaiced: %ld pixels with R, G, B not all equal (%s)\n", colored, comps.c_str());
+                }
             }
         }
         outputClip->releaseOutputImage();
@@ -538,7 +554,8 @@ main(int argc, char** argv)
     // a diagnostic: if the plug-in binary stays mapped (e.g. its GNU unique symbols make dlclose() a no-op on Linux),
     // the runtime stays loaded whatever the pin does
     const std::string binaryAfterUnload = mappedPluginBinary();
-    std::printf("plug-in binary after the unload: %s\n", binaryAfterUnload.empty() ? "unmapped" : ("still mapped: " + binaryAfterUnload).c_str());
+    std::printf("plug-in binary after the unload: %s\n",
+                binaryAfterUnload.empty() ? "unmapped" : (binaryAfterUnload == "?") ? "unknown" : ("still mapped: " + binaryAfterUnload).c_str());
     std::printf("threads: %d at start, %d after the render, %d after the unload (-1: not counted); OpenMP runtime: "
                 "%s after the render, %s after the unload\n",
                 threadsAtStart, threadsAfterRender, threadCount(), runtimeAfterRender.empty() ? "none" : runtimeAfterRender.c_str(),

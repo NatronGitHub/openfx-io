@@ -58,15 +58,15 @@ int liveOIIOInstances();
 void OIIOPluginLoaded(const std::string& pluginUID);
 void OIIOPluginUnloaded(const std::string& pluginUID);
 
-// Keep the OpenMP runtime loaded until the process exits, if one is loaded (#239). LibRaw, which OpenImageIO uses for
+// Keep the OpenMP runtimes loaded until the process exits, if any is loaded (#239). LibRaw, which OpenImageIO uses for
 // RAW files, uses OpenMP (Linux: libgomp; MS Windows, MSYS2: libgomp-1.dll; not MacPorts' LibRaw), and its idle
 // worker threads outlive the render: if unloading IO.ofx (dlclose(), FreeLibrary()) also unloaded the OpenMP
-// runtime, they would run unmapped code. Only the runtime is pinned (as openfx-gmic pins vcomp140.dll): IO.ofx itself
-// still unloads. Called by ReadOIIO's load action, when the runtime is usually already loaded as a dependency of
-// IO.ofx (through OpenImageIO and LibRaw), and after each decode: an OpenImageIO built with non-embedded plug-ins
-// dlopen()s its raw reader, and with it LibRaw and OpenMP, on the first RAW read. Thread-safe. Once a runtime was
-// pinned it does nothing more (an atomic check); until then it tries again, which is cheap. Nothing is done if no
-// OpenMP runtime is loaded (e.g. MacPorts' LibRaw).
+// runtime, they would run unmapped code. Only the runtime is pinned (as openfx-gmic pins vcomp140.dll), not IO.ofx:
+// on MS Windows, IO.ofx is still unloaded (on Linux and macOS, it currently stays mapped after dlclose() anyway,
+// #264). Called by ReadOIIO's load action, when the runtime is usually already loaded as a dependency of IO.ofx
+// (through OpenImageIO and LibRaw), and after each RAW read: an OpenImageIO built with non-embedded plug-ins
+// dlopen()s its raw reader, and with it LibRaw and OpenMP, on the first RAW read. Every runtime present is pinned, once.
+// Thread-safe. Nothing is done if no OpenMP runtime is loaded (e.g. MacPorts' LibRaw).
 void pinOpenMPRuntime();
 
 #endif /* IO_GLOBAL_OIIO_H*/

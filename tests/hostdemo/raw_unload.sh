@@ -94,7 +94,7 @@ for i in $(seq 1 "$RUNS"); do
     elif ! grep -q "^ok   render" "$log" || ! grep -q "^exiting after the unload: OK" "$log"; then
         echo "FAIL run $i: no render, or no exit message"
     else
-        echo "ok   run $i: $(grep '^threads:' "$log"); $(grep '^plug-in binary' "$log")"
+        echo "ok   run $i: $(grep '^ok   demosaiced' "$log" | sed 's/^ok   //'); $(grep '^threads:' "$log"); $(grep '^plug-in binary' "$log")"
         grep -q "^note:" "$log" && echo "     $(grep '^note:' "$log")"
         continue
     fi
