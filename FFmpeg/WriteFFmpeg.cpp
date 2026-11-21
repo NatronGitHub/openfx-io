@@ -1909,6 +1909,8 @@ private:
     float _pixelAspectRatio;
     bool _isOpen; // Flag for the configuration state of the FFmpeg components.
     uint64_t _pts_counter;
+    int64_t _lastDts; // the dts of the last video packet written, in the codec time base (AV_NOPTS_VALUE if none)
+    int64_t _packetsWritten; // the number of video packets written since beginEncode()
     WriterError _error;
     AVFormatContext* _formatContext;
     SwsContext* _convertCtx;
@@ -2184,6 +2186,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _pixelAspectRatio(1.)
     , _isOpen(false)
     , _pts_counter(0)
+    , _lastDts(AV_NOPTS_VALUE)
+    , _packetsWritten(0)
     , _error(IGNORE_FINISH)
     , _formatContext(nullptr)
     , _convertCtx(nullptr)
@@ -4743,6 +4747,27 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     break;
                 }
 
+                // libx265 leaves the dts of the first packets uninitialized if fewer frames were encoded than its
+                // B-frame delay (bframes ? (b-pyramid ? 2 : 1) : 0, so 2 by default): x265's Encoder sets
+                // m_bframeDelayTime only when frame number m_bframeDelay is received (x265 4.2,
+                // source/encoder/encoder.cpp:1791-1792), but the dts of the first m_bframeDelay packets is
+                // m_reorderedPts - m_bframeDelayTime (encoder.cpp:2444-2446), and m_bframeDelayTime is not
+                // initialized (encoder.h:186). libavcodec/libx265.c copies it (pkt->dts = x265pic_out->dts). With
+                // 1 or 2 frames, the dts is then garbage, which the mov muxer rejects ("pts/dts pair unsupported",
+                // libavformat/movenc.c: ff_mov_write_packet()), or that would delay the start of the video.
+                // A dts can not be after the pts, nor more frames before it than frames were sent to the encoder
+                // (the input pts are 0, 1, 2... in the codec time base): use the pts (there are no B-frames with
+                // fewer than 3 frames), or the next tick after the previous dts.
+                if ((pkt->pts != AV_NOPTS_VALUE) && (pkt->dts != AV_NOPTS_VALUE) && (pkt->pts >= 0) &&
+                    ((pkt->dts > pkt->pts) || (pkt->dts < pkt->pts - (int64_t)_pts_counter))) {
+                    const int64_t dts = (_lastDts == AV_NOPTS_VALUE) ? pkt->pts : (std::min)(pkt->pts, _lastDts + 1);
+                    av_log(avCodecContext, AV_LOG_WARNING, "invalid dts %" PRId64 " for pts %" PRId64 ", using %" PRId64 "\n", (int64_t)pkt->dts, (int64_t)pkt->pts, dts);
+                    pkt->dts = dts;
+                }
+                if ((int64_t)(pkt->dts) != AV_NOPTS_VALUE) {
+                    _lastDts = pkt->dts;
+                }
+
                 // Each of these packets should consist of a single frame therefore each one
                 // must have a PTS in order to correctly set the frame-rate
                 if ((int64_t)(pkt->dts) != AV_NOPTS_VALUE) {
@@ -4773,6 +4798,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     break;
                 }
                 wrotePacket = true;
+                ++_packetsWritten;
             }
 
             if (error) {
@@ -5438,6 +5464,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     }
 
     _isOpen = true;
+    _lastDts = AV_NOPTS_VALUE;
+    _packetsWritten = 0;
     _error = CLEANUP;
 } // WriteFFmpegPlugin::beginEncode
 
@@ -5679,12 +5707,19 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         allEncoded = (_nextFrameToEncode != INT_MIN) && (_nextFrameToEncode > _lastFrameToEncode);
     }
 
-    bool flushFrames = true;
-    while (flushFrames) {
-        // Continue to write the audio/video interleave while there are still
-        // frames in the video and/or audio encoder queues, without queuing any
-        // new data to encode. This is ffmpeg specific.
-        flushFrames = !writeToFile(_formatContext, true, -1) ? true : false;
+    // Continue to write the audio/video interleave while there are still
+    // frames in the video and/or audio encoder queues, without queuing any
+    // new data to encode. This is ffmpeg specific.
+    // writeToFile() returns 0 while it writes packets, -10 once the encoder is drained, and another negative value
+    // if encoding or writing a packet failed (writeVideo() then set the persistent message, e.g. "Cannot write
+    // frame: ..."): the file is still finalized and closed, but the render fails.
+    int flushResult = 0;
+    while (flushResult == 0) {
+        flushResult = writeToFile(_formatContext, true, -1);
+    }
+    const bool flushFailed = (flushResult != -10);
+    if (flushFailed && (_error == SUCCESS)) {
+        _error = CLEANUP;
     }
 #if OFX_FFMPEG_AUDIO
     // The audio is written in ~0.5s chunks only when the video stream position
@@ -5716,6 +5751,10 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
 
     _pts_counter = 0;
 
+    if (flushFailed) {
+        // the error of the encoder or of the muxer is the persistent message
+        throwSuiteStatusException(kOfxStatFailed);
+    }
     if ((error >= 0) && (_error == SUCCESS) && (closeError < 0)) {
         // The file is closed after the trailer is written, and the last data may only be written now
         // (e.g. on a network share). Not reported if writing a frame failed (_error is CLEANUP), which
@@ -5730,6 +5769,11 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         char szError[1024] = { 0 };
         av_strerror(error, szError, sizeof(szError));
         setPersistentMessage(Message::eMessageError, "", string("Unable to finalize the file: ") + szError);
+        throwSuiteStatusException(kOfxStatFailed);
+    }
+    if ((_error == SUCCESS) && allEncoded && (_packetsWritten == 0)) {
+        // issue #129: every frame was rendered, but nothing was written to the file
+        setPersistentMessage(Message::eMessageError, "", "No frame was written to the file");
         throwSuiteStatusException(kOfxStatFailed);
     }
     if ((closeError >= 0) && (_error == SUCCESS) && allEncoded && !_encodeWarnings.empty()) {

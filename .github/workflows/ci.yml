@@ -370,9 +370,11 @@ jobs:
           install: >-
             git base-devel unzip
           # pacboy's "name:p" is ${MINGW_PACKAGE_PREFIX}-name for the msystem above: no hard-coded environment
+          # (gdb: tests/hostdemo/hang.sh dumps the stacks of a hung hostDemo or reader_window, #244)
           pacboy: >-
             cc:p pkgconf:p python:p cmake:p ninja:p
             openimageio:p opencolorio:p openexr:p libraw:p ffmpeg:p seexpr:p libpng:p fmt:p expat:p
+            gdb:p
       - name: Build (release, C++17, CMake)
         run: |
           set -eo pipefail
