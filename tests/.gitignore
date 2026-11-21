@@ -67,6 +67,11 @@
 /reader_window_host
 /reader_window_host.dSYM/
 /.reader_window_host/
+/exit_without_unload
+/exit_without_unload.dSYM/
+/.exit_without_unload/
+/oiio_threadpool_test_tsan
+/oiio_threadpool_test_tsan.dSYM/
 /png_corrupt_test
 /png_corrupt_test.dSYM/
 /.png_corrupt/

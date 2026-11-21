@@ -23,10 +23,6 @@
 #include <mutex>
 #include <set>
 
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-#include <IlmThreadPool.h>
-#endif
-
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imageio.h>
@@ -54,29 +50,16 @@ loadedOIIOPlugins()
     return *s;
 }
 
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-// The number of threads of OpenEXR's global pool when shutdownOIIOThreads() stopped it (0: it did not), restored by
-// initOIIOThreads() after the next load: OpenImageIO only sets it when its exr_threads attribute changes, so it
-// would never start it again. Locked by loadedOIIOPluginsMutex().
-int gExrThreadsToRestore = 0;
-#endif
+// The number of live instances of the OIIO plug-ins (OIIOThreadsUser objects). Locked by loadedOIIOPluginsMutex().
+int gLiveOIIOInstances = 0;
 } // namespace
 
-void
-initOIIOThreads()
+// Set OpenImageIO's threading attributes, which starts its thread pool: for the first live instance, with
+// loadedOIIOPluginsMutex() locked. (OpenEXR's pool, which OpenImageIO's OpenEXR reader and writer use, is counted
+// separately, by ExrThreadsUser, with ReadEXR and WriteEXR.)
+static void
+startOIIOThreads()
 {
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    {
-        std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
-        if (gExrThreadsToRestore > 0) {
-            // unless someone else started it since
-            if (IlmThread::ThreadPool::globalThreadPool().numThreads() == 0) {
-                IlmThread::ThreadPool::globalThreadPool().setNumThreads(gExrThreadsToRestore);
-            }
-            gExrThreadsToRestore = 0;
-        }
-    }
-#endif
     // See https://github.com/lgritz/oiio/commit/7f7934fafc127a9f3bc51b6aa5e2e77b1b8a26db
     // We want OpenEXR to use all threads, while we do not want OIIO to use all threads for its image
     // processing functionalities w/o letting the host know about it.
@@ -106,22 +89,16 @@ initOIIOThreads()
     }
 }
 
-// Stop OpenImageIO's thread pool (and, on MS Windows, OpenEXR's): only called by OIIOPluginUnloaded(), once the
-// last OIIO plug-in is unloaded, with loadedOIIOPluginsMutex() locked. If the plug-ins are loaded again (a host may
-// unload the binary after its plug-in scan and load it again when a plug-in is used, and the binary, or
-// OpenImageIO, may stay in memory in between), initOIIOThreads(), called by every OIIO plug-in instance, starts
-// the pools again.
+// Stop OpenImageIO's thread pool, with loadedOIIOPluginsMutex() locked: when the
+// last live instance of the OIIO plug-ins is destroyed (OIIOThreadsUser), and, as a fallback, when the last OIIO
+// plug-in is unloaded (OIIOPluginUnloaded()). Stopping a stopped pool does nothing. The next instance starts the
+// pools again (startOIIOThreads()).
 static void
 shutdownOIIOThreads()
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    // Kill all threads otherwise when the static global thread pool joins it threads there is a deadlock on Mingw
-    // (initOIIOThreads() restores them if the plug-ins are loaded again)
-    const int exrThreads = IlmThread::ThreadPool::globalThreadPool().numThreads();
-    if (exrThreads > 0) {
-        gExrThreadsToRestore = exrThreads;
-    }
-    IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
+    // (OpenEXR's pool is stopped by the last ExrThreadsUser, and by OIIOPluginUnloaded() if none is alive,
+    // ExrThreads.h: not here, while ReadEXR or WriteEXR instances may still use it, #132)
 
     // TODO: Remove the code in the following #if block once all platforms have been updated to an OpenImageIO
     // version that defines default_thread_pool_shutdown().
@@ -157,5 +134,36 @@ OIIOPluginUnloaded(const std::string& pluginUID)
         // before the binary containing the plug-in is unloaded", after "all instances of a plugin have been destroyed"):
         // stop the pools now, their threads would deadlock if they were joined while the binary is unloaded (MS Windows)
         shutdownOIIOThreads();
+        // and OpenEXR's, unless ReadEXR or WriteEXR instances use it (#132): OpenImageIO may have started it outside
+        // of any instance
+        stopUnusedExrThreads();
     }
+}
+
+OIIOThreadsUser::OIIOThreadsUser()
+{
+    std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
+    if (++gLiveOIIOInstances == 1) {
+        startOIIOThreads();
+    }
+}
+
+OIIOThreadsUser::~OIIOThreadsUser()
+{
+    std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
+    if (--gLiveOIIOInstances == 0) {
+        // the last live instance: stop the pools now, while the host still runs normally. A host may exit without
+        // sending kOfxActionUnload (it never unloads the binary), and OpenImageIO requires its pools to be shut down
+        // before exit: "Failing to call `OIIO::shutdown` could lead to a sporadic dead-lock during application
+        // shutdown on certain platforms such as Windows" (imageio.h, OpenImageIO 3.2.2) (#250)
+        shutdownOIIOThreads();
+    }
+}
+
+int
+liveOIIOInstances()
+{
+    std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
+
+    return gLiveOIIOInstances;
 }

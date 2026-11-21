@@ -40,6 +40,7 @@ GCC_DIAG_ON(deprecated)
 
 #include "GenericOCIO.h"
 #include "GenericWriter.h"
+#include "ExrThreads.h"
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -128,6 +129,10 @@ depthNameToInt(const string& name)
 
 class WriteEXRPlugin
     : public GenericWriterPlugin {
+    // counts this instance among the users of OpenEXR's global thread pool: the first one starts it, the last one
+    // stops it on MS Windows (ExrThreads.h). (A member of this class: the base class doesn't use the pool.)
+    ExrThreadsUser _exrThreads;
+
 public:
     WriteEXRPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
 
@@ -309,8 +314,9 @@ WriteEXRPlugin::onOutputFileChanged(const string& /*filename*/,
     }
 }
 
-// unload: OpenEXR's global thread pool is not stopped (see ReadEXRPluginFactory::unload())
-mDeclareWriterPluginFactory(WriteEXRPluginFactory, {}, false);
+// unload: OpenEXR's global thread pool is stopped on MS Windows if no instance of its users is alive (see
+// ReadEXRPluginFactory::unload())
+mDeclareWriterPluginFactory(WriteEXRPluginFactory, { stopUnusedExrThreads(); }, false);
 void
 WriteEXRPluginFactory::load()
 {

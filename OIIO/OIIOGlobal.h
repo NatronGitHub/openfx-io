@@ -22,14 +22,37 @@
 
 #include <string>
 
-// Set OpenImageIO's threading attributes (and start its thread pool): called by the OIIO plug-ins' instances.
-void initOIIOThreads();
+#include "ExrThreads.h"
+
+// A member of each instance of the OIIO plug-ins (ReadOIIO, WriteOIIO, OIIOText, OIIOResize), which share
+// OpenImageIO's thread pool. The live instances are counted: the first one sets OpenImageIO's threading attributes,
+// which starts the pool, and the destruction of the last one stops it (OIIO::shutdown()), so that a host that exits
+// without kOfxActionUnload (the spec allows it if it never unloads the binary) doesn't leave its threads to
+// OpenImageIO's static destructors, which may dead-lock at exit on MS Windows (#250). The next instance starts it
+// again. Thread-safe. It also holds an ExrThreadsUser: OpenImageIO's OpenEXR reader and writer use OpenEXR's pool,
+// which is counted with ReadEXR's and WriteEXR's instances (ExrThreads.h).
+class OIIOThreadsUser
+{
+public:
+    OIIOThreadsUser();
+    ~OIIOThreadsUser();
+
+private:
+    ExrThreadsUser _exrThreads; // (constructed before, and destroyed after, the body of the constructor and destructor)
+
+    OIIOThreadsUser(const OIIOThreadsUser&); // not copyable
+    OIIOThreadsUser& operator=(const OIIOThreadsUser&);
+};
+
+// The number of live OIIOThreadsUser objects (for the tests)
+int liveOIIOInstances();
 
 // The OIIO plug-ins of this binary (ReadOIIO, WriteOIIO, OIIOText, OIIOResize) share OpenImageIO's thread pool
 // (and, on MS Windows, OpenEXR's IlmThread pool), which must be stopped before the binary is unloaded. Each
 // plug-in calls OIIOPluginLoaded() at the end of its load action, with its unique identifier (getUID(): one per
-// plug-in version), and OIIOPluginUnloaded() in its unload action: the pools are stopped by the unload of the
-// last loaded OIIO plug-in, not by the first one, while the others may still use them (#118).
+// plug-in version), and OIIOPluginUnloaded() in its unload action: the pools are also stopped by the unload of the
+// last loaded OIIO plug-in (not by the first one, while the others may still use them, #118), in case an instance
+// is still alive then.
 // Thread-safe. A plug-in loaded twice is counted once, and the unload of a plug-in that is not loaded (e.g. after
 // its load failed) does not stop the pools while other OIIO plug-ins are loaded.
 void OIIOPluginLoaded(const std::string& pluginUID);

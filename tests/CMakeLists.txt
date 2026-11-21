@@ -190,14 +190,14 @@ if(TARGET io_tests_ofx)
   set(_io_plugin_srcs
     ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/WriteFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp ${S}/FFmpeg/PixelFormat.cpp
     ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/WriteOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp
-    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
+    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
     ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
     ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp
     ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp)
   # GenericReader and its in-repo dependencies only (READER_HOOKS_SRCS)
   set(_io_reader_srcs
-    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/GenericOCIO.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
+    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericOCIO.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
     ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp)
   # OpenGL render support, as in ../Makefile.master (OCIOPluginBase.cpp needs it): OCIO_CDL_CXXFLAGS and the
@@ -269,6 +269,13 @@ if(TARGET io_tests_ofx)
   io_test_program(oiio_threadpool_test OFX SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs} ${S}/OIIO/OIIOResize.cpp
                   INCLUDES ${S}/openfx/Support/Plugins/include)
   io_test(test-oiio-threads ENV "${_io_ocio_env}" COMMAND oiio_threadpool_test)
+  if(IO_TESTS_SANITIZERS)
+    # test-oiio-threads-tsan: the same with ThreadSanitizer (the instances are counted from several threads, #250)
+    io_test_program(oiio_threadpool_test_tsan OFX THREADS SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs}
+                    ${S}/OIIO/OIIOResize.cpp INCLUDES ${S}/openfx/Support/Plugins/include SANITIZE -fsanitize=thread)
+    io_test(test-oiio-threads-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+            COMMAND oiio_threadpool_test_tsan)
+  endif()
 
   # test-oiio-edge: OIIOResize and OIIOText with degenerate inputs, with OpenGL (OIIOText's interact)
   io_test_program(oiio_edge_test OFX SOURCES ${T}/oiio_edge_test.cpp ${_io_plugin_srcs} ${S}/OIIO/OIIOResize.cpp
@@ -340,14 +347,34 @@ if(TARGET io_tests_ofx)
             COMMAND "${IO_BASH}" "${T}/hostdemo/reader_window.sh" $<TARGET_FILE:reader_window_host>
                     "${B}/.reader_window_host/plugins" "${B}/.reader_window_host/work")
     set_tests_properties(test-reader-window-host PROPERTIES SKIP_RETURN_CODE 77)
+    # test-exit-without-unload: a host that renders ReadOIIO, destroys its instance and exits without
+    # kOfxActionUnload, 10 times, must exit (#250); linked with OpenImageIO, whose pool it also checks
+    add_executable(exit_without_unload ${T}/hostdemo/exit_without_unload.cpp "${_io_hd}/hostDemoClipInstance.cpp"
+                   "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
+                   "${_io_hd}/hostDemoParamInstance.cpp")
+    target_compile_options(exit_without_unload PRIVATE -O0 -g)
+    target_include_directories(exit_without_unload PRIVATE "${_io_hd}")
+    target_link_libraries(exit_without_unload PRIVATE OfxHost OpenImageIO::OpenImageIO)
+    if(IO_TESTS_TBBMALLOC_LIBRARY)
+      # (the oneTBB exit crash of programs that link OpenImageIO, see io_tests_ofx)
+      target_link_libraries(exit_without_unload PRIVATE "${IO_TESTS_TBBMALLOC_LIBRARY}")
+    endif()
+    set_target_properties(exit_without_unload PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
+                          CXX_EXTENSIONS OFF)
+    add_dependencies(exit_without_unload io_reader_window_plugins)
+    io_test(test-exit-without-unload ENV "${_io_ocio_env}"
+            COMMAND "${IO_BASH}" "${T}/hostdemo/exit_without_unload.sh" $<TARGET_FILE:exit_without_unload>
+                    "${B}/.reader_window_host/plugins" "${B}/.exit_without_unload")
+    set_tests_properties(test-exit-without-unload PROPERTIES SKIP_RETURN_CODE 77)
   else()
     message(STATUS "tests: no test-reader-window-host (it needs HostSupport, e.g. IO_HOSTDEMO_TESTS=ON, and bash)")
   endif()
 
   if(_io_t_exr)
     # test-exr: ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders
-    set(_io_exr_srcs ${T}/exr_read_test.cpp ${S}/EXR/ReadEXR.cpp ${_io_reader_srcs})
-    io_test_program(exr_read_test OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR)
+    # (with OIIOGlobal.cpp: the test creates OIIO plug-in instances' OIIOThreadsUser while ReadEXR renders, #250)
+    set(_io_exr_srcs ${T}/exr_read_test.cpp ${S}/EXR/ReadEXR.cpp ${S}/OIIO/OIIOGlobal.cpp ${_io_reader_srcs})
+    io_test_program(exr_read_test OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO)
     io_test(test-exr DIR "${B}/.exr_read" ENV "${_io_ocio_env}" COMMAND $<TARGET_FILE:exr_read_test> "${B}/.exr_read")
 
     # test-ofx14 and test-ofx14-scan: every plug-in of IO.ofx (the sources of ../IO/Makefile; the SeExpr and PNG ones
@@ -360,7 +387,7 @@ if(TARGET io_tests_ofx)
       ${S}/PFM/ReadPFM.cpp ${S}/PFM/WritePFM.cpp
       ${S}/OCIO/OCIOColorSpace.cpp ${S}/OCIO/OCIODisplay.cpp ${S}/OCIO/OCIOCDLTransform.cpp ${S}/OCIO/OCIOFileTransform.cpp
       ${S}/OCIO/OCIOLogConvert.cpp ${S}/OCIO/OCIOLookTransform.cpp ${S}/OCIO/OCIOPluginBase.cpp
-      ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
+      ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
       ${S}/IOSupport/GenericOCIOOpenGL.cpp ${S}/IOSupport/glsl.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
       ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp
       ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
@@ -403,19 +430,19 @@ if(TARGET io_tests_ofx)
       io_test(test-ofx14-scan-asan-full DIR "${B}/.ofx14scanasanfull" ENV "${_io_ocio_env}"
               COMMAND ${_p} --full --scan "${B}/.ofx14scanasanfull")
       # test-exr-tsan: test-exr with ThreadSanitizer
-      io_test_program(exr_read_test_tsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR SANITIZE -fsanitize=thread)
+      io_test_program(exr_read_test_tsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO SANITIZE -fsanitize=thread)
       io_test(test-exr-tsan DIR "${B}/.exr_read_tsan" ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> "${B}/.exr_read_tsan")
       # test-exr-ubsan: with UndefinedBehaviorSanitizer, stopping at the first error, with an allocator that fills new
       # memory with a pattern (tests/Makefile's test-exr-ubsan)
-      io_test_program(exr_read_test_ubsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR
+      io_test_program(exr_read_test_ubsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       SANITIZE -fsanitize=undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all)
       io_test(test-exr-ubsan DIR "${B}/.exr_read_ubsan" ENV "${_io_ocio_env}" MallocPreScribble=1 MallocScribble=1
               MALLOC_PERTURB_=170 COMMAND $<TARGET_FILE:exr_read_test_ubsan> "${B}/.exr_read_ubsan")
       # test-exr-tsan-debug: test-exr and test-reader-hooks, DEBUG builds (the Support library's property validation
       # and logging) with ThreadSanitizer
       set(_io_tsan_env "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 abort_on_error=0 $ENV{TSAN_OPTIONS}")
-      io_test_program(exr_read_test_tsan_debug OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR DEFINITIONS DEBUG
+      io_test_program(exr_read_test_tsan_debug OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO DEFINITIONS DEBUG
                       SANITIZE -fsanitize=thread)
       io_test(test-exr-tsan-debug DIR "${B}/.exr_read_tsan_debug" ENV ${_io_tsan_env}
               COMMAND $<TARGET_FILE:exr_read_test_tsan_debug> "${B}/.exr_read_tsan_debug")
