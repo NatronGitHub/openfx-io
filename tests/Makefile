@@ -398,8 +398,9 @@ exit_without_unload: $(EWU_HOST_SRCS)
 	$(CXX) $(RW_HOST_CXXFLAGS) $(shell $(PKGCONF) --cflags OpenImageIO) $(filter %.cpp,$^) $(RW_HOST_LIBS) $(shell $(PKGCONF) --libs OpenImageIO) $(TBBMALLOC_LIBS) -o $@
 
 # a host that renders a DNG file with ReadOIIO (LibRaw: OpenMP on Linux and MS Windows), unloads the plug-ins, keeps
-# running, then exits, 5 times: it must not crash (#239; with the bundle of test-reader-window-host; not linked with
-# OpenImageIO, LibRaw or OpenMP, so that nothing else keeps them loaded)
+# running, then exits, 5 times: the OpenMP runtime loaded after the render must still be loaded after the unload, and
+# no run may crash (#239; with the bundle of test-reader-window-host; not linked with OpenImageIO, LibRaw or OpenMP, so
+# that nothing else keeps them loaded)
 RAW_UNLOAD_SRCS := hostdemo/raw_unload.cpp $(filter-out hostdemo/reader_window.cpp,$(RW_HOST_SRCS))
 raw_unload: $(RAW_UNLOAD_SRCS)
 	$(CXX) $(RW_HOST_CXXFLAGS) $(filter %.cpp,$^) $(RW_HOST_LIBS) -o $@

@@ -1,6 +1,9 @@
 #!/bin/bash
 # Run raw_unload (raw_unload.cpp) several times: a host that renders a DNG file with ReadOIIO (LibRaw, which uses
-# OpenMP on Linux and MS Windows), unloads the plug-ins, keeps running, then exits, must not crash (#239).
+# OpenMP on Linux and MS Windows), unloads the plug-ins, keeps running, then exits (#239). Each run must not crash,
+# the render must be demosaiced, and an OpenMP runtime loaded after the render must still be loaded after the unload
+# (ReadOIIO pins it). With IO_HOSTDEMO_STRICT=1 on Linux and MS Windows, a run where no OpenMP runtime was loaded fails:
+# the test would then exercise nothing (e.g. if LibRaw were built without OpenMP).
 #
 # Usage: tests/hostdemo/raw_unload.sh <raw_unload> <dir with the bundle> [work dir]
 # Environment:
@@ -9,7 +12,8 @@
 #   RAW_UNLOAD_TIMEOUT   seconds per run (default 120)
 #   OMP_NUM_THREADS      default 4: LibRaw's OpenMP regions use several threads
 #   OMP_WAIT_POLICY      default active: the idle OpenMP workers keep running the runtime's code
-#   IO_HOSTDEMO_STRICT   1 (as in CI): a missing bundle fails instead of skipping
+#   IO_HOSTDEMO_STRICT   1 (as in CI): a missing bundle fails instead of skipping, and so does a run without an OpenMP
+#                        runtime on Linux and MS Windows
 # Exit status: 0 on success, 1 on failure, 77 if the bundle is missing (1 with IO_HOSTDEMO_STRICT=1).
 set -o pipefail
 
@@ -78,6 +82,8 @@ for i in $(seq 1 "$RUNS"); do
     wait $watchdog 2> /dev/null
     if [ $hung -eq 1 ]; then
         echo "FAIL run $i: timeout (${TIMEOUT}s)"
+    elif [ "$STRICT" = 1 ] && [ "$(uname -s)" != Darwin ] && grep -q "^note: no OpenMP runtime" "$log"; then
+        echo "FAIL run $i: no OpenMP runtime was loaded after the render (IO_HOSTDEMO_STRICT=1, not macOS)"
     elif grep -q "^FAIL" "$log"; then
         echo "FAIL run $i: $(grep '^FAIL' "$log" | head -1)"
     elif [ $status -ne 0 ]; then
@@ -88,7 +94,8 @@ for i in $(seq 1 "$RUNS"); do
     elif ! grep -q "^ok   render" "$log" || ! grep -q "^exiting after the unload: OK" "$log"; then
         echo "FAIL run $i: no render, or no exit message"
     else
-        echo "ok   run $i: $(grep '^threads:' "$log")"
+        echo "ok   run $i: $(grep '^threads:' "$log"); $(grep '^plug-in binary' "$log")"
+        grep -q "^note:" "$log" && echo "     $(grep '^note:' "$log")"
         continue
     fi
     failed=$((failed + 1))

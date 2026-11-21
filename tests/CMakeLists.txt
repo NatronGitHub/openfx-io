@@ -367,8 +367,9 @@ if(TARGET io_tests_ofx)
                     "${B}/.reader_window_host/plugins" "${B}/.exit_without_unload")
     set_tests_properties(test-exit-without-unload PROPERTIES SKIP_RETURN_CODE 77)
     # test-raw-unload: a host that renders a DNG file with ReadOIIO (LibRaw: OpenMP on Linux and MS Windows), unloads
-    # the plug-ins, keeps running, then exits, 5 times, must not crash (#239); not linked with OpenImageIO, LibRaw or
-    # OpenMP, so that nothing else keeps them loaded
+    # the plug-ins, keeps running, then exits, 5 times: the OpenMP runtime loaded after the render must still be loaded
+    # after the unload, and no run may crash (#239); not linked with OpenImageIO, LibRaw or OpenMP, so that nothing
+    # else keeps them loaded
     add_executable(raw_unload ${T}/hostdemo/raw_unload.cpp "${_io_hd}/hostDemoClipInstance.cpp"
                    "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
                    "${_io_hd}/hostDemoParamInstance.cpp")

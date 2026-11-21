@@ -153,6 +153,62 @@ findOpenMP(struct dl_phdr_info* info, size_t /*size*/, void* data)
 }
 #endif
 
+#if defined(__linux__)
+int
+findOfx(struct dl_phdr_info* info, size_t /*size*/, void* data)
+{
+    const char* name = info->dlpi_name;
+    const size_t n = name ? std::strlen(name) : 0;
+    if (n > 4 && !std::strcmp(name + n - 4, ".ofx")) {
+        *(std::string*)data = name;
+
+        return 1;
+    }
+
+    return 0;
+}
+#endif
+
+// A plug-in binary (*.ofx) mapped in this process (its path), or "" if none is (or it can't be told)
+std::string
+mappedPluginBinary()
+{
+#if defined(_WIN32)
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) {
+        return std::string();
+    }
+    MODULEENTRY32 me;
+    me.dwSize = sizeof(me);
+    std::string found;
+    for (BOOL ok = Module32First(snap, &me); ok && found.empty(); ok = Module32Next(snap, &me)) {
+        const size_t n = std::strlen(me.szModule);
+        if (n > 4 && !_stricmp(me.szModule + n - 4, ".ofx")) {
+            found = me.szExePath;
+        }
+    }
+    CloseHandle(snap);
+
+    return found;
+#elif defined(__APPLE__)
+    const uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; ++i) {
+        const char* name = _dyld_get_image_name(i);
+        const size_t l = name ? std::strlen(name) : 0;
+        if (l > 4 && !std::strcmp(name + l - 4, ".ofx")) {
+            return name;
+        }
+    }
+
+    return std::string();
+#else
+    std::string found;
+    dl_iterate_phdr(findOfx, &found);
+
+    return found;
+#endif
+}
+
 // The OpenMP runtime loaded in this process (its file name), or "" if none is
 std::string
 openMPRuntime()
@@ -455,6 +511,22 @@ main(int argc, char** argv)
             ++failures;
         } else {
             std::printf("ok   render of (%d,%d,%d,%d)\n", rod.x1, rod.y1, rod.x2, rod.y2);
+            // decoded by LibRaw (OpenImageIO's raw reader) and demosaiced: R, G and B differ. (A TIFF reader would
+            // read the CFA as one grey channel: R = G = B.)
+            MyHost::MyImage* img = outputClip->getOutputImage();
+            long colored = 0;
+            for (int y = rod.y1; y < rod.y2; ++y) {
+                for (int x = rod.x1; x < rod.x2; ++x) {
+                    const float* p = reinterpret_cast<const float*>(img->getPixelData(x, y));
+                    colored += (std::memcmp(&p[0], &p[1], sizeof(float)) != 0 || std::memcmp(&p[1], &p[2], sizeof(float)) != 0) ? 1 : 0;
+                }
+            }
+            if (colored == 0) {
+                std::printf("FAIL: the render is grey (R = G = B everywhere): the DNG file was not demosaiced by LibRaw\n");
+                ++failures;
+            } else {
+                std::printf("ok   demosaiced: %ld pixels with R, G, B not all equal\n", colored);
+            }
         }
         outputClip->releaseOutputImage();
         threadsAfterRender = threadCount();
@@ -463,12 +535,18 @@ main(int argc, char** argv)
     // the instance is destroyed: unload the plug-ins (kOfxActionUnload, and the binary)
     OFX::Host::PluginCache::clearPluginCache();
     const std::string runtimeAfterUnload = openMPRuntime();
+    // a diagnostic: if the plug-in binary stays mapped (e.g. its GNU unique symbols make dlclose() a no-op on Linux),
+    // the runtime stays loaded whatever the pin does
+    const std::string binaryAfterUnload = mappedPluginBinary();
+    std::printf("plug-in binary after the unload: %s\n", binaryAfterUnload.empty() ? "unmapped" : ("still mapped: " + binaryAfterUnload).c_str());
     std::printf("threads: %d at start, %d after the render, %d after the unload (-1: not counted); OpenMP runtime: "
                 "%s after the render, %s after the unload\n",
                 threadsAtStart, threadsAfterRender, threadCount(), runtimeAfterRender.empty() ? "none" : runtimeAfterRender.c_str(),
                 runtimeAfterUnload.empty() ? "none" : runtimeAfterUnload.c_str());
     // its idle workers outlive the render: if the runtime was unloaded with IO.ofx, they run unmapped code (#239)
-    if (!runtimeAfterRender.empty() && runtimeAfterUnload.empty()) {
+    if (runtimeAfterRender.empty()) {
+        std::printf("note: no OpenMP runtime was loaded after the render: the pin is not exercised\n");
+    } else if (runtimeAfterUnload.empty()) {
         std::printf("FAIL: the OpenMP runtime (%s) was unloaded with the plug-ins\n", runtimeAfterRender.c_str());
         ++failures;
     }

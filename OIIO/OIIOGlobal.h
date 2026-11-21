@@ -62,8 +62,11 @@ void OIIOPluginUnloaded(const std::string& pluginUID);
 // RAW files, uses OpenMP (Linux: libgomp; MS Windows, MSYS2: libgomp-1.dll; not MacPorts' LibRaw), and its idle
 // worker threads outlive the render: if unloading IO.ofx (dlclose(), FreeLibrary()) also unloaded the OpenMP
 // runtime, they would run unmapped code. Only the runtime is pinned (as openfx-gmic pins vcomp140.dll): IO.ofx itself
-// still unloads. Called by ReadOIIO's load action, when the runtime is already loaded as a dependency of IO.ofx (through
-// OpenImageIO and LibRaw). Thread-safe, and only done once; nothing is done if no OpenMP runtime is loaded.
+// still unloads. Called by ReadOIIO's load action, when the runtime is usually already loaded as a dependency of
+// IO.ofx (through OpenImageIO and LibRaw), and after each decode: an OpenImageIO built with non-embedded plug-ins
+// dlopen()s its raw reader, and with it LibRaw and OpenMP, on the first RAW read. Thread-safe. Once a runtime was
+// pinned it does nothing more (an atomic check); until then it tries again, which is cheap. Nothing is done if no
+// OpenMP runtime is loaded (e.g. MacPorts' LibRaw).
 void pinOpenMPRuntime();
 
 #endif /* IO_GLOBAL_OIIO_H*/

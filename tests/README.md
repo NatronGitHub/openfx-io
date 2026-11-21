@@ -407,8 +407,18 @@ a host built on HostSupport, not linked with OpenImageIO, LibRaw or OpenMP (so t
 and runs it 5 times (`hostdemo/raw_unload.sh`, with `OMP_NUM_THREADS=4` and `OMP_WAIT_POLICY=active`, and a 120 s
 watchdog each) with the bundle of `test-reader-window-host`. It renders a 640x480 DNG file with ReadOIIO, destroys the
 instance, unloads the plug-ins (kOfxActionUnload, then `dlclose()` or `FreeLibrary()`), keeps running for 3 s, and
-exits: no run may crash. LibRaw's demosaic uses OpenMP on Linux (libgomp) and MS Windows (MSYS2's libgomp-1.dll), whose
-idle workers outlive the render: ReadOIIO's load keeps the OpenMP runtime loaded (`pinOpenMPRuntime()`, OIIOGlobal.h).
+exits. LibRaw's demosaic uses OpenMP on Linux (libgomp) and MS Windows (MSYS2's libgomp-1.dll), whose idle workers
+outlive the render: ReadOIIO keeps the OpenMP runtime loaded (`pinOpenMPRuntime()`, OIIOGlobal.h). Each run checks:
+* the OpenMP runtime loaded after the render is still loaded after the unload (the main check: an unloaded runtime does
+  not always crash within the run); without one, the run prints a note, and fails with `IO_HOSTDEMO_STRICT=1` on Linux
+  and MS Windows, where LibRaw uses OpenMP (so that the test can't silently stop exercising anything);
+* the render was demosaiced by LibRaw (R, G and B not all equal; a TIFF reader would read the CFA as one grey channel);
+* no crash, within the 3 s after the unload or at exit.
+
+It also prints the thread counts (Linux, MS Windows) and whether the plug-in binary is still mapped after the unload: if
+it is (e.g. its GNU unique symbols make `dlclose()` a no-op on Linux), the runtime stays loaded whatever the pin does.
+macOS does not exercise the fix: MacPorts' LibRaw has no OpenMP, and with `WITH_LIBRAW=1` the test bundle links libomp
+itself (`tests/Makefile`), which then stays loaded with or without the pin.
 The DNG file is written by `raw_unload --write-dng`: an uncompressed 16-bit RGGB CFA DNG with the minimal DNG tags,
 which LibRaw reads (OpenImageIO's `raw` reader), since no RAW file can be committed, and a download would make the
 test depend on the network.

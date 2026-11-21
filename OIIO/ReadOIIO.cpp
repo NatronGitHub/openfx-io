@@ -2766,6 +2766,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     } // for (std::size_t i = 0; i < channels.size(); i+=incr) {
 
     img->close();
+    // an OpenImageIO built with non-embedded plug-ins loads LibRaw (and its OpenMP runtime) on the first RAW read:
+    // pin the runtime now if it wasn't loaded at load (cheap once done, #239)
+    pinOpenMPRuntime();
 } // ReadOIIOPlugin::decodePlane
 
 bool
