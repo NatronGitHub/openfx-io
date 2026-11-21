@@ -85,6 +85,10 @@
  *       written as ARGB, and v210 fails with an error
  *     - a project saved with the v308 or v410 encoder, which FFmpeg 9 removed, writes rawvideo with the same tag
  *
+ *   WriteFFmpeg DNxHR 444 on binary RGB noise (issue #267), with the option --dnxhr444-noise (only this test):
+ *     - FFmpeg's dnxhd encoder must not abort (qscale above 255 in its 8-bit mb_qscale): the frames encode, or
+ *       fail with "Cannot encode frame"
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -147,10 +151,13 @@ struct WriterParams {
     // not W x H (the size of the movie, the output RoD at beginSequenceRender), as when Natron changes the
     // project format during the render
     int renderW = 0, renderH = 0;
-    // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque)
+    // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque); 3: binaryNoise()
     int pattern = 0;
     // the quantization of colorPattern() (see there)
     int patternQuant = 255;
+    // the frames may fail to encode (and endSequenceRender may fail), with the error "Cannot encode frame"; if they
+    // all encode, the file must be written (#267: what matters is that the encoder does not abort)
+    bool allowEncodeFailure = false;
 };
 
 // The persistent warning of WriteFFmpeg after endSequenceRender (see testWriteFFmpeg()).
@@ -168,6 +175,22 @@ void colorPattern(int x, int r, int t, int W, int H, bool alpha, float* rgba, in
     rgba[1] = q(1. - (double)r / (H - 1));
     rgba[2] = q(0.2 + 0.5 * (double)(x + r) / (W + H - 2) + 0.05 * t);
     rgba[3] = alpha ? q(1. - 0.75 * (double)x / (W - 1)) : 1.f;
+}
+
+// Binary RGB noise (#267): each of R, G and B of each pixel is 0 or 1, from a hash of (x, r, t, channel), so
+// that the image is the same on every run. Opaque.
+void binaryNoise(int x, int r, int t, float* rgba)
+{
+    for (int k = 0; k < 3; ++k) {
+        uint32_t h = (uint32_t)x * 0x9E3779B1u ^ (uint32_t)r * 0x85EBCA77u ^ (uint32_t)t * 0xC2B2AE3Du ^ (uint32_t)k * 0x27D4EB2Fu;
+        h ^= h >> 15;
+        h *= 0x2C1B3C6Du;
+        h ^= h >> 12;
+        h *= 0x297A2D39u;
+        h ^= h >> 15;
+        rgba[k] = (h & 1u) ? 1.f : 0.f;
+    }
+    rgba[3] = 1.f;
 }
 
 // The index of the first option of a choice param whose label contains the given text, or -1.
@@ -291,7 +314,11 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
             if (!wp.frameValues.empty()) v = wp.frameValues[(size_t)(t - 1) % wp.frameValues.size()];
             if (view != 0) v = 1.f - v;
-            if (wp.pattern > 0) {
+            if (wp.pattern == 3) {
+                for (int r = 0; r < rh; ++r) {
+                    for (int x = 0; x < rw; ++x) binaryNoise(x, r, t, &fp[((size_t)r * rw + x) * 4]);
+                }
+            } else if (wp.pattern > 0) {
                 for (int r = 0; r < rh; ++r) {
                     for (int x = 0; x < rw; ++x) colorPattern(x, r, t, rw, rh, wp.pattern > 1, &fp[((size_t)r * rw + x) * 4], wp.patternQuant);
                 }
@@ -307,7 +334,10 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             PropSet a = makeRenderInArgs((double)t, rw, rh);
             pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
             OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-            if (!ok(st)) { std::printf("  FAIL: render frame %d view %d = %d\n", t, view, st); ++rfail; }
+            if (!ok(st)) {
+                std::printf(wp.allowEncodeFailure ? "  render frame %d view %d = %d (a failure is allowed)\n" : "  FAIL: render frame %d view %d = %d\n", t, view, st);
+                ++rfail;
+            }
         }
     }
 
@@ -320,7 +350,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
         OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
+        if (!ok(st) && !(wp.allowEncodeFailure && rfail)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
         std::lock_guard<std::mutex> lock(gMessagesMutex);
         gWarningAfterRender = gPersistentWarning;
     }
@@ -339,6 +369,14 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             return 1;
         }
         std::printf("  PASS (render failed as expected: %s)\n", gPersistentError.c_str());
+        return 0;
+    }
+    if (wp.allowEncodeFailure && rfail) {
+        if (gPersistentError.find("Cannot encode frame") == std::string::npos) {
+            std::printf("  FAIL: %d frames failed to render, without the error \"Cannot encode frame\" (error: \"%s\")\n", rfail, gPersistentError.c_str());
+            return 1;
+        }
+        std::printf("  PASS (the encoder failed cleanly: %s)\n", gPersistentError.c_str());
         return 0;
     }
     if (rfail || sz <= 0) { std::printf("  FAIL (encode)\n"); return 1; }
@@ -2232,11 +2270,35 @@ int testWriteFFmpegSameFile(const std::string& outFile, int W, int H, int nFrame
     return failures ? 1 : 0;
 }
 
+// #267: FFmpeg's dnxhd encoder stores the qscale of each macroblock in a uint8_t (libavcodec/dnxhdenc.h:101), and its
+// default qmax is 1024: on binary RGB noise in DNxHR 444, rate control picks a qscale above 255, which wraps, and
+// libavcodec aborts (put_bits.h assertion), which kills the host (this test). WriteFFmpeg limits qmax to 256: the
+// frames must encode, or fail with "Cannot encode frame". Run by itself (--dnxhr444-noise), so that an abort only
+// fails this test.
+int testDNxHR444Noise(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg DNxHR 444, binary RGB noise: no abort in FFmpeg's encoder (issue #267) ====\n");
+    WriterParams wp;
+    wp.strings = { { "codecShortName", "dnxhd" } };
+    wp.ints = { { "DNxHDCodecProfile", 0 } }; // DNxHR 444
+    // relies on WriteFFmpeg writing DNxHR 444 as gbrp10: in yuv444p10, this noise only needs a qscale of about 35
+    wp.pattern = 3;
+    wp.allowEncodeFailure = true;
+    const int failures = testWriteFFmpeg(outFile, 256, 120, 2, wp); // 256x120: the smallest DNxHR size
+    std::remove(outFile.c_str());
+    return failures;
+}
+
 int
 main(int argc, char** argv)
 {
     initHost();
     const std::string outFile = (argc > 1) ? argv[1] : "/tmp/iotest/ofx_render_out.mov";
+    if ((argc > 2) && (std::string(argv[2]) == "--dnxhr444-noise")) {
+        const int failures = testDNxHR444Noise(outFile);
+        std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
+        return failures ? 1 : 0;
+    }
     const int W = 128, H = 128, N = 10;
 
     int failures = 0;

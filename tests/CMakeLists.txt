@@ -219,6 +219,8 @@ if(TARGET io_tests_ofx)
   # test-render: WriteFFmpeg encodes, ReadFFmpeg decodes (round trips)
   io_test_program(ofx_render_test OFX SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs})
   io_test(test-render ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov")
+  # test-dnxhr444-noise (#267): DNxHR 444 on binary RGB noise, FFmpeg's dnxhd encoder must not abort
+  io_test(test-dnxhr444-noise ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i267.dnxhr444.mov" --dnxhr444-noise)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})
