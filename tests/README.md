@@ -51,6 +51,7 @@ make test-runscript # RunScript: stderr line splitting (all systems); on MS Wind
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
 make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
 make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
+make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
@@ -400,6 +401,17 @@ a TIFF file (written by `oiiotool`) with ReadOIIO, destroys the instance, and re
 kOfxActionUnload. Each run must exit. When the plug-in uses the program's OpenImageIO (the bundle is not deployed with
 its own copy), and OpenImageIO can stop its pool (2.5.3 or later; not Ubuntu 24.04's 2.4), the pool must have
 `hardware_concurrency() - 1` threads with the instance, and 0 after it was destroyed.
+
+`make test-raw-unload` (ctest `test-raw-unload`, when the build has HostSupport, #239) builds `hostdemo/raw_unload.cpp`,
+a host built on HostSupport, not linked with OpenImageIO, LibRaw or OpenMP (so that nothing else keeps them loaded),
+and runs it 5 times (`hostdemo/raw_unload.sh`, with `OMP_NUM_THREADS=4` and `OMP_WAIT_POLICY=active`, and a 120 s
+watchdog each) with the bundle of `test-reader-window-host`. It renders a 640x480 DNG file with ReadOIIO, destroys the
+instance, unloads the plug-ins (kOfxActionUnload, then `dlclose()` or `FreeLibrary()`), keeps running for 3 s, and
+exits: no run may crash. LibRaw's demosaic uses OpenMP on Linux (libgomp) and MS Windows (MSYS2's libgomp-1.dll), whose
+idle workers outlive the render: ReadOIIO's load keeps the OpenMP runtime loaded (`pinOpenMPRuntime()`, OIIOGlobal.h).
+The DNG file is written by `raw_unload --write-dng`: an uncompressed 16-bit RGGB CFA DNG with the minimal DNG tags,
+which LibRaw reads (OpenImageIO's `raw` reader), since no RAW file can be committed, and a download would make the
+test depend on the network.
 
 ### 1f2. `test-oiio-edge` — OIIOResize and OIIOText with degenerate inputs
 

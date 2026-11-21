@@ -19,9 +19,27 @@
 #include "OIIOGlobal.h"
 
 #include "ofxsMacros.h"
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <set>
+
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#else
+#include <link.h>
+#endif
+#endif
 
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
@@ -167,3 +185,67 @@ liveOIIOInstances()
 
     return gLiveOIIOInstances;
 }
+
+#if !defined(_WIN32) && !defined(__WIN32__) && !defined(WIN32)
+namespace {
+// Is this the path of an OpenMP runtime (GNU libgomp, LLVM libomp, Intel libiomp5)?
+bool
+isOpenMPRuntime(const char* path)
+{
+    if (!path) {
+        return false;
+    }
+    const char* name = std::strrchr(path, '/');
+    name = name ? name + 1 : path;
+
+    return !std::strncmp(name, "libgomp.", 8) || !std::strncmp(name, "libomp.", 7) || !std::strncmp(name, "libiomp5.", 9);
+}
+
+// keep the library of this path loaded until the process exits (the handle is never closed)
+void
+pinLibrary(const char* path)
+{
+    (void)dlopen(path, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
+}
+
+#ifndef __APPLE__
+int
+pinOpenMPCallback(struct dl_phdr_info* info, size_t /*size*/, void* /*data*/)
+{
+    if (isOpenMPRuntime(info->dlpi_name)) {
+        pinLibrary(info->dlpi_name);
+    }
+
+    return 0;
+}
+#endif
+} // namespace
+#endif
+
+void
+pinOpenMPRuntime()
+{
+    static std::once_flag once;
+    std::call_once(once, []() {
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+        // MinGW's libgomp, LLVM's libomp, Intel's libiomp5 and MSVC's vcomp140: GetModuleHandleExW() only finds a
+        // module that is already loaded, and pins it (it stays loaded until the process exits)
+        static const wchar_t* const names[] = { L"libgomp-1.dll", L"libomp.dll", L"libiomp5md.dll", L"vcomp140.dll" };
+        for (const wchar_t* name : names) {
+            HMODULE h;
+            (void)GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, name, &h);
+        }
+#elif defined(__APPLE__)
+        const uint32_t n = _dyld_image_count();
+        for (uint32_t i = 0; i < n; ++i) {
+            const char* path = _dyld_get_image_name(i);
+            if (isOpenMPRuntime(path)) {
+                pinLibrary(path);
+            }
+        }
+#else
+        dl_iterate_phdr(pinOpenMPCallback, NULL);
+#endif
+    });
+}
+

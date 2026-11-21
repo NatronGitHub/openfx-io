@@ -58,4 +58,12 @@ int liveOIIOInstances();
 void OIIOPluginLoaded(const std::string& pluginUID);
 void OIIOPluginUnloaded(const std::string& pluginUID);
 
+// Keep the OpenMP runtime loaded until the process exits, if one is loaded (#239). LibRaw, which OpenImageIO uses for
+// RAW files, uses OpenMP (Linux: libgomp; MS Windows, MSYS2: libgomp-1.dll; not MacPorts' LibRaw), and its idle
+// worker threads outlive the render: if unloading IO.ofx (dlclose(), FreeLibrary()) also unloaded the OpenMP
+// runtime, they would run unmapped code. Only the runtime is pinned (as openfx-gmic pins vcomp140.dll): IO.ofx itself
+// still unloads. Called by ReadOIIO's load action, when the runtime is already loaded as a dependency of IO.ofx (through
+// OpenImageIO and LibRaw). Thread-safe, and only done once; nothing is done if no OpenMP runtime is loaded.
+void pinOpenMPRuntime();
+
 #endif /* IO_GLOBAL_OIIO_H*/

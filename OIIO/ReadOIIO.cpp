@@ -3108,6 +3108,8 @@ ReadOIIOPluginFactory::load()
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());
 #endif
+    // LibRaw's OpenMP runtime must outlive IO.ofx, as its worker threads do (#239)
+    pinOpenMPRuntime();
     // last: only count a successful load (if load throws, the host does not call unload)
     OIIOPluginLoaded(getUID());
 }
