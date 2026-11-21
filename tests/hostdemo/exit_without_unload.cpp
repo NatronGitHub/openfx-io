@@ -31,8 +31,9 @@
  * time 0, destroys the instance, and returns from main() without unloading the plug-ins. The test is that the
  * process exits (tests/hostdemo/exit_without_unload.sh runs it with a timeout).
  * If the plug-in uses the same OpenImageIO library as this program (a bundle that is not deployed with its own
- * copy), it also checks OpenImageIO's default thread pool: hardware_concurrency() - 1 threads while the instance
- * exists, and 0 after it is destroyed, before exit. Exit status: 0 on success.
+ * copy), and OpenImageIO can stop its pool (2.5.3 or later), it also checks OpenImageIO's default thread pool:
+ * hardware_concurrency() - 1 threads while the instance exists, and 0 after it is destroyed, before exit. Exit
+ * status: 0 on success.
  */
 
 #include <cstdio>
@@ -72,6 +73,14 @@
 #include <OpenImageIO/thread.h>
 
 namespace {
+
+// OpenImageIO >= 2.5.3 (or a patched version) can stop its pool (OIIOGlobal.cpp): with an older one (e.g. 2.4, in
+// Ubuntu 24.04), shutdownOIIOThreads() can't, and the pool size after the destruction is not checked
+#if defined(NATRON_OIIO_HAS_DEFAULT_THREAD_POOL_SHUTDOWN) || OIIO_VERSION >= OIIO_MAKE_VERSION(2, 5, 3)
+const bool kHasPoolShutdown = true;
+#else
+const bool kHasPoolShutdown = false;
+#endif
 
 int
 poolSize()
@@ -223,7 +232,11 @@ main(int argc, char** argv)
         sizeWithInstance = poolSize();
     } // the instance is destroyed (kOfxActionDestroyInstance)
     const int sizeAfter = poolSize();
-    if ((expected > 0) && (sizeWithInstance == expected)) {
+    if (!kHasPoolShutdown) {
+        std::printf("note OpenImageIO %s has no default_thread_pool_shutdown(): the pool size is not checked "
+                    "(%d threads with the instance, %d after it was destroyed)\n",
+                    OIIO_VERSION_STRING, sizeWithInstance, sizeAfter);
+    } else if ((expected > 0) && (sizeWithInstance == expected)) {
         // the plug-in uses this program's OpenImageIO
         std::printf("%s OpenImageIO's pool: %d threads with the instance, %d after it was destroyed (0 expected)\n",
                     sizeAfter == 0 ? "ok  " : "FAIL", sizeWithInstance, sizeAfter);

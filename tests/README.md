@@ -397,7 +397,8 @@ It sets `OCIO=test.ocio`.
 (`hostdemo/exit_without_unload.sh`, with a 120 s watchdog each) with the bundle of `test-reader-window-host`: it renders
 a TIFF file (written by `oiiotool`) with ReadOIIO, destroys the instance, and returns from `main()` without
 kOfxActionUnload. Each run must exit. When the plug-in uses the program's OpenImageIO (the bundle is not deployed with
-its own copy), the pool must have `hardware_concurrency() - 1` threads with the instance, and 0 after it was destroyed.
+its own copy), and OpenImageIO can stop its pool (2.5.3 or later; not Ubuntu 24.04's 2.4), the pool must have
+`hardware_concurrency() - 1` threads with the instance, and 0 after it was destroyed.
 
 ### 1f2. `test-oiio-edge` — OIIOResize and OIIOText with degenerate inputs
 
