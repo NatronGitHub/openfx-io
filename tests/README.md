@@ -551,8 +551,8 @@ ReadPNG instance, asks for the Image Info, the RoD and renders it: the RoD (corr
 image data) must fail with a persistent error message that has libpng's message (`libpng error: ...`). It also
 renders an image wider than libpng's limit (1000001 pixels) with WritePNG, which must fail with libpng's message. It
 then reads all the corrupt files 8 more times, and checks that the memory allocated
-(`__sanitizer_get_current_allocated_bytes()`) and the lowest free file descriptor are the same as before. It sets
-`OCIO=test.ocio`.
+(`__sanitizer_get_current_allocated_bytes()`) and the lowest free file descriptor are the same as before (without
+AddressSanitizer, e.g. on MS Windows, only the file descriptors are checked). It sets `OCIO=test.ocio`.
 
 ### 1g2. `test-reader-window-host` — the readers in a host built on HostSupport (#232)
 

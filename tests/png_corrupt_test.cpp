@@ -50,6 +50,7 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -66,7 +67,9 @@
 #define PNG_CORRUPT_TEST_ASAN 1
 #endif
 #ifdef PNG_CORRUPT_TEST_ASAN
-#include <sanitizer/allocator_interface.h>
+// (from <sanitizer/allocator_interface.h>, which GCC doesn't install in the default include path on Ubuntu 24.04; the
+// ASan runtimes of GCC and clang both export it)
+extern "C" size_t __sanitizer_get_current_allocated_bytes(void);
 #endif
 
 #ifdef _WIN32
@@ -786,7 +789,7 @@ main(int argc,
 #else
     (void)bytes0;
     (void)bytes1;
-    std::printf("  (not built with AddressSanitizer: the allocated memory is not checked)\n");
+    std::printf("  SKIP: the allocated memory is not checked (not built with AddressSanitizer)\n");
 #endif
 
     read->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
