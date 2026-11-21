@@ -502,6 +502,15 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
 * **a truncated file**: the render must fail, with an error message.
 * **concurrent renders**: 6 instances render 2 files (3 instances per file) 8 times each
   from 6 threads at once: each render must give the same image as a single-threaded one.
+* **OpenEXR's thread pool** (`IOSupport/ExrThreads.h`, #250, #132): it is counted by the instances of its users
+  (ReadEXR, WriteEXR, and the OIIO plug-ins through their `OIIOThreadsUser`). With the pool at 0 threads, as in a
+  process where no OIIO instance ever existed, a ReadEXR instance starts it with `hardware_concurrency()` threads; the
+  destruction of the last user stops it on MS Windows and leaves it elsewhere; a new instance starts it again; an OIIO
+  instance created and destroyed while a ReadEXR instance exists (as Natron's Read node does with a temporary ReadOIIO)
+  leaves it running (it is linked with `OIIOGlobal.cpp` for this).
+* **ReadEXR renders while OIIO instances come and go**: 4 instances render 20 times each from 4 threads while another
+  thread creates and destroys 400 `OIIOThreadsUser`, under a 300 s watchdog: stopping OpenEXR's pool while a render
+  adds tasks could leave a task that no thread runs, and the render waiting forever.
 
 `make test-exr-tsan` builds and runs it with ThreadSanitizer (`-fsanitize=thread`,
 no suppressions). OpenEXR itself is not instrumented, so the race on a shared

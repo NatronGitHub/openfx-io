@@ -469,6 +469,14 @@ else()
   _io_not_built(RUNSCRIPT "RunScript")
 endif()
 
+# OpenEXR's global thread pool, used by the EXR and OIIO plug-ins (IOSupport/ExrThreads.h)
+if(_io_src_EXR OR _io_src_OIIO)
+  target_sources(IO PRIVATE IOSupport/ExrThreads.cpp)
+  if(NOT TARGET OpenEXR::OpenEXR)
+    target_compile_definitions(IO PRIVATE OFX_IO_NO_ILMTHREAD)
+  endif()
+endif()
+
 # IO/Makefile's PLUGINOBJECTS order
 target_sources(IO PRIVATE
   ${_io_src_SEEXPR}

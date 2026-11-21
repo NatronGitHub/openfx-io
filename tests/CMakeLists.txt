@@ -190,14 +190,14 @@ if(TARGET io_tests_ofx)
   set(_io_plugin_srcs
     ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/WriteFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp ${S}/FFmpeg/PixelFormat.cpp
     ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/WriteOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp
-    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
+    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
     ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
     ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp
     ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp)
   # GenericReader and its in-repo dependencies only (READER_HOOKS_SRCS)
   set(_io_reader_srcs
-    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/GenericOCIO.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
+    ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericOCIO.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
     ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp)
   # OpenGL render support, as in ../Makefile.master (OCIOPluginBase.cpp needs it): OCIO_CDL_CXXFLAGS and the
@@ -363,8 +363,9 @@ if(TARGET io_tests_ofx)
 
   if(_io_t_exr)
     # test-exr: ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders
-    set(_io_exr_srcs ${T}/exr_read_test.cpp ${S}/EXR/ReadEXR.cpp ${_io_reader_srcs})
-    io_test_program(exr_read_test OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR)
+    # (with OIIOGlobal.cpp: the test creates OIIO plug-in instances' OIIOThreadsUser while ReadEXR renders, #250)
+    set(_io_exr_srcs ${T}/exr_read_test.cpp ${S}/EXR/ReadEXR.cpp ${S}/OIIO/OIIOGlobal.cpp ${_io_reader_srcs})
+    io_test_program(exr_read_test OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO)
     io_test(test-exr DIR "${B}/.exr_read" ENV "${_io_ocio_env}" COMMAND $<TARGET_FILE:exr_read_test> "${B}/.exr_read")
 
     # test-ofx14 and test-ofx14-scan: every plug-in of IO.ofx (the sources of ../IO/Makefile; the SeExpr and PNG ones
@@ -377,7 +378,7 @@ if(TARGET io_tests_ofx)
       ${S}/PFM/ReadPFM.cpp ${S}/PFM/WritePFM.cpp
       ${S}/OCIO/OCIOColorSpace.cpp ${S}/OCIO/OCIODisplay.cpp ${S}/OCIO/OCIOCDLTransform.cpp ${S}/OCIO/OCIOFileTransform.cpp
       ${S}/OCIO/OCIOLogConvert.cpp ${S}/OCIO/OCIOLookTransform.cpp ${S}/OCIO/OCIOPluginBase.cpp
-      ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
+      ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
       ${S}/IOSupport/GenericOCIOOpenGL.cpp ${S}/IOSupport/glsl.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
       ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp
       ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
@@ -420,19 +421,19 @@ if(TARGET io_tests_ofx)
       io_test(test-ofx14-scan-asan-full DIR "${B}/.ofx14scanasanfull" ENV "${_io_ocio_env}"
               COMMAND ${_p} --full --scan "${B}/.ofx14scanasanfull")
       # test-exr-tsan: test-exr with ThreadSanitizer
-      io_test_program(exr_read_test_tsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR SANITIZE -fsanitize=thread)
+      io_test_program(exr_read_test_tsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO SANITIZE -fsanitize=thread)
       io_test(test-exr-tsan DIR "${B}/.exr_read_tsan" ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> "${B}/.exr_read_tsan")
       # test-exr-ubsan: with UndefinedBehaviorSanitizer, stopping at the first error, with an allocator that fills new
       # memory with a pattern (tests/Makefile's test-exr-ubsan)
-      io_test_program(exr_read_test_ubsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR
+      io_test_program(exr_read_test_ubsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       SANITIZE -fsanitize=undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all)
       io_test(test-exr-ubsan DIR "${B}/.exr_read_ubsan" ENV "${_io_ocio_env}" MallocPreScribble=1 MallocScribble=1
               MALLOC_PERTURB_=170 COMMAND $<TARGET_FILE:exr_read_test_ubsan> "${B}/.exr_read_ubsan")
       # test-exr-tsan-debug: test-exr and test-reader-hooks, DEBUG builds (the Support library's property validation
       # and logging) with ThreadSanitizer
       set(_io_tsan_env "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 abort_on_error=0 $ENV{TSAN_OPTIONS}")
-      io_test_program(exr_read_test_tsan_debug OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR DEFINITIONS DEBUG
+      io_test_program(exr_read_test_tsan_debug OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO DEFINITIONS DEBUG
                       SANITIZE -fsanitize=thread)
       io_test(test-exr-tsan-debug DIR "${B}/.exr_read_tsan_debug" ENV ${_io_tsan_env}
               COMMAND $<TARGET_FILE:exr_read_test_tsan_debug> "${B}/.exr_read_tsan_debug")

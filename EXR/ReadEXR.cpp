@@ -53,6 +53,7 @@ GCC_DIAG_ON(deprecated)
 
 #include "GenericOCIO.h"
 #include "GenericReader.h"
+#include "ExrThreads.h"
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -90,6 +91,10 @@ namespace Imf_ = OPENEXR_IMF_NAMESPACE;
 
 class ReadEXRPlugin
     : public GenericReaderPlugin {
+    // counts this instance among the users of OpenEXR's global thread pool: the first one starts it, the last one
+    // stops it on MS Windows (ExrThreads.h). (A member of this class: the base class doesn't use the pool.)
+    ExrThreadsUser _exrThreads;
+
 public:
     ReadEXRPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
 
@@ -917,10 +922,9 @@ ReadEXRPluginFactory::unload()
 {
     // The header cache is global data, destroyed at unload (kOfxActionUnload): the binary may stay in memory, and be
     // loaded again later, after the files changed.
-    // OpenEXR's global thread pool is not stopped here: this plug-in never sets its number of threads (the OIIO
-    // plug-ins do, with OpenImageIO's exr_threads attribute, and stop it, see OIIOGlobal.cpp), and stopping it at
-    // each unload, e.g. after a plug-in scan, would leave OpenEXR single-threaded for the rest of the process
-    // (OpenImageIO sets it only when its exr_threads value changes).
+    // OpenEXR's global thread pool is not stopped here: it is started by the first of its users' instances (this
+    // plug-in, WriteEXR and the OIIO plug-ins), and stopped on MS Windows by the destruction of the last one
+    // (ExrThreads.h, #250, #132), not at each unload, e.g. after a plug-in scan, while other plug-ins may use it.
     Exr::FileManager::s_readerManager.clear();
 }
 

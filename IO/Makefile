@@ -10,7 +10,7 @@ ofxsTransformInteract.o \
 ofxsMultiPlane.o \
 ofxsRectangleInteract.o \
 ofxsLut.o \
-GenericReader.o GenericWriter.o SequenceParsing.o \
+GenericReader.o GenericWriter.o SequenceParsing.o ExrThreads.o \
 SeExpr.o \
 SeGrain.o \
 SeNoise.o \

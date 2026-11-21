@@ -22,12 +22,15 @@
 
 #include <string>
 
+#include "ExrThreads.h"
+
 // A member of each instance of the OIIO plug-ins (ReadOIIO, WriteOIIO, OIIOText, OIIOResize), which share
-// OpenImageIO's thread pool (and, on MS Windows, OpenEXR's IlmThread pool). The live instances are counted: the
-// first one sets OpenImageIO's threading attributes, which starts the pool, and the destruction of the last one
-// stops the pools (OIIO::shutdown()), so that a host that exits without kOfxActionUnload (the spec allows it if it
-// never unloads the binary) doesn't leave their threads to OpenImageIO's static destructors, which may dead-lock
-// at exit on MS Windows (#250). The next instance starts them again. Thread-safe.
+// OpenImageIO's thread pool. The live instances are counted: the first one sets OpenImageIO's threading attributes,
+// which starts the pool, and the destruction of the last one stops it (OIIO::shutdown()), so that a host that exits
+// without kOfxActionUnload (the spec allows it if it never unloads the binary) doesn't leave its threads to
+// OpenImageIO's static destructors, which may dead-lock at exit on MS Windows (#250). The next instance starts it
+// again. Thread-safe. It also holds an ExrThreadsUser: OpenImageIO's OpenEXR reader and writer use OpenEXR's pool,
+// which is counted with ReadEXR's and WriteEXR's instances (ExrThreads.h).
 class OIIOThreadsUser
 {
 public:
@@ -35,6 +38,8 @@ public:
     ~OIIOThreadsUser();
 
 private:
+    ExrThreadsUser _exrThreads; // (constructed before, and destroyed after, the body of the constructor and destructor)
+
     OIIOThreadsUser(const OIIOThreadsUser&); // not copyable
     OIIOThreadsUser& operator=(const OIIOThreadsUser&);
 };

@@ -92,7 +92,7 @@ OFX_SUPPORT := \
 PLUGIN_SRCS := \
     ../FFmpeg/ReadFFmpeg.cpp ../FFmpeg/WriteFFmpeg.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp \
     ../OIIO/ReadOIIO.cpp ../OIIO/WriteOIIO.cpp ../OIIO/OIIOGlobal.cpp \
-    ../IOSupport/GenericReader.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
+    ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/SequenceParsing/SequenceParsing.cpp \
     ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp \
@@ -127,7 +127,7 @@ oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGI
 	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
 
 # GenericReader and its in-repo dependencies only: the test defines its own readers
-READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/GenericOCIO.cpp \
+READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/SequenceParsing/SequenceParsing.cpp \
     ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp
@@ -229,7 +229,7 @@ OFX14_SRCS := ../EXR/ReadEXR.cpp ../EXR/WriteEXR.cpp \
     ../PFM/ReadPFM.cpp ../PFM/WritePFM.cpp \
     ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIODisplay.cpp ../OCIO/OCIOCDLTransform.cpp ../OCIO/OCIOFileTransform.cpp \
     ../OCIO/OCIOLogConvert.cpp ../OCIO/OCIOLookTransform.cpp ../OCIO/OCIOPluginBase.cpp \
-    ../IOSupport/GenericReader.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
+    ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp ../IOSupport/SequenceParsing/SequenceParsing.cpp \
     ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp \
     ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
@@ -286,8 +286,8 @@ clean-ofx14-scan:
 
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # -pthread: the test uses std::thread
-EXR_READ_SRCS := ../EXR/ReadEXR.cpp $(READER_HOOKS_SRCS)
-EXR_READ_CXXFLAGS := -I../EXR -pthread
+EXR_READ_SRCS := ../EXR/ReadEXR.cpp ../OIIO/OIIOGlobal.cpp $(READER_HOOKS_SRCS)
+EXR_READ_CXXFLAGS := -I../EXR -I../OIIO -pthread
 
 exr_read_test: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(EXR_READ_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@

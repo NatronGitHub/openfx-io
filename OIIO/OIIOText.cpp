@@ -113,7 +113,9 @@ static bool gHostSupportsDefaultCoordinateSystem = true; // for kParamDefaultsNo
 
 class OIIOTextPlugin
     : public ImageEffect {
-    // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h)
+    // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h).
+    // (A member of this class, constructed before and destroyed after the bodies of its constructor and
+    // destructor: the base class doesn't use the pools.)
     OIIOThreadsUser _oiioThreads;
 
 public:

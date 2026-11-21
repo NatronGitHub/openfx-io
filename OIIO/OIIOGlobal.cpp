@@ -23,10 +23,6 @@
 #include <mutex>
 #include <set>
 
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-#include <IlmThreadPool.h>
-#endif
-
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
 #include <OpenImageIO/imageio.h>
@@ -56,29 +52,14 @@ loadedOIIOPlugins()
 
 // The number of live instances of the OIIO plug-ins (OIIOThreadsUser objects). Locked by loadedOIIOPluginsMutex().
 int gLiveOIIOInstances = 0;
-
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-// The number of threads of OpenEXR's global pool when shutdownOIIOThreads() stopped it (0: it did not), restored by
-// startOIIOThreads() for the next instance: OpenImageIO only sets it when its exr_threads attribute changes, so it
-// would never start it again. Locked by loadedOIIOPluginsMutex().
-int gExrThreadsToRestore = 0;
-#endif
 } // namespace
 
-// Set OpenImageIO's threading attributes, which starts its thread pool (and, on MS Windows, start OpenEXR's pool
-// again if shutdownOIIOThreads() stopped it): for the first live instance, with loadedOIIOPluginsMutex() locked.
+// Set OpenImageIO's threading attributes, which starts its thread pool: for the first live instance, with
+// loadedOIIOPluginsMutex() locked. (OpenEXR's pool, which OpenImageIO's OpenEXR reader and writer use, is counted
+// separately, by ExrThreadsUser, with ReadEXR and WriteEXR.)
 static void
 startOIIOThreads()
 {
-#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    if (gExrThreadsToRestore > 0) {
-        // unless someone else started it since
-        if (IlmThread::ThreadPool::globalThreadPool().numThreads() == 0) {
-            IlmThread::ThreadPool::globalThreadPool().setNumThreads(gExrThreadsToRestore);
-        }
-        gExrThreadsToRestore = 0;
-    }
-#endif
     // See https://github.com/lgritz/oiio/commit/7f7934fafc127a9f3bc51b6aa5e2e77b1b8a26db
     // We want OpenEXR to use all threads, while we do not want OIIO to use all threads for its image
     // processing functionalities w/o letting the host know about it.
@@ -108,7 +89,7 @@ startOIIOThreads()
     }
 }
 
-// Stop OpenImageIO's thread pool (and, on MS Windows, OpenEXR's), with loadedOIIOPluginsMutex() locked: when the
+// Stop OpenImageIO's thread pool, with loadedOIIOPluginsMutex() locked: when the
 // last live instance of the OIIO plug-ins is destroyed (OIIOThreadsUser), and, as a fallback, when the last OIIO
 // plug-in is unloaded (OIIOPluginUnloaded()). Stopping a stopped pool does nothing. The next instance starts the
 // pools again (startOIIOThreads()).
@@ -116,13 +97,8 @@ static void
 shutdownOIIOThreads()
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    // Kill all threads otherwise when the static global thread pool joins it threads there is a deadlock on Mingw
-    // (startOIIOThreads() restores them for the next instance)
-    const int exrThreads = IlmThread::ThreadPool::globalThreadPool().numThreads();
-    if (exrThreads > 0) {
-        gExrThreadsToRestore = exrThreads;
-    }
-    IlmThread::ThreadPool::globalThreadPool().setNumThreads(0);
+    // (OpenEXR's pool is stopped by the last ExrThreadsUser, ExrThreads.h: not here, while ReadEXR or WriteEXR
+    // instances may still use it, #132)
 
     // TODO: Remove the code in the following #if block once all platforms have been updated to an OpenImageIO
     // version that defines default_thread_pool_shutdown().

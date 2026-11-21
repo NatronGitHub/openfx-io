@@ -23,6 +23,9 @@
  */
 #include "ofx_test_host.h"
 
+#include "ExrThreads.h"
+#include "OIIOGlobal.h"
+
 #include <ImathBox.h>
 #include <ImfChannelList.h>
 #include <ImfCompression.h>
@@ -910,6 +913,129 @@ testThreads(OfxPlugin* p, const std::string& dir)
     check(mismatches == 0, "%d threads x %d renders: %d differ from the single-threaded render", (int)readers.size(), kRenders, (int)mismatches);
 }
 
+// OpenEXR's global thread pool is counted by its users' instances (ExrThreads.h, #250, #132): a ReadEXR instance
+// starts it, even if no OIIO plug-in instance ever existed (ReadEXR never sizes it itself); on MS Windows, the
+// destruction of the last user stops it, elsewhere it keeps its threads; a new instance starts it again.
+void
+testPoolRefcount(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== OpenEXR's thread pool, counted by its users' instances ====\n");
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+    const bool stopsAtZero = true;
+#else
+    const bool stopsAtZero = false;
+#endif
+    const int hw = (int)std::thread::hardware_concurrency();
+    if (hw <= 0) {
+        std::printf("  SKIP: hardware_concurrency() is unknown\n");
+
+        return;
+    }
+    const std::string path = dir + "/pool.exr";
+    ExrSpec s;
+    s.display = s.data = box(0, 0, 63, 31);
+    if (!writeExr(path, s)) {
+        ++gFailures;
+
+        return;
+    }
+    check(liveExrThreadsUsers() == 0, "no OpenEXR pool user alive (%d)", liveExrThreadsUsers());
+    // as in a process where no OIIO plug-in instance ever existed (OpenImageIO starts it with exr_threads)
+    Imf::setGlobalThreadCount(0);
+    {
+        Reader r;
+        check(r.create(p, path), "ReadEXR instance");
+        check(liveExrThreadsUsers() == 1, "1 OpenEXR pool user (%d)", liveExrThreadsUsers());
+        check(exrPoolThreads() == hw, "a ReadEXR instance, no OIIO instance: the pool has %d threads (%d)", hw, exrPoolThreads());
+        check(ok(r.prepareAndRender()), "render");
+    }
+    check(liveExrThreadsUsers() == 0, "no OpenEXR pool user alive (%d)", liveExrThreadsUsers());
+    if (stopsAtZero) {
+        check(exrPoolThreads() == 0, "the last user destroyed: the pool is stopped (MS Windows) (%d threads)", exrPoolThreads());
+    } else {
+        check(exrPoolThreads() == hw, "the last user destroyed: the pool keeps its threads (not MS Windows) (%d)", exrPoolThreads());
+    }
+    {
+        Reader r;
+        check(r.create(p, path), "a new ReadEXR instance");
+        check(exrPoolThreads() == hw, "the pool has %d threads again (%d)", hw, exrPoolThreads());
+        // an OIIO plug-in instance (its OIIOThreadsUser) created and destroyed while ReadEXR's exists, as Natron's Read
+        // node does with a temporary ReadOIIO: OpenEXR's pool keeps its threads (#132)
+        {
+            OIIOThreadsUser oiio;
+            check(liveExrThreadsUsers() == 2, "2 OpenEXR pool users (%d)", liveExrThreadsUsers());
+        }
+        check(exrPoolThreads() == hw, "an OIIO instance destroyed while a ReadEXR instance exists: the pool keeps its threads (%d)", exrPoolThreads());
+        check(ok(r.prepareAndRender()), "render");
+    }
+}
+
+// ReadEXR renders on 4 threads while another thread creates and destroys OIIO plug-in instances (their
+// OIIOThreadsUser) repeatedly. Stopping OpenEXR's pool (setNumThreads(0)) while a render adds tasks may leave a task
+// that no thread runs, and the render then waits forever for its TaskGroup: OpenEXR's pool must never be stopped
+// while a ReadEXR instance exists (#250). Under a watchdog: a hang fails the test (and exits) after 300 s.
+void
+testPoolChurn(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== ReadEXR renders while OIIO instances are created and destroyed ====\n");
+    const std::string path = dir + "/churn.exr";
+    ExrSpec s;
+    s.display = s.data = box(0, 0, 511, 383);
+    s.compression = Imf::ZIP_COMPRESSION;
+    s.type = Imf::HALF;
+    s.bench = true;
+    if (!writeExr(path, s)) {
+        ++gFailures;
+
+        return;
+    }
+    const int kReaders = 4, kRenders = 20, kChurn = 400;
+    std::vector<Reader> readers(kReaders);
+    for (Reader& r : readers) {
+        if (!r.create(p, path) || !ok(r.prepare())) {
+            check(false, "ReadEXR instance");
+
+            return;
+        }
+    }
+    std::atomic<bool> done(false);
+    std::thread watchdog([&done]() {
+        for (int i = 0; i < 3000 && !done; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!done) {
+            std::printf("  FAIL: renders and OIIO instances still running after 300 s: hung\n");
+            std::fflush(stdout);
+            std::_Exit(1);
+        }
+    });
+    std::atomic<int> failures(0);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kReaders; ++t) {
+        threads.emplace_back([&, t]() {
+            for (int n = 0; n < kRenders; ++n) {
+                if (!ok(readers[t].render())) {
+                    ++failures;
+                }
+            }
+        });
+    }
+    threads.emplace_back([&]() {
+        for (int n = 0; n < kChurn; ++n) {
+            OIIOThreadsUser oiio;
+            std::this_thread::yield();
+        }
+    });
+    for (std::thread& t : threads) {
+        t.join();
+    }
+    done = true;
+    watchdog.join();
+    check(failures == 0, "%d threads x %d renders while %d OIIO instances were created and destroyed: %d failed", kReaders, kRenders,
+          kChurn, (int)failures);
+    check(exrPoolThreads() > 0, "the pool has threads while the ReadEXR instances exist (%d)", exrPoolThreads());
+}
+
 // Times the renders of 2048x1556 RGBA half files.
 int
 bench(OfxPlugin* p, const std::string& dir, int n)
@@ -1034,6 +1160,8 @@ main(int argc, char** argv)
     testWindowBlocks(p, dir);
     testTruncated(p, dir);
     testThreads(p, dir);
+    testPoolRefcount(p, dir);
+    testPoolChurn(p, dir);
 
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::printf("%s (%d failure%s)\n", gFailures ? "FAIL" : "PASS", gFailures, gFailures == 1 ? "" : "s");
