@@ -4,7 +4,8 @@ name: Continuous Integration
 # (Natron's Qt5 builds). Extra variants (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests)
 # only run nightly (if master changed) or on demand. Every build, test and dependency build uses CMake (and ctest). The
 # Makefiles stay buildable (Natron's RB-2.6 build-plugins.sh uses them): a nightly Linux step only checks that they
-# still build the plug-ins.
+# still build the plug-ins. Natron's Linux testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is
+# built on pushes, nightly and on demand, not for pull requests.
 #
 # Frugal CI (NatronGitHub runners are shared by all repos): one run per change. The macOS job (scarce runners)
 # only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows. Pushes run CI only on
@@ -41,7 +42,8 @@ concurrency:
 env:
   # Debug builds (C++20, CMake, in build-debug) are an extra variant: only on schedule or on demand.
   EXTRA_VARIANTS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-  # Bundles (testing bundles used by Natron's CI) are only uploaded for tags and manual runs.
+  # Bundles (testing bundles, e.g. those of Natron's CI: see "Natron's testing bundles" in README.md) are only uploaded
+  # for tags and manual runs.
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
@@ -181,9 +183,10 @@ jobs:
         run: make -j4 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
       - name: Generate testing bundle
         run: |
-          # Bundle used for Natron's automated testing. It carries the libraries of Ubuntu 26.04, but no system libraries
-          # (glibc, libstdc++, libgcc_s, libgomp, GLVND, OpenCL, X11: see find_and_copy_deps.py), so it needs Ubuntu 26.04's.
-          # Release bundles are built on Rocky Linux 9 (see "Linux runtime requirements" in README.md).
+          # A self-contained bundle for testing on Ubuntu 26.04 (Natron's CI uses linux-natron's, for Ubuntu 24.04). It
+          # carries the libraries of Ubuntu 26.04, but no system libraries (glibc, libstdc++, libgcc_s, libgomp, GLVND,
+          # OpenCL, X11: see find_and_copy_deps.py), so it needs Ubuntu 26.04's. Release bundles are built on Rocky
+          # Linux 9 (see "Linux runtime requirements" in README.md).
           cp -r Bundle TestingBundle
           printf '%s\n' "Ubuntu 26.04 testing build, not a release." \
             "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
@@ -207,6 +210,146 @@ jobs:
         uses: actions/upload-artifact@v4.3.1
         with:
           name: openfx-io-build-ubuntu_26-testing
+          path: TestingBundle
+
+  linux-natron:
+    # Natron's Linux testing bundle. Natron's CI (RB-2.6 .github/workflows/ci.yml) runs its Linux tests on
+    # ubuntu-24.04 (there is no pyside2 on 26.04), with the openfx-io-build-ubuntu_24-testing.zip asset of the
+    # natron_testing release (see "Natron's testing bundles" in README.md): the bundle must load on Ubuntu 24.04,
+    # whose FFmpeg (6.1) is older than the plug-ins' minimum (8.0). This job builds FFmpeg (cached, like SeExpr) and
+    # IO.ofx against it on ubuntu-24.04, bundles that FFmpeg (and Ubuntu's other libraries), and checks that the bundle
+    # loads (verify_plugin_loads) and renders (hostDemo) without LD_LIBRARY_PATH. The rest of the CI (tests, nightly
+    # variants) is the "linux" job's, on 26.04.
+    # Not per pull request (which stays at three builds: Linux 26.04, Windows, macOS): on pushes to master, RB-* and
+    # tags (so that a merge that breaks the bundle Natron uses is seen at once), nightly if master changed, and on
+    # demand (the runs whose artifact replaces the natron_testing asset).
+    name: Linux testing bundle for Natron (Ubuntu 24.04, FFmpeg 9.0.2)
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # The FFmpeg of the bundle: the FFmpeg 9.0 of Natron's SDKs (macOS: MacPorts' 9.0.2). FFMPEG_CONFIGURE: its
+      # configure options (also in the cache key: changing them rebuilds it). A shared GPL build without the
+      # programs and without autodetected libraries (they would be bundled too), with FFmpeg's own codecs and
+      # libx264, libx265 and libvpx, as WriteFFmpeg and ReadFFmpeg offer with Ubuntu's FFmpeg.
+      FFMPEG_VERSION: n9.0.2
+      FFMPEG_CONFIGURE: --enable-shared --disable-static --disable-programs --disable-doc --disable-autodetect --enable-gpl --enable-zlib --enable-libx264 --enable-libx265 --enable-libvpx
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4.1.1
+        with:
+          submodules: recursive
+      - name: Install Ubuntu system packages
+        run: |
+          sudo apt-get update
+          # no libav*-dev (Ubuntu 24.04's FFmpeg 6.1 is too old): nasm, zlib1g-dev, libx264-dev, libx265-dev and
+          # libvpx-dev build FFmpeg; openimageio-tools (oiiotool) and fonts-freefont-ttf for hostDemo
+          sudo apt-get install -y cmake bison flex nasm zlib1g-dev libx264-dev libx265-dev libvpx-dev \
+            libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
+            libgl-dev libegl-dev liblcms2-dev libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev \
+            patchelf libexpat1-dev fonts-freefont-ttf
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: FFmpegBuild
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-24.04-${{ env.FFMPEG_CONFIGURE }}
+      - name: Build FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          git clone -q --depth 1 -b "$FFMPEG_VERSION" https://github.com/FFmpeg/FFmpeg.git FFmpegSrc
+          cd FFmpegSrc
+          # shellcheck disable=SC2086
+          ./configure --prefix="$PWD/../FFmpegBuild" $FFMPEG_CONFIGURE
+          make -j4
+          make install
+      - name: Cache SeExpr
+        id: cache-seexpr
+        uses: actions/cache@v4
+        with:
+          path: SeExprBuild
+          key: seexpr-2.11-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
+      - name: Build SeExpr 2.11
+        if: steps.cache-seexpr.outputs.cache-hit != 'true'
+        run: |
+          git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
+          cd SeExprSrc
+          sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
+          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build build -j4
+          cmake --install build
+      - name: Build (release, C++17, CMake)
+        run: |
+          # IO_HOSTDEMO_TESTS: builds openfx's hostDemo and io_verify_plugin_loads, for the checks below (the tests
+          # are not run: see the "linux" job)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild \
+            -DFFMPEG_PKG_CONFIG_PATH="$PWD/FFmpegBuild/lib/pkgconfig" -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle \
+            -DIO_HOSTDEMO_TESTS=ON
+          cmake --build build -j4
+          # installs Bundle/IO.ofx.bundle
+          cmake --install build
+      - name: Generate testing bundle
+        run: |
+          # The libraries of Ubuntu 24.04 and FFmpeg 9.0.2 (FFmpegBuild, in the source tree, so not in the installed
+          # IO.ofx's rpath: LD_LIBRARY_PATH for ldd), but no system libraries (see find_and_copy_deps.py). Ubuntu's
+          # OpenImageIO links Ubuntu's FFmpeg 6.1 (libavcodec.so.60), which is bundled too: the plug-ins' FFmpeg has
+          # other sonames (libavcodec.so.63) and versioned symbols, so that both load in the same process.
+          cp -r Bundle TestingBundle
+          printf '%s\n' "Ubuntu 24.04 testing build (FFmpeg ${FFMPEG_VERSION#n}), not a release." \
+            "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "It carries FFmpeg and Ubuntu's libraries, but no system libraries (glibc, libstdc++, libgcc_s, libgomp, libGL," \
+            "X11): they come from the system, and those of Ubuntu 24.04 (glibc 2.39) or later are needed. Release builds" \
+            "target Rocky Linux 9." \
+            > TestingBundle/README.txt
+          BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
+          LD_LIBRARY_PATH="$PWD/FFmpegBuild/lib" python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
+            ${BINARY_PATH}/IO.ofx ${BINARY_PATH} FFmpegBuild/lib SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
+          for l in avformat avcodec avutil swscale; do
+            ls ${BINARY_PATH}/lib${l}.so.* > /dev/null || { echo "lib${l} is not in the bundle"; exit 1; }
+          done
+          ls ${BINARY_PATH}
+          patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
+          # No system library may be bundled (Ubuntu 24.04's libraries: no symbol version limit; --no-needed: the
+          # copied Ubuntu libraries find their dependencies in the system)
+          OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
+            OFX_ABI_ZLIB=99 "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
+      - name: Check the testing bundle (verify_plugin_loads, hostDemo)
+        env:
+          IO_HOSTDEMO_STRICT: 1
+          OCIO: ${{ github.workspace }}/tests/test.ocio
+        run: |
+          # Without LD_LIBRARY_PATH: the bundle must find its FFmpeg by itself. ldd shows which FFmpeg each library
+          # gets.
+          unset LD_LIBRARY_PATH
+          BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
+          ldd ${BINARY_PATH}/IO.ofx | grep -E 'libav|libsw|OpenImageIO'
+          # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
+          sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
+          g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
+          ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
+          # hostDemo renders every plug-in of the testing bundle (tests/hostdemo/run.sh, as io-hostdemo), including
+          # ReadOIIO (Ubuntu's FFmpeg 6.1, through OpenImageIO) and Read/WriteFFmpeg (FFmpeg 9.0.2) in one process
+          hd=$(find build -type f -name hostDemo -perm -u+x | head -1)
+          vp=$(find build -type f -name io_verify_plugin_loads -perm -u+x | head -1)
+          test -n "$hd" && test -n "$vp"
+          bash tests/hostdemo/run.sh "$hd" TestingBundle/IO.ofx.bundle "$vp" "$PWD/hostdemo-testing"
+      - name: Upload the hostDemo test outputs
+        if: failure()
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: openfx-io-hostdemo-ubuntu_24-testing
+          path: hostdemo-testing/out
+          if-no-files-found: ignore
+      - name: Upload testing artifacts
+        if: env.UPLOAD_BUNDLES == 'true'
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          # the name of the natron_testing asset that Natron's CI downloads
+          name: openfx-io-build-ubuntu_24-testing
           path: TestingBundle
 
   macos:
@@ -426,7 +569,8 @@ jobs:
       - name: Generate testing bundle
         run: |
           set -eo pipefail
-          # Self-contained bundle used for Natron's automated testing.
+          # Self-contained bundle used for Natron's automated testing (the natron_testing asset
+          # openfx-io-build-windows_ucrt64-testing.zip, see "Natron's testing bundles" in README.md).
           cp -r Bundle TestingBundle
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Win64
           python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} "$MINGW_PREFIX/bin"
