@@ -333,9 +333,15 @@ main(int argc, char** argv)
     OFX::Host::PluginCache::getPluginCache()->scanPluginFiles();
     // Unload the plug-ins (kOfxActionUnload, then the binary) before main() returns, as hostDemo does, on every
     // return path (declared after the caches and before the instance: the instance is destroyed first). Without
-    // it, the plug-ins never get kOfxActionUnload, where the OIIO plug-ins stop OpenImageIO's and OpenEXR's thread
-    // pools (OIIOGlobal.cpp): their threads would then be joined at process exit, by the static destructors of the
-    // DLLs, under the loader lock, which hangs on MS Windows (#244).
+    // it, the plug-ins never get kOfxActionUnload, where the OIIO plug-ins shut down OpenImageIO's and OpenEXR's
+    // thread pools (OIIOGlobal.cpp), and OpenImageIO requires it: "Before exiting an application that utilizes
+    // OpenImageIO the `OIIO::shutdown` function must be called, which will perform shutdown of any running
+    // thread-pools. Failing to call `OIIO::shutdown` could lead to a sporadic dead-lock during application shutdown
+    // on certain platforms such as Windows." (imageio.h, OpenImageIO 3.2.2). At ExitProcess, Windows terminates the
+    // other threads before DLL_PROCESS_DETACH, where the static thread pool's destructor (thread_pool::Impl::stop())
+    // then uses the condition variable and the winpthreads state that the killed workers left behind: most likely
+    // what hung (#244). (Its GetExitCodeThread check only skips notify_all(), and means little with MinGW's
+    // pthread_t.)
     struct UnloadPlugins {
         ~UnloadPlugins() { OFX::Host::PluginCache::clearPluginCache(); }
     } unloadPlugins;
