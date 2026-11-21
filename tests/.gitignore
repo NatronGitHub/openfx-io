@@ -75,3 +75,6 @@
 /png_corrupt_test
 /png_corrupt_test.dSYM/
 /.png_corrupt/
+/raw_unload
+/raw_unload.dSYM/
+/.raw_unload/

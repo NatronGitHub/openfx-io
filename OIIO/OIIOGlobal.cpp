@@ -19,9 +19,29 @@
 #include "OIIOGlobal.h"
 
 #include "ofxsMacros.h"
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <set>
+#include <string>
+#include <vector>
+
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#else
+#include <link.h>
+#endif
+#endif
 
 // clang-format off
 GCC_DIAG_OFF(unused-parameter)
@@ -166,4 +186,84 @@ liveOIIOInstances()
     std::lock_guard<std::mutex> lock(loadedOIIOPluginsMutex());
 
     return gLiveOIIOInstances;
+}
+
+#if !defined(_WIN32) && !defined(__WIN32__) && !defined(WIN32)
+namespace {
+// Is this the path of an OpenMP runtime (GNU libgomp, LLVM libomp, Intel libiomp5)?
+bool
+isOpenMPRuntime(const char* path)
+{
+    if (!path) {
+        return false;
+    }
+    const char* name = std::strrchr(path, '/');
+    name = name ? name + 1 : path;
+
+    return !std::strncmp(name, "libgomp.", 8) || !std::strncmp(name, "libomp.", 7) || !std::strncmp(name, "libiomp5.", 9);
+}
+
+// keep the library of this path loaded until the process exits (the handle is never closed); true if it is loaded
+bool
+pinLibrary(const char* path)
+{
+    return dlopen(path, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE) != NULL;
+}
+
+#ifndef __APPLE__
+// Only collects the paths: dlopen() must not be called from a dl_iterate_phdr() callback. glibc holds
+// dl_load_write_lock there, and dlopen() takes dl_load_lock, which a concurrent dlopen() or dlclose() holds while it
+// waits for dl_load_write_lock: a lock-order inversion, which dead-locks (#263 review).
+int
+collectOpenMPRuntimes(struct dl_phdr_info* info, size_t /*size*/, void* data)
+{
+    if (isOpenMPRuntime(info->dlpi_name)) {
+        static_cast<std::vector<std::string>*>(data)->push_back(info->dlpi_name);
+    }
+
+    return 0;
+}
+#endif
+} // namespace
+#endif
+
+void
+pinOpenMPRuntime()
+{
+    // Every runtime that is loaded is pinned, and only once: the ones pinned so far (a runtime may be loaded after
+    // another one was pinned, e.g. libgomp after vcomp140). Called at load and after RAW reads: the cost is fine.
+    static std::mutex* m = new std::mutex; // never destroyed
+    static std::set<std::string>* pinnedRuntimes = new std::set<std::string>;
+    std::lock_guard<std::mutex> lock(*m);
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+    // MinGW's libgomp, LLVM's libomp, Intel's libiomp5 and MSVC's vcomp140: GetModuleHandleExW() only finds a module
+    // that is already loaded, and pins it (it stays loaded until the process exits)
+    static const wchar_t* const names[] = { L"libgomp-1.dll", L"libomp.dll", L"libiomp5md.dll", L"vcomp140.dll" };
+    static const char* const namesA[] = { "libgomp-1.dll", "libomp.dll", "libiomp5md.dll", "vcomp140.dll" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        HMODULE h;
+        if (!pinnedRuntimes->count(namesA[i]) && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, names[i], &h)) {
+            pinnedRuntimes->insert(namesA[i]);
+        }
+    }
+#else
+    std::vector<std::string> paths;
+#if defined(__APPLE__)
+    const uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; ++i) {
+        const char* path = _dyld_get_image_name(i);
+        if (isOpenMPRuntime(path)) {
+            paths.push_back(path);
+        }
+    }
+#else
+    dl_iterate_phdr(collectOpenMPRuntimes, &paths);
+#endif
+    // (after dl_iterate_phdr() returned, see collectOpenMPRuntimes())
+    for (const std::string& path : paths) {
+        if (!pinnedRuntimes->count(path) && pinLibrary(path.c_str())) {
+            pinnedRuntimes->insert(path);
+        }
+    }
+#endif
 }
