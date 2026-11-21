@@ -51,6 +51,10 @@ env:
   # Bundles (testing bundles, e.g. those of Natron's CI: see "Natron's testing bundles" in README.md) are only uploaded
   # for tags and manual runs.
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+  # The desktop libraries of Natron's Linux installer (SYSTEM_LIBS_RE in tools/jenkins/build-Linux-installer.sh), which
+  # the Linux testing bundles never carry (find_and_copy_deps.py): their linuxCheckBundle.sh check counts the runner's
+  # sonames that match it as system libraries (OFX_ABI_SYSTEM_LIBS), so that it fails if one is bundled.
+  DESKTOP_LIBS_RE: '^lib(X[A-Za-z0-9]*|X11-xcb|xcb|xcb-.*|SM|ICE|xkbcommon|xkbcommon-x11|asound)\.so\.[0-9]+$'
 
 jobs:
   # Skip linux-natron in the weekly run if master didn't change since the last completed weekly run (this job only
@@ -204,11 +208,10 @@ jobs:
           printf '%s\n' "Ubuntu 26.04 testing build, not a release." \
             "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             "It carries Ubuntu's libraries (including the OpenCL ICD loader, libOpenCL.so.1), but no system libraries:" \
-            "glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the X11" \
+            "glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the desktop" \
             "libraries (libX11, libxcb...) come from the system, and those of Ubuntu 26.04 (glibc 2.43) or later are" \
-            "needed (Ubuntu packages: libgomp1 libatomic1 libgl1 libdrm2 libselinux1 libudev1 libx11-6 libx11-xcb1" \
-            "libxau6 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0 libxcb-render0 libxcb-shm0). The" \
-            "licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
+            "needed. Ubuntu packages:" "$(.github/workflows/check_testing_bundle.sh --packages)" \
+            "The licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
           python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} \
@@ -219,15 +222,20 @@ jobs:
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
           # No system library may be bundled (same limits as the Bundle check above; --no-needed: the copied
           # Ubuntu libraries find their dependencies in the system).
+          # The desktop libraries (X11...) must not be bundled either (DESKTOP_LIBS_RE).
+          desktop=$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -printf '%f\n' | grep -E "$DESKTOP_LIBS_RE" | sort | tr '\n' ' ')
+          [[ " $desktop " == *" libX11.so.6 "* && " $desktop " == *" libxcb.so.1 "* ]] || { echo "no X11 libraries in DESKTOP_LIBS_RE's list: $desktop"; exit 1; }
           OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
-            OFX_ABI_ZLIB=99 "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
+            OFX_ABI_ZLIB=99 OFX_ABI_SYSTEM_LIBS="$desktop" \
+            "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
           # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
           g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
           ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
       - name: Check the testing bundle on a clean Ubuntu 26.04 (docker)
         # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
-        # load IO.ofx (RTLD_NOW) in a clean ubuntu:26.04 container, with only the documented runtime requirements.
+        # check that the bundle needs no undocumented system library, and load IO.ofx (RTLD_NOW) in a clean ubuntu:26.04
+        # container, with only the documented runtime packages and their dependencies.
         run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:26.04 ./verify_plugin_loads
       - name: Upload testing artifacts
         if: env.UPLOAD_BUNDLES == 'true'
@@ -332,12 +340,11 @@ jobs:
           cp -r Bundle TestingBundle
           printf '%s\n' "Ubuntu 24.04 testing build (FFmpeg ${FFMPEG_VERSION#n}), not a release." \
             "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            "It carries FFmpeg and Ubuntu's libraries (including the OpenCL ICD loader, libOpenCL.so.1), but no system" \
-            "libraries: glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the X11" \
+            "It carries FFmpeg and Ubuntu's libraries (including the OpenCL ICD loader, libOpenCL.so.1), but no system libraries:" \
+            "glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the desktop" \
             "libraries (libX11, libxcb...) come from the system, and those of Ubuntu 24.04 (glibc 2.39) or later are" \
-            "needed (Ubuntu packages: libgomp1 libatomic1 libgl1 libdrm2 libselinux1 libudev1 libx11-6 libx11-xcb1" \
-            "libxau6 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0 libxcb-render0 libxcb-shm0). The" \
-            "licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
+            "needed. Ubuntu packages:" "$(.github/workflows/check_testing_bundle.sh --packages)" \
+            "The licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
           LD_LIBRARY_PATH="$PWD/FFmpegBuild/lib" python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
@@ -352,8 +359,12 @@ jobs:
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
           # No system library may be bundled (Ubuntu 24.04's libraries: no symbol version limit; --no-needed: the
           # copied Ubuntu libraries find their dependencies in the system)
+          # The desktop libraries (X11...) must not be bundled either (DESKTOP_LIBS_RE).
+          desktop=$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -printf '%f\n' | grep -E "$DESKTOP_LIBS_RE" | sort | tr '\n' ' ')
+          [[ " $desktop " == *" libX11.so.6 "* && " $desktop " == *" libxcb.so.1 "* ]] || { echo "no X11 libraries in DESKTOP_LIBS_RE's list: $desktop"; exit 1; }
           OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
-            OFX_ABI_ZLIB=99 "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
+            OFX_ABI_ZLIB=99 OFX_ABI_SYSTEM_LIBS="$desktop" \
+            "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
       - name: Check the testing bundle (verify_plugin_loads, hostDemo)
         env:
           IO_HOSTDEMO_STRICT: 1
@@ -376,8 +387,8 @@ jobs:
           bash tests/hostdemo/run.sh "$hd" TestingBundle/IO.ofx.bundle "$vp" "$PWD/hostdemo-testing"
       - name: Check the testing bundle on a clean Ubuntu 24.04 (docker)
         # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
-        # load IO.ofx (RTLD_NOW) in a clean ubuntu:24.04 container, with only the documented runtime requirements, as
-        # on Natron's CI runners and users' systems.
+        # check that the bundle needs no undocumented system library, and load IO.ofx (RTLD_NOW) in a clean ubuntu:24.04
+        # container, with only the documented runtime packages and their dependencies.
         run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:24.04 ./verify_plugin_loads
       - name: Upload the hostDemo test outputs
         if: failure()

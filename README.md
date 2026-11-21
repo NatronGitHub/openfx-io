@@ -82,30 +82,21 @@ come from the system:
 - the GPU drivers: `libcuda`, NVIDIA's `libnvidia-*` and `libnvcuvid`, and the OpenCL drivers (the vendor ICDs:
   `libnvidia-opencl`, `libamdocl*`, `libigdrcl`, `libintelocl`, `libMesaOpenCL`, `libRusticlOpenCL`, `libpocl`), which
   the OpenCL ICD loader finds through `/etc/OpenCL/vendors/*.icd` and `dlopen()`s;
-- the X11 client libraries: `libX11`, `libX11-xcb`, `libXext`, `libXfixes`, `libXrender`, `libXau`, `libXdmcp`, and
-  [libxcb](https://xcb.freedesktop.org) and its extensions (`libxcb-render`, `libxcb-shm`, `libxcb-dri3`...): a bundled
-  libxcb older than the system's breaks the system's libX11.
+- the desktop libraries, which must match the system's display server and sound system: the X11 client libraries
+  (`libX*`, e.g. `libX11`, `libX11-xcb`, `libXext`, `libXfixes`, `libXrender`, `libXau`, `libXdmcp`, and
+  [libxcb](https://xcb.freedesktop.org) and its extensions, e.g. `libxcb-render`, `libxcb-shm`, `libxcb-dri3`: a
+  bundled libxcb older than the system's breaks the system's libX11), `libSM`, `libICE`,
+  [libxkbcommon](https://xkbcommon.org) and `libxkbcommon-x11`, and [ALSA](https://www.alsa-project.org)'s
+  `libasound`.
 
 These are the system libraries of openfx's
 [`linuxCheckBundle.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/linuxCheckBundle.sh), which
-must never be bundled, plus the X11 client libraries, as in Natron's Linux installer (`SYSTEM_LIBS_RE` in
+must never be bundled, plus the desktop libraries, as in Natron's Linux installer (`SYSTEM_LIBS_RE` in
 [`tools/jenkins/build-Linux-installer.sh`](https://github.com/NatronGitHub/Natron/blob/RB-2.6/tools/jenkins/build-Linux-installer.sh)).
 Everything else is bundled, including the [OpenCL ICD loader](https://github.com/OCL-dev/ocl-icd) (`libOpenCL.so.1`,
 needed by some FFmpeg builds such as Ubuntu's libavutil): it is vendor-neutral and not in a default install (Ubuntu's
 [`ocl-icd-libopencl1`](https://packages.ubuntu.com/noble/ocl-icd-libopencl1), Rocky Linux's `ocl-icd`), and it finds
-the system's OpenCL drivers by itself. Its licence (BSD-2-Clause) is in the bundle's `Contents/Resources/Licenses`
-(the Debian copyright file of the package it comes from, in the testing bundles).
-
-On Ubuntu and Debian, these are the packages `libc6 libstdc++6 libgcc-s1 libgomp1 libatomic1 libgl1 libdrm2
-libselinux1 libudev1 libx11-6 libx11-xcb1 libxau6 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0
-libxcb-render0 libxcb-shm0`. CI loads its Linux testing bundles in clean `ubuntu:24.04` and `ubuntu:26.04` containers
-with only these packages installed ([`check_testing_bundle.sh`](.github/workflows/check_testing_bundle.sh)), and fails
-if a library of the bundle needs another library that is neither bundled nor in this list.
-
-The testing bundles also carry Ubuntu's [libva](https://github.com/intel/libva) (`libva.so.2`, `libva-drm.so.2`,
-`libva-x11.so.2`) and `libvdpau`, because Ubuntu's libavutil needs them. A bundled libva only finds the VA-API drivers
-of the distribution it was built on, but nothing uses them: the plug-ins don't use FFmpeg's hardware decoding, and
-neither does OpenImageIO.
+the system's OpenCL drivers by itself.
 
 Release builds target [Rocky Linux](https://rockylinux.org) [9](https://docs.rockylinux.org/releases/release_notes/9_0/)
 (glibc 2.34, GCC 11), with [GCC Toolset](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/developing_c_and_cpp_applications_in_rhel_9/assembly_additional-toolsets-for-development-rhel-9_developing-applications)
@@ -115,6 +106,31 @@ Linux 9: `GLIBC_2.34` (Rocky Linux 9's glibc 2.34 also has a few backported `GLI
 `GLIBCXX_3.4.29` and `CXXABI_1.3.13` (libstdc++), `GCC_7.0.0` (libgcc_s, x86-64), `GOMP_5.0.1` and `OMP_5.0.1`
 (libgomp). The Linux bundles built by CI are testing builds, not releases (see [Natron's testing
 bundles](#natrons-testing-bundles)).
+
+#### The Linux testing bundles
+
+CI's Linux testing bundles (see [Natron's testing bundles](#natrons-testing-bundles)) follow the same rules, with
+Ubuntu's libraries. Their bundled OpenCL ICD loader comes with its licence (BSD-2-Clause): the Debian copyright file
+of its package, in `IO.ofx.bundle/Contents/Resources/Licenses`. The system libraries that they need today are provided
+by the Ubuntu (and Debian) packages
+`libc6 libstdc++6 libgcc-s1 libgomp1 libatomic1 libgl1 libdrm2 libselinux1 libudev1 libx11-6 libx11-xcb1 libxau6
+libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0 libxcb-render0 libxcb-shm0`
+(`RUNTIME_PACKAGES` in [`check_testing_bundle.sh`](.github/workflows/check_testing_bundle.sh), also printed in the
+bundles' `README.txt`). CI checks each testing bundle in two ways:
+
+1. strictly: every library that a file of the bundle needs (`DT_NEEDED`) and that the bundle doesn't carry must be one
+   of the sonames that these packages provide (`RUNTIME_SONAMES`);
+2. it loads `IO.ofx` (with `RTLD_NOW`) in a clean `ubuntu:24.04` or `ubuntu:26.04` container where only these packages
+   and their dependencies are installed (`libgl1`, for instance, brings Mesa's GLX driver).
+
+The other system libraries above (e.g. `libgbm`, `libglapi`, `libdrm_*`, `libEGL`, `libOpenGL`, `libGLES*`,
+`libcrypt`, the GPU drivers and OpenCL ICDs, `libSM`, `libxkbcommon`, `libasound`) are never bundled either: when a
+bundled library first needs one, it must be added to `RUNTIME_SONAMES` and `RUNTIME_PACKAGES`, and here.
+
+The testing bundles also carry Ubuntu's [libva](https://github.com/intel/libva) (`libva.so.2`, `libva-drm.so.2`,
+`libva-x11.so.2`) and `libvdpau`, because Ubuntu's libavutil.so.58 needs them (and libavcodec.so.60 needs
+`libva.so.2`). A bundled libva only finds the VA-API drivers of the distribution it was built on, but nothing uses
+them: the plug-ins don't use FFmpeg's hardware decoding, and neither does OpenImageIO.
 
 ## Compiling with CMake
 

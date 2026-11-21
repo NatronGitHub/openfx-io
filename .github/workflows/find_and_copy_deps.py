@@ -26,7 +26,7 @@ def get_deps_for_binary(binary_path, search_directories):
     system_libs_to_skip = []
     if sys.platform == "linux":
         # System libraries to skip (see "Linux runtime requirements" in README.md): the system list of openfx's
-        # linuxCheckBundle.sh, which never bundles them, plus the X11 client libraries, as Natron's Linux installer
+        # linuxCheckBundle.sh, which never bundles them, plus the desktop libraries, as Natron's Linux installer
         # (SYSTEM_LIBS_RE in tools/jenkins/build-Linux-installer.sh) does:
         # - glibc and the dynamic loader, libcrypt, and the GCC runtime (libstdc++, libgcc_s, libgomp, libatomic);
         # - GLVND (libGL, libGLX, libEGL, libGLdispatch, libOpenGL, libGLES*), libdrm and libdrm_* (libdrm_amdgpu...),
@@ -37,8 +37,9 @@ def get_deps_for_binary(binary_path, search_directories):
         #   libigdrcl, libintelocl, libMesaOpenCL, libRusticlOpenCL, libpocl; libnvidia-opencl is a libnvidia-*). The
         #   OpenCL ICD loader only opens the ICDs listed in /etc/OpenCL/vendors/*.icd: they are never NEEDED, and a
         #   bundled copy would never be used;
-        # - the X11 client libraries: libX11, libX11-xcb, libXext..., and libxcb and its extensions (a bundled libxcb
-        #   breaks the system's libX11).
+        # - the desktop libraries, which must match the system's display server and sound system: the X11 client
+        #   libraries (libX*, e.g. libX11, libX11-xcb, libXext; libxcb and its extensions: a bundled libxcb breaks the
+        #   system's libX11), libSM, libICE, libxkbcommon, libxkbcommon-x11, and ALSA's libasound.
         # The OpenCL ICD loader itself, libOpenCL.so.1 (ocl-icd, NEEDED by Ubuntu's libavutil), is bundled: it is
         # vendor-neutral and not in a default install (ocl-icd-libopencl1 on Ubuntu, ocl-icd on Rocky Linux), and
         # IO.ofx doesn't load without it (#270). It finds the system's vendor ICDs by itself.
@@ -91,16 +92,16 @@ def get_deps_for_binary(binary_path, search_directories):
             "libnvcuvid.so",
             "libnvidia-",
             "libpocl.so",
-            # the X11 client libraries
-            "libX11.so",
-            "libX11-xcb.so",
-            "libXau.so",
-            "libXdmcp.so",
-            "libXext.so",
-            "libXfixes.so",
-            "libXrender.so",
+            # the desktop libraries, as Natron's SYSTEM_LIBS_RE: libX* (libX11, libX11-xcb, libXau, libXext...), libxcb
+            # and its extensions, libSM, libICE, libxkbcommon(-x11), and ALSA's libasound
+            "libX",
             "libxcb.so",
             "libxcb-",
+            "libSM.so",
+            "libICE.so",
+            "libxkbcommon.so",
+            "libxkbcommon-x11.so",
+            "libasound.so",
         ]
     ret = set()
     while True:
