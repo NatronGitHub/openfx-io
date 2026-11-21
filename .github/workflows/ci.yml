@@ -126,7 +126,7 @@ jobs:
           git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
           cd SeExprSrc
           sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           cmake --build build -j4
           cmake --install build
       - name: Build (release, C++17, CMake)
@@ -272,14 +272,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: FFmpegBuild
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-ubuntu-24.04-${{ env.FFMPEG_CONFIGURE }}
+          # v2: the v1 entries have FFmpegSrc/../FFmpegBuild in their .pc files, which doesn't resolve on a cache hit
+          key: ffmpeg-v2-${{ env.FFMPEG_VERSION }}-ubuntu-24.04-${{ env.FFMPEG_CONFIGURE }}
       - name: Build FFmpeg
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
           git clone -q --depth 1 -b "$FFMPEG_VERSION" https://github.com/FFmpeg/FFmpeg.git FFmpegSrc
           cd FFmpegSrc
+          # an absolute prefix without "..": it is written into the .pc files, and on a cache hit FFmpegSrc doesn't
+          # exist, so FFmpegSrc/../FFmpegBuild wouldn't resolve
           # shellcheck disable=SC2086
-          ./configure --prefix="$PWD/../FFmpegBuild" $FFMPEG_CONFIGURE
+          ./configure --prefix="$GITHUB_WORKSPACE/FFmpegBuild" $FFMPEG_CONFIGURE
           make -j4
           make install
       - name: Cache SeExpr
@@ -294,7 +297,7 @@ jobs:
           git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
           cd SeExprSrc
           sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/../SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           cmake --build build -j4
           cmake --install build
       - name: Build (release, C++17, CMake)
