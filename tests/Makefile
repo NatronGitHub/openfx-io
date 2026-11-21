@@ -337,6 +337,27 @@ test-reader-window: reader_window_test
 clean-reader-window:
 	rm -rf reader_window_test reader_window_test.dSYM .reader_window
 
+# ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files (made from valid ones that the test writes with
+# libpng) must fail cleanly, without a crash, an AddressSanitizer report, or a leak (of memory or of a file
+# descriptor). With AddressSanitizer (not on MS Windows, as OCIO_FT_ASAN). Only if pkg-config finds libpng.
+ifneq ($(HAVE_PNG),)
+PNG_CORRUPT_SRCS := ../PNG/ReadPNG.cpp ../PNG/WritePNG.cpp ../IOSupport/GenericWriter.cpp $(READER_HOOKS_SRCS)
+PNG_CORRUPT_CXXFLAGS := -I../PNG -pthread $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer) \
+    $(shell $(PKGCONF) --cflags libpng)
+
+png_corrupt_test: png_corrupt_test.cpp ofx_test_host.h ../PNG/PNGError.h $(PNG_CORRUPT_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(PNG_CORRUPT_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(READER_WINDOW_LIBS) -o $@
+
+.PHONY: test-png-corrupt clean-png-corrupt
+test: test-png-corrupt
+clean: clean-png-corrupt
+test-png-corrupt: png_corrupt_test
+	rm -rf .png_corrupt && mkdir -p .png_corrupt
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" ./png_corrupt_test $(CURDIR)/.png_corrupt
+clean-png-corrupt:
+	rm -rf png_corrupt_test png_corrupt_test.dSYM .png_corrupt
+endif
+
 # The same readers and ReadFFmpeg in a real OFX host (#232): reader_window_host (hostdemo/reader_window.cpp) is built
 # on openfx's HostSupport and hostDemo's host classes (with expat, from pkg-config), and loads them from a bundle built
 # here (ReaderWindow.ofx.bundle, like IO.ofx but with the readers only). hostdemo/reader_window.sh writes the files

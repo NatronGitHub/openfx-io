@@ -301,6 +301,15 @@ if(TARGET io_tests_ofx)
   io_test(test-reader-window-multiplane DIR "${B}/.reader_window_multiplane" ENV "${_io_ocio_env}" "${_io_asan_env}"
           READER_WINDOW_MULTIPLANE=1 COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window_multiplane")
 
+  # test-png-corrupt: ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files fail cleanly (no crash, no
+  # AddressSanitizer report, no leak), with AddressSanitizer
+  if(_io_t_png)
+    io_test_program(png_corrupt_test OFX THREADS SOURCES ${T}/png_corrupt_test.cpp ${S}/PNG/ReadPNG.cpp ${S}/PNG/WritePNG.cpp
+                    ${S}/IOSupport/GenericWriter.cpp ${_io_reader_srcs} INCLUDES ${S}/PNG SANITIZE ${_io_asan} LIBS io_png)
+    io_test(test-png-corrupt DIR "${B}/.png_corrupt" ENV "${_io_ocio_env}" "${_io_asan_env}"
+            COMMAND $<TARGET_FILE:png_corrupt_test> "${B}/.png_corrupt")
+  endif()
+
   # test-reader-window-host: the same readers and ReadFFmpeg, in a bundle of their own, rendered by reader_window_host
   # (hostdemo/reader_window.cpp), a host built on HostSupport (OfxHost: with IO_HOSTDEMO_TESTS, or
   # OFX_BUILD_HOSTSUPPORT) and hostDemo's host classes; hostdemo/reader_window.sh writes the files with oiiotool and
