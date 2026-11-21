@@ -47,6 +47,8 @@ HD=$(abspath "$1")
 BUNDLE=$(abspath "$2")
 VERIFY=$(abspath "$3")
 SRC=$(cd "$(dirname "$0")/../.." && pwd)
+# kill_hung: the stacks of a hung hostDemo, then kill it (#244)
+. "$SRC/tests/hostdemo/hang.sh"
 WORK=$(abspath "${4:-${TMPDIR:-/tmp}/openfx-io-hostdemo}")
 
 # MSYS2: hostDemo and the plug-ins are native programs, which need Windows paths
@@ -173,7 +175,8 @@ run() {
     watchdog=$!
     while kill -0 $pid 2> /dev/null; do
         if ! kill -0 $watchdog 2> /dev/null; then
-            kill -9 $pid 2> /dev/null && echo "killed after ${timeout}s" >> "$log"
+            kill_hung $pid "$OUT/$name.stacks"
+            echo "killed after ${timeout}s" >> "$log"
             break
         fi
         sleep 0.2
@@ -190,6 +193,7 @@ run() {
         else
             why="$why, in the actions: no out/$name.json"
         fi
+        [ -s "$OUT/$name.stacks" ] && cat "$OUT/$name.stacks" >> "$log"
     elif [ $status -ne 0 ]; then
         why="hostDemo exit status $status"
         [ $status -gt 128 ] && why="$why (signal $((status - 128)))"

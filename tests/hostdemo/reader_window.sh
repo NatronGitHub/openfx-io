@@ -30,6 +30,8 @@ abspath() { case "$1" in /*|[A-Za-z]:[/\\]*) printf '%s\n' "$1" ;; *) printf '%s
 RW=$(abspath "$1")
 PLUGINS=$(abspath "$2")
 SRC=$(cd "$(dirname "$0")/../.." && pwd)
+# kill_hung: the stacks of a hung reader_window, then kill it (#244)
+. "$SRC/tests/hostdemo/hang.sh"
 WORK=$(abspath "${3:-${TMPDIR:-/tmp}/openfx-io-reader-window}")
 TIMEOUT=${READER_WINDOW_TIMEOUT:-300}
 
@@ -58,7 +60,6 @@ if [ -z "$OIIOTOOL" ]; then
     skipall "oiiotool not found (set OIIOTOOL)"
 fi
 FFMPEG=${FFMPEG:-$(command -v ffmpeg)}
-TIMEOUT_CMD=$(command -v timeout || command -v gtimeout)
 
 rm -rf "$WORK"
 mkdir -p "$WORK/files" "$WORK/logs"
@@ -118,16 +119,36 @@ check() {
     esac
     local name="${id#fr.inria.openfx.}-$file${*:+ $*}"
     local log="$WORK/logs/$(printf '%s' "$name" | tr -c 'A-Za-z0-9.=-' '_').log"
-    local cmd=("$RW" "$id" "$major" "filename=$(native "$FILES/$file")" "$@")
-    if [ -n "$TIMEOUT_CMD" ]; then
-        cmd=("$TIMEOUT_CMD" -k 10 "$TIMEOUT" "${cmd[@]}")
-    fi
-    if (cd "$WORK" && "${cmd[@]}") > "$log" 2>&1; then
+    local stacks="${log%.log}.stacks"
+    rm -f "$stacks"
+    # (exec: $pid is reader_window's, or on MSYS2 that of the shell whose /proc/$pid/winpid is reader_window's)
+    (cd "$WORK" && exec "$RW" "$id" "$major" "filename=$(native "$FILES/$file")" "$@") > "$log" 2>&1 &
+    local pid=$! status=0 watchdog hung=0
+    # the watchdog is a sleep, a child of this shell: poll reader_window, and kill it if the watchdog ended first
+    sleep "$TIMEOUT" &
+    watchdog=$!
+    while kill -0 $pid 2> /dev/null; do
+        if ! kill -0 $watchdog 2> /dev/null; then
+            kill_hung $pid "$stacks"
+            hung=1
+            break
+        fi
+        sleep 0.2
+    done
+    wait $pid || status=$?
+    kill $watchdog 2> /dev/null
+    wait $watchdog 2> /dev/null
+    if [ $hung -eq 0 ] && [ $status -eq 0 ]; then
         echo "ok   $name"
         ok=$((ok + 1))
     else
-        echo "FAIL $name"
+        if [ $hung -eq 1 ]; then
+            echo "FAIL $name: timeout (${TIMEOUT}s)$(grep -q 'all windows OK' "$log" && echo ', after the renders: hung at unload or exit')"
+        else
+            echo "FAIL $name: exit status $status"
+        fi
         grep -v '^ok ' "$log" | sed 's/^/     | /' | head -40
+        [ -s "$stacks" ] && sed 's/^/     | /' "$stacks" | head -400
         failed="$failed $name"
     fi
 }
