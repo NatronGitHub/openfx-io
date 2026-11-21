@@ -27,6 +27,11 @@
  * gives an output PAR of 1. getLevelFromScale() and upscalePowerOfTwo() (IOUtility.h) are
  * checked for degenerate inputs that gave NaN.
  *
+ * And that startingTime and timeOffset stay consistent (issue #154): timeOffset = startingTime - firstFrame, the time
+ * domain starts at startingTime and render maps it to the first frame, when the user changes startingTime, timeOffset
+ * or firstFrame, when the plug-in changes startingTime for a new file (as Natron sets originalFrameRange), and on a
+ * project load (where no persistent param may be set).
+ *
  * Minimal test readers are defined below (a GenericReaderPlugin subclass with the
  * default isOutputFrameVarying(), and a subclass returning true), and are driven
  * through the OFX actions by the in-process host of ofx_test_host.h. decode() records
@@ -70,6 +75,7 @@ using namespace OFX::IO;
 #define kSupportsXY false
 #define kSupportsAlpha false
 #define kSupportsTiles false
+#define kParamGuessedParamsName "ParamExistingInstance" // GenericReader's kParamGuessedParams
 
 namespace {
 
@@ -467,6 +473,29 @@ struct Reader {
     Effect inst;
     TestReaderPlugin* plugin = nullptr;
     Clip* out = nullptr;
+    // optional, set before create(): sets the param values before createInstance, as a host loading a project does
+    std::function<void(Effect& ctx)> restore;
+    // the reason of the instanceChanged(filename) sent after createInstance, or nullptr for none
+    const char* fileChangeReason = kOfxChangeUserEdited;
+
+    // instanceChanged for the param `name`, with the given reason (kOfxChangeUserEdited...)
+    bool changed(const char* name, const char* reason, double time = 1.)
+    {
+        PropSet a;
+        OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, name);
+        pSetString(ap, kOfxPropChangeReason, 0, reason);
+        pSetDouble(ap, kOfxPropTime, 0, time);
+        double rs[2] = { 1., 1. };
+        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        if (!ok(p->mainEntry(kOfxActionBeginInstanceChanged, H(inst), PH(&a), nullptr))) {
+            return false;
+        }
+        const bool ret = ok(p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr));
+
+        return ok(p->mainEntry(kOfxActionEndInstanceChanged, H(inst), PH(&a), nullptr)) && ret;
+    }
 
     // fileAtTime (optional): the value of the file param at each time, as for an image sequence
     bool create(OfxPlugin* plugin_, const std::string& filename, std::function<std::string(double)> fileAtTime = nullptr)
@@ -482,6 +511,9 @@ struct Reader {
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
         if (fileAtTime) {
             ctx.params[kOfxImageEffectFileParamName].stringAtTime = fileAtTime;
+        }
+        if (restore) {
+            restore(ctx);
         }
         inst.delegate = &ctx;
         setInstanceProps(inst, kWidth, kHeight, kVideoRange.max, kOfxImageEffectContextReader);
@@ -500,15 +532,7 @@ struct Reader {
             return false;
         }
         // the user set the filename: guessParamsFromFilename, frame range...
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        if (!ok(p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr))) {
+        if (fileChangeReason && !changed(kOfxImageEffectFileParamName, fileChangeReason)) {
             std::printf("  FAIL: instanceChanged(filename)\n");
 
             return false;
@@ -543,6 +567,20 @@ struct Reader {
         pGetDouble(PH(&outArgs), "OfxImageClipPropPAR_" kOfxImageEffectOutputClipName, 0, &v);
 
         return v;
+    }
+
+    // the time domain returned by getTimeDomain, or (-1, -1) if it failed
+    OfxRangeD timeDomain()
+    {
+        PropSet outArgs;
+        OfxRangeD range = { -1., -1. };
+        if (ok(p->mainEntry(kOfxImageEffectActionGetTimeDomain, H(inst), nullptr, PH(&outArgs)))) {
+            double r[2] = { -1., -1. };
+            pGetDoubleN(PH(&outArgs), kOfxImageEffectPropFrameRange, 2, r);
+            range = { r[0], r[1] };
+        }
+
+        return range;
     }
 
     OfxStatus render(double t)
@@ -813,6 +851,156 @@ testIOUtility()
         const int i8 = floatToInt<256>(v.v);
         const int i16 = floatToInt<65536>(v.v);
         check(i8 == v.i8 && i16 == v.i16, "floatToInt(%g) = %d, %d (expected %d, %d)", v.v, i8, i16, v.i8, v.i16);
+    }
+}
+
+// 1e. startingTime and timeOffset stay in sync (issue #154), whoever changes startingTime. getTimeDomain and
+// getClipPreferences use startingTime, render (getSequenceTime), the RoD and isIdentity use timeOffset, so the
+// invariant is timeOffset == startingTime - firstFrame. Before the fix, when Natron set originalFrameRange for a new
+// file, the plug-in set startingTime (and firstFrame) to its first frame but kept the old timeOffset: the time domain
+// started at the first frame, but render held the first frame of the sequence.
+
+// the sequence frame that the reader decoded for a render at time t, or -1
+double
+decodedFrame(Reader& r, double t)
+{
+    r.plugin->records.clear();
+    if (!ok(r.render(t)) || (r.plugin->records.size() != 1)) {
+        return -1.;
+    }
+
+    return r.plugin->records[0].time;
+}
+
+// startingTime, timeOffset and firstFrame are consistent, the time domain starts at startingTime, and the frame
+// rendered at startingTime + k is the sequence frame firstFrame + k
+void
+checkStartingTime(Reader& r, const char* what, int expectedFirst, int expectedLast, int expectedStartingTime)
+{
+    const int first = paramInt(&r.ctx.params["firstFrame"], 0);
+    const int last = paramInt(&r.ctx.params["lastFrame"], 0);
+    const int startingTime = paramInt(&r.ctx.params["startingTime"], 0);
+    const int timeOffset = paramInt(&r.ctx.params["timeOffset"], 0);
+    check(first == expectedFirst && last == expectedLast && startingTime == expectedStartingTime,
+          "%s: frame range %d..%d, startingTime %d (expected %d..%d, %d)", what, first, last, startingTime, expectedFirst, expectedLast, expectedStartingTime);
+    check(timeOffset == startingTime - first, "%s: timeOffset %d = startingTime - firstFrame = %d", what, timeOffset, startingTime - first);
+    const OfxRangeD td = r.timeDomain();
+    check(td.min == startingTime && td.max == startingTime + (last - first),
+          "%s: time domain %g..%g (expected %d..%d)", what, td.min, td.max, startingTime, startingTime + (last - first));
+    for (int k : { 0, last - first }) {
+        const double f = decodedFrame(r, startingTime + k);
+        check(f == first + k, "%s: render at time %d decodes sequence frame %g (expected %d)", what, startingTime + k, f, first + k);
+    }
+}
+
+void
+testStartingTime(OfxPlugin* pDefault, const std::string& prefix)
+{
+    std::printf("==== startingTime and timeOffset stay in sync (#154) ====\n");
+    // two image sequences: prefix.stA.0001.tst ... prefix.stA.0010.tst and prefix.stB.0001.tst ... prefix.stB.0004.tst
+    auto fileAtA = [prefix](double t) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), ".stA.%04d.tst", (int)std::floor(t + 0.5));
+
+        return prefix + buf;
+    };
+    auto fileAtB = [prefix](double t) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), ".stB.%04d.tst", (int)std::floor(t + 0.5));
+
+        return prefix + buf;
+    };
+    std::vector<std::string> files;
+    for (int f = 1; f <= 10; ++f) {
+        files.push_back(fileAtA(f));
+        if (f <= 4) {
+            files.push_back(fileAtB(f));
+        }
+    }
+    for (const std::string& f : files) {
+        std::FILE* fp = std::fopen(f.c_str(), "wb");
+        if (!fp) {
+            check(false, "cannot create %s", f.c_str());
+
+            return;
+        }
+        std::fclose(fp);
+    }
+    {
+        Reader r;
+        if (r.create(pDefault, fileAtA(1), fileAtA)) {
+            checkStartingTime(r, "new reader, sequence 1..10", 1, 10, 1);
+
+            // the user sets the starting time
+            setParamInt(r.ctx, "startingTime", 101);
+            check(r.changed("startingTime", kOfxChangeUserEdited), "instanceChanged(startingTime, user edit)");
+            checkStartingTime(r, "user set startingTime 101", 1, 10, 101);
+
+            // the user sets the time offset
+            setParamInt(r.ctx, "timeOffset", 50);
+            check(r.changed("timeOffset", kOfxChangeUserEdited), "instanceChanged(timeOffset, user edit)");
+            checkStartingTime(r, "user set timeOffset 50", 1, 10, 51);
+
+            // the user sets the first frame: the time offset is kept, the starting time follows
+            setParamInt(r.ctx, "firstFrame", 3);
+            check(r.changed("firstFrame", kOfxChangeUserEdited), "instanceChanged(firstFrame, user edit)");
+            checkStartingTime(r, "user set firstFrame 3", 3, 10, 53);
+            setParamInt(r.ctx, "firstFrame", 1);
+            check(r.changed("firstFrame", kOfxChangeUserEdited), "instanceChanged(firstFrame, user edit)");
+            setParamInt(r.ctx, "startingTime", 101);
+            check(r.changed("startingTime", kOfxChangeUserEdited), "instanceChanged(startingTime, user edit)");
+            checkStartingTime(r, "user set firstFrame 1 and startingTime 101", 1, 10, 101);
+
+            // the user picks the sequence 1..4, as Natron does it: Natron sets originalFrameRange (reason
+            // NatronInternalEdited, sent as kOfxChangeUserEdited) before instanceChanged(filename), and the
+            // plug-in sets startingTime to the first frame of the new sequence
+            setOverrideString(&r.ctx, kOfxImageEffectFileParamName, fileAtB(1));
+            r.ctx.params[kOfxImageEffectFileParamName].stringAtTime = fileAtB;
+            r.ctx.params["originalFrameRange"].hasOv = true;
+            r.ctx.params["originalFrameRange"].ov.i = { 1, 4 };
+            check(r.changed("originalFrameRange", kOfxChangeUserEdited), "instanceChanged(originalFrameRange, user edit)");
+            check(r.changed(kOfxImageEffectFileParamName, kOfxChangeUserEdited), "instanceChanged(filename, user edit)");
+            checkStartingTime(r, "new sequence 1..4 (Natron)", 1, 4, 1);
+        } else {
+            ++gFailures;
+        }
+    }
+    {
+        // Project load: the host restores the saved values before createInstance, then may send
+        // instanceChanged(filename) with kOfxChangePluginEdited (Natron). The plug-in must not set any param
+        // (this would mark the project as modified), and render must use the saved offset.
+        Reader r;
+        r.restore = [&](Effect& ctx) {
+            auto set = [&](const char* name, std::vector<int> v) {
+                ctx.params[name].hasOv = true;
+                ctx.params[name].ov.i = v;
+            };
+            set("originalFrameRange", { 1, 10 });
+            set("firstFrame", { 1 });
+            set("lastFrame", { 10 });
+            set("startingTime", { 101 });
+            set("timeOffset", { 100 });
+            set(kParamGuessedParamsName, { 1 });
+        };
+        r.fileChangeReason = kOfxChangePluginEdited;
+        if (r.create(pDefault, fileAtA(1), fileAtA)) {
+            // (non-persistent params, such as the OCIO colorspace menus, are not saved in the project)
+            std::string written;
+            for (const auto& kv : r.ctx.params) {
+                int persistent = 1;
+                pGetInt(PH(kv.second.props), kOfxParamPropPersistant, 0, &persistent);
+                if ((kv.second.nSet > 0) && persistent) {
+                    written += " " + kv.first;
+                }
+            }
+            check(written.empty(), "project load: no persistent param set by the plug-in (set:%s)", written.c_str());
+            checkStartingTime(r, "project load, startingTime 101", 1, 10, 101);
+        } else {
+            ++gFailures;
+        }
+    }
+    for (const std::string& f : files) {
+        std::remove(f.c_str());
     }
 }
 
@@ -1516,6 +1704,7 @@ main(int argc, char** argv)
     testClipPreferencesSequence(pDefault, prefix);
     testClipPreferencesPar0(pDefault, prefix);
     testIOUtility();
+    testStartingTime(pDefault, prefix);
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);
