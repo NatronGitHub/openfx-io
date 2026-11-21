@@ -17,9 +17,10 @@
  * along with openfx-io.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 /*
- * reader_window_test — render windows and render scales of ReadOIIO, ReadPFM and ReadPNG (issues #160, #163, #232),
- * driven by the in-process host (ofx_test_host.h). Built with AddressSanitizer (make test-reader-window), and the
- * output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it crashes.
+ * reader_window_test — render windows and render scales of ReadOIIO, ReadPFM and ReadPNG (issues #160, #163, #232,
+ * #234), driven by the in-process host (ofx_test_host.h). Built with AddressSanitizer (make test-reader-window), and
+ * the output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it
+ * crashes.
  *
  *  - render scale 1/2: GenericReader decodes a full-resolution window into its buffer, then downscales it; decode()
  *    gets a render scale of 1 (ReadOIIO and ReadPFM assert it, #160)
@@ -31,19 +32,21 @@
  *  - render windows partly or entirely out of the RoD, in an image that covers the RoD and the window (and, for
  *    ReadOIIO, of the window): transparent black out of the RoD (#232)
  *  - the files: ReadOIIO, float TIFF (grey, RGB, RGBA), scanline and tiled EXR with a data window smaller than the
- *    display window, and an EXR whose data window has a negative origin and extends past the display window;
- *    ReadPFM, a PFM (color); ReadPNG (if built with libpng), 8-bit RGB and RGBA, 16-bit grey and RGBA, interlaced
- *    8-bit RGB and 16-bit RGBA PNG. Each one with two filePremult values: decode() writes in the output image at
- *    scale 1 (Opaque RGB, PreMultiplied RGBA), or in GenericReader's buffer, which GenericReader then premultiplies
+ *    display window, and an EXR whose data window has a negative origin and extends past the display window; ReadPFM,
+ *    an RGB and a grey PFM; ReadPNG (if built with libpng), 8-bit RGB and RGBA, 16-bit grey and RGBA, interlaced 8-bit
+ *    RGB and 16-bit RGBA PNG. Each one with two filePremult values: decode() writes in the output image at scale 1
+ *    (Opaque RGB, PreMultiplied RGBA), or in GenericReader's buffer, which GenericReader then premultiplies
  *    (UnPreMultiplied). At scale 1, the whole image is the file's pixels, and alpha is checked (1 for Opaque files,
  *    also in the black border that ReadOIIO adds around a data window).
+ *  - files without alpha (RGB and grey PFM and TIFF, RGB PNG), read as RGBA with each filePremult, without and with
+ *    an OCIO conversion (x2 to x1 of swap.ocio, next to $OCIO): the file's colours (times 2) and alpha 1 (#234)
  *  - a file rewritten with a smaller or larger image, rendered with the RoD that the host got before (decode() then
  *    gets a render window that is not the file's): only the window is written, and for an Opaque file, alpha is 1 in
  *    the new image and the rest of the window is transparent black (#232)
  *  - concurrent renders while another thread replaces the file by smaller and larger ones (#163): only the
  *    windows are written, alpha is 1 in the image and 0 in the black (Opaque files)
  *
- * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/Makefile)
+ * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/Makefile, and swap.ocio in its directory)
  *        $READER_WINDOW_ONLY: run only the tests whose title contains it (e.g. "ReadPFM", "rewrite", "scale 0.5")
  *        $READER_WINDOW_MULTIPLANE=1: only the 2-part EXR test, in a Natron-like host (dynamic choices, plane suite)
  *        $READER_WINDOW_DUMP: a directory where the render of the whole RoD of each test is written (raw RGBA float)
@@ -241,6 +244,10 @@ struct Reader {
     // filePremult: 0 Opaque, 1 PreMultiplied, 2 UnPreMultiplied (the output is premultiplied)
     // outputLayer: if not empty, ReadOIIO's output layer (its kParamChannelOutputLayerChoice string param, in a host
     // that supports dynamic choices and multiple planes)
+    // ocioConfig, ocioInput, ocioOutput: if not empty, the OCIO config file (instead of $OCIO), and the input and
+    // output colorspaces (set after the reader guessed them from the file)
+    std::string ocioConfig, ocioInput, ocioOutput;
+
     bool create(OfxPlugin* plugin, const std::string& filename, int filePremult, const std::string& outputLayer = std::string())
     {
         p = plugin;
@@ -252,6 +259,9 @@ struct Reader {
             return false;
         }
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
+        if (!ocioConfig.empty()) {
+            setOverrideString(&ctx, "ocioConfigFile", ocioConfig); // GenericOCIO loads it when the instance is created
+        }
         if (!outputLayer.empty()) {
             setOverrideString(&ctx, "outputLayerChoice", outputLayer);
         }
@@ -287,6 +297,10 @@ struct Reader {
         // output's premultiplication): decode() writes in the output image, at scale 1
         setOverrideInt(&ctx, "filePremult", filePremult);
         setOverrideInt(&ctx, "outputPremult", 1);
+        if (!ocioInput.empty()) {
+            setOverrideString(&ctx, "ocioInputSpace", ocioInput);
+            setOverrideString(&ctx, "ocioOutputSpace", ocioOutput);
+        }
         setOverrideInt(&ctx, "outputComponents", 0); // RGBA
         out->connected = true;
         setupClipImage(out, 1, 1, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
@@ -451,10 +465,6 @@ struct File {
         return b;
     }
 
-    // the alpha of the RGBA output of an RGB file that is not Opaque: ReadPFM sets it to 0 (see ReadPFM.cpp), the
-    // others to 1
-    float rgbAlpha() const { return (kind == ePFM) ? 0.f : 1.f; }
-
     // the value of the file's channel c at file pixel (fx, fy) (y down), as the reader reads it
     float fileValue(int fx, int fy, int c) const
     {
@@ -488,13 +498,8 @@ struct File {
             // file is Opaque (it is in the RoD: GenericReader sets alpha to 1)
             return ((c == 3) && (nchannels < 4) && (filePremult == 0)) ? 1.f : 0.f;
         }
-        // the alpha of the output
-        float alpha = 1.f;
-        if (nchannels == 4) {
-            alpha = fileValue(fx, fy, 3);
-        } else if (filePremult != 0) {
-            alpha = rgbAlpha();
-        }
+        // the alpha of the output: 1 for a file without alpha, whatever filePremult is (#234)
+        const float alpha = (nchannels == 4) ? fileValue(fx, fy, 3) : 1.f;
         if (c == 3) {
             return alpha;
         }
@@ -517,12 +522,14 @@ writePFM(const std::string& path,
     // a negative scale: little-endian
     const uint16_t one = 1;
     const bool littleEndian = *(const unsigned char*)&one == 1;
-    std::fprintf(file, "PF\n%d %d\n%s\n", f.width, f.height, littleEndian ? "-1.0" : "1.0");
-    std::vector<float> line((size_t)f.width * 3);
+    // "PF": RGB, "Pf": grey
+    const int C = (f.nchannels == 1) ? 1 : 3;
+    std::fprintf(file, "P%c\n%d %d\n%s\n", (C == 1) ? 'f' : 'F', f.width, f.height, littleEndian ? "-1.0" : "1.0");
+    std::vector<float> line((size_t)f.width * C);
     for (int y = 0; y < f.height; ++y) { // bottom-up
         for (int x = 0; x < f.width; ++x) {
-            for (int c = 0; c < 3; ++c) {
-                line[(size_t)x * 3 + c] = floatValue(x, y, c);
+            for (int c = 0; c < C; ++c) {
+                line[(size_t)x * C + c] = floatValue(x, y, c);
             }
         }
         std::fwrite(line.data(), sizeof(float), line.size(), file);
@@ -903,6 +910,77 @@ testFile(OfxPlugin* p,
     }
 }
 
+// An RGB or grey file (no alpha) read as RGBA with every filePremult, without and with an OCIO conversion (#234): the
+// output is the file's colours (converted, if OCIO is not identity; R = G = B for a grey file) and alpha is 1, as
+// GenericReader sets it for Opaque files. ReadPFM used to write alpha = 0, which GenericReader premultiplied by
+// (UnPreMultiplied, or PreMultiplied with OCIO: unpremultiply, convert, premultiply), so the colours were 0. The conversion is from x2 to x1 of swap.ocio (next to $OCIO): the colours are multiplied by 2.
+void
+testRGBAlpha(OfxPlugin* p,
+             const std::string& dir,
+             const char* name,
+             const File& f)
+{
+    const std::string path = dir + "/" + name + extension(f.kind);
+    if (!writeFile(path, f)) {
+        check(false, "%s: write the file", name);
+
+        return;
+    }
+    const std::string ocio = std::getenv("OCIO") ? std::getenv("OCIO") : "";
+    const size_t slash = ocio.find_last_of("/\\");
+    const std::string swapOCIO = ((slash == std::string::npos) ? std::string() : ocio.substr(0, slash + 1)) + "swap.ocio";
+    for (int filePremult : { 0, 1, 2 }) {
+        for (bool withOCIO : { false, true }) {
+            const std::string title = strprintf("%s %s alpha, filePremult %d%s", f.plugin + 16, name, filePremult, withOCIO ? ", OCIO x2 to x1" : "");
+            if (!selected(title)) {
+                continue;
+            }
+            std::printf("==== %s ====\n", title.c_str());
+            Reader r;
+            if (withOCIO) {
+                r.ocioConfig = swapOCIO;
+                r.ocioInput = "x2";
+                r.ocioOutput = "x1";
+            }
+            if (!r.create(p, path, filePremult)) {
+                check(false, "create");
+
+                continue;
+            }
+            OfxStatus st = r.getRoD(1.);
+            if (!ok(st)) {
+                check(false, "getRegionOfDefinition = %d", st);
+
+                continue;
+            }
+            r.setImage(r.rod, 1., true);
+            gPersistentError.clear();
+            st = r.render(r.rod, 1., false);
+            check(ok(st) && gPersistentError.empty(), "render = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ",
+                  gPersistentError.c_str());
+            const float k = withOCIO ? 2.f : 1.f;
+            int bad = 0;
+            for (int y = r.rod.y1; y < r.rod.y2; ++y) {
+                for (int x = r.rod.x1; x < r.rod.x2; ++x) {
+                    // PFM is stored bottom-up, the others top-down
+                    const int fy = (f.kind == ePFM) ? y : f.height - 1 - y;
+                    for (int c = 0; c < 4; ++c) {
+                        const float v = (c == 3) ? 1.f : k * f.fileValue(x, fy, (f.nchannels == 1) ? 0 : c);
+                        const float px = r.pixel(x, y)[c];
+                        if (!(std::fabs(px - v) <= 1e-6f * (1.f + std::fabs(v)))) {
+                            if (bad < 3) {
+                                std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, px, v);
+                            }
+                            ++bad;
+                        }
+                    }
+                }
+            }
+            check(bad == 0, "the file's colours%s, and alpha 1 (%d wrong)", withOCIO ? " times 2" : "", bad);
+        }
+    }
+}
+
 // The file is replaced by a smaller or a larger one after the host got the RoD: the renders with the old RoD only
 // write their window (GenericReader fills the part out of the new frame bounds with black, decode() gets a window
 // that may not be in the file it opened).
@@ -1240,11 +1318,20 @@ main(int argc,
     testFile(oiio, dir, "grey", tiffGrey);
     testFile(oiio, dir, "overscan", exrOverscan);
     testFile(pfm, dir, "rgb", pfmRGB);
+    // a grey PFM ("Pf"), read as RGBA
+    const File pfmGrey = { "fr.inria.openfx.ReadPFM", ePFM, 61, 47, 1, 0, 0, 0, 0 };
+    testFile(pfm, dir, "grey", pfmGrey);
+    // RGB and grey files: alpha 1 with any filePremult, also with an OCIO conversion (#234)
+    testRGBAlpha(pfm, dir, "rgb", pfmRGB);
+    testRGBAlpha(pfm, dir, "grey", pfmGrey);
+    testRGBAlpha(oiio, dir, "rgb", tiffRGB);
+    testRGBAlpha(oiio, dir, "grey", tiffGrey);
 #ifdef HAVE_PNG
     OfxPlugin* png = findPlugin("fr.inria.openfx.ReadPNG");
     const File pngRGB = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 3, 0, 0, 0, 0 };
     const File pngRGBA = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 4, 0, 0, 0, 0 };
     testFile(png, dir, "rgb", pngRGB);
+    testRGBAlpha(png, dir, "rgb", pngRGB);
     testFile(png, dir, "rgba", pngRGBA);
     // read row by row, only down to the window, unless interlaced (read whole)
     const File pngGrey16 = { "fr.inria.openfx.ReadPNG", ePNG, 61, 47, 1, 0, 0, 0, 0, 16 };
