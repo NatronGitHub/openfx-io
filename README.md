@@ -57,8 +57,9 @@ on Windows with [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/do
 [Xcode](https://developer.apple.com/xcode/)'s clang and [MacPorts](https://www.macports.org). It is the reference for the
 packages to install and the commands to run on each platform. It builds with [CMake](https://cmake.org) and tests with
 [`ctest`](https://cmake.org/cmake/help/latest/manual/ctest.1.html): a Release C++17 build on every push and pull
-request, and nightly also a Debug C++20 build, with the same tests. The Makefiles are only checked nightly on Linux
-(a Release build of the plug-ins).
+request, and weekly (on Saturdays) also a Debug C++20 build, with the same tests. The Makefiles are only checked weekly on
+Linux (a Release build of the plug-ins). The weekly run builds on Windows and macOS every week, since MSYS2 and MacPorts
+are rolling distributions, and on Linux only if master changed since the last weekly run.
 [Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 9 (see [Linux runtime requirements](#linux-runtime-requirements)), on macOS 14 and later (arm64), and on
 MSYS2 UCRT64.
 
