@@ -67,3 +67,6 @@
 /reader_window_host
 /reader_window_host.dSYM/
 /.reader_window_host/
+/png_corrupt_test
+/png_corrupt_test.dSYM/
+/.png_corrupt/
