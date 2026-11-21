@@ -44,8 +44,10 @@ to checkout a given tag.
 - [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
   [LibRaw](https://www.libraw.org) for the RAW formats
 - [OpenEXR](https://openexr.com) and [Imath](https://github.com/AcademySoftwareFoundation/Imath)
-- [FFmpeg](https://ffmpeg.org) 4.0 to 9 ([`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins
-  compile against a given FFmpeg version)
+- [FFmpeg](https://ffmpeg.org) 8.0 to 9 (the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)'s
+  libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100 and libswscale 9.1.100, or later: the build stops with an
+  older FFmpeg; [`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins compile
+  against a given FFmpeg version)
 - [libpng](http://www.libpng.org/pub/png/libpng.html)
 - [SeExpr](https://github.com/wdas/SeExpr) [2.11](https://github.com/wdas/SeExpr/releases/tag/v2.11), which has the SeExpr 1 API (`SeExpression.h`); SeExpr 3.x
   (the SeExpr2 API) does not work
@@ -77,8 +79,8 @@ Release builds target [Rocky Linux](https://rockylinux.org) [9](https://docs.roc
 so the plug-ins still only need the system's libstdc++. Their symbol versions must not be newer than those of Rocky
 Linux 9: `GLIBC_2.34` (Rocky Linux 9's glibc 2.34 also has a few backported `GLIBC_2.35` symbols, e.g. `__memcmpeq`),
 `GLIBCXX_3.4.29` and `CXXABI_1.3.13` (libstdc++), `GCC_7.0.0` (libgcc_s, x86-64), `GOMP_5.0.1` and `OMP_5.0.1`
-(libgomp). The Linux bundle built by CI is an Ubuntu 24.04 testing build, not a release: it needs the system libraries
-of Ubuntu 24.04 or later.
+(libgomp). The Linux bundles built by CI are testing builds, not releases (see [Natron's testing
+bundles](#natrons-testing-bundles)).
 
 ## Compiling with CMake
 
@@ -165,7 +167,7 @@ compiling:
 See the [CI workflow](.github/workflows/ci.yml) for the complete package lists and build commands.
 
 - **Linux**: install the development packages of the libraries above from the distribution. On [Ubuntu
-  24.04](https://packages.ubuntu.com/noble/): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
+  26.04](https://packages.ubuntu.com/resolute/) (whose [FFmpeg](https://packages.ubuntu.com/resolute/libavcodec-dev) is 8.0): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
   libpng-dev libwebp-dev libtiff-dev libopenjp2-7-dev libavcodec-dev libavformat-dev libavutil-dev
   libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools` for the tests and hostDemo.
   Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with [`bison`](https://www.gnu.org/software/bison/) and [`flex`](https://github.com/westes/flex)) and passes its
@@ -213,6 +215,33 @@ The tests in [`tests/`](tests) link the plug-in sources with a minimal in-proces
 application. The CMake build builds them (`BUILD_TESTING`, above), and `ctest` runs them, as CI does:
 `ctest --test-dir build --output-on-failure`. Without CMake: `cd tests; make test`. See
 [tests/README.md](tests/README.md).
+
+### Natron's testing bundles
+
+[Natron](https://github.com/NatronGitHub/Natron)'s CI ([`.github/workflows/ci.yml`](https://github.com/NatronGitHub/Natron/blob/RB-2.6/.github/workflows/ci.yml)
+on RB-2.6) tests Natron with the plug-ins of the assets of openfx-io's
+[`natron_testing`](https://github.com/NatronGitHub/openfx-io/releases/tag/natron_testing) release:
+
+| Asset | Natron's job | Built by (CI job, artifact) |
+|-------|--------------|-----------------------------|
+| `openfx-io-build-ubuntu_24-testing.zip` | Linux, `ubuntu-24.04` | `linux-natron` (Ubuntu 24.04, FFmpeg 9.0.2 built from source and bundled, since Ubuntu 24.04's FFmpeg 6.1 is too old), `openfx-io-build-ubuntu_24-testing` |
+| `openfx-io-build-windows_ucrt64-testing.zip` | Windows, MSYS2 | `windows` (MSYS2 UCRT64), `openfx-io-build-windows_ucrt64-testing` |
+
+Natron unzips each asset into its `Plugins` directory: the zip holds `IO.ofx.bundle` (with its libraries) and a
+`README.txt` at its root. The other artifacts (`openfx-io-build-ubuntu_26-testing` of the `linux` job, which needs
+Ubuntu 26.04, and the macOS bundle) are not used by Natron. CI uploads the bundles only for tags and manual runs, and
+the assets are updated by hand, from a run of the commit to test (e.g. master, after a merge that Natron's tests
+need):
+
+```sh
+gh workflow run ci.yml -R NatronGitHub/openfx-io --ref master   # then wait for the run: gh run watch
+run=$(gh run list -R NatronGitHub/openfx-io --workflow ci.yml --event workflow_dispatch --branch master --limit 1 --json databaseId --jq '.[0].databaseId')
+for a in ubuntu_24 windows_ucrt64; do
+  gh run download "$run" -R NatronGitHub/openfx-io -n "openfx-io-build-$a-testing" -D "$a"
+  (cd "$a" && zip -qr "../openfx-io-build-$a-testing.zip" .)
+  gh release upload natron_testing "openfx-io-build-$a-testing.zip" -R NatronGitHub/openfx-io --clobber
+done
+```
 
 [`tools/compare_bundles.sh`](tools/compare_bundles.sh) `BUNDLE_A BUNDLE_B` compares two bundles on Linux or macOS, e.g. the `IO.ofx.bundle`
 built by the Makefiles and the one installed by CMake: file list, `Info.plist`, resources, exported

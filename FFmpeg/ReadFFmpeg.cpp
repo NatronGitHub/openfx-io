@@ -57,10 +57,6 @@
 #include "GenericReader.h"
 #include "ofxsCopier.h"
 
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 0, 0)
-#error "This requires FFmpeg >= 4.0"
-#endif
-
 using namespace OFX;
 using namespace OFX::IO;
 

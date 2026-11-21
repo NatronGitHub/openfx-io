@@ -1914,17 +1914,12 @@ int testWriteFFmpegX265(const std::string& outFile, int W, int H, int prefCoding
     if (!enc) { std::printf("  SKIP: no libx265 encoder\n"); return 0; }
     // the expected bit depth: the highest one up to the requested one, among the Y'CbCr formats without alpha
     // that have at least the requested chroma resolution
-    // (avcodec_get_supported_config() is in libavcodec 61.13 and later, AVCodec::pix_fmts is deprecated since then)
     const AVPixelFormat* pixFmts = nullptr;
-#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
     const void* configs = nullptr;
     int nConfigs = 0;
     if (avcodec_get_supported_config(nullptr, enc, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &nConfigs) >= 0 && nConfigs > 0) {
         pixFmts = static_cast<const AVPixelFormat*>(configs); // terminated by AV_PIX_FMT_NONE
     }
-#else
-    pixFmts = enc->pix_fmts;
-#endif
     if (!pixFmts) { std::printf("  FAIL: no pixel formats for libx265\n"); return 1; }
     int expectedDepth = 0;
     bool listsAlpha = false; // libx265 lists a format with alpha and at least the requested chroma
@@ -2585,23 +2580,16 @@ main(int argc, char** argv)
             { "rawvideo BI_RGB in AVI", "avi", "rawvideo", 3, 0, false, "rawvideo", "[0][0][0][0]", "bgr24", rgbTol },
             { "rawvideo UYVY in AVI", "avi", "rawvideo", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol },
         };
-#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
-        // from FFmpeg 8, the mov muxer writes rawvideo with the v308, v408 and v410 tags
+        // the mov muxer writes rawvideo with the v308, v408 and v410 tags
         cases.push_back({ "rawvideo v308 in QuickTime", "mov", "rawvideo", 2, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
         cases.push_back({ "rawvideo v408 in QuickTime", "mov", "rawvideo", 2, 0, true, "rawvideo", "v408", "uyva", yuv8Tol });
         cases.push_back({ "rawvideo v410 in QuickTime", "mov", "rawvideo", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol });
-#endif
         // a project saved with the v308 or v410 encoder: with FFmpeg 9, which removed them, rawvideo writes the same tag
         if (avcodec_find_encoder_by_name("v308")) {
-#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
-            // the real encoders, whose files the mov demuxer of FFmpeg 8 gives to rawvideo (libavformat/isom_tags.c:36-38
+            // the real encoders (FFmpeg 8), whose files the mov demuxer gives to rawvideo (libavformat/isom_tags.c:36-38
             // in n8.0)
             cases.push_back({ "v308 encoder in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
             cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "rawvideo", "v410", "v30xle", yuv10Tol });
-#else
-            cases.push_back({ "v308 encoder in QuickTime", "mov", "v308", 1, 0, false, "v308", "v308", "yuv444p", yuv8Tol });
-            cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "v410", "v410", "yuv444p10le", yuv10Tol });
-#endif
         } else {
             // the warning stays after the render (GenericWriterPlugin::render() clears the persistent message)
             cases.push_back({ "saved v308 project, rawvideo in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol,
@@ -2630,7 +2618,6 @@ main(int argc, char** argv)
                           nullptr, nullptr, 0 });
         cases.push_back({ "rawvideo YUVA444 10-bit in NUT, values on no grid", "nut", "rawvideo", 2, 1, true, "rawvideo", "Y4[0][10]", "yuva444p10le",
                           yuv10Tol, nullptr, nullptr, 0 });
-#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
         cases.push_back({ "rawvideo v410 in QuickTime, values on no grid", "mov", "rawvideo", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol,
                           nullptr, nullptr, 0 });
         // Y'CbCr with more than 10 bits in QuickTime: v410 (10-bit 4:4:4), with a warning
@@ -2638,11 +2625,6 @@ main(int argc, char** argv)
                           "rawvideo has no pixel format with Y'CbCr 4:4:4, 16 bits in the mov container", nullptr, 0 });
         cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: v410", "mov", "rawvideo", 1, 2, false, "rawvideo", "v410", "v30xle", yuv10Tol,
                           "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
-#else
-        // (values on no grid, in 8 bits: plus the 8-bit rounding, 0.5/255)
-        cases.push_back({ "rawvideo YUV422 12-bit in QuickTime: 2vuy", "mov", "rawvideo", 1, 2, false, "rawvideo", "2vuy", "uyvy422",
-                          yuv422Tol + 0.5 / 255., "rawvideo has no pixel format with Y'CbCr 4:2:2, 12 bits in the mov container", nullptr, 0 });
-#endif
 
         // Odd widths (63x47)
         {
@@ -2662,11 +2644,9 @@ main(int argc, char** argv)
                 { "rawvideo BI_RGB BGRA in AVI, odd width", "avi", "rawvideo", 3, 0, true, "rawvideo", "[0][0][0][0]", "bgra", rgbTol },
                 { "rawvideo UYVY in AVI, odd width", "avi", "rawvideo", 1, 0, false, "rawvideo", "UYVY", "uyvy422", yuv422Tol },
                 { "rawvideo YUV420 8-bit in Matroska, odd width", "mkv", "rawvideo", 0, 0, false, "rawvideo", "I420", "yuv420p", yuv420Tol },
-#if (LIBAVFORMAT_VERSION_MAJOR >= 62)
                 { "rawvideo v410 in QuickTime, odd width", "mov", "rawvideo", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol },
                 { "rawvideo v308 in QuickTime, odd width", "mov", "rawvideo", 2, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol },
                 { "rawvideo v408 in QuickTime, odd width", "mov", "rawvideo", 2, 0, true, "rawvideo", "v408", "uyva", yuv8Tol },
-#endif
             };
             for (UncompressedCase c : odd) {
                 c.W = 63;

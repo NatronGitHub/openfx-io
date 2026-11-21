@@ -50,6 +50,15 @@ FFMPEG_LINKFLAGS = $(foreach l,avformat avcodec swscale avutil,$(FFMPEG_LIBDIR)/
 else
 FFMPEG_LINKFLAGS = `$(FFMPEG_PKG_CONFIG) --libs libavformat libavcodec libswscale libavutil`
 endif
+# FFmpeg 8.0 or later: the versions of the libraries in the n8.0 release (as checked in FFmpeg/FFmpegFile.h). Fail
+# with a message if pkg-config finds an older FFmpeg (only for the plugins that link FFmpeg, and not for "make clean").
+FFMPEG_MIN_MODULES = libavformat >= 62.3.100, libavcodec >= 62.11.100, libswscale >= 9.1.100, libavutil >= 60.8.100
+ifneq ($(and $(filter IO FFmpeg,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes)),)
+FFMPEG_TOO_OLD := $(shell $(FFMPEG_PKG_CONFIG) --exists libavcodec 2>/dev/null && ! $(FFMPEG_PKG_CONFIG) --exists '$(FFMPEG_MIN_MODULES)' 2>/dev/null && for m in libavformat libavcodec libswscale libavutil; do printf '%s %s ' $$m "$$($(FFMPEG_PKG_CONFIG) --modversion $$m 2>/dev/null)"; done)
+ifneq ($(strip $(FFMPEG_TOO_OLD)),)
+$(error The FFmpeg plugins require FFmpeg 8.0 or later ($(FFMPEG_MIN_MODULES)), but pkg-config found $(strip $(FFMPEG_TOO_OLD)) in $(FFMPEG_LIBDIR). Select another FFmpeg with FFMPEG_PKG_CONFIG_PATH=<prefix>/lib/pkgconfig)
+endif
+endif
 # (only on macOS, for the plugins that link FFmpeg, and not for "make clean")
 FFMPEG_CHECK_BUNDLE := $(and $(filter Darwin,$(shell uname -s)),$(filter IO FFmpeg,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes))
 ifneq ($(FFMPEG_CHECK_BUNDLE),)

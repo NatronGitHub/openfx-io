@@ -1,7 +1,7 @@
 #!/bin/sh
 # Compile check of the FFmpeg plug-in sources against the FFmpeg found by pkg-config, without linking
-# (-fsyntax-only), e.g. to check older FFmpeg versions in a container: see "FFmpeg version compile check" in
-# tests/README.md. Run from the repository root; $1 is the compiler (default: g++).
+# (-fsyntax-only), e.g. to check a given FFmpeg version (8.0 or later) with PKG_CONFIG_PATH or in a container: see
+# "FFmpeg version compile check" in tests/README.md. Run from the repository root; $1 is the compiler (default: g++).
 CXX="${1:-g++}"
 FFCFLAGS="$(pkg-config --cflags libavformat libavcodec libavutil libswscale libswresample)" || exit 1
 echo "libavformat $(pkg-config --modversion libavformat), libavcodec $(pkg-config --modversion libavcodec), $($CXX --version | head -n 1)"
