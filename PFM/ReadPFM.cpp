@@ -389,7 +389,14 @@ ReadPFMPlugin::getFrameBounds(const string& filename,
 {
     assert(bounds && par);
     // read PFM header
-    std::FILE* const nfile = std::fopen(filename.c_str(), "rb");
+    std::FILE* const nfile = fopen_utf8(filename.c_str(), "rb");
+    if (!nfile) {
+        if (error) {
+            *error = string("Cannot open file \"") + filename + "\".";
+        }
+
+        return false;
+    }
 
     char pfm_type, item[1024] = { 0 };
     int W = 0;
@@ -483,7 +490,7 @@ ReadPFMPlugin::guessParamsFromFilename(const string& newFile,
     stringstream ss;
 
     // read PFM header
-    std::FILE* const nfile = std::fopen(filename.c_str(), "rb");
+    std::FILE* const nfile = fopen_utf8(filename.c_str(), "rb");
     if (!nfile) {
         return false;
     }
