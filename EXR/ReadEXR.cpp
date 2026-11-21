@@ -922,10 +922,12 @@ ReadEXRPluginFactory::unload()
 {
     // The header cache is global data, destroyed at unload (kOfxActionUnload): the binary may stay in memory, and be
     // loaded again later, after the files changed.
-    // OpenEXR's global thread pool is not stopped here: it is started by the first of its users' instances (this
-    // plug-in, WriteEXR and the OIIO plug-ins), and stopped on MS Windows by the destruction of the last one
-    // (ExrThreads.h, #250, #132), not at each unload, e.g. after a plug-in scan, while other plug-ins may use it.
+    // OpenEXR's global thread pool is started by the first of its users' instances (this plug-in, WriteEXR and the
+    // OIIO plug-ins), and stopped on MS Windows by the destruction of the last one (ExrThreads.h, #250, #132), and
+    // here, on MS Windows, if no instance of its users is alive: OpenImageIO may have started it outside of any
+    // instance, and its threads must not be joined while the binary is unloaded.
     Exr::FileManager::s_readerManager.clear();
+    stopUnusedExrThreads();
 }
 
 void

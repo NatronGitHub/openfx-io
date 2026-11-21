@@ -97,8 +97,8 @@ static void
 shutdownOIIOThreads()
 {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
-    // (OpenEXR's pool is stopped by the last ExrThreadsUser, ExrThreads.h: not here, while ReadEXR or WriteEXR
-    // instances may still use it, #132)
+    // (OpenEXR's pool is stopped by the last ExrThreadsUser, and by OIIOPluginUnloaded() if none is alive,
+    // ExrThreads.h: not here, while ReadEXR or WriteEXR instances may still use it, #132)
 
     // TODO: Remove the code in the following #if block once all platforms have been updated to an OpenImageIO
     // version that defines default_thread_pool_shutdown().
@@ -134,6 +134,9 @@ OIIOPluginUnloaded(const std::string& pluginUID)
         // before the binary containing the plug-in is unloaded", after "all instances of a plugin have been destroyed"):
         // stop the pools now, their threads would deadlock if they were joined while the binary is unloaded (MS Windows)
         shutdownOIIOThreads();
+        // and OpenEXR's, unless ReadEXR or WriteEXR instances use it (#132): OpenImageIO may have started it outside
+        // of any instance
+        stopUnusedExrThreads();
     }
 }
 

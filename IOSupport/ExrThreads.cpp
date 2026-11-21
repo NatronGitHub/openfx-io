@@ -68,21 +68,37 @@ ExrThreadsUser::ExrThreadsUser()
     }
 }
 
+// MS Windows: stop the pool (with exrThreadsMutex() locked), remembering its size for the next user
+static void
+stopPoolLocked()
+{
+#if !defined(OFX_IO_NO_ILMTHREAD) && (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
+    IlmThread::ThreadPool& pool = IlmThread::ThreadPool::globalThreadPool();
+    const int n = pool.numThreads();
+    if (n > 0) {
+        gThreadsToRestore = n;
+        pool.setNumThreads(0);
+    }
+#endif
+}
+
 ExrThreadsUser::~ExrThreadsUser()
 {
     std::lock_guard<std::mutex> lock(exrThreadsMutex());
     if (--gLiveUsers == 0) {
-#if !defined(OFX_IO_NO_ILMTHREAD) && (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
         // the last user: stop the pool now, while the host still runs normally. Its threads would otherwise be
         // joined at exit by OpenEXR's static destructors, after ExitProcess terminated them, which may dead-lock with
         // MinGW (#250). The next user starts it again.
-        IlmThread::ThreadPool& pool = IlmThread::ThreadPool::globalThreadPool();
-        const int n = pool.numThreads();
-        if (n > 0) {
-            gThreadsToRestore = n;
-            pool.setNumThreads(0);
-        }
-#endif
+        stopPoolLocked();
+    }
+}
+
+void
+stopUnusedExrThreads()
+{
+    std::lock_guard<std::mutex> lock(exrThreadsMutex());
+    if (gLiveUsers == 0) {
+        stopPoolLocked();
     }
 }
 

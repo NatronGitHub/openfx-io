@@ -314,8 +314,9 @@ WriteEXRPlugin::onOutputFileChanged(const string& /*filename*/,
     }
 }
 
-// unload: OpenEXR's global thread pool is not stopped (see ReadEXRPluginFactory::unload())
-mDeclareWriterPluginFactory(WriteEXRPluginFactory, {}, false);
+// unload: OpenEXR's global thread pool is stopped on MS Windows if no instance of its users is alive (see
+// ReadEXRPluginFactory::unload())
+mDeclareWriterPluginFactory(WriteEXRPluginFactory, { stopUnusedExrThreads(); }, false);
 void
 WriteEXRPluginFactory::load()
 {
