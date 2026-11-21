@@ -397,6 +397,22 @@ EWU_HOST_SRCS := hostdemo/exit_without_unload.cpp $(filter-out hostdemo/reader_w
 exit_without_unload: $(EWU_HOST_SRCS)
 	$(CXX) $(RW_HOST_CXXFLAGS) $(shell $(PKGCONF) --cflags OpenImageIO) $(filter %.cpp,$^) $(RW_HOST_LIBS) $(shell $(PKGCONF) --libs OpenImageIO) $(TBBMALLOC_LIBS) -o $@
 
+# a host that renders a DNG file with ReadOIIO (LibRaw: OpenMP on Linux and MS Windows), unloads the plug-ins, keeps
+# running, then exits, 5 times: it must not crash (#239; with the bundle of test-reader-window-host; not linked with
+# OpenImageIO, LibRaw or OpenMP, so that nothing else keeps them loaded)
+RAW_UNLOAD_SRCS := hostdemo/raw_unload.cpp $(filter-out hostdemo/reader_window.cpp,$(RW_HOST_SRCS))
+raw_unload: $(RAW_UNLOAD_SRCS)
+	$(CXX) $(RW_HOST_CXXFLAGS) $(filter %.cpp,$^) $(RW_HOST_LIBS) -o $@
+
+.PHONY: test-raw-unload clean-raw-unload
+test: test-raw-unload
+clean: clean-raw-unload
+test-raw-unload: raw_unload $(RW_BUNDLE_BINARY)
+	OCIO=$(CURDIR)/test.ocio bash hostdemo/raw_unload.sh ./raw_unload .reader_window_host/plugins .raw_unload; \
+	    st=$$?; if [ $$st -eq 77 ]; then echo "test-raw-unload: SKIPPED"; else exit $$st; fi
+clean-raw-unload:
+	rm -rf raw_unload raw_unload.dSYM .raw_unload
+
 .PHONY: test-exit-without-unload clean-exit-without-unload
 test: test-exit-without-unload
 clean: clean-exit-without-unload
