@@ -79,6 +79,11 @@ jobs:
     env:
       # pkg-config directory of the FFmpeg to build against; empty: Ubuntu's (libavcodec-dev, ...: FFmpeg 8.0)
       FFMPEG_PKG_CONFIG_PATH: ""
+      # OIIOText's default font (OpenImageIO's FreeMono, from fonts-freefont-ttf): OpenImageIO 2.5 only looks for fonts
+      # in its font directories (e.g. /usr/share/fonts) and the directories just below them, not deeper as 2.4 did,
+      # so not in /usr/share/fonts/truetype/freefont (enumerate_fonts(),
+      # https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/v2.5.19.1/src/libOpenImageIO/imagebufalgo_draw.cpp#L790-L846)
+      OPENIMAGEIO_FONTS: /usr/share/fonts/truetype/freefont
     defaults:
       run:
         shell: bash -eo pipefail {0}
