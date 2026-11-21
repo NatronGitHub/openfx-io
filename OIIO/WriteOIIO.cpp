@@ -322,6 +322,9 @@ static bool gIsMultiplanarV2 = false;
 
 class WriteOIIOPlugin
     : public GenericWriterPlugin {
+    // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h)
+    OIIOThreadsUser _oiioThreads;
+
 public:
     WriteOIIOPlugin(OfxImageEffectHandle handle, const vector<string>& extensions);
 
@@ -478,7 +481,6 @@ WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
     string filename;
     _fileParam->getValue(filename);
     refreshParamsVisibility(filename);
-    initOIIOThreads();
 }
 
 WriteOIIOPlugin::~WriteOIIOPlugin()

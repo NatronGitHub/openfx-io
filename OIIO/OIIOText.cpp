@@ -113,6 +113,9 @@ static bool gHostSupportsDefaultCoordinateSystem = true; // for kParamDefaultsNo
 
 class OIIOTextPlugin
     : public ImageEffect {
+    // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h)
+    OIIOThreadsUser _oiioThreads;
+
 public:
     OIIOTextPlugin(OfxImageEffectHandle handle);
 
@@ -164,8 +167,6 @@ OIIOTextPlugin::OIIOTextPlugin(OfxImageEffectHandle handle)
     _fontName = fetchStringParam(kParamFontName);
     _textColor = fetchRGBAParam(kParamTextColor);
     assert(_position && _text && _fontSize && _fontName && _textColor);
-
-    initOIIOThreads();
 
     // honor kParamDefaultsNormalised
     if (paramExists(kParamDefaultsNormalised)) {

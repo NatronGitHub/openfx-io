@@ -158,6 +158,9 @@ OIIO_NAMESPACE_USING
 
 class OIIOResizePlugin
     : public ImageEffect {
+    // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h)
+    OIIOThreadsUser _oiioThreads;
+
 public:
     OIIOResizePlugin(OfxImageEffectHandle handle);
 
@@ -264,8 +267,6 @@ OIIOResizePlugin::OIIOResizePlugin(OfxImageEffectHandle handle)
         _format->setIsSecretAndDisabled(true);
         break;
     }
-
-    initOIIOThreads();
 }
 
 OIIOResizePlugin::~OIIOResizePlugin()

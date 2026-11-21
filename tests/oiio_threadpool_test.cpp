@@ -13,21 +13,32 @@
  *     host's 4 CPUs, uses the pool)
  *   - reload and unload ReadOIIO (as during a plug-in scan), load and unload OIIOResize v1 (another plug-in):
  *     the pool keeps its threads
- *   - destroy the instance, unload WriteOIIO: the pool keeps its threads; unload OIIOResize, the last OIIO
- *     plug-in loaded: the pool is stopped (0 threads, if OpenImageIO has default_thread_pool_shutdown())
- *   - load, render and unload OIIOResize again (the pool is restarted by the instance, stopped by the unload)
+ *   - two instances: destroying one keeps the pool's threads; destroying the last live instance stops the pool
+ *     (0 threads, if OpenImageIO has default_thread_pool_shutdown()), while the plug-ins are still loaded, for a
+ *     host that exits without kOfxActionUnload (#250); a new instance starts it again
+ *   - unload WriteOIIO and OIIOResize, the last OIIO plug-in loaded: the pool stays stopped (the unload's
+ *     shutdown is a fallback, and does nothing more)
+ *   - load, render and unload OIIOResize again (the pool is restarted by the instance, stopped by its destruction)
+ *   - 8 threads create and destroy OIIOThreadsUser objects (what each OIIO plug-in instance holds) concurrently, and
+ *     check that the pool runs while theirs exists; at the end, nothing is alive and the pool is stopped (also built
+ *     with ThreadSanitizer: make test-oiio-threads-tsan)
  *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
 
+#include "OIIOGlobal.h"
+
 #include <OpenImageIO/oiioversion.h>
 #include <OpenImageIO/sysutil.h>
 #include <OpenImageIO/thread.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -46,7 +57,7 @@ OfxStatus mtNum4(unsigned int* n) { *n = 4; return kOfxStatOK; }
 
 int poolSize() { return OIIO::default_thread_pool()->size(); }
 
-// The pool size while an OIIO plug-in instance exists: initOIIOThreads() sets the "threads" attribute to 0
+// The pool size while an OIIO plug-in instance exists: the first one (OIIOThreadsUser) sets the "threads" attribute to 0
 // (all the cores), i.e. a pool of hardware_concurrency() - 1 threads (the calling thread is the other one).
 int expectedPoolSize() { return (int)OIIO::Sysutil::hardware_concurrency() - 1; }
 
@@ -81,15 +92,19 @@ bool unload(OfxPlugin* p) { return ok(p->mainEntry(kOfxActionUnload, nullptr, nu
 struct ResizeInstance {
     OfxPlugin* p;
     Effect ctx;
+    Effect* c = &ctx; // the context descriptor (clips and params): ctx, or another instance's (shareContext())
     Effect inst;
     bool created = false;
 
     explicit ResizeInstance(OfxPlugin* plugin) : p(plugin) {}
+
+    // another instance of the same context descriptor
+    void shareContext(ResizeInstance& other) { c = &other.ctx; }
     ~ResizeInstance() { destroy(); }
 
     bool create()
     {
-        inst.delegate = &ctx;
+        inst.delegate = c;
         setInstanceProps(inst, 64, 64, 1, kOfxImageEffectContextFilter);
         created = ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr));
         return created;
@@ -109,8 +124,8 @@ struct ResizeInstance {
     {
         const int W = 64, H = 64, w = W / 2, h = H / 2;
         const float color[4] = { 0.25f, 0.5f, 0.75f, 1.f };
-        Clip* src = ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
-        Clip* dst = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+        Clip* src = c->clips.count(kOfxImageEffectSimpleSourceClipName) ? c->clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+        Clip* dst = c->clips.count(kOfxImageEffectOutputClipName) ? c->clips[kOfxImageEffectOutputClipName] : nullptr;
         if (!src || !dst) {
             std::printf("  no Source or Output clip\n");
             return false;
@@ -210,16 +225,39 @@ int main()
         check(poolSize() == expected, "the pool keeps its threads");
         check(r.render(), "OIIOResize renders");
 
-        std::printf("== destroy the instance, unload WriteOIIO\n");
+        std::printf("== a second instance; destroy the first one\n");
+        {
+            ResizeInstance r2(resize);
+            r2.shareContext(r);
+            check(r2.create(), "OIIOResize CreateInstance (second)");
+            check(liveOIIOInstances() == 2, "2 live instances");
+            r.destroy();
+            check(liveOIIOInstances() == 1, "1 live instance");
+            check(poolSize() == expected, "the pool keeps its threads");
+            check(r2.render(), "the second instance renders");
+            std::printf("== destroy the last live instance (the plug-ins are still loaded)\n");
+            r2.destroy();
+        }
+        check(liveOIIOInstances() == 0, "no live instance");
+        std::printf("  pool size: %d\n", poolSize());
+        if (kHasPoolShutdown) {
+            check(poolSize() == 0, "the pool is stopped (#250: a host may exit without kOfxActionUnload)");
+        }
+        std::printf("== a new instance\n");
+        check(r.create(), "OIIOResize CreateInstance");
+        check(poolSize() == expected, "the pool has hardware_concurrency() - 1 threads again");
+        check(r.render(), "OIIOResize renders");
         r.destroy();
-        check(unload(write), "WriteOIIO unload");
-        check(poolSize() == expected, "the pool keeps its threads");
+        if (kHasPoolShutdown) {
+            check(poolSize() == 0, "the pool is stopped");
+        }
 
-        std::printf("== unload OIIOResize, the last OIIO plug-in loaded\n");
+        std::printf("== unload WriteOIIO, then OIIOResize, the last OIIO plug-in loaded\n");
+        check(unload(write), "WriteOIIO unload");
         check(unload(resize), "OIIOResize unload");
         std::printf("  pool size: %d\n", poolSize());
         if (kHasPoolShutdown) {
-            check(poolSize() == 0, "the pool is stopped");
+            check(poolSize() == 0, "the pool stays stopped");
         }
     }
 
@@ -232,12 +270,44 @@ int main()
         check(poolSize() == expected, "the pool has hardware_concurrency() - 1 threads again");
         check(r.render(), "OIIOResize renders");
         r.destroy();
+        if (kHasPoolShutdown) {
+            check(poolSize() == 0, "the pool is stopped by the destruction of the instance");
+        }
         check(unload(resize), "OIIOResize unload");
         if (kHasPoolShutdown) {
-            check(poolSize() == 0, "the pool is stopped");
+            check(poolSize() == 0, "the pool stays stopped");
         }
     } else {
         check(false, "OIIOResize found");
+    }
+
+    std::printf("== 8 threads create and destroy OIIOThreadsUser objects concurrently\n");
+    {
+        std::atomic<int> notRunning(0);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 8; ++t) {
+            threads.emplace_back([&notRunning, expected, t]() {
+                for (int i = 0; i < 200; ++i) {
+                    OIIOThreadsUser user;
+                    if (poolSize() != expected) {
+                        ++notRunning;
+                    }
+                    if ((i + t) % 3 == 0) {
+                        OIIOThreadsUser nested; // a second instance on the same thread
+                        std::this_thread::yield();
+                    }
+                }
+            });
+        }
+        for (std::thread& t : threads) {
+            t.join();
+        }
+        std::printf("  the pool was not running %d times while an OIIOThreadsUser existed\n", notRunning.load());
+        check(notRunning == 0, "the pool runs while an OIIOThreadsUser exists");
+        check(liveOIIOInstances() == 0, "no live instance");
+        if (kHasPoolShutdown) {
+            check(poolSize() == 0, "the pool is stopped");
+        }
     }
 
     if (gFailures) {

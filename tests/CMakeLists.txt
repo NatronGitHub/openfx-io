@@ -269,6 +269,13 @@ if(TARGET io_tests_ofx)
   io_test_program(oiio_threadpool_test OFX SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs} ${S}/OIIO/OIIOResize.cpp
                   INCLUDES ${S}/openfx/Support/Plugins/include)
   io_test(test-oiio-threads ENV "${_io_ocio_env}" COMMAND oiio_threadpool_test)
+  if(IO_TESTS_SANITIZERS)
+    # test-oiio-threads-tsan: the same with ThreadSanitizer (the instances are counted from several threads, #250)
+    io_test_program(oiio_threadpool_test_tsan OFX THREADS SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs}
+                    ${S}/OIIO/OIIOResize.cpp INCLUDES ${S}/openfx/Support/Plugins/include SANITIZE -fsanitize=thread)
+    io_test(test-oiio-threads-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+            COMMAND oiio_threadpool_test_tsan)
+  endif()
 
   # test-oiio-edge: OIIOResize and OIIOText with degenerate inputs, with OpenGL (OIIOText's interact)
   io_test_program(oiio_edge_test OFX SOURCES ${T}/oiio_edge_test.cpp ${_io_plugin_srcs} ${S}/OIIO/OIIOResize.cpp
@@ -331,6 +338,25 @@ if(TARGET io_tests_ofx)
             COMMAND "${IO_BASH}" "${T}/hostdemo/reader_window.sh" $<TARGET_FILE:reader_window_host>
                     "${B}/.reader_window_host/plugins" "${B}/.reader_window_host/work")
     set_tests_properties(test-reader-window-host PROPERTIES SKIP_RETURN_CODE 77)
+    # test-exit-without-unload: a host that renders ReadOIIO, destroys its instance and exits without
+    # kOfxActionUnload, 10 times, must exit (#250); linked with OpenImageIO, whose pool it also checks
+    add_executable(exit_without_unload ${T}/hostdemo/exit_without_unload.cpp "${_io_hd}/hostDemoClipInstance.cpp"
+                   "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
+                   "${_io_hd}/hostDemoParamInstance.cpp")
+    target_compile_options(exit_without_unload PRIVATE -O0 -g)
+    target_include_directories(exit_without_unload PRIVATE "${_io_hd}")
+    target_link_libraries(exit_without_unload PRIVATE OfxHost OpenImageIO::OpenImageIO)
+    if(IO_TESTS_TBBMALLOC_LIBRARY)
+      # (the oneTBB exit crash of programs that link OpenImageIO, see io_tests_ofx)
+      target_link_libraries(exit_without_unload PRIVATE "${IO_TESTS_TBBMALLOC_LIBRARY}")
+    endif()
+    set_target_properties(exit_without_unload PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
+                          CXX_EXTENSIONS OFF)
+    add_dependencies(exit_without_unload io_reader_window_plugins)
+    io_test(test-exit-without-unload ENV "${_io_ocio_env}"
+            COMMAND "${IO_BASH}" "${T}/hostdemo/exit_without_unload.sh" $<TARGET_FILE:exit_without_unload>
+                    "${B}/.reader_window_host/plugins" "${B}/.exit_without_unload")
+    set_tests_properties(test-exit-without-unload PROPERTIES SKIP_RETURN_CODE 77)
   else()
     message(STATUS "tests: no test-reader-window-host (it needs HostSupport, e.g. IO_HOSTDEMO_TESTS=ON, and bash)")
   endif()

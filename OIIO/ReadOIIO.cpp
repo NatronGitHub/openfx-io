@@ -406,6 +406,9 @@ struct ReadOIIOTestAccess; // tests/oiio_layers_test.cpp
 
 class ReadOIIOPlugin
     : public GenericReaderPlugin {
+    // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h)
+    OIIOThreadsUser _oiioThreads;
+
     friend struct ReadOIIOTestAccess;
 
 public:
@@ -586,8 +589,6 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
 
     // Don't try to restore any state in here, do so in restoreState instead which is called
     // right away after the constructor.
-
-    initOIIOThreads();
 }
 
 ReadOIIOPlugin::~ReadOIIOPlugin()

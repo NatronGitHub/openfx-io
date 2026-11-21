@@ -187,6 +187,17 @@ ocio_anim_fuzz: ocio_anim_fuzz.cpp ocio_colorspace_anim_test.cpp ofx_test_host.h
 oiio_threadpool_test: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
+# the same with ThreadSanitizer: the OIIO plug-in instances are counted under a mutex, from several threads (#250)
+oiio_threadpool_test_tsan: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include -fsanitize=thread -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+.PHONY: test-oiio-threads-tsan clean-oiio-threads-tsan
+clean: clean-oiio-threads-tsan
+test-oiio-threads-tsan: oiio_threadpool_test_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./oiio_threadpool_test_tsan
+clean-oiio-threads-tsan:
+	rm -rf oiio_threadpool_test_tsan oiio_threadpool_test_tsan.dSYM
+
 # OIIOResize and OIIOText with degenerate inputs (an empty source, huge or infinite RoDs, huge text positions), with
 # the OIIO plug-ins (OIIOGlobal), and OpenGL (OIIOText's interact; OCIO_CDL_LIBS). (Added to test and clean here, on
 # lines of their own.)
@@ -358,6 +369,21 @@ reader_window_host: $(RW_HOST_SRCS) ../openfx/HostSupport/examples/hostDemoClipI
 $(RW_BUNDLE_BINARY): $(RW_PLUGIN_SRCS) $(OFX_SUPPORT)
 	mkdir -p $(@D)
 	$(CXX) $(OFX_CXXFLAGS) -I../PFM -I../PNG $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) -fPIC -shared $^ $(OFX_LIBS) $(READER_WINDOW_LIBS) -o $@
+
+# a host that renders ReadOIIO, destroys its instance and exits without kOfxActionUnload, 10 times: it must exit
+# (#250; with the bundle of test-reader-window-host, and OpenImageIO, whose pool it also checks)
+EWU_HOST_SRCS := hostdemo/exit_without_unload.cpp $(filter-out hostdemo/reader_window.cpp,$(RW_HOST_SRCS))
+exit_without_unload: $(EWU_HOST_SRCS)
+	$(CXX) $(RW_HOST_CXXFLAGS) $(shell $(PKGCONF) --cflags OpenImageIO) $(filter %.cpp,$^) $(RW_HOST_LIBS) $(shell $(PKGCONF) --libs OpenImageIO) $(TBBMALLOC_LIBS) -o $@
+
+.PHONY: test-exit-without-unload clean-exit-without-unload
+test: test-exit-without-unload
+clean: clean-exit-without-unload
+test-exit-without-unload: exit_without_unload $(RW_BUNDLE_BINARY)
+	OCIO=$(CURDIR)/test.ocio bash hostdemo/exit_without_unload.sh ./exit_without_unload .reader_window_host/plugins .exit_without_unload; \
+	    st=$$?; if [ $$st -eq 77 ]; then echo "test-exit-without-unload: SKIPPED"; else exit $$st; fi
+clean-exit-without-unload:
+	rm -rf exit_without_unload exit_without_unload.dSYM .exit_without_unload
 
 .PHONY: test-reader-window-host clean-reader-window-host
 test: test-reader-window-host

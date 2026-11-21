@@ -48,7 +48,9 @@ make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
-make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO plug-in's unload, not the first
+make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
+make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
+make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
@@ -369,16 +371,33 @@ swap only undoes its first change); `ocio_anim_fuzz scenario 0 0` with `SCEN=mai
 `kNatronOfxHostIsNatron`, string params read at the given time): `make test-ocio-anim` also
 runs the test and a fuzz run so.
 
-### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118)
+### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118, #250)
 
 `oiio_threadpool_test.cpp` loads ReadOIIO, WriteOIIO and OIIOResize in the in-process
 host of `ofx_test_host.h`, which share OpenImageIO's default thread pool, as in IO.ofx.
-Each OIIO plug-in stops the pool in its unload action (its threads must not be joined
-while the binary is unloaded, a deadlock on MS Windows), but only if it is the last OIIO
-plug-in loaded: after ReadOIIO's unload (and a reload and unload, as in a plug-in scan),
-the pool must keep its `hardware_concurrency() - 1` threads and OIIOResize must render
-(`ImageBufAlgo::resize()`, with the host's 4 CPUs); after the unload of the last one,
-the pool must have 0 threads. It sets `OCIO=test.ocio`.
+The instances of the OIIO plug-ins are counted (`OIIOThreadsUser`, OIIOGlobal.h): the first one starts the pool, and
+the destruction of the last one stops it, for a host that exits without kOfxActionUnload (OpenImageIO requires its
+pools to be shut down before exit, #250). Each OIIO plug-in also stops the pool in its unload action, but only if it
+is the last OIIO plug-in loaded:
+* after ReadOIIO's unload (and a reload and unload, as in a plug-in scan) while an OIIOResize instance exists, the
+  pool must keep its `hardware_concurrency() - 1` threads and OIIOResize must render (`ImageBufAlgo::resize()`, with
+  the host's 4 CPUs);
+* with two instances, the destruction of one keeps the threads; the destruction of the last one stops the pool (0
+  threads), while the plug-ins are still loaded, and a new instance starts it again;
+* the unload of the last OIIO plug-in leaves it stopped;
+* 8 threads create and destroy `OIIOThreadsUser` objects concurrently: the pool must run while each one exists, and
+  be stopped at the end. `make test-oiio-threads-tsan` builds and runs it with
+  [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-oiio-threads-tsan`, with
+  `IO_TESTS_SANITIZERS`).
+
+It sets `OCIO=test.ocio`.
+
+`make test-exit-without-unload` (ctest `test-exit-without-unload`, when the build has HostSupport) builds
+`hostdemo/exit_without_unload.cpp`, a host built on HostSupport and linked with OpenImageIO, and runs it 10 times
+(`hostdemo/exit_without_unload.sh`, with a 120 s watchdog each) with the bundle of `test-reader-window-host`: it renders
+a TIFF file (written by `oiiotool`) with ReadOIIO, destroys the instance, and returns from `main()` without
+kOfxActionUnload. Each run must exit. When the plug-in uses the program's OpenImageIO (the bundle is not deployed with
+its own copy), the pool must have `hardware_concurrency() - 1` threads with the instance, and 0 after it was destroyed.
 
 ### 1f2. `test-oiio-edge` — OIIOResize and OIIOText with degenerate inputs
 
