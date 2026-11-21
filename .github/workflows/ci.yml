@@ -2,10 +2,16 @@ name: Continuous Integration
 
 # Per push/PR: exactly three full CMake builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64): Release, C++17
 # (Natron's Qt5 builds). Extra variants (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests)
-# only run nightly (if master changed) or on demand. Every build, test and dependency build uses CMake (and ctest). The
-# Makefiles stay buildable (Natron's RB-2.6 build-plugins.sh uses them): a nightly Linux step only checks that they
-# still build the plug-ins. Natron's Linux testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is
-# built on pushes, nightly and on demand, not for pull requests.
+# only run weekly or on demand. Every build, test and dependency build uses CMake (and ctest). The Makefiles stay
+# buildable (Natron's RB-2.6 build-plugins.sh uses them): a weekly Linux step only checks that they still build the
+# plug-ins. Natron's Linux testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes,
+# weekly and on demand, not for pull requests.
+#
+# Weekly run (Saturdays): the jobs whose upstream moves (linux: Ubuntu 26.04's updates and runner image; windows:
+# MSYS2 UCRT64, a rolling distribution; macos: MacPorts, updated by "port selfupdate") run every week, even if master
+# didn't change, so that an upstream update that breaks the build is seen within a week. linux-natron (FFmpeg pinned
+# and cached, also built on every push to master) only runs if master changed since the last weekly run (the
+# "changes" job).
 #
 # Frugal CI (NatronGitHub runners are shared by all repos): one run per change. The macOS job (scarce runners)
 # only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows. Pushes run CI only on
@@ -14,7 +20,7 @@ name: Continuous Integration
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: '17 3 * * *' # nightly, 03:17 UTC: extra variants (skipped if master didn't change)
+    - cron: '17 3 * * 6' # weekly, Saturdays 03:17 UTC: extra variants (linux-natron skipped if master didn't change)
   push:
     branches: [master, 'RB-*']
     tags: ['*']
@@ -33,7 +39,7 @@ permissions:
   contents: read
 
 concurrency:
-  # nightly and manual runs have their own groups, so that they don't cancel (or get cancelled by) master's push CI.
+  # weekly and manual runs have their own groups, so that they don't cancel (or get cancelled by) master's push CI.
   # Runs of draft pull requests (which skip every job) have their own group too: otherwise a late run of a push made
   # while the PR was a draft cancels the ready_for_review run, then skips itself, and no CI runs at all.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event_name || 'ci' }}${{ github.event.pull_request.draft && '-draft' || '' }}
@@ -47,9 +53,12 @@ env:
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # Skip the nightly run if master didn't change since the last completed nightly run (this job only runs on
-  # schedule): once per commit, even if that run failed. Compare commits rather than dates: commit dates may be
-  # older than the push. If the API call fails, run anyway.
+  # Skip linux-natron in the weekly run if master didn't change since the last completed weekly run (this job only
+  # runs on schedule): once per commit, even if that run failed. Only runs that succeeded or failed count: a cancelled
+  # (or skipped, timed out...) run didn't build its commit, which the next weekly run builds. Compare commits rather
+  # than dates: commit dates may be older than the push. If the API call (or this job) fails, or no such run exists,
+  # run anyway. master_changed is only read by linux-natron,
+  # whose upstream doesn't move; linux, windows and macos run every week.
   changes:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
@@ -57,24 +66,27 @@ jobs:
     permissions:
       actions: read
     outputs:
-      run: ${{ steps.check.outputs.run }}
+      master_changed: ${{ steps.check.outputs.master_changed }}
     steps:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status completed --limit 1 --json headSha --jq '.[0].headSha // empty') || last=
+          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status completed --limit 20 \
+            --json headSha,conclusion --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0].headSha // empty') || last=
           if [ -n "$last" ] && [ "$last" = "$GITHUB_SHA" ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"; echo "master ($GITHUB_SHA) didn't change since the last nightly run: skipping."
+            echo "master_changed=false" >> "$GITHUB_OUTPUT"
+            echo "master ($GITHUB_SHA) didn't change since the last weekly run: skipping linux-natron."
           else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "master_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
   linux:
     name: Linux (Ubuntu 26.04)
-    needs: changes
-    # no CI for draft pull requests; the scheduled run only if master changed
-    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    # no CI for draft pull requests. Ubuntu 26.04 moves (apt-get update installs its updates of FFmpeg, OpenImageIO,
+    # OpenColorIO, LibRaw..., and the runner image changes weekly): the weekly run builds on Linux every week, even if
+    # master didn't change (no "needs: changes").
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     # Ubuntu 26.04: its FFmpeg is 8.0 (the minimum, see README.md), and its OpenImageIO links the same FFmpeg
     runs-on: ubuntu-26.04
     timeout-minutes: 90
@@ -178,7 +190,7 @@ jobs:
       - name: Build (release, Makefiles)
         # The Makefiles are not CI's build, but Natron's RB-2.6 build-plugins.sh still uses them: check that they build
         # the plug-ins (only, without the tests), with the compiler's default C++ standard (no -std= in CXX), and
-        # nothing else. Nightly only, on Linux.
+        # nothing else. Weekly and on demand only, on Linux.
         if: env.EXTRA_VARIANTS == 'true'
         run: make -j4 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
       - name: Generate testing bundle
@@ -211,6 +223,9 @@ jobs:
         with:
           name: openfx-io-build-ubuntu_26-testing
           path: TestingBundle
+          # 90 days: the repository's default and maximum, pinned so that a lower default doesn't shorten it (Natron's
+          # testing assets are made from these bundles)
+          retention-days: 90
 
   linux-natron:
     # Natron's Linux testing bundle. Natron's CI (RB-2.6 .github/workflows/ci.yml) runs its Linux tests on
@@ -218,14 +233,14 @@ jobs:
     # natron_testing release (see "Natron's testing bundles" in README.md): the bundle must load on Ubuntu 24.04,
     # whose FFmpeg (6.1) is older than the plug-ins' minimum (8.0). This job builds FFmpeg (cached, like SeExpr) and
     # IO.ofx against it on ubuntu-24.04, bundles that FFmpeg (and Ubuntu's other libraries), and checks that the bundle
-    # loads (verify_plugin_loads) and renders (hostDemo) without LD_LIBRARY_PATH. The rest of the CI (tests, nightly
+    # loads (verify_plugin_loads) and renders (hostDemo) without LD_LIBRARY_PATH. The rest of the CI (tests, weekly
     # variants) is the "linux" job's, on 26.04.
     # Not per pull request (which stays at three builds: Linux 26.04, Windows, macOS): on pushes to master, RB-* and
-    # tags (so that a merge that breaks the bundle Natron uses is seen at once), nightly if master changed, and on
+    # tags (so that a merge that breaks the bundle Natron uses is seen at once), weekly if master changed, and on
     # demand (the runs whose artifact replaces the natron_testing asset).
     name: Linux testing bundle for Natron (Ubuntu 24.04, FFmpeg 9.0.2)
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.master_changed == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -351,11 +366,15 @@ jobs:
           # the name of the natron_testing asset that Natron's CI downloads
           name: openfx-io-build-ubuntu_24-testing
           path: TestingBundle
+          # 90 days: the repository's default and maximum, pinned so that a lower default doesn't shorten it (Natron's
+          # testing assets are made from these bundles)
+          retention-days: 90
 
   macos:
     name: macOS 15 (Xcode clang, MacPorts)
-    # macOS runners are scarce: only build on macOS once Linux and Windows passed (they already skip drafts and
-    # unchanged nightlies). macOS is informative: merging only requires Linux and Windows.
+    # macOS runners are scarce: only build on macOS once Linux and Windows passed (they already skip drafts). macOS is
+    # informative: merging only requires Linux and Windows. MacPorts moves (port selfupdate): like Linux and Windows,
+    # the weekly run builds on macOS every week, even if master didn't change.
     needs: [linux, windows]
     if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     runs-on: macos-15
@@ -491,12 +510,15 @@ jobs:
         with:
           name: openfx-io-build-macos_15-release
           path: Bundle
+          # 90 days: the repository's default and maximum, pinned so that a lower default doesn't shorten it (Natron's
+          # testing assets are made from these bundles)
+          retention-days: 90
 
   windows:
     name: Windows (MSYS2 UCRT64)
-    needs: changes
-    # no CI for draft pull requests; the scheduled run only if master changed
-    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.run == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    # no CI for draft pull requests. MSYS2 is a rolling distribution (e.g. its FFmpeg moves): the weekly run builds on
+    # Windows every week, even if master didn't change (no "needs: changes").
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -592,3 +614,6 @@ jobs:
         with:
           name: openfx-io-build-windows_ucrt64-testing
           path: TestingBundle
+          # 90 days: the repository's default and maximum, pinned so that a lower default doesn't shorten it (Natron's
+          # testing assets are made from these bundles)
+          retention-days: 90
