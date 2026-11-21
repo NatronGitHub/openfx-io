@@ -29,7 +29,8 @@
  * run unmapped code, and the process crashes, either while it keeps running or at exit. Run it with OMP_NUM_THREADS=4
  * (and OMP_WAIT_POLICY=active, so that the idle workers keep running the runtime's code). It is not linked with
  * OpenImageIO, LibRaw or OpenMP: nothing else keeps them loaded. Exit status: 0 on success (a crash is a signal, or
- * on MS Windows an exception exit code).
+ * on MS Windows an exception exit code). If an OpenMP runtime was loaded after the render, it must still be loaded
+ * after the unload: a crash is not certain, so this is checked too (it prints the runtime and the thread counts).
  *
  * --write-dng writes a small 16-bit Bayer (RGGB) DNG file, for this test: no RAW file can be committed or
  * downloaded reliably, and LibRaw reads a minimal uncompressed CFA DNG.
@@ -70,17 +71,29 @@
 #include <chrono>
 #include <fstream>
 #include <thread>
-#ifdef __linux__
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <tlhelp32.h>
+#else
+#include <dlfcn.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#else
 #include <dirent.h>
+#include <link.h>
+#endif
 #endif
 
 namespace {
 
-// the number of threads of this process (Linux: /proc/self/task), or -1
+// the number of threads of this process (Linux: /proc/self/task; MS Windows: a ToolHelp snapshot), or -1
 int
 threadCount()
 {
-#ifdef __linux__
+#if defined(__linux__)
     DIR* d = opendir("/proc/self/task");
     if (!d) {
         return -1;
@@ -92,8 +105,81 @@ threadCount()
     closedir(d);
 
     return n;
+#elif defined(_WIN32)
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    const DWORD pid = GetCurrentProcessId();
+    THREADENTRY32 te;
+    te.dwSize = sizeof(te);
+    int n = 0;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        n += (te.th32OwnerProcessID == pid) ? 1 : 0;
+    }
+    CloseHandle(snap);
+
+    return n;
 #else
     return -1;
+#endif
+}
+
+#if !defined(_WIN32)
+// Is this the path of an OpenMP runtime (GNU libgomp, LLVM libomp, Intel libiomp5)?
+bool
+isOpenMPRuntime(const char* path)
+{
+    if (!path) {
+        return false;
+    }
+    const char* name = std::strrchr(path, '/');
+    name = name ? name + 1 : path;
+
+    return !std::strncmp(name, "libgomp.", 8) || !std::strncmp(name, "libomp.", 7) || !std::strncmp(name, "libiomp5.", 9);
+}
+#endif
+#if defined(__linux__)
+int
+findOpenMP(struct dl_phdr_info* info, size_t /*size*/, void* data)
+{
+    if (isOpenMPRuntime(info->dlpi_name)) {
+        *(std::string*)data = info->dlpi_name;
+
+        return 1;
+    }
+
+    return 0;
+}
+#endif
+
+// The OpenMP runtime loaded in this process (its file name), or "" if none is
+std::string
+openMPRuntime()
+{
+#if defined(_WIN32)
+    static const char* const names[] = { "libgomp-1.dll", "libomp.dll", "libiomp5md.dll", "vcomp140.dll" };
+    for (const char* name : names) {
+        if (GetModuleHandleA(name)) {
+            return name;
+        }
+    }
+
+    return std::string();
+#elif defined(__APPLE__)
+    const uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; ++i) {
+        if (isOpenMPRuntime(_dyld_get_image_name(i))) {
+            return _dyld_get_image_name(i);
+        }
+    }
+
+    return std::string();
+#else
+    std::string found;
+    dl_iterate_phdr(findOpenMP, &found);
+
+    return found;
 #endif
 }
 
@@ -258,6 +344,7 @@ main(int argc, char** argv)
 
     int failures = 0;
     int threadsAfterRender = -1;
+    std::string runtimeAfterRender;
     {
         OFX::Host::auto_ptr<OFX::Host::ImageEffect::Instance> instance(plugin->createInstance(kOfxImageEffectContextReader, NULL));
         MyHost::MyEffectInstance* myInstance = dynamic_cast<MyHost::MyEffectInstance*>(instance.get());
@@ -371,11 +458,20 @@ main(int argc, char** argv)
         }
         outputClip->releaseOutputImage();
         threadsAfterRender = threadCount();
+        runtimeAfterRender = openMPRuntime();
     } // the instance is destroyed (kOfxActionDestroyInstance)
     // the instance is destroyed: unload the plug-ins (kOfxActionUnload, and the binary)
     OFX::Host::PluginCache::clearPluginCache();
-    std::printf("threads: %d at start, %d after the render, %d after the unload (-1: not counted)\n", threadsAtStart,
-                threadsAfterRender, threadCount());
+    const std::string runtimeAfterUnload = openMPRuntime();
+    std::printf("threads: %d at start, %d after the render, %d after the unload (-1: not counted); OpenMP runtime: "
+                "%s after the render, %s after the unload\n",
+                threadsAtStart, threadsAfterRender, threadCount(), runtimeAfterRender.empty() ? "none" : runtimeAfterRender.c_str(),
+                runtimeAfterUnload.empty() ? "none" : runtimeAfterUnload.c_str());
+    // its idle workers outlive the render: if the runtime was unloaded with IO.ofx, they run unmapped code (#239)
+    if (!runtimeAfterRender.empty() && runtimeAfterUnload.empty()) {
+        std::printf("FAIL: the OpenMP runtime (%s) was unloaded with the plug-ins\n", runtimeAfterRender.c_str());
+        ++failures;
+    }
     std::fflush(stdout);
     // keep running (any thread left running the code of an unloaded library crashes the process)
     std::this_thread::sleep_for(std::chrono::milliseconds((long)(sleepSeconds * 1000.)));

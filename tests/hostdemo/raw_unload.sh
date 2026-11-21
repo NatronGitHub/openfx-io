@@ -78,6 +78,8 @@ for i in $(seq 1 "$RUNS"); do
     wait $watchdog 2> /dev/null
     if [ $hung -eq 1 ]; then
         echo "FAIL run $i: timeout (${TIMEOUT}s)"
+    elif grep -q "^FAIL" "$log"; then
+        echo "FAIL run $i: $(grep '^FAIL' "$log" | head -1)"
     elif [ $status -ne 0 ]; then
         why="exit status $status"
         [ $status -gt 128 ] && why="$why (signal $((status - 128)))"
