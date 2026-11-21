@@ -2332,7 +2332,11 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         ~PinOpenMPAfterRawRead()
         {
             if (raw) {
-                pinOpenMPRuntime();
+                // (a destructor is noexcept: nothing may escape, e.g. std::bad_alloc)
+                try {
+                    pinOpenMPRuntime();
+                } catch (...) {
+                }
             }
         }
     } pinOpenMPAfterRawRead;

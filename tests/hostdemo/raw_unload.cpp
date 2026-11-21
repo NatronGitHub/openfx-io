@@ -523,7 +523,10 @@ main(int argc, char** argv)
             MyHost::MyImage* img = outputClip->getOutputImage();
             const std::string comps = outputClip->getComponents();
             const int nComps = img->getNComponents();
-            if (((comps != kOfxImageComponentRGBA) && (comps != kOfxImageComponentRGB)) || (nComps < 3)) {
+            if (img->getBytesPerComponent() != 4) {
+                std::printf("FAIL: the output image has %d bytes per component, not 4 (float)\n", img->getBytesPerComponent());
+                ++failures;
+            } else if (((comps != kOfxImageComponentRGBA) && (comps != kOfxImageComponentRGB)) || (nComps < 3)) {
                 std::printf("FAIL: the output components are %s (%d per pixel), not RGBA or RGB: the DNG file was not "
                             "demosaiced by LibRaw\n",
                             comps.c_str(), nComps);
