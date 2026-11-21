@@ -67,6 +67,10 @@
  *     - with Alpha unchecked and Bit Depth 10 or 12, the pixel format has no alpha, at least the requested
  *       chroma, and the highest bit depth that libx265 supports up to the requested one
  *
+ *   WriteFFmpeg libx265 MP4 with 1 or 2 frames (issue #217):
+ *     - libx265 gives the first packets an uninitialized dts: each encode must have all its frames (or fail),
+ *       and an error of the muxer in the encoder flush must fail endSequenceRender
+ *
  *   WriteOIIO test (issue #79):
  *     - render a JPEG while the host has no source image for the render window
  *       (clipGetImage fails with kOfxStatFailed): a black image must be written
@@ -1575,6 +1579,33 @@ struct StreamInfo {
     std::vector<int> center; // per decoded frame
 };
 
+// Issue #217: libx265 into MP4 with 1 or 2 frames, fewer than its B-frame delay (2 by default). libx265 then gives
+// the first packets an uninitialized dts (x265 source/encoder/encoder.cpp: m_bframeDelayTime is only set when frame
+// number m_bframeDelay is received), which the mov muxer rejects in the flush ("pts/dts pair unsupported", then
+// "Cannot write frame"), and WriteFFmpeg ignored the error of the flush: endSequenceRender succeeded and the file
+// had no frame (257 bytes). As the dts is uninitialized memory, this happened in 5 to 10 runs out of 40 (when run
+// first, on macOS): each size is encoded 20 times. Each file must succeed and have all its frames.
+int testWriteFFmpegX265FewFrames(const std::string& outFile)
+{
+    if (!avcodec_find_encoder_by_name("libx265")) { std::printf("  SKIP: no libx265 encoder\n"); return 0; }
+    int failures = 0;
+    for (int nFrames = 1; nFrames <= 2; ++nFrames) {
+        for (int run = 0; run < 20; ++run) {
+            WriterParams wp;
+            wp.strings = { { "codecShortName", "libx265" } };
+            int f = testWriteFFmpeg(outFile, 128, 96, nFrames, wp);
+            int n = 0, nI = 0;
+            if (!f) f = probeVideoFrames(outFile, &n, &nI);
+            if (!f && (n != nFrames)) { std::printf("  FAIL: decoded %d frames, expected %d\n", n, nFrames); f = 1; }
+            failures += f;
+        }
+    }
+    std::remove(outFile.c_str());
+    if (failures) std::printf("  FAIL (libx265 with 1 or 2 frames, %d failures)\n", failures);
+    else std::printf("  PASS (libx265 with 1 or 2 frames)\n");
+    return failures;
+}
+
 int probeStream(const std::string& file, StreamInfo* info)
 {
     *info = StreamInfo();
@@ -2214,6 +2245,9 @@ main(int argc, char** argv)
     const int W = 128, H = 128, N = 10;
 
     int failures = 0;
+    // first, while the heap is fresh: the uninitialized dts of libx265 was more often garbage then (issue #217)
+    std::printf("==== WriteFFmpeg libx265 MP4 at 128x96 with 1 or 2 frames, 20 times each: encodes (issue #217) ====\n");
+    failures += testWriteFFmpegX265FewFrames(outFile + ".i217.mp4");
     std::printf("==== WriteFFmpeg render integration ====\n");
     failures += testWriteFFmpeg(outFile, W, H, N);
     std::printf("==== ReadFFmpeg render integration ====\n");
