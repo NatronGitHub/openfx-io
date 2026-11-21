@@ -196,18 +196,26 @@ jobs:
       - name: Generate testing bundle
         run: |
           # A self-contained bundle for testing on Ubuntu 26.04 (Natron's CI uses linux-natron's, for Ubuntu 24.04). It
-          # carries the libraries of Ubuntu 26.04, but no system libraries (glibc, libstdc++, libgcc_s, libgomp, GLVND,
-          # OpenCL, X11: see find_and_copy_deps.py), so it needs Ubuntu 26.04's. Release bundles are built on Rocky
-          # Linux 9 (see "Linux runtime requirements" in README.md).
+          # carries the libraries of Ubuntu 26.04 (including the OpenCL ICD loader libOpenCL.so.1, which libavutil
+          # needs, #270), but no system libraries (glibc, the GCC runtime, GLVND, libdrm, libselinux, libudev, X11: see
+          # find_and_copy_deps.py and "Linux runtime requirements" in README.md), so it needs Ubuntu 26.04's. Release
+          # bundles are built on Rocky Linux 9.
           cp -r Bundle TestingBundle
           printf '%s\n' "Ubuntu 26.04 testing build, not a release." \
             "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            "It carries no system libraries (glibc, libstdc++, libgcc_s, libgomp, libGL, X11): they come from the system," \
-            "and those of Ubuntu 26.04 (glibc 2.43) or later are needed. Release builds target Rocky Linux 9." \
+            "It carries Ubuntu's libraries (including the OpenCL ICD loader, libOpenCL.so.1), but no system libraries:" \
+            "glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the X11" \
+            "libraries (libX11, libxcb...) come from the system, and those of Ubuntu 26.04 (glibc 2.43) or later are" \
+            "needed (Ubuntu packages: libgomp1 libatomic1 libgl1 libdrm2 libselinux1 libudev1 libx11-6 libx11-xcb1" \
+            "libxau6 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0 libxcb-render0 libxcb-shm0). The" \
+            "licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
           python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} \
             SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
+          # The licence (BSD-2-Clause) of the bundled OpenCL ICD loader: its Debian copyright file, in
+          # Contents/Resources/Licenses (see "Linux runtime requirements" in README.md)
+          bash .github/workflows/copy_bundled_licenses.sh ${BINARY_PATH} TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
           # No system library may be bundled (same limits as the Bundle check above; --no-needed: the copied
           # Ubuntu libraries find their dependencies in the system).
@@ -217,6 +225,10 @@ jobs:
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
           g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
           ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
+      - name: Check the testing bundle on a clean Ubuntu 26.04 (docker)
+        # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
+        # load IO.ofx (RTLD_NOW) in a clean ubuntu:26.04 container, with only the documented runtime requirements.
+        run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:26.04 ./verify_plugin_loads
       - name: Upload testing artifacts
         if: env.UPLOAD_BUNDLES == 'true'
         uses: actions/upload-artifact@v4.3.1
@@ -312,16 +324,20 @@ jobs:
           cmake --install build
       - name: Generate testing bundle
         run: |
-          # The libraries of Ubuntu 24.04 and FFmpeg 9.0.2 (FFmpegBuild, in the source tree, so not in the installed
-          # IO.ofx's rpath: LD_LIBRARY_PATH for ldd), but no system libraries (see find_and_copy_deps.py). Ubuntu's
+          # The libraries of Ubuntu 24.04 (including the OpenCL ICD loader libOpenCL.so.1, which Ubuntu's libavutil.so.58
+          # needs, #270) and FFmpeg 9.0.2 (FFmpegBuild, in the source tree, so not in the installed IO.ofx's rpath:
+          # LD_LIBRARY_PATH for ldd), but no system libraries (see find_and_copy_deps.py). Ubuntu's
           # OpenImageIO links Ubuntu's FFmpeg 6.1 (libavcodec.so.60), which is bundled too: the plug-ins' FFmpeg has
           # other sonames (libavcodec.so.63) and versioned symbols, so that both load in the same process.
           cp -r Bundle TestingBundle
           printf '%s\n' "Ubuntu 24.04 testing build (FFmpeg ${FFMPEG_VERSION#n}), not a release." \
             "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            "It carries FFmpeg and Ubuntu's libraries, but no system libraries (glibc, libstdc++, libgcc_s, libgomp, libGL," \
-            "X11): they come from the system, and those of Ubuntu 24.04 (glibc 2.39) or later are needed. Release builds" \
-            "target Rocky Linux 9." \
+            "It carries FFmpeg and Ubuntu's libraries (including the OpenCL ICD loader, libOpenCL.so.1), but no system" \
+            "libraries: glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the X11" \
+            "libraries (libX11, libxcb...) come from the system, and those of Ubuntu 24.04 (glibc 2.39) or later are" \
+            "needed (Ubuntu packages: libgomp1 libatomic1 libgl1 libdrm2 libselinux1 libudev1 libx11-6 libx11-xcb1" \
+            "libxau6 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0 libxcb-render0 libxcb-shm0). The" \
+            "licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
           LD_LIBRARY_PATH="$PWD/FFmpegBuild/lib" python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
@@ -330,6 +346,9 @@ jobs:
             ls ${BINARY_PATH}/lib${l}.so.* > /dev/null || { echo "lib${l} is not in the bundle"; exit 1; }
           done
           ls ${BINARY_PATH}
+          # The licence (BSD-2-Clause) of the bundled OpenCL ICD loader: its Debian copyright file, in
+          # Contents/Resources/Licenses (see "Linux runtime requirements" in README.md)
+          bash .github/workflows/copy_bundled_licenses.sh ${BINARY_PATH} TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
           # No system library may be bundled (Ubuntu 24.04's libraries: no symbol version limit; --no-needed: the
           # copied Ubuntu libraries find their dependencies in the system)
@@ -355,6 +374,11 @@ jobs:
           vp=$(find build -type f -name io_verify_plugin_loads -perm -u+x | head -1)
           test -n "$hd" && test -n "$vp"
           bash tests/hostdemo/run.sh "$hd" TestingBundle/IO.ofx.bundle "$vp" "$PWD/hostdemo-testing"
+      - name: Check the testing bundle on a clean Ubuntu 24.04 (docker)
+        # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
+        # load IO.ofx (RTLD_NOW) in a clean ubuntu:24.04 container, with only the documented runtime requirements, as
+        # on Natron's CI runners and users' systems.
+        run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:24.04 ./verify_plugin_loads
       - name: Upload the hostDemo test outputs
         if: failure()
         uses: actions/upload-artifact@v4.3.1

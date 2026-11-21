@@ -72,8 +72,40 @@ come from the system:
 - [glibc](https://sourceware.org/glibc/) 2.34 or later;
 - [libstdc++](https://gcc.gnu.org/onlinedocs/libstdc++/) and `libgcc_s` from [GCC](https://gcc.gnu.org) 11 or later;
 - [libgomp](https://gcc.gnu.org/onlinedocs/libgomp/), GCC's [OpenMP](https://www.openmp.org) runtime, when LibRaw
-  uses OpenMP;
-- `libGL` (e.g. [libglvnd](https://gitlab.freedesktop.org/glvnd/libglvnd)).
+  uses OpenMP, and `libatomic` (GCC), when a library needs it (e.g. Ubuntu 26.04's GLib);
+- `libGL` and `libGLX` ([libglvnd](https://gitlab.freedesktop.org/glvnd/libglvnd)),
+  [libdrm](https://gitlab.freedesktop.org/mesa/drm) (`libdrm.so.2`, `libdrm_*`), and
+  [Mesa](https://www.mesa3d.org)'s `libgbm` and `libglapi`: they must match the system's graphics driver (Mesa's
+  drivers load in the same process, and a bundled older copy breaks them);
+- `libudev` (from [systemd](https://systemd.io): it reads the running udev's database, whose format follows the
+  system's udev) and [libselinux](https://github.com/SELinuxProject/selinux);
+- the GPU drivers: `libcuda`, NVIDIA's `libnvidia-*` and `libnvcuvid`, and the OpenCL drivers (the vendor ICDs:
+  `libnvidia-opencl`, `libamdocl*`, `libigdrcl`, `libintelocl`, `libMesaOpenCL`, `libRusticlOpenCL`, `libpocl`), which
+  the OpenCL ICD loader finds through `/etc/OpenCL/vendors/*.icd` and `dlopen()`s;
+- the X11 client libraries: `libX11`, `libX11-xcb`, `libXext`, `libXfixes`, `libXrender`, `libXau`, `libXdmcp`, and
+  [libxcb](https://xcb.freedesktop.org) and its extensions (`libxcb-render`, `libxcb-shm`, `libxcb-dri3`...): a bundled
+  libxcb older than the system's breaks the system's libX11.
+
+These are the system libraries of openfx's
+[`linuxCheckBundle.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/linuxCheckBundle.sh), which
+must never be bundled, plus the X11 client libraries, as in Natron's Linux installer (`SYSTEM_LIBS_RE` in
+[`tools/jenkins/build-Linux-installer.sh`](https://github.com/NatronGitHub/Natron/blob/RB-2.6/tools/jenkins/build-Linux-installer.sh)).
+Everything else is bundled, including the [OpenCL ICD loader](https://github.com/OCL-dev/ocl-icd) (`libOpenCL.so.1`,
+needed by some FFmpeg builds such as Ubuntu's libavutil): it is vendor-neutral and not in a default install (Ubuntu's
+[`ocl-icd-libopencl1`](https://packages.ubuntu.com/noble/ocl-icd-libopencl1), Rocky Linux's `ocl-icd`), and it finds
+the system's OpenCL drivers by itself. Its licence (BSD-2-Clause) is in the bundle's `Contents/Resources/Licenses`
+(the Debian copyright file of the package it comes from, in the testing bundles).
+
+On Ubuntu and Debian, these are the packages `libc6 libstdc++6 libgcc-s1 libgomp1 libatomic1 libgl1 libdrm2
+libselinux1 libudev1 libx11-6 libx11-xcb1 libxau6 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0
+libxcb-render0 libxcb-shm0`. CI loads its Linux testing bundles in clean `ubuntu:24.04` and `ubuntu:26.04` containers
+with only these packages installed ([`check_testing_bundle.sh`](.github/workflows/check_testing_bundle.sh)), and fails
+if a library of the bundle needs another library that is neither bundled nor in this list.
+
+The testing bundles also carry Ubuntu's [libva](https://github.com/intel/libva) (`libva.so.2`, `libva-drm.so.2`,
+`libva-x11.so.2`) and `libvdpau`, because Ubuntu's libavutil needs them. A bundled libva only finds the VA-API drivers
+of the distribution it was built on, but nothing uses them: the plug-ins don't use FFmpeg's hardware decoding, and
+neither does OpenImageIO.
 
 Release builds target [Rocky Linux](https://rockylinux.org) [9](https://docs.rockylinux.org/releases/release_notes/9_0/)
 (glibc 2.34, GCC 11), with [GCC Toolset](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/developing_c_and_cpp_applications_in_rhel_9/assembly_additional-toolsets-for-development-rhel-9_developing-applications)
