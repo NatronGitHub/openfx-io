@@ -7,10 +7,11 @@ name: Continuous Integration
 # plug-ins. Natron's Linux testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes,
 # weekly and on demand, not for pull requests.
 #
-# Weekly run (Saturdays): the jobs that build against a rolling upstream (windows: MSYS2 UCRT64; macos: MacPorts,
-# updated by "port selfupdate") run every week, even if master didn't change, so that an upstream update that breaks
-# the build is seen within a week. The Ubuntu jobs (linux, linux-natron: Ubuntu LTS packages, linux-natron's FFmpeg
-# is pinned) only run if master changed since the last weekly run (the "changes" job).
+# Weekly run (Saturdays): the jobs whose upstream moves (linux: Ubuntu 26.04's updates and runner image; windows:
+# MSYS2 UCRT64, a rolling distribution; macos: MacPorts, updated by "port selfupdate") run every week, even if master
+# didn't change, so that an upstream update that breaks the build is seen within a week. linux-natron (FFmpeg pinned
+# and cached, also built on every push to master) only runs if master changed since the last weekly run (the
+# "changes" job).
 #
 # Frugal CI (NatronGitHub runners are shared by all repos): one run per change. The macOS job (scarce runners)
 # only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows. Pushes run CI only on
@@ -19,7 +20,7 @@ name: Continuous Integration
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: '17 3 * * 6' # weekly, Saturdays 03:17 UTC: extra variants (Ubuntu jobs skipped if master didn't change)
+    - cron: '17 3 * * 6' # weekly, Saturdays 03:17 UTC: extra variants (linux-natron skipped if master didn't change)
   push:
     branches: [master, 'RB-*']
     tags: ['*']
@@ -52,10 +53,12 @@ env:
   UPLOAD_BUNDLES: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # Skip the Ubuntu jobs of the weekly run if master didn't change since the last completed weekly run (this job only
-  # runs on schedule): once per commit, even if that run failed. Compare commits rather than dates: commit dates may be
-  # older than the push. If the API call (or this job) fails, run anyway. master_changed is only read by the jobs
-  # without a rolling upstream (linux, linux-natron); windows and macos run every week.
+  # Skip linux-natron in the weekly run if master didn't change since the last completed weekly run (this job only
+  # runs on schedule): once per commit, even if that run failed. Only runs that succeeded or failed count: a cancelled
+  # (or skipped, timed out...) run didn't build its commit, which the next weekly run builds. Compare commits rather
+  # than dates: commit dates may be older than the push. If the API call (or this job) fails, or no such run exists,
+  # run anyway. master_changed is only read by linux-natron,
+  # whose upstream doesn't move; linux, windows and macos run every week.
   changes:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
@@ -69,20 +72,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status completed --limit 1 --json headSha --jq '.[0].headSha // empty') || last=
+          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event schedule --status completed --limit 20 \
+            --json headSha,conclusion --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0].headSha // empty') || last=
           if [ -n "$last" ] && [ "$last" = "$GITHUB_SHA" ]; then
             echo "master_changed=false" >> "$GITHUB_OUTPUT"
-            echo "master ($GITHUB_SHA) didn't change since the last weekly run: skipping the Ubuntu jobs (linux, linux-natron)."
+            echo "master ($GITHUB_SHA) didn't change since the last weekly run: skipping linux-natron."
           else
             echo "master_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
   linux:
     name: Linux (Ubuntu 26.04)
-    needs: changes
-    # no CI for draft pull requests; the weekly run only if master changed (Ubuntu's packages move little). changes is
-    # skipped for other events; if it failed, run anyway.
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.master_changed == 'true') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    # no CI for draft pull requests. Ubuntu 26.04 moves (apt-get update installs its updates of FFmpeg, OpenImageIO,
+    # OpenColorIO, LibRaw..., and the runner image changes weekly): the weekly run builds on Linux every week, even if
+    # master didn't change (no "needs: changes").
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     # Ubuntu 26.04: its FFmpeg is 8.0 (the minimum, see README.md), and its OpenImageIO links the same FFmpeg
     runs-on: ubuntu-26.04
     timeout-minutes: 90
@@ -186,7 +190,7 @@ jobs:
       - name: Build (release, Makefiles)
         # The Makefiles are not CI's build, but Natron's RB-2.6 build-plugins.sh still uses them: check that they build
         # the plug-ins (only, without the tests), with the compiler's default C++ standard (no -std= in CXX), and
-        # nothing else. Weekly (if master changed) and on demand only, on Linux.
+        # nothing else. Weekly and on demand only, on Linux.
         if: env.EXTRA_VARIANTS == 'true'
         run: make -j4 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
       - name: Generate testing bundle
@@ -369,10 +373,10 @@ jobs:
   macos:
     name: macOS 15 (Xcode clang, MacPorts)
     # macOS runners are scarce: only build on macOS once Linux and Windows passed (they already skip drafts). macOS is
-    # informative: merging only requires Linux and Windows. MacPorts moves (port selfupdate), so the weekly run builds
-    # on macOS every week: if master didn't change, linux is skipped and only Windows has to pass.
+    # informative: merging only requires Linux and Windows. MacPorts moves (port selfupdate): like Linux and Windows,
+    # the weekly run builds on macOS every week, even if master didn't change.
     needs: [linux, windows]
-    if: ${{ !cancelled() && needs.windows.result == 'success' && (needs.linux.result == 'success' || (github.event_name == 'schedule' && needs.linux.result == 'skipped')) }}
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 150
     env:
