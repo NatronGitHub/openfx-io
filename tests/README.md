@@ -72,17 +72,6 @@ Requires: a C++17 compiler, `pkg-config` (or CMake), and dev libs for FFmpeg, Op
 OpenImageIO (+ `fmt`), plus the `ffmpeg` and `oiiotool` CLIs for the media harnesses (`test-ffmpeg`, `test-oiio`,
 bash scripts; `FFMPEG_READ_TEST_BIN`: the `ffmpeg_read_test` to run, default the one next to the script).
 
-## Correction to an earlier assumption
-
-An earlier iteration of this file claimed the OFX plugins "cannot be built here
-because the vendored `openfx` submodule is version-mismatched." **That was wrong.**
-The symbols that appeared missing (`setLayoutHint`, `ClipComponentsArguments`,
-`FrameViewsNeeded*`, the `isIdentity` signature, …) are gated behind the
-`OFX_EXTENSIONS_NUKE`/`OFX_EXTENSIONS_NATRON` (etc.) macros that `Makefile.master`
-defines. With those `-D` flags the plugin code compiles cleanly against the pinned
-`openfx` submodule. The tests below actually compile and link the plugin
-translation units.
-
 ## The tests
 
 ### 1. `test-ofx` — OFX entry points + actions, plugin code linked directly
