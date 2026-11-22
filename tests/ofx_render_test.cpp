@@ -94,10 +94,11 @@
  *       720p at 60 fps (which FFmpeg's encoder rejects): beginSequenceRender fails, endSequenceRender must not crash,
  *       and the next render must work
  *
- *   WriteFFmpeg, a frame fails to encode while other threads wait (issue #288), with the option --encode-failure (only
- *   this test; not on MS Windows):
- *     - frames 2..4 are rendered on other threads, which wait for frame 1; frame 1 fails to be written (RLIMIT_FSIZE):
- *       the waiting renders must fail within 60 s instead of waiting forever, and the next render must work
+ *   WriteFFmpeg, a frame is not encoded while other threads wait (issue #288), with the option --encode-failure (only
+ *   this test):
+ *     - frames 2..4 are rendered on other threads, which wait for frame 1; frame 1 is aborted, or rendered to another
+ *       file: the waiting renders must fail within 60 s instead of waiting forever, and the next render must work
+ *     - with --encode-failure-disk-full (not on MS Windows: exit status 77), frame 1 fails to be written (RLIMIT_FSIZE)
  *
  * Exit status: 0 = all checks passed.
  */
@@ -2373,6 +2374,8 @@ public:
 
     void setInt(const char* name, int value) { setOverrideInt(&_ctx, name, value); }
 
+    void setFilename(const std::string& file) { setOverrideString(&_ctx, kOfxImageEffectFileParamName, file); }
+
     // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
     void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
 
@@ -2500,29 +2503,22 @@ int testWriteFFmpegBeginFailures(const std::string& outFile)
     return failures;
 }
 
-// #288: encoding a frame fails (here, the file can not grow, as on a full disk) while other render threads wait in
-// encode() for their turn: they must be woken up and fail, instead of waiting forever (which deadlocked Natron, which
-// waits for its render threads before endSequenceRender). The failure is injected with RLIMIT_FSIZE, so that the
-// real write error path (avio, the muxer, writeToFile()) fails, without a test hook in the plug-in; flush_packets=1
-// makes the muxer write each packet to the file when it is muxed. Not on MS Windows (no RLIMIT_FSIZE).
-int testWriteFFmpegEncodeFailure(const std::string& outFile)
+// #288: frame 1 is never encoded while other render threads wait in encode() for their turn: they must be woken up
+// and fail, instead of waiting forever (which deadlocked Natron, which waits for its render threads before
+// endSequenceRender). Frames 2..4 are rendered on other threads, which wait for frame 1; then inject() makes frame 1
+// fail (or not reach encode()), afterFrame1() runs once frame 1 returned, and afterWaiting() once the other threads
+// returned (or the test exits after 60 s). The next render of the same instance must then work.
+int testWriteFFmpegEncodeFailure(const std::string& outFile, const char* label, const std::function<void(WriterSession&)>& inject,
+                                 const std::function<void(WriterSession&)>& afterFrame1, const std::function<void(WriterSession&)>& afterWaiting,
+                                 bool frame1Fails, const WriterParams& wp = WriterParams())
 {
-    std::printf("==== WriteFFmpeg, a frame fails to encode while other threads wait for their turn: they fail, no deadlock (issue #288) ====\n");
-#ifdef _WIN32
-    (void)outFile;
-    std::printf("  SKIP: no RLIMIT_FSIZE on MS Windows\n");
-    return 0;
-#else
+    std::printf("==== WriteFFmpeg, %s while other threads wait for their turn: they fail, no deadlock (issue #288) ====\n", label);
     const int N = 4;
     const int timeoutSeconds = 60;
     std::remove(outFile.c_str());
-    // a write beyond RLIMIT_FSIZE fails with EFBIG, instead of killing the process with SIGXFSZ
-    std::signal(SIGXFSZ, SIG_IGN);
     int failures = 0;
     {
         WriterSession s;
-        WriterParams wp;
-        wp.strings = { { "formatOptions", "flush_packets=1" } };
         if (s.create(outFile, 128, 128, N, wp)) return 1;
         OfxStatus st = s.begin(N);
         if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); return 1; }
@@ -2534,19 +2530,11 @@ int testWriteFFmpegEncodeFailure(const std::string& outFile)
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-        // The file can not grow any more: frame 1 fails to be written.
-        struct stat sb;
-        if (::stat(outFile.c_str(), &sb) != 0) { std::printf("  FAIL: no file %s\n", outFile.c_str()); std::_Exit(1); }
-        struct rlimit oldLimit;
-        ::getrlimit(RLIMIT_FSIZE, &oldLimit);
-        struct rlimit limit = oldLimit;
-        limit.rlim_cur = (rlim_t)sb.st_size;
-        ::setrlimit(RLIMIT_FSIZE, &limit);
+        inject(s);
         const OfxStatus st1 = s.render(1);
-        ::setrlimit(RLIMIT_FSIZE, &oldLimit);
-        const std::string error = WriterSession::persistentError();
-        std::printf("  render frame 1 = %d (error: \"%s\")\n", st1, error.c_str());
-        if (ok(st1)) { std::printf("  FAIL: frame 1 was written: the failure injection did not work\n"); ++failures; }
+        afterFrame1(s);
+        std::printf("  render frame 1 = %d (error: \"%s\")\n", st1, WriterSession::persistentError().c_str());
+        if (frame1Fails && ok(st1)) { std::printf("  FAIL: frame 1 was rendered: the failure injection did not work\n"); ++failures; }
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
         for (size_t i = 0; i < waiting.size(); ++i) {
@@ -2554,13 +2542,13 @@ int testWriteFFmpegEncodeFailure(const std::string& outFile)
                 // the waiting threads can not be joined: exit now
                 std::printf("  FAIL: the render of frame %d still waits after %d s: deadlock (issue #288)\n", (int)i + 2, timeoutSeconds);
                 std::printf("FAIL\n");
-                std::fflush(stdout);
                 std::_Exit(1);
             }
             const OfxStatus sti = waiting[i].get();
             std::printf("  render frame %d = %d\n", (int)i + 2, sti);
             if (ok(sti)) { std::printf("  FAIL: frame %d was rendered after frame 1 failed\n", (int)i + 2); ++failures; }
         }
+        afterWaiting(s);
         st = s.end(N);
         std::printf("  endSequenceRender = %d\n", st);
 
@@ -2574,6 +2562,51 @@ int testWriteFFmpegEncodeFailure(const std::string& outFile)
     std::remove(outFile.c_str());
     if (!failures) std::printf("  PASS\n");
     return failures;
+}
+
+// #288, on every system: frame 1 is aborted (GenericWriterPlugin::render() returns before encode(), as when the user
+// cancels a render in Natron: abort() stays true for all the render threads), or frame 1 fails one of the checks of
+// encode() (here, it is rendered to another file).
+int testWriteFFmpegEncodeFailures(const std::string& outFile)
+{
+    auto nothing = [](WriterSession&) {};
+    int failures = 0;
+    failures += testWriteFFmpegEncodeFailure(outFile, "frame 1 is aborted", [](WriterSession&) { gAbort = 1; }, nothing,
+                                             [](WriterSession&) { gAbort = 0; }, false);
+    failures += testWriteFFmpegEncodeFailure(outFile, "frame 1 is rendered to another file",
+                                             [&outFile](WriterSession& s) { s.setFilename(outFile + ".other.mov"); },
+                                             [&outFile](WriterSession& s) { s.setFilename(outFile); }, nothing, true);
+    std::remove((outFile + ".other.mov").c_str());
+    return failures;
+}
+
+// #288, POSIX only: frame 1 fails to be written because the file can not grow, as on a full disk. The failure is
+// injected with RLIMIT_FSIZE, so that the real write error path (avio, the muxer, writeToFile()) fails, without a test
+// hook in the plug-in; flush_packets=1 makes the muxer write each packet to the file when it is muxed. Exits with 77
+// (skipped) on MS Windows, which has no RLIMIT_FSIZE.
+int testWriteFFmpegEncodeFailureDiskFull(const std::string& outFile)
+{
+#ifdef _WIN32
+    (void)outFile;
+    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
+    std::exit(77);
+#else
+    // a write beyond RLIMIT_FSIZE fails with EFBIG, instead of killing the process with SIGXFSZ
+    std::signal(SIGXFSZ, SIG_IGN);
+    struct rlimit oldLimit;
+    ::getrlimit(RLIMIT_FSIZE, &oldLimit);
+    WriterParams wp;
+    wp.strings = { { "formatOptions", "flush_packets=1" } };
+    return testWriteFFmpegEncodeFailure(outFile, "frame 1 fails to be written (the disk is full)",
+                                        [&outFile, &oldLimit](WriterSession&) {
+                                            struct stat sb;
+                                            if (::stat(outFile.c_str(), &sb) != 0) { std::printf("  FAIL: no file %s\n", outFile.c_str()); std::_Exit(1); }
+                                            struct rlimit limit = oldLimit;
+                                            limit.rlim_cur = (rlim_t)sb.st_size; // the file can not grow any more
+                                            ::setrlimit(RLIMIT_FSIZE, &limit);
+                                        },
+                                        [&oldLimit](WriterSession&) { ::setrlimit(RLIMIT_FSIZE, &oldLimit); },
+                                        [](WriterSession&) {}, true, wp);
 #endif
 }
 
@@ -2587,13 +2620,21 @@ main(int argc, char** argv)
         std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
         return failures ? 1 : 0;
     }
-    if ((argc > 2) && (std::string(argv[2]) == "--begin-failure")) {
-        const int failures = testWriteFFmpegBeginFailures(outFile);
-        std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
-        return failures ? 1 : 0;
-    }
-    if ((argc > 2) && (std::string(argv[2]) == "--encode-failure")) {
-        const int failures = testWriteFFmpegEncodeFailure(outFile);
+    if ((argc > 2) && (std::string(argv[2]).compare(0, 2, "--") == 0) && (std::string(argv[2]) != "--dnxhr444-noise")) {
+        // a crash or a deadlock must not lose the output
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+        const std::string mode = argv[2];
+        int failures = 0;
+        if (mode == "--begin-failure") {
+            failures = testWriteFFmpegBeginFailures(outFile);
+        } else if (mode == "--encode-failure") {
+            failures = testWriteFFmpegEncodeFailures(outFile);
+        } else if (mode == "--encode-failure-disk-full") {
+            failures = testWriteFFmpegEncodeFailureDiskFull(outFile);
+        } else {
+            std::printf("unknown option %s\n", mode.c_str());
+            return 2;
+        }
         std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
         return failures ? 1 : 0;
     }

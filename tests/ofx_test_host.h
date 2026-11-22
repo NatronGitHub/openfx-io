@@ -37,6 +37,7 @@
 #include "nuke/fnOfxExtensions.h" // kOfxImageEffectPropRenderPlanes, kFnOfxImagePlaneColour, kFnOfxImageEffectPropView
 #include "ofxNatron.h" // kNatronOfxParamProcessR/G/B/A
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -278,7 +279,7 @@ OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxProp
 OfxStatus ieClipReleaseImage(OfxPropertySetHandle) { return kOfxStatOK; }
 OfxStatus ieClipGetRoD(OfxImageClipHandle c, OfxTime, OfxRectD* rod)
 { Clip* clip = reinterpret_cast<Clip*>(c); double v; if (pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &v) == kOfxStatOK) { pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &rod->x1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 1, &rod->y1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 2, &rod->x2); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 3, &rod->y2); return kOfxStatOK; } return kOfxStatFailed; }
-int gAbort = 0; // what ieAbort() returns (a render the host is aborting)
+std::atomic<int> gAbort { 0 }; // what ieAbort() returns (a render the host is aborting); read by the render threads
 int ieAbort(OfxImageEffectHandle) { return gAbort; }
 OfxStatus ieMemAlloc(OfxImageEffectHandle, size_t n, OfxImageMemoryHandle* h) { *h = reinterpret_cast<OfxImageMemoryHandle>(malloc(n)); return *h ? kOfxStatOK : kOfxStatErrMemory; }
 OfxStatus ieMemFree(OfxImageMemoryHandle h) { free(reinterpret_cast<void*>(h)); return kOfxStatOK; }

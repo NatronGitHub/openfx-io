@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <cctype> // ::tolower
 #include <cfloat> // DBL_MAX
+#include <chrono> // std::chrono::milliseconds
 #include <climits> // INT_MAX
 #include <cmath> // std::ceil, std::fabs
 #include <cstdio>
@@ -1456,7 +1457,9 @@ private:
 };
 
 // Calls a function when it goes out of scope, unless release() was called: the cleanup of a function that has many
-// exits, including exceptions (C++ Core Guidelines E.6, E.19).
+// exits, including exceptions (C++ Core Guidelines E.6, E.19):
+// https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-raii
+// https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-finally
 template <class F>
 class ScopeExit {
 public:
@@ -1882,7 +1885,6 @@ private:
     static void GetCodecSupportedParams(const AVCodec* codec, CodecParams* p);
 
     void configureAudioStream(const AVCodec* avCodec, AVStream* avStream);
-    bool checkVideoStreamSettings(AVCodecID codecId, string* error) const;
     void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
     void addStream(AVFormatContext* avFormatContext, enum AVCodecID avCodecId, const AVCodec** pavCodec, MyAVStream* myStreamOut);
     int openCodec(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myAVStream, AVDictionary** options = nullptr);
@@ -1908,7 +1910,6 @@ private:
     OfxRectI _rodPixel;
     float _pixelAspectRatio;
     bool _isOpen; // Flag for the configuration state of the FFmpeg components.
-    bool _headerWritten; // avformat_write_header() succeeded: endEncode() must write the trailer
     uint64_t _pts_counter;
     int64_t _lastDts; // the dts of the last video packet written, in the codec time base (AV_NOPTS_VALUE if none)
     int64_t _packetsWritten; // the number of video packets written since beginEncode()
@@ -1917,6 +1918,11 @@ private:
     SwsContext* _convertCtx;
     MyAVStream _streamVideo;
     MyAVStream _streamAudio;
+    // _nextFrameToEncodeMutex guards _nextFrameToEncode, _firstFrameToEncode, _lastFrameToEncode, _frameStep, and,
+    // in encode(), _error and the encoding of a frame (writeToFile()), which the render threads do one at a time and in
+    // order; _nextFrameToEncodeCond is notified when _nextFrameToEncode changes. beginEncode() and endEncode()
+    // (beginSequenceRender and endSequenceRender) are not concurrent with the renders (C++ Core Guidelines CP.50
+    // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-mutex).
     tthread::mutex _nextFrameToEncodeMutex;
     tthread::condition_variable _nextFrameToEncodeCond;
     int _nextFrameToEncode; //< the frame index we need to encode next, INT_MIN means uninitialized
@@ -2186,7 +2192,6 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     : GenericWriterPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha)
     , _pixelAspectRatio(1.)
     , _isOpen(false)
-    , _headerWritten(false)
     , _pts_counter(0)
     , _lastDts(AV_NOPTS_VALUE)
     , _packetsWritten(0)
@@ -3516,219 +3521,6 @@ WriteFFmpegPlugin::configureAudioStream(AVCodec* avCodec,
 
 #endif
 
-// The frame size at which FFmpeg's dnxhd encoder encodes an image of size width x height with a DNxHD profile.
-static void
-dnxhdFrameSize(DNxHDCodecProfileEnum dnxhdCodecProfile,
-               int* width,
-               int* height)
-{
-    switch (dnxhdCodecProfile) {
-    case eDNxHDCodecProfileHR444:
-    case eDNxHDCodecProfileHRHQX:
-    case eDNxHDCodecProfileHRHQ:
-    case eDNxHDCodecProfileHRSQ:
-    case eDNxHDCodecProfileHRLB:
-        // DNxHR is resolution-independent
-        // No conversion necessary.
-        break;
-    case eDNxHDCodecProfile440x:
-    case eDNxHDCodecProfile220x:
-    case eDNxHDCodecProfile220:
-    case eDNxHDCodecProfile145:
-    case eDNxHDCodecProfile36:
-        // This writer will rescale for any source format
-        // that is not natively supported by DNxHD. Check
-        // that the source format matches a native DNxHD
-        // format. If it's not supported, then force to
-        // 1920x1080 (the most flexible format for DNxHD).
-        // This will also mean that avcodec_open2 will not
-        // fail as the format matches a native DNxHD format.
-        // Any other frame dimensions result in error.
-        if ((((1920 == *width) /*|| (1440 == *width)*/) && (1080 == *height)) || (((1280 == *width) /*|| (960 == *width)*/) && (720 == *height))) {
-            // No conversion necessary.
-        } else {
-            *width = 1920;
-            *height = 1080;
-        }
-        break;
-    } // switch
-}
-
-// The bitrate (in Mbit/s) of a DNxHD profile at a frame size of dnxhdFrameSize() and a frame rate: -1 for DNxHR (no
-// fixed bitrate), 0 if the profile has no bitrate at this frame size and rate.
-static int
-dnxhdBitrateMbps(DNxHDCodecProfileEnum dnxhdCodecProfile,
-                 int width,
-                 int height,
-                 int frameRate,
-                 bool progressive)
-{
-    int mbs = 0;
-    switch (dnxhdCodecProfile) {
-    case eDNxHDCodecProfileHR444:
-    case eDNxHDCodecProfileHRHQX:
-    case eDNxHDCodecProfileHRHQ:
-    case eDNxHDCodecProfileHRSQ:
-    case eDNxHDCodecProfileHRLB:
-        mbs = -1;
-        break;
-    case eDNxHDCodecProfile440x:
-        // 880x in 1080p/60 or 1080p/59.94, 730x in 1080p/50, 440x in 1080p/30, 390x in 1080p/25, 350x in 1080p/24
-        if ((width == 1920) && (height == 1080)) {
-            if (frameRate > 50) {
-                // case 60:
-                // case 59:
-                mbs = progressive ? 880 : /*0*/ 220;
-            } else if (frameRate > 29) {
-                // case 50:
-                mbs = progressive ? 730 : /*0*/ 220;
-            } else if (frameRate > 25) {
-                // case 29:
-                mbs = progressive ? 440 : /*0*/ 220;
-            } else if (frameRate > 24) {
-                // case 25:
-                mbs = progressive ? 390 : /*0*/ 185;
-            } else {
-                // case 24:
-                // case 23:
-                mbs = progressive ? 350 : /*0*/ 145;
-            }
-        }
-        break;
-    case eDNxHDCodecProfile220x:
-    case eDNxHDCodecProfile220:
-        // 440x in 1080p/60 or 1080p/59.94, 365x in 1080p/50, 220x in 1080i/60 or 1080i/59.94, 185x in 1080i/50 or 1080p/25, 175x in 1080p/24 or 1080p/23.976, 220x in 1080p/29.97, 220x in 720p/59.94, 175x in 720p/50
-        if ((width == 1920) && (height == 1080)) {
-            if (frameRate > 50) {
-                // case 60:
-                // case 59:
-                mbs = progressive ? 440 : 220;
-            } else if (frameRate > 29) {
-                // case 50:
-                mbs = progressive ? 365 : 185;
-            } else if (frameRate > 25) {
-                // case 29:
-                mbs = progressive ? 220 : /*0*/ 145;
-            } else if (frameRate > 24) {
-                // case 25:
-                mbs = progressive ? 185 : /*0*/ 120;
-            } else {
-                // case 24:
-                // case 23:
-                mbs = progressive ? 175 : /*0*/ 120;
-            }
-        } else {
-            if (frameRate > 50) {
-                // case 60:
-                // case 59:
-                mbs = progressive ? 220 : 0; // 720i unsupported in ffmpeg
-            } else {
-                // case 50:
-                mbs = progressive ? 175 : 0; // 720i unsupported in ffmpeg
-            }
-        }
-        break;
-    case eDNxHDCodecProfile145:
-        // 290 in 1080p/60 or 1080p/59.94, 240 in 1080p/50, 145 in 1080i/60 or 1080i/59.94, 120 in 1080i/50 or 1080p/25, 115 in 1080p/24 or 1080p/23.976, 145 in 1080p/29.97, 145 in 720p/59.94, 115 in 720p/50
-        if ((width == 1920) && (height == 1080)) {
-            if (frameRate > 50) {
-                // case 60:
-                // case 59:
-                mbs = progressive ? 290 : 145;
-            } else if (frameRate > 29) {
-                // case 50:
-                mbs = progressive ? 240 : 120;
-            } else if (frameRate > 25) {
-                // case 29:
-                mbs = progressive ? 145 : /*0*/ 120; // 120 is the lowest possible bitrate for 1920x1080i
-            } else if (frameRate > 24) {
-                // case 25:
-                mbs = 120 /*progressive ? 120 : 0*/; // 120 is the lowest possible bitrate for 1920x1080i
-            } else {
-                // case 24:
-                // case 23:
-                mbs = progressive ? 115 : /*0*/ 120; // 120 is the lowest possible bitrate for 1920x1080i
-            }
-        } else {
-            if (frameRate > 50) {
-                // case 60:
-                // case 59:
-                mbs = progressive ? 145 : 0; // 720i unsupported
-            } else {
-                // case 50:
-                mbs = progressive ? 115 : 0; // 720i unsupported
-            }
-        }
-        break;
-    case eDNxHDCodecProfile36:
-        // 90 in 1080p/60 or 1080p/59.94, 75 in 1080p/50, 45 in 1080i/60 or 1080i/59.94, 36 in 1080i/50 or 1080p/25, 36 in 1080p/24 or 1080p/23.976, 45 in 1080p/29.97, 100 in 720p/59.94, 85 in 720p/50
-        if ((width == 1920) && (height == 1080)) {
-            if (frameRate > 50) {
-                // case 60:
-                // case 59:
-                mbs = progressive ? 90 : /*45*/ 120; // 45 is not unsupported by ffmpeg for 1920x1080i
-            } else if (frameRate > 29) {
-                // case 50:
-                mbs = progressive ? 75 : /*36*/ 120; // 36 is not unsupported by ffmpeg 1920x1080i
-            } else if (frameRate > 25) {
-                // case 29:
-                mbs = progressive ? 45 : /*0*/ 120;
-            } else if (frameRate > 24) {
-                // case 25:
-                mbs = progressive ? 36 : /*0*/ 120;
-            } else {
-                // case 24:
-                // case 23:
-                mbs = progressive ? 36 : /*0*/ 120;
-            }
-        } else {
-            switch (frameRate) {
-            case 60:
-            case 59:
-                mbs = progressive ? 100 : 0; // 720i unsupported in ffmpeg
-                break;
-            case 50:
-                mbs = progressive ? 85 : 0; // 720i unsupported in ffmpeg
-                break;
-            default:
-                break;
-            }
-        }
-        break;
-    } // switch
-
-    return mbs;
-}
-
-// The settings of the video stream that configureVideoStream() can not apply, checked by beginEncode() before it
-// allocates anything or touches the output file (#289).
-bool
-WriteFFmpegPlugin::checkVideoStreamSettings(AVCodecID codecId,
-                                            string* error) const
-{
-    // for the time being, we only support progressive encoding
-    if (_inputClip->getFieldOrder() != eFieldNone) {
-        *error = "only progressive video is supported";
-
-        return false;
-    }
-    if (codecId == AV_CODEC_ID_DNXHD) {
-        const DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)_dnxhdCodecProfile->getValue();
-        int width = _rodPixel.x2 - _rodPixel.x1;
-        int height = _rodPixel.y2 - _rodPixel.y1;
-        dnxhdFrameSize(dnxhdCodecProfile, &width, &height);
-        const double fps = _fps->getValue();
-        const int frameRate = (0.0 < fps) ? (int)fps : 0; // as in configureVideoStream()
-        if (dnxhdBitrateMbps(dnxhdCodecProfile, width, height, frameRate, /* progressive = */ true) == 0) {
-            *error = "frameRate not supported for DNxHD";
-
-            return false;
-        }
-    }
-
-    return true;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // configureVideoStream
 // Set video parameters of the video stream.
@@ -4064,9 +3856,13 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
         }
     }
 
+    FieldEnum fieldOrder = _inputClip->getFieldOrder();
+    bool progressive = (fieldOrder == eFieldNone);
     // for the time being, we only support progressive encoding
-    const bool progressive = (_inputClip->getFieldOrder() == eFieldNone);
-    assert(progressive); // checked by checkVideoStreamSettings()
+    if (!progressive) {
+        setPersistentMessage(Message::eMessageError, "", "only progressive video is supported");
+        throwSuiteStatusException(kOfxStatFailed);
+    }
     // Set this field so that an 'fiel' atom is inserted
     // into the QuickTime 'moov' atom.
     // [note: interlaced flags, see ffmpeg.c:1191 in ffmpeg 3.2.2
@@ -4080,8 +3876,39 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
 
     // the following was moved here from openCodec()
     if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
-        const DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)dnxhdCodecProfile_i;
-        dnxhdFrameSize(dnxhdCodecProfile, &avCodecContext->width, &avCodecContext->height);
+        DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)dnxhdCodecProfile_i;
+        int srcWidth = avCodecContext->width;
+        int srcHeight = avCodecContext->height;
+        switch (dnxhdCodecProfile) {
+        case eDNxHDCodecProfileHR444:
+        case eDNxHDCodecProfileHRHQX:
+        case eDNxHDCodecProfileHRHQ:
+        case eDNxHDCodecProfileHRSQ:
+        case eDNxHDCodecProfileHRLB:
+            // DNxHR is resolution-independent
+            // No conversion necessary.
+            break;
+        case eDNxHDCodecProfile440x:
+        case eDNxHDCodecProfile220x:
+        case eDNxHDCodecProfile220:
+        case eDNxHDCodecProfile145:
+        case eDNxHDCodecProfile36:
+            // This writer will rescale for any source format
+            // that is not natively supported by DNxHD. Check
+            // that the source format matches a native DNxHD
+            // format. If it's not supported, then force to
+            // 1920x1080 (the most flexible format for DNxHD).
+            // This will also mean that avcodec_open2 will not
+            // fail as the format matches a native DNxHD format.
+            // Any other frame dimensions result in error.
+            if ((((1920 == srcWidth) /*|| (1440 == srcWidth)*/) && (1080 == srcHeight)) || (((1280 == srcWidth) /*|| (960 == srcWidth)*/) && (720 == srcHeight))) {
+                // No conversion necessary.
+            } else {
+                avCodecContext->width = 1920;
+                avCodecContext->height = 1080;
+            }
+            break;
+        } // switch
 
         // If alpha is to be encoded, then the following must
         // be set to 32. This will ensure the correct bit depth
@@ -4089,31 +3916,156 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
         // Otherwise the following must be set to 24.
         const bool hasAlpha = alphaEnabled();
         avCodecContext->bits_per_coded_sample = (hasAlpha) ? 32 : 24;
-        const char* dnxhrProfile = nullptr; // the DNxHD profiles are selected by their bitrate
+        int mbs = 0;
         switch (dnxhdCodecProfile) {
         case eDNxHDCodecProfileHR444:
-            dnxhrProfile = "dnxhr_444";
+            av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_444", 0);
+            mbs = -1;
             break;
         case eDNxHDCodecProfileHRHQX:
-            dnxhrProfile = "dnxhr_hqx";
+            av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_hqx", 0);
+            mbs = -1;
             break;
         case eDNxHDCodecProfileHRHQ:
-            dnxhrProfile = "dnxhr_hq";
+            av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_hq", 0);
+            mbs = -1;
             break;
         case eDNxHDCodecProfileHRSQ:
-            dnxhrProfile = "dnxhr_sq";
+            av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_sq", 0);
+            mbs = -1;
             break;
         case eDNxHDCodecProfileHRLB:
-            dnxhrProfile = "dnxhr_lb";
+            av_opt_set(avCodecContext->priv_data, "profile", "dnxhr_lb", 0);
+            mbs = -1;
             break;
-        default:
+        case eDNxHDCodecProfile440x:
+            // 880x in 1080p/60 or 1080p/59.94, 730x in 1080p/50, 440x in 1080p/30, 390x in 1080p/25, 350x in 1080p/24
+            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
+                if (frameRate > 50) {
+                    // case 60:
+                    // case 59:
+                    mbs = progressive ? 880 : /*0*/ 220;
+                } else if (frameRate > 29) {
+                    // case 50:
+                    mbs = progressive ? 730 : /*0*/ 220;
+                } else if (frameRate > 25) {
+                    // case 29:
+                    mbs = progressive ? 440 : /*0*/ 220;
+                } else if (frameRate > 24) {
+                    // case 25:
+                    mbs = progressive ? 390 : /*0*/ 185;
+                } else {
+                    // case 24:
+                    // case 23:
+                    mbs = progressive ? 350 : /*0*/ 145;
+                }
+            }
             break;
+        case eDNxHDCodecProfile220x:
+        case eDNxHDCodecProfile220:
+            // 440x in 1080p/60 or 1080p/59.94, 365x in 1080p/50, 220x in 1080i/60 or 1080i/59.94, 185x in 1080i/50 or 1080p/25, 175x in 1080p/24 or 1080p/23.976, 220x in 1080p/29.97, 220x in 720p/59.94, 175x in 720p/50
+            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
+                if (frameRate > 50) {
+                    // case 60:
+                    // case 59:
+                    mbs = progressive ? 440 : 220;
+                } else if (frameRate > 29) {
+                    // case 50:
+                    mbs = progressive ? 365 : 185;
+                } else if (frameRate > 25) {
+                    // case 29:
+                    mbs = progressive ? 220 : /*0*/ 145;
+                } else if (frameRate > 24) {
+                    // case 25:
+                    mbs = progressive ? 185 : /*0*/ 120;
+                } else {
+                    // case 24:
+                    // case 23:
+                    mbs = progressive ? 175 : /*0*/ 120;
+                }
+            } else {
+                if (frameRate > 50) {
+                    // case 60:
+                    // case 59:
+                    mbs = progressive ? 220 : 0; // 720i unsupported in ffmpeg
+                } else {
+                    // case 50:
+                    mbs = progressive ? 175 : 0; // 720i unsupported in ffmpeg
+                }
+            }
+            break;
+        case eDNxHDCodecProfile145:
+            // 290 in 1080p/60 or 1080p/59.94, 240 in 1080p/50, 145 in 1080i/60 or 1080i/59.94, 120 in 1080i/50 or 1080p/25, 115 in 1080p/24 or 1080p/23.976, 145 in 1080p/29.97, 145 in 720p/59.94, 115 in 720p/50
+            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
+                if (frameRate > 50) {
+                    // case 60:
+                    // case 59:
+                    mbs = progressive ? 290 : 145;
+                } else if (frameRate > 29) {
+                    // case 50:
+                    mbs = progressive ? 240 : 120;
+                } else if (frameRate > 25) {
+                    // case 29:
+                    mbs = progressive ? 145 : /*0*/ 120; // 120 is the lowest possible bitrate for 1920x1080i
+                } else if (frameRate > 24) {
+                    // case 25:
+                    mbs = 120 /*progressive ? 120 : 0*/; // 120 is the lowest possible bitrate for 1920x1080i
+                } else {
+                    // case 24:
+                    // case 23:
+                    mbs = progressive ? 115 : /*0*/ 120; // 120 is the lowest possible bitrate for 1920x1080i
+                }
+            } else {
+                if (frameRate > 50) {
+                    // case 60:
+                    // case 59:
+                    mbs = progressive ? 145 : 0; // 720i unsupported
+                } else {
+                    // case 50:
+                    mbs = progressive ? 115 : 0; // 720i unsupported
+                }
+            }
+            break;
+        case eDNxHDCodecProfile36:
+            // 90 in 1080p/60 or 1080p/59.94, 75 in 1080p/50, 45 in 1080i/60 or 1080i/59.94, 36 in 1080i/50 or 1080p/25, 36 in 1080p/24 or 1080p/23.976, 45 in 1080p/29.97, 100 in 720p/59.94, 85 in 720p/50
+            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
+                if (frameRate > 50) {
+                    // case 60:
+                    // case 59:
+                    mbs = progressive ? 90 : /*45*/ 120; // 45 is not unsupported by ffmpeg for 1920x1080i
+                } else if (frameRate > 29) {
+                    // case 50:
+                    mbs = progressive ? 75 : /*36*/ 120; // 36 is not unsupported by ffmpeg 1920x1080i
+                } else if (frameRate > 25) {
+                    // case 29:
+                    mbs = progressive ? 45 : /*0*/ 120;
+                } else if (frameRate > 24) {
+                    // case 25:
+                    mbs = progressive ? 36 : /*0*/ 120;
+                } else {
+                    // case 24:
+                    // case 23:
+                    mbs = progressive ? 36 : /*0*/ 120;
+                }
+            } else {
+                switch (frameRate) {
+                case 60:
+                case 59:
+                    mbs = progressive ? 100 : 0; // 720i unsupported in ffmpeg
+                    break;
+                case 50:
+                    mbs = progressive ? 85 : 0; // 720i unsupported in ffmpeg
+                    break;
+                default:
+                    break;
+                }
+            }
+            break;
+        } // switch
+        if (mbs == 0) {
+            setPersistentMessage(Message::eMessageError, "", "frameRate not supported for DNxHD");
+            throwSuiteStatusException(kOfxStatFailed);
         }
-        if (dnxhrProfile) {
-            av_opt_set(avCodecContext->priv_data, "profile", dnxhrProfile, 0);
-        }
-        const int mbs = dnxhdBitrateMbps(dnxhdCodecProfile, avCodecContext->width, avCodecContext->height, frameRate, progressive);
-        assert(mbs != 0); // checked by checkVideoStreamSettings()
         if (mbs > 0) {
             avCodecContext->bit_rate = mbs * 1000000;
         }
@@ -4936,8 +4888,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         return;
     }
 
-    // The state of the previous render (e.g. SUCCESS, which would make endEncode() finalize the file) does not
-    // apply to this one: until it succeeds, endEncode() has nothing to finish (#289).
+    // the state of the previous render does not apply to this one: until beginEncode() succeeds, endEncode() has
+    // nothing to finish (#289)
     _error = IGNORE_FINISH;
 
     if (args.isInteractive) {
@@ -5002,57 +4954,15 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         }
     }
 
-    // The video codec, and the settings of the video stream, checked before anything is allocated.
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    const AVCodec* videoCodec = nullptr;
-    if (!initCodec(avOutputFormat, codecId, videoCodec)) {
-        setPersistentMessage(Message::eMessageError, "", "Unable to find codec");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
-    // Test if the container recognises the codec type.
-    bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    // mov seems to be able to cope with anything, which the above function doesn't seem to think is the case (even with FF_COMPLIANCE_EXPERIMENTAL)
-    // and it doesn't return -1 for in this case, so we'll special-case this situation to allow this
-    // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
-    if (!isCodecSupportedInContainer) {
-        setPersistentMessage(Message::eMessageError, "", string("The codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name);
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
-    // The v210 encoder needs an even width (FFmpeg n9.0 libavcodec/v210enc.c:56-59, n4.4 v210enc.c:99-102), and fails
-    // in avcodec_open2() with "Invalid argument" otherwise.
-    const int width = rodPixel.x2 - rodPixel.x1;
-    if ((codecId == AV_CODEC_ID_V210) && (width % 2 != 0)) {
-        setPersistentMessage(Message::eMessageError, "", string("The v210 codec needs an even width, and the image is ") + std::to_string(width)
-                             + " pixels wide: crop or pad the image to an even width, or choose another codec.");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
-    {
-        string error;
-        if (!checkVideoStreamSettings(codecId, &error)) {
-            setPersistentMessage(Message::eMessageError, "", error);
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
-    }
-
     // If the file exists (which means "overwrite" was checked), remove it first.
     // See https://github.com/NatronGitHub/Natron/issues/666
     if (OFX::exists_utf8(filename.c_str())) {
         OFX::remove_utf8(filename.c_str());
     }
 
-    // From here on, a failure frees everything that beginEncode() allocated (the format and codec contexts, the
-    // AVIOContext, the file), so that endEncode() has nothing to finish and the next render can begin (#289).
+    // From here on, any failure (also an exception, e.g. from configureVideoStream()) frees the format and codec
+    // contexts and closes the AVIOContext (a partially written file stays), so that endEncode() has nothing to finish
+    // and the next render can begin (#289).
     ScopeExit freeFormatOnFailure([this] { freeFormat(); });
 
     assert(!_formatContext);
@@ -5128,6 +5038,39 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         }
     }
 #endif // if OFX_FFMPEG_AUDIO
+
+    // Create a video stream.
+    AVCodecID codecId = AV_CODEC_ID_NONE;
+    const AVCodec* videoCodec = nullptr;
+    if (!initCodec(avOutputFormat, codecId, videoCodec)) {
+        setPersistentMessage(Message::eMessageError, "", "Unable to find codec");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
+
+    // Test if the container recognises the codec type.
+    bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
+    // mov seems to be able to cope with anything, which the above function doesn't seem to think is the case (even with FF_COMPLIANCE_EXPERIMENTAL)
+    // and it doesn't return -1 for in this case, so we'll special-case this situation to allow this
+    // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
+    if (!isCodecSupportedInContainer) {
+        setPersistentMessage(Message::eMessageError, "", string("The codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name);
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
+
+    // The v210 encoder needs an even width (FFmpeg n9.0 libavcodec/v210enc.c:56-59, n4.4 v210enc.c:99-102), and fails
+    // in avcodec_open2() with "Invalid argument" otherwise.
+    const int width = rodPixel.x2 - rodPixel.x1;
+    if ((codecId == AV_CODEC_ID_V210) && (width % 2 != 0)) {
+        setPersistentMessage(Message::eMessageError, "", string("The v210 codec needs an even width, and the image is ") + std::to_string(width)
+                             + " pixels wide: crop or pad the image to an even width, or choose another codec.");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 
     clearPersistentMessage();
     _encodeWarnings.clear();
@@ -5331,7 +5274,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
             return;
         }
-        _headerWritten = true;
 
         if (!unrecognizedOptions.empty()) {
             // Not a persistent message: GenericWriterPlugin::render() clears it after each frame.
@@ -5598,58 +5540,21 @@ WriteFFmpegPlugin::encode(const string& filename,
                           const int rowBytes)
 {
     assert(dstNCompsStartIndex == 0);
-    if ((dstNComps != 4) && (dstNComps != 3)) {
-        setPersistentMessage(Message::eMessageError, "", "can only write RGBA or RGB components images");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
-    }
-
-    if (!_isOpen || !_formatContext) {
-        setPersistentMessage(Message::eMessageError, "", "file is not open");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-    if (!pixelData || !_streamVideo.stream) {
-        throwSuiteStatusException(kOfxStatErrBadHandle);
-
-        return;
-    }
-    // beginEncode() opened the file param at beginSequenceRender, and the frames of a movie can only go
-    // to that file: the param at this frame (if it is animated, or was changed during the render) must
-    // name the same file, maybe through another path (#137).
-    const string openUrl = _formatContext->url ? _formatContext->url : "";
-    if (!isSameOutputUrl(filename, openUrl)) {
-        stringstream ss;
-        ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
-        setPersistentMessage(Message::eMessageError, "", ss.str());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
-    if (pixelAspectRatio != _pixelAspectRatio) {
-        setPersistentMessage(Message::eMessageError, "", "all images in the sequence do not have the same pixel aspect ratio");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
-    }
-
     // the frame number, which _nextFrameToEncode is compared with
     const int frame = (int)std::lround(time);
 
     /// Check that we're really encoding in sequential order
     {
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
-        // However this frame ends (encoded, failed, or nothing to do), wake up the threads that wait for their turn
-        // below: they check _nextFrameToEncode again, which is INT_MIN if this frame failed (#288).
+        // However encode() ends, wake up the threads that wait for their turn below: they check _nextFrameToEncode
+        // again, which is INT_MIN if this frame failed (#288).
         ScopeExit notifyWaitingThreads([this] { _nextFrameToEncodeCond.notify_all(); });
 
         // A frame before the next one was already encoded, or will never be: waiting for it would never end.
         // The frame that was just encoded is rendered again (only view 0 gets here, see encodesMainViewOnly()):
         // nothing to do; any other one is an error. A host doesn't do that: Natron calls beginSequenceRender
         // before, and endSequenceRender after, each render of a Write node, which renders its frames in order.
+        // No other thread waits for such a frame, so the render goes on.
         if ((_nextFrameToEncode != INT_MIN) && (frame < _nextFrameToEncode)) {
             if (frame == _nextFrameToEncode - _frameStep) {
                 return;
@@ -5662,18 +5567,65 @@ WriteFFmpegPlugin::encode(const string& filename,
 
             return;
         }
-        _nextFrameToEncodeCond.wait(guard, [this, frame] { return (_nextFrameToEncode == frame) || (_nextFrameToEncode == INT_MIN); });
 
-        if (_nextFrameToEncode == INT_MIN) {
-            // Another thread aborted
-            if (abort()) {
-                setPersistentMessage(Message::eMessageError, "", "Render aborted");
-            }
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
         try {
+            if ((dstNComps != 4) && (dstNComps != 3)) {
+                setPersistentMessage(Message::eMessageError, "", "can only write RGBA or RGB components images");
+                throwSuiteStatusException(kOfxStatErrFormat);
+
+                return;
+            }
+
+            if (!_isOpen || !_formatContext) {
+                setPersistentMessage(Message::eMessageError, "", "file is not open");
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            if (!pixelData || !_streamVideo.stream) {
+                throwSuiteStatusException(kOfxStatErrBadHandle);
+
+                return;
+            }
+            // beginEncode() opened the file param at beginSequenceRender, and the frames of a movie can only go
+            // to that file: the param at this frame (if it is animated, or was changed during the render) must
+            // name the same file, maybe through another path (#137).
+            const string openUrl = _formatContext->url ? _formatContext->url : "";
+            if (!isSameOutputUrl(filename, openUrl)) {
+                stringstream ss;
+                ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
+                setPersistentMessage(Message::eMessageError, "", ss.str());
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+
+            if (pixelAspectRatio != _pixelAspectRatio) {
+                setPersistentMessage(Message::eMessageError, "", "all images in the sequence do not have the same pixel aspect ratio");
+                throwSuiteStatusException(kOfxStatErrFormat);
+
+                return;
+            }
+
+            // The frame this thread waits for may never come to encode(): GenericWriterPlugin::render() returns before
+            // it if the render is aborted. Check abort() while waiting, with a predicate (C++ Core Guidelines CP.42,
+            // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-wait).
+            const auto myTurnOrFailed = [this, frame] { return (_nextFrameToEncode == frame) || (_nextFrameToEncode == INT_MIN); };
+            while (!_nextFrameToEncodeCond.wait_for(guard, std::chrono::milliseconds(100), myTurnOrFailed)) {
+                if (abort()) {
+                    _nextFrameToEncode = INT_MIN;
+                }
+            }
+
+            if (_nextFrameToEncode == INT_MIN) {
+                // Another thread aborted
+                if (abort()) {
+                    setPersistentMessage(Message::eMessageError, "", "Render aborted");
+                }
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
             _error = IGNORE_FINISH;
 
             if (_isOpen) {
@@ -5700,9 +5652,10 @@ WriteFFmpegPlugin::encode(const string& filename,
         } catch (...) {
             // this frame will never be encoded: the threads that wait for the next ones fail (#288)
             _nextFrameToEncode = INT_MIN;
-            throw; // not a copy of the exception (C++ Core Guidelines E.15): keep its type and status
+            // the exception itself, not a copy (C++ Core Guidelines E.15, https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-exception-ref)
+            throw;
         }
-    } // tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+    } // MultiThread::AutoMutex lock(_nextFrameToEncodeMutex);
 } // WriteFFmpegPlugin::encode
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -5723,9 +5676,7 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         return;
     }
 
-    // Nothing to finish: beginEncode() failed, or no frame was given to encode(). av_write_trailer() can only finish
-    // a file whose header was written (#289).
-    if ((_error == IGNORE_FINISH) || !_headerWritten) {
+    if (_error == IGNORE_FINISH) {
         freeFormat();
 
         return;
@@ -6091,6 +6042,7 @@ WriteFFmpegPlugin::updatePixelFormat()
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
         updatePersistentMessage(); // "Unable to find codec", and the other errors
+        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -6106,6 +6058,7 @@ WriteFFmpegPlugin::updatePixelFormat()
         _infoBitDepth->setValue(0);
         _infoBPP->setValue(0);
         updatePersistentMessage(); // "The codec X is not supported in container Y", and the other errors
+        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -6121,6 +6074,7 @@ WriteFFmpegPlugin::updatePixelFormat()
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_YUV422P;
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_RGB24;
     getPixelFormats(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat);
+    freeFormat();
 
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(targetPixelFormat);
     _infoPixelFormat->setValue(desc ? pix_fmt_name_canonical(desc->name) : "unknown");
@@ -6151,6 +6105,7 @@ WriteFFmpegPlugin::availPixelFormats()
     AVCodecID codecId = AV_CODEC_ID_NONE;
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
+        freeFormat();
         sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (cannot initialize codec)", false);
 
         return;
@@ -6163,6 +6118,7 @@ WriteFFmpegPlugin::availPixelFormats()
     // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
     if (!isCodecSupportedInContainer) {
         string ret = string("Supported pixel codings:\nnone (codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name + ")";
+        freeFormat();
         sendMessage(Message::eMessageError, "", ret);
 
         return;
@@ -6193,6 +6149,7 @@ WriteFFmpegPlugin::availPixelFormats()
         }
         ret += '.';
     }
+    freeFormat();
 
     sendMessage(Message::eMessageMessage, "", ret, false);
 }
@@ -6428,7 +6385,6 @@ WriteFFmpegPlugin::freeFormat()
         avformat_free_context(_formatContext); // also cleans up the allocation by avformat_new_stream()
         _formatContext = nullptr;
     }
-    _headerWritten = false;
     if (_convertCtx) {
         sws_freeContext(_convertCtx);
         _convertCtx = nullptr;
