@@ -25,50 +25,83 @@ def get_deps_for_binary(binary_path, search_directories):
 
     system_libs_to_skip = []
     if sys.platform == "linux":
-        # System libraries to skip: the glibc libraries and the dynamic loader, the GCC runtime (libstdc++,
-        # libgcc_s, libgomp: never bundled, the system's must be used, see "Linux runtime requirements" in
-        # README.md), OpenGL, OpenCL and CUDA drivers, and X11.
+        # System libraries to skip (see "Linux runtime requirements" in README.md): the system list of openfx's
+        # linuxCheckBundle.sh, which never bundles them, plus the desktop libraries, as Natron's Linux installer
+        # (SYSTEM_LIBS_RE in tools/jenkins/build-Linux-installer.sh) does:
+        # - glibc and the dynamic loader, libcrypt, and the GCC runtime (libstdc++, libgcc_s, libgomp, libatomic);
+        # - GLVND (libGL, libGLX, libEGL, libGLdispatch, libOpenGL, libGLES*), libdrm and libdrm_* (libdrm_amdgpu...),
+        #   and Mesa's libgbm and libglapi: they must match the system's graphics driver, which a bundled older copy
+        #   breaks;
+        # - libudev (it reads the running udev's database, whose format follows the system's udev) and libselinux;
+        # - the GPU drivers: libcuda, NVIDIA's libnvidia-* and libnvcuvid, and the OpenCL vendor ICDs (libamdocl*,
+        #   libigdrcl, libintelocl, libMesaOpenCL, libRusticlOpenCL, libpocl; libnvidia-opencl is a libnvidia-*). The
+        #   OpenCL ICD loader only opens the ICDs listed in /etc/OpenCL/vendors/*.icd: they are never NEEDED, and a
+        #   bundled copy would never be used;
+        # - the desktop libraries, which must match the system's display server and sound system: the X11 client
+        #   libraries (libX*, e.g. libX11, libX11-xcb, libXext; libxcb and its extensions: a bundled libxcb breaks the
+        #   system's libX11), libSM, libICE, libxkbcommon, libxkbcommon-x11, and ALSA's libasound.
+        # The OpenCL ICD loader itself, libOpenCL.so.1 (ocl-icd, NEEDED by Ubuntu's libavutil), is bundled: it is
+        # vendor-neutral and not in a default install (ocl-icd-libopencl1 on Ubuntu, ocl-icd on Rocky Linux), and
+        # IO.ofx doesn't load without it (#270). It finds the system's vendor ICDs by itself.
         system_libs_to_skip = [
+            # glibc, libcrypt, the dynamic loader
             "ld-linux",
-            "libc.so",
-            "libdl.so",
-            "libdrm.so",
-            "libgcc_s.so",
-            "libgomp.so",
-            "libm.so",
-            "libpthread.so",
-            "libresolv.so",
-            "librt.so",
-            "libselinux.so",
-            "libstdc++.so",
-            "libudev.so",
-            "libGL.so",
-            "libGLX.so",
-            "libGLdispatch.so",
-            "libX11.so",
-            "libXau.so",
-            "libXdmcp.so",
-            "libXext.so",
-            "libXfixes.so",
-            "libXrender.so",
-            # the rest of openfx's linuxCheckBundle.sh system list (glibc, libatomic, GLVND, OpenCL and CUDA drivers)
             "ld64.so",
             "libBrokenLocale.so",
-            "libEGL.so",
-            "libGLESv1_CM.so",
-            "libGLESv2.so",
-            "libOpenCL.so",
-            "libOpenGL.so",
             "libanl.so",
-            "libatomic.so",
+            "libc.so",
             "libc_malloc_debug.so",
             "libcrypt.so",
-            "libcuda.so",
+            "libdl.so",
+            "libm.so",
             "libmvec.so",
             "libnsl.so",
             "libnss_",
+            "libpthread.so",
+            "libresolv.so",
+            "librt.so",
             "libthread_db.so",
             "libutil.so",
+            # the GCC runtime
+            "libatomic.so",
+            "libgcc_s.so",
+            "libgomp.so",
+            "libstdc++.so",
+            # GLVND, libdrm, Mesa's libgbm and libglapi
+            "libEGL.so",
+            "libGL.so",
+            "libGLESv1_CM.so",
+            "libGLESv2.so",
+            "libGLX.so",
+            "libGLdispatch.so",
+            "libOpenGL.so",
+            "libdrm.so",
+            "libdrm_",
+            "libgbm.so",
+            "libglapi.so",
+            # libudev, libselinux
+            "libselinux.so",
+            "libudev.so",
+            # the GPU drivers, including the OpenCL vendor ICDs (not libOpenCL.so: the ICD loader is bundled)
+            "libMesaOpenCL.so",
+            "libRusticlOpenCL.so",
+            "libamdocl",
+            "libcuda.so",
+            "libigdrcl.so",
+            "libintelocl.so",
+            "libnvcuvid.so",
+            "libnvidia-",
+            "libpocl.so",
+            # the desktop libraries, as Natron's SYSTEM_LIBS_RE: libX* (libX11, libX11-xcb, libXau, libXext...), libxcb
+            # and its extensions, libSM, libICE, libxkbcommon(-x11), and ALSA's libasound
+            "libX",
+            "libxcb.so",
+            "libxcb-",
+            "libSM.so",
+            "libICE.so",
+            "libxkbcommon.so",
+            "libxkbcommon-x11.so",
+            "libasound.so",
         ]
     ret = set()
     while True:
