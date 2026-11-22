@@ -17,6 +17,9 @@
  * "paramSetValue should only be called from within a kOfxActionInstanceChanged or interact
  * action"): render reads the grade from the file, and a missing file fails the render with a
  * persistent error message. The file is loaded into the params by kOfxActionInstanceChanged.
+ * Also: turning "Read from file" off copies the file's grade into the params; Export exports the
+ * file's grade; the CCC Id selects a grade of a .ccc file (and a wrong one is an error); a missing
+ * file that appears is read by the next render, without Reload (failures are not cached).
  *
  * The plug-in is linked directly and driven through the OFX actions by the in-process host
  * of ofx_test_host.h; the exported file is read back by an OCIO FileTransform.
@@ -259,22 +262,76 @@ setValueCount(const Effect& ctx)
     return n;
 }
 
-// a ColorCorrection file (.cc) with the grade kSlope, kOffset, kPower, kSaturation
+// a CDL grade: slope, offset, power (OCIO's SOP order), saturation
+struct Grade {
+    double sop[9];
+    double saturation;
+};
+const Grade kGrade = { { kSlope[0], kSlope[1], kSlope[2], kOffset[0], kOffset[1], kOffset[2], kPower[0], kPower[1], kPower[2] }, kSaturation };
+const Grade kGrade2 = { { 0.8, 1.1, 0.95, -0.05, 0.02, 0.04, 0.9, 1.15, 1.05 }, 1.3 };
+
+// a ColorCorrection element with grade
 void
-writeCC(const std::string& filename)
+writeColorCorrection(std::ostream& os, const char* id, const Grade& g)
+{
+    os << "<ColorCorrection id=\"" << id << "\">\n"
+       << "  <SOPNode>\n"
+       << "    <Slope>" << g.sop[0] << " " << g.sop[1] << " " << g.sop[2] << "</Slope>\n"
+       << "    <Offset>" << g.sop[3] << " " << g.sop[4] << " " << g.sop[5] << "</Offset>\n"
+       << "    <Power>" << g.sop[6] << " " << g.sop[7] << " " << g.sop[8] << "</Power>\n"
+       << "  </SOPNode>\n"
+       << "  <SatNode>\n"
+       << "    <Saturation>" << g.saturation << "</Saturation>\n"
+       << "  </SatNode>\n"
+       << "</ColorCorrection>\n";
+}
+
+// a ColorCorrection file (.cc) with the grade g (kGrade by default)
+void
+writeCC(const std::string& filename, const Grade& g = kGrade)
 {
     std::ofstream ofs(filename.c_str(), std::ios::binary);
     ofs.imbue(std::locale::classic());
-    ofs << "<ColorCorrection id=\"test\">\n"
-        << "  <SOPNode>\n"
-        << "    <Slope>" << kSlope[0] << " " << kSlope[1] << " " << kSlope[2] << "</Slope>\n"
-        << "    <Offset>" << kOffset[0] << " " << kOffset[1] << " " << kOffset[2] << "</Offset>\n"
-        << "    <Power>" << kPower[0] << " " << kPower[1] << " " << kPower[2] << "</Power>\n"
-        << "  </SOPNode>\n"
-        << "  <SatNode>\n"
-        << "    <Saturation>" << kSaturation << "</Saturation>\n"
-        << "  </SatNode>\n"
-        << "</ColorCorrection>\n";
+    writeColorCorrection(ofs, "test", g);
+}
+
+// a ColorCorrectionCollection file (.ccc): "first" with kGrade, then "second" with kGrade2
+void
+writeCCC(const std::string& filename)
+{
+    std::ofstream ofs(filename.c_str(), std::ios::binary);
+    ofs.imbue(std::locale::classic());
+    ofs << "<ColorCorrectionCollection xmlns=\"urn:ASC:CDL:v1.01\">\n";
+    writeColorCorrection(ofs, "first", kGrade);
+    writeColorCorrection(ofs, "second", kGrade2);
+    ofs << "</ColorCorrectionCollection>\n";
+}
+
+// OCIO's CDL of g applied to rgb
+void
+applyGrade(const Grade& g, float rgb[3])
+{
+    try {
+        OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
+        cc->setSOP(g.sop);
+        cc->setSat(g.saturation);
+        OCIO::GetCurrentConfig()->getProcessor(cc)->getDefaultCPUProcessor()->applyRGB(rgb);
+    } catch (const std::exception& e) {
+        check(false, "OCIO computes the expected grade (%s)", e.what());
+    }
+}
+
+// the grade params of ctx are g
+bool
+paramsAre(Effect& ctx, const Grade& g)
+{
+    bool same = true;
+    for (int c = 0; c < 3; ++c) {
+        same = same && closeEnough(paramDouble(&ctx.params["slope"], c), g.sop[c]) && closeEnough(paramDouble(&ctx.params["offset"], c), g.sop[3 + c])
+            && closeEnough(paramDouble(&ctx.params["power"], c), g.sop[6 + c]);
+    }
+
+    return same && closeEnough(paramDouble(&ctx.params["saturation"], 0), g.saturation);
 }
 
 // kOfxActionInstanceChanged on param name (a user edit)
@@ -337,9 +394,11 @@ isIdentity(OfxPlugin* p, Effect& inst)
     return p->mainEntry(kOfxImageEffectActionIsIdentity, H(inst), PH(&a), PH(&o));
 }
 
-// a new instance, in a new context descriptor ctx, with "Read from file" on and the File param set to filename
+// a new instance, in a new context descriptor ctx, with "Read from file" on, the File param set to filename and the
+// CCC Id param to cccid
 bool
-createReadFromFileInstance(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& filename, OfxStatus* st)
+createReadFromFileInstance(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& filename, OfxStatus* st,
+                           const std::string& cccid = std::string())
 {
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
@@ -351,12 +410,36 @@ createReadFromFileInstance(OfxPlugin* p, Effect& ctx, Effect& inst, const std::s
     }
     setOverrideInt(&ctx, "readFromFile", 1);
     setOverrideString(&ctx, "file", filename);
+    setOverrideString(&ctx, "cccId", cccid);
     inst.delegate = &ctx;
     setInstanceProps(inst, kW, kH, 1, kOfxImageEffectContextFilter);
     gPersistentError.clear();
     *st = p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr);
 
     return true;
+}
+
+// render, which must succeed without setting a param, and output the kInputRGB image graded by g
+void
+checkRenderApplies(OfxPlugin* p, Effect& ctx, Effect& inst, const Grade& g, const char* what)
+{
+    float expected[3] = { kInputRGB[0], kInputRGB[1], kInputRGB[2] };
+    applyGrade(g, expected);
+    const int before = setValueCount(ctx);
+    gPersistentError.clear();
+    const OfxStatus st = render(p, ctx, inst);
+    check(ok(st), "%s: render returns OK (status %d)", what, st);
+    check(gPersistentError.empty(), "%s: no persistent error (got \"%s\")", what, gPersistentError.c_str());
+    check(setValueCount(ctx) == before, "%s: render sets no param (%d paramSetValue calls)", what, setValueCount(ctx) - before);
+    const float* d = reinterpret_cast<const float*>(ctx.clips[kOfxImageEffectOutputClipName]->buffer.data());
+    bool same = true;
+    for (int i = 0; i < kW * kH; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            same = same && !isUnwritten(&d[4 * i + c]) && std::fabs(d[4 * i + c] - expected[c]) <= 1e-5;
+        }
+    }
+    check(same, "%s: render applies the grade: (%g %g %g) -> (%g %g %g), expected (%g %g %g)", what,
+          kInputRGB[0], kInputRGB[1], kInputRGB[2], d[0], d[1], d[2], expected[0], expected[1], expected[2]);
 }
 
 void
@@ -420,35 +503,8 @@ testRenderFromFile(OfxPlugin* p, const std::string& dir)
     check(st == kOfxStatReplyDefault, "isIdentity: not an identity, the grade comes from the file (status %d)", st);
     check(setValueCount(ctx) == before, "isIdentity sets no param (%d paramSetValue calls)", setValueCount(ctx) - before);
 
-    // the expected output: OCIO's CDL with the grade of the file
-    float expected[3] = { kInputRGB[0], kInputRGB[1], kInputRGB[2] };
-    try {
-        OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
-        double sop[9] = { kSlope[0], kSlope[1], kSlope[2], kOffset[0], kOffset[1], kOffset[2], kPower[0], kPower[1], kPower[2] };
-        cc->setSOP(sop);
-        cc->setSat(kSaturation);
-        OCIO::GetCurrentConfig()->getProcessor(cc)->getDefaultCPUProcessor()->applyRGB(expected);
-    } catch (const std::exception& e) {
-        check(false, "OCIO computes the expected grade (%s)", e.what());
-    }
-
-    for (int pass = 0; pass < 2; ++pass) {
-        before = setValueCount(ctx);
-        gPersistentError.clear();
-        st = render(p, ctx, inst);
-        check(ok(st), "render %d returns OK (status %d)", pass + 1, st);
-        check(gPersistentError.empty(), "render %d: no persistent error (got \"%s\")", pass + 1, gPersistentError.c_str());
-        check(setValueCount(ctx) == before, "render %d sets no param (%d paramSetValue calls)", pass + 1, setValueCount(ctx) - before);
-        const float* d = reinterpret_cast<const float*>(ctx.clips[kOfxImageEffectOutputClipName]->buffer.data());
-        bool same = true;
-        for (int i = 0; i < kW * kH; ++i) {
-            for (int c = 0; c < 3; ++c) {
-                same = same && !isUnwritten(&d[4 * i + c]) && std::fabs(d[4 * i + c] - expected[c]) <= 1e-5;
-            }
-        }
-        check(same, "render %d applies the grade of the file: (%g %g %g) -> (%g %g %g), expected (%g %g %g)", pass + 1,
-              kInputRGB[0], kInputRGB[1], kInputRGB[2], d[0], d[1], d[2], expected[0], expected[1], expected[2]);
-    }
+    checkRenderApplies(p, ctx, inst, kGrade, "render 1");
+    checkRenderApplies(p, ctx, inst, kGrade, "render 2");
 
     // the user presses Reload: kOfxActionInstanceChanged loads the file into the params
     const int slopeSets = ctx.params["slope"].nSet;
@@ -456,18 +512,122 @@ testRenderFromFile(OfxPlugin* p, const std::string& dir)
     st = instanceChanged(p, inst, "reload");
     check(ok(st), "instanceChanged(reload) returns OK (status %d)", st);
     check(gPersistentError.empty(), "instanceChanged(reload): no persistent error (got \"%s\")", gPersistentError.c_str());
-    ParamRec& slope = ctx.params["slope"];
-    ParamRec& offset = ctx.params["offset"];
-    ParamRec& power = ctx.params["power"];
-    ParamRec& saturation = ctx.params["saturation"];
-    bool loaded = slope.nSet > slopeSets && saturation.nSet > saturationSets;
-    for (int c = 0; c < 3; ++c) {
-        loaded = loaded && closeEnough(paramDouble(&slope, c), kSlope[c]) && closeEnough(paramDouble(&offset, c), kOffset[c])
-            && closeEnough(paramDouble(&power, c), kPower[c]);
-    }
-    loaded = loaded && closeEnough(paramDouble(&saturation, 0), kSaturation);
+    const bool loaded = (ctx.params["slope"].nSet > slopeSets) && (ctx.params["saturation"].nSet > saturationSets) && paramsAre(ctx, kGrade);
     check(loaded, "instanceChanged(reload) loads the grade of the file into the params");
 
+    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    std::remove(filename.c_str());
+}
+
+void
+testReadFromFileOff(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== Read from file turned off: the params get the grade of the file ====\n");
+    const std::string filename = dir + "/off.cc";
+    writeCC(filename);
+    Effect ctx, inst;
+    OfxStatus st;
+    if (!createReadFromFileInstance(p, ctx, inst, filename, &st) || !ok(st)) {
+        check(false, "createInstance (status %d)", st);
+
+        return;
+    }
+    check(!paramsAre(ctx, kGrade), "the params don't have the grade of the file yet");
+    setOverrideInt(&ctx, "readFromFile", 0);
+    st = instanceChanged(p, inst, "readFromFile");
+    check(ok(st), "instanceChanged(readFromFile) returns OK (status %d)", st);
+    check(paramsAre(ctx, kGrade), "the params have the grade of the file, so the output doesn't change");
+    checkRenderApplies(p, ctx, inst, kGrade, "render from the params");
+    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    std::remove(filename.c_str());
+}
+
+void
+testExportFromFile(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== Export with Read from file on: the grade of the file is exported ====\n");
+    const std::string filename = dir + "/source.cc";
+    const std::string exported = dir + "/exported.cc";
+    writeCC(filename, kGrade2);
+    Effect ctx, inst;
+    OfxStatus st;
+    if (!createReadFromFileInstance(p, ctx, inst, filename, &st) || !ok(st)) {
+        check(false, "createInstance (status %d)", st);
+
+        return;
+    }
+    gMessages.clear();
+    st = exportTo(p, ctx, inst, exported);
+    check(ok(st), "instanceChanged(export) returns OK (status %d)", st);
+    check(gMessages.empty(), "no error message (got \"%s\")", gMessages.c_str());
+    std::string error;
+    OCIO::ConstCDLTransformRcPtr cdl = readCDL(exported, &error);
+    check((bool)cdl, "OCIO reads a CDL from the exported file (%s)", cdl ? "ok" : error.c_str());
+    if (cdl) {
+        double sop[9];
+        cdl->getSOP(sop);
+        bool same = closeEnough(cdl->getSat(), kGrade2.saturation);
+        for (int k = 0; k < 9; ++k) {
+            same = same && closeEnough(sop[k], kGrade2.sop[k]);
+        }
+        check(same, "the exported grade is the file's (not the params')");
+    }
+    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    std::remove(filename.c_str());
+    std::remove(exported.c_str());
+}
+
+void
+testCCC(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== Read from a .ccc file: the CCC Id selects the grade ====\n");
+    const std::string filename = dir + "/grades.ccc";
+    writeCCC(filename);
+    {
+        Effect ctx, inst;
+        OfxStatus st;
+        if (createReadFromFileInstance(p, ctx, inst, filename, &st, "second") && ok(st)) {
+            checkRenderApplies(p, ctx, inst, kGrade2, "cccId \"second\"");
+            st = instanceChanged(p, inst, "cccId");
+            check(paramsAre(ctx, kGrade2), "instanceChanged(cccId) loads the grade of \"second\" into the params");
+            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+        } else {
+            check(false, "createInstance (status %d)", st);
+        }
+    }
+    {
+        Effect ctx, inst;
+        OfxStatus st;
+        if (createReadFromFileInstance(p, ctx, inst, filename, &st, "third") && ok(st)) {
+            gPersistentError.clear();
+            st = render(p, ctx, inst);
+            check(!ok(st), "cccId \"third\" (not in the file): render fails (status %d)", st);
+            check(!gPersistentError.empty(), "cccId \"third\": persistent error (\"%s\")", gPersistentError.c_str());
+            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+        } else {
+            check(false, "createInstance (status %d)", st);
+        }
+    }
+    std::remove(filename.c_str());
+}
+
+void
+testFileAppears(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== Read from file: a missing file that appears is read by the next render, without Reload ====\n");
+    const std::string filename = dir + "/later.cc";
+    Effect ctx, inst;
+    OfxStatus st;
+    if (!createReadFromFileInstance(p, ctx, inst, filename, &st) || !ok(st)) {
+        check(false, "createInstance (status %d)", st);
+
+        return;
+    }
+    gPersistentError.clear();
+    st = render(p, ctx, inst);
+    check(!ok(st), "the file is missing: render fails (status %d)", st);
+    writeCC(filename, kGrade2);
+    checkRenderApplies(p, ctx, inst, kGrade2, "the file was created");
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
     std::remove(filename.c_str());
 }
@@ -527,6 +687,10 @@ main(int, char**)
     testUnwritable(p, ctx, inst, dir);
     testMissingFile(p, dir);
     testRenderFromFile(p, dir);
+    testReadFromFileOff(p, dir);
+    testExportFromFile(p, dir);
+    testCCC(p, dir);
+    testFileAppears(p, dir);
 
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);

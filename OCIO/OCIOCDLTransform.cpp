@@ -34,9 +34,11 @@
 #include <sys/stat.h> // _S_*
 #endif
 #include <locale>
+#include <memory> // std::unique_ptr
 #include <optional>
 #include <sstream> // std::ostringstream
 #include <string>
+#include <system_error> // std::error_code
 
 #include "IOUtility.h"
 #include "ofxsFileOpen.h"
@@ -156,6 +158,11 @@ struct CDLGradeResult {
     string error;
 };
 
+// closes a std::FILE (RAII, R.1: https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-raii)
+struct FileCloser {
+    void operator()(std::FILE* f) const noexcept { std::fclose(f); }
+};
+
 // Read the grade of a .cc file, or of the id cccid in a .ccc file. It makes no OFX call, so it may be called from
 // any action, render included, and it is thread-safe (OCIO's file cache has its own lock).
 CDLGradeResult
@@ -163,6 +170,17 @@ readCDLFile(const string& file,
             const string& cccid)
 {
     CDLGradeResult result;
+    // OCIO also caches the files that it can't read, until OCIO::ClearAllCaches() (Reload): check first that the file
+    // can be opened, so that a file that is missing for a while is read when it appears
+    {
+        const std::unique_ptr<std::FILE, FileCloser> f(OFX::fopen_utf8(file.c_str(), "rb"));
+        if (!f) {
+            const std::error_code error(errno, std::generic_category());
+            result.error = string("Cannot open the CDL file \"") + file + "\": " + error.message();
+
+            return result;
+        }
+    }
     try {
         AutoSetAndRestoreThreadLocale locale;
         // OCIO caches the file (OCIO::ClearAllCaches() clears its cache)
@@ -192,14 +210,15 @@ createCDLTransform(const CDLGrade& grade,
     OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
 #if OCIO_VERSION_HEX >= 0x02000000
     cc->setSOP(grade.sop.data());
+    cc->setSat(grade.saturation); // a double in OCIO 2 (an exported file has 0.7, not 0.699999988079071)
 #else
     std::array<float, 9> sop;
     for (std::size_t i = 0; i < sop.size(); ++i) {
-        sop[i] = (float)grade.sop[i];
+        sop[i] = static_cast<float>(grade.sop[i]);
     }
     cc->setSOP(sop.data());
+    cc->setSat(static_cast<float>(grade.saturation));
 #endif
-    cc->setSat((float)grade.saturation);
     cc->setDirection((direction == 0) ? OCIO::TRANSFORM_DIR_FORWARD : OCIO::TRANSFORM_DIR_INVERSE);
 
     return cc;
@@ -260,10 +279,13 @@ private:
     // The grade that is applied at time: the CDL file's if "Read from file" is on, else the params'. Render-safe.
     CDLGradeResult getGradeAtTime(double time);
 
-    // Load the grade of the CDL file into the grade params. It calls paramSetValue, so it must only be called from
-    // changedParam() (ofxParam.h: "paramSetValue should only be called from within a kOfxActionInstanceChanged or
-    // interact action"). On error, sets a persistent message and leaves the params unchanged.
-    void loadCDLFileIntoParams(double time);
+    // Set the grade params to grade (paramSetValue): only from changedParam(), see the constructor.
+    void setGradeParams(const CDLGrade& grade);
+
+    // Load the grade of the CDL file into the grade params (paramSetValue): only from changedParam(), see the
+    // constructor. On error, sets a persistent message (and, if userEdit, sends it too, for OFX 1.4 hosts without
+    // the persistent message suite), and leaves the params unchanged.
+    void loadCDLFileIntoParams(double time, bool userEdit);
 
     void copyPixelData(bool unpremult,
                        bool premult,
@@ -360,13 +382,15 @@ private:
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
 
-    // The last CDL file read by getFileGradeAtTime(), and its grade or error. version is the hidden "version" param,
-    // which Reload increments, so that the file is read again.
+    // The last CDL file that getFileGradeAtTime() read successfully, and its grade. Failures are not cached: a file
+    // that is missing for a while (e.g. at the start of a NatronRenderer batch, which has no Reload button) is read
+    // again by the next render. version is the hidden "version" param, which Reload increments, so that the file is
+    // read again.
     struct CDLFileCache {
         string file;
         string cccid;
         int version = 0;
-        CDLGradeResult result;
+        CDLGrade grade;
     };
     GenericOCIO::Mutex _cdlFileMutex;
     std::optional<CDLFileCache> _cdlFileCache; // guarded by _cdlFileMutex
@@ -430,12 +454,17 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
     setSupportsOpenGLAndTileInfo();
 #endif
 
-    // Only the enabled state of the params is set here. The constructor neither reads the CDL file nor sets a param
-    // (ofxParam.h: "paramSetValue should only be called from within a kOfxActionInstanceChanged or interact action"),
-    // and it never fails because of the file: on kOfxStatFailed from kOfxActionCreateInstance, "the host should
-    // destroy the instanace handle and not attempt to proceed further" (ofxCore.h), so Natron would drop the node
-    // when it loads a project whose CDL file is missing. render() reads the file itself, and changedParam() loads it
-    // into the params.
+    // Only the enabled state of the params is set here: the constructor neither reads the CDL file nor sets a param.
+    // - It must never fail because of the file: on kOfxStatFailed from kOfxActionCreateInstance, "the host should
+    //   destroy the instanace handle and not attempt to proceed further" (ofxCore.h), so Natron would drop the node
+    //   when it loads a project whose CDL file is missing.
+    // - The spec allows setting params here (ofxParameter.rst, "Setting Parameters": "You can only set parameters in
+    //   the following actions [...] kOfxActionCreateInstance, [...] kOfxActionInstanceChanged", and GenericOCIO's
+    //   constructor relies on it), although ofxParam.h says "paramSetValue should only be called from within a
+    //   kOfxActionInstanceChanged or interact action". But a setValue() here makes Natron call changedParam() on an
+    //   object that is not fully constructed yet, and it marks a project that is only being loaded as modified.
+    // So render() reads the file itself, and changedParam() loads it into the params. By design, opening the UI
+    // doesn't load the file into the params either: Reload does.
     refreshKnobEnabledState(_readFromFile->getValue());
 }
 
@@ -610,12 +639,22 @@ OCIOCDLTransformPlugin::getFileGradeAtTime(double time)
     _cccid->getValueAtTime(time, cccid);
     const int version = _version->getValueAtTime(time);
 
+    // The lock is deliberately held while OCIO reads the file (CP.43:
+    // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-time): the render threads that need the same
+    // file wait for one read instead of all reading it, and OCIO never calls back into the plug-in.
     GenericOCIO::AutoMutex guard(_cdlFileMutex);
-    if (!_cdlFileCache || (_cdlFileCache->file != file) || (_cdlFileCache->cccid != cccid) || (_cdlFileCache->version != version)) {
-        _cdlFileCache = CDLFileCache { file, cccid, version, readCDLFile(file, cccid) };
+    if (_cdlFileCache && (_cdlFileCache->file == file) && (_cdlFileCache->cccid == cccid) && (_cdlFileCache->version == version)) {
+        CDLGradeResult result;
+        result.grade = _cdlFileCache->grade;
+
+        return result;
+    }
+    CDLGradeResult result = readCDLFile(file, cccid);
+    if (result.grade) {
+        _cdlFileCache = CDLFileCache { file, cccid, version, *result.grade };
     }
 
-    return _cdlFileCache->result;
+    return result;
 }
 
 CDLGradeResult
@@ -1018,15 +1057,25 @@ OCIOCDLTransformPlugin::refreshKnobEnabledState(bool readFromFile)
 }
 
 void
-OCIOCDLTransformPlugin::loadCDLFileIntoParams(double time)
+OCIOCDLTransformPlugin::loadCDLFileIntoParams(double time,
+                                              bool userEdit)
 {
     const CDLGradeResult result = getFileGradeAtTime(time);
     if (!result.grade) {
         setPersistentMessage(Message::eMessageError, "", result.error);
+        if (userEdit) {
+            sendMessage(Message::eMessageError, "", result.error);
+        }
 
         return;
     }
-    const std::array<double, 9>& sop = result.grade->sop;
+    setGradeParams(*result.grade);
+}
+
+void
+OCIOCDLTransformPlugin::setGradeParams(const CDLGrade& grade)
+{
+    const std::array<double, 9>& sop = grade.sop;
     _slope->deleteAllKeys();
     _slope->setValue(sop[0], sop[1], sop[2]);
     _offset->deleteAllKeys();
@@ -1034,7 +1083,7 @@ OCIOCDLTransformPlugin::loadCDLFileIntoParams(double time)
     _power->deleteAllKeys();
     _power->setValue(sop[6], sop[7], sop[8]);
     _saturation->deleteAllKeys();
-    _saturation->setValue(result.grade->saturation);
+    _saturation->setValue(grade.saturation);
 }
 
 // open a new file (UTF-8 path) for writing; fail with errno == EEXIST if it already exists
@@ -1082,8 +1131,6 @@ OCIOCDLTransformPlugin::exportCDL(double time,
 
         return;
     }
-    const std::array<double, 9>& sop = result.grade->sop;
-    const double saturation = result.grade->saturation;
 
     string xml; // the grade, as a ColorCorrection XML file
     try {
@@ -1092,23 +1139,7 @@ OCIOCDLTransformPlugin::exportCDL(double time,
         if (!config) {
             throw std::runtime_error("OCIO: no current config");
         }
-        OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
-#if OCIO_VERSION_HEX >= 0x02000000
-        cc->setSOP(sop.data());
-#else
-        std::array<float, 9> sopf;
-        for (std::size_t i = 0; i < sopf.size(); ++i) {
-            sopf[i] = (float)sop[i];
-        }
-        cc->setSOP(sopf.data());
-#endif
-#if OCIO_VERSION_HEX >= 0x02000000
-        cc->setSat(saturation); // a double: write 0.7, not 0.699999988079071
-#else
-        cc->setSat((float)saturation);
-#endif
-        cc->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
-
+        const OCIO::CDLTransformRcPtr cc = createCDLTransform(*result.grade, 0); // forward
 #if OCIO_VERSION_HEX >= 0x02000000
         // the same ColorCorrection XML (.cc) as OCIO 1's CDLTransform::getXML()
         OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
@@ -1159,9 +1190,17 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
         bool readFromFile;
         _readFromFile->getValueAtTime(args.time, readFromFile);
         refreshKnobEnabledState(readFromFile);
-        // kOfxActionInstanceChanged is where the file may be loaded into the params (paramSetValue)
+        // kOfxActionInstanceChanged is where the file is loaded into the params (paramSetValue)
         if (readFromFile) {
-            loadCDLFileIntoParams(args.time);
+            loadCDLFileIntoParams(args.time, args.reason == eChangeUserEdit);
+        } else if (paramName == kParamReadFromFile) {
+            // "Read from file" was turned off: keep the grade that was applied, the file's, rather than jump to the
+            // params, which may be stale (they are only loaded from the file by changedParam()). An unreadable file
+            // leaves them unchanged, without an error: the file is no longer used.
+            const CDLGradeResult result = getFileGradeAtTime(args.time);
+            if (result.grade) {
+                setGradeParams(*result.grade);
+            }
         }
     } else if ((paramName == kParamExport) && (args.reason == eChangeUserEdit)) {
         string exportName;
