@@ -232,7 +232,7 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   Natron's MacPorts tree ([`tools/MacPorts`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts) in the
   Natron repository, RB-2.6 branch) and use `SEEXPR_HOME=/opt/local`; CI instead builds SeExpr 2.11 from source with that
   port's patches.
-  The plug-ins target macOS 14.0 (`MACOSX_DEPLOYMENT_TARGET` for the Makefiles and Xcode,
+  The plug-ins target macOS 14.0 (`MACOSX_DEPLOYMENT_TARGET` for the Makefiles,
   `CMAKE_OSX_DEPLOYMENT_TARGET` for CMake; see Apple's
   [macOS Deployment Target](https://developer.apple.com/documentation/xcode/build-settings-reference#macOS-Deployment-Target)
   setting), as Natron 2.6 does. MacPorts builds its libraries for the build machine's macOS unless the
@@ -248,16 +248,13 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")"`,
   or `make CONFIG=release SEEXPR_HOME="$MINGW_PREFIX"`.
 
-## Using Xcode on macOS
+## IDE projects
 
-In order to use the provided Xcode project file ([`IO.xcodeproj`](IO.xcodeproj)), you should add the
-following definitions in Xcode's settings
-(Settings > Locations > Custom Paths):
-- EXR_PATH: path to OpenEXR installation prefix (e.g. /usr/local or /opt/local)
-- FFMPEG_PATH: path to FFmpeg installation prefix  (e.g. /usr/local or /opt/local)
-- OCIO_PATH: path to OpenColorIO installation prefix (e.g. /usr/local or /opt/local)
-- OIIO_PATH: path to OpenImageIO installation prefix (e.g. /usr/local or /opt/local)
-- SEEXPR_PATH: path to SeExpr installation prefix (e.g. /usr/local or /opt/local)
+The repository has no IDE project files. Generate one from the CMake build instead:
+`cmake -S . -B build-xcode -G Xcode` for an [Xcode](https://developer.apple.com/xcode/) project on macOS (with the
+same `-D` options as above; the MacPorts libraries are found through `pkg-config`), or open the source directory in
+an IDE that reads `CMakeLists.txt` directly. On MS Windows, the only supported toolchain is MSYS2 UCRT64 (above);
+MSVC and Visual Studio projects are not supported.
 
 ## Testing
 

@@ -29,8 +29,6 @@ CMakeLists.txt text whitespace=tab-in-indent,trail,space
 # VS 20xx files
 *.sln text eol=crlf
 *.vcproj text eol=crlf merge=union
-*.vcxproj text eol=crlf merge=union
-*.vcxproj.filters text eol=crlf
 # VC6 files
 *.dsw text eol=crlf
 *.dsp text eol=crlf
