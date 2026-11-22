@@ -535,7 +535,7 @@ test-writeffmpeg-encode-failure: ofx_render_test
 
 # #288: the same, frame 1 fails to be written (RLIMIT_FSIZE, as on a full disk). Skipped (exit status 77) on MS Windows.
 test-writeffmpeg-encode-failure-disk-full: ofx_render_test
-	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288.mov --encode-failure-disk-full; \
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288-disk-full.mov --encode-failure-disk-full; \
 	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeffmpeg-encode-failure-disk-full: SKIPPED"; else exit $$st; fi
 
 # RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70);
@@ -601,7 +601,7 @@ clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxTestLog.txt \
+	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxTestLog.txt \
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
