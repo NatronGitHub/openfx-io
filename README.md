@@ -251,9 +251,11 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
 ## IDE projects
 
 The repository has no IDE project files. Generate one from the CMake build instead:
-`cmake -S . -B build-xcode -G Xcode` for an [Xcode](https://developer.apple.com/xcode/) project on macOS (with the
-same `-D` options as above; the MacPorts libraries are found through `pkg-config`), or open the source directory in
-an IDE that reads `CMakeLists.txt` directly. On MS Windows, the only supported toolchain is MSYS2 UCRT64 (above);
+`cmake -S . -B build-xcode -G Xcode` for an [Xcode](https://developer.apple.com/xcode/) project on macOS, with the
+same `-D` options as above and `/opt/local/bin` first in `PATH` (the libraries are found through their CMake config files
+or `pkg-config`). [Xcode](https://cmake.org/cmake/help/latest/generator/Xcode.html) is a multi-configuration generator,
+so `CMAKE_BUILD_TYPE` is ignored: choose the configuration when building (`cmake --build build-xcode --config Release`,
+`ctest --test-dir build-xcode -C Release`) or in the Xcode scheme. Any IDE that reads `CMakeLists.txt` directly also works. On MS Windows, the only supported toolchain is MSYS2 UCRT64 (above);
 MSVC and Visual Studio projects are not supported.
 
 ## Testing
