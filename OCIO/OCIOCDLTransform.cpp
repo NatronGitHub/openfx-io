@@ -283,8 +283,8 @@ private:
     void setGradeParams(const CDLGrade& grade);
 
     // Load the grade of the CDL file into the grade params (paramSetValue): only from changedParam(), see the
-    // constructor. On error, sets a persistent message (and, if userEdit, sends it too, for OFX 1.4 hosts without
-    // the persistent message suite), and leaves the params unchanged.
+    // constructor. On error, sets a persistent message (or, if userEdit and the host has no persistent message suite,
+    // sends it), and leaves the params unchanged.
     void loadCDLFileIntoParams(double time, bool userEdit);
 
     void copyPixelData(bool unpremult,
@@ -1062,8 +1062,9 @@ OCIOCDLTransformPlugin::loadCDLFileIntoParams(double time,
 {
     const CDLGradeResult result = getFileGradeAtTime(time);
     if (!result.grade) {
-        setPersistentMessage(Message::eMessageError, "", result.error);
-        if (userEdit) {
+        // sendMessage() (a modal dialog in Natron) only if the host has no persistent message (OFX 1.4 hosts without
+        // OfxMessageSuiteV2)
+        if ((setPersistentMessage(Message::eMessageError, "", result.error) == Message::eMessageReplyFailed) && userEdit) {
             sendMessage(Message::eMessageError, "", result.error);
         }
 

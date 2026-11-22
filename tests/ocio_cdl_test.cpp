@@ -250,6 +250,18 @@ testUnwritable(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
 }
 
 
+// the number of occurrences of what in s
+int
+occurrences(const std::string& s, const char* what)
+{
+    int n = 0;
+    for (std::size_t pos = s.find(what); pos != std::string::npos; pos = s.find(what, pos + 1)) {
+        ++n;
+    }
+
+    return n;
+}
+
 // the number of paramSetValue/paramSetValueAtTime calls by the plug-in on the params of ctx
 int
 setValueCount(const Effect& ctx)
@@ -470,9 +482,24 @@ testMissingFile(OfxPlugin* p, const std::string& dir)
     p->mainEntry(kOfxActionBeginInstanceEdit, H(inst), nullptr, nullptr);
     check(setValueCount(ctx) == before, "beginInstanceEdit sets no param (%d paramSetValue calls)", setValueCount(ctx) - before);
     gPersistentError.clear();
+    gMessages.clear();
     st = instanceChanged(p, inst, "reload");
     check(ok(st), "instanceChanged(reload) returns OK (status %d)", st);
     check(gPersistentError.find("grade.cc") != std::string::npos, "instanceChanged(reload) sets a persistent error (\"%s\")", gPersistentError.c_str());
+    // gMessages records both the persistent and the sent messages: the persistent one only, no modal dialog
+    check(occurrences(gMessages, "Cannot open the CDL file") == 1, "instanceChanged(reload) doesn't also send the error (messages: \"%s\")", gMessages.c_str());
+    // a host without the persistent message (OFX 1.4 without OfxMessageSuiteV2): the error is sent instead
+    {
+        const auto setPersistent = gMsgSuiteV2.setPersistentMessage;
+        gMsgSuiteV2.setPersistentMessage = nullptr;
+        gPersistentError.clear();
+        gMessages.clear();
+        st = instanceChanged(p, inst, "reload");
+        gMsgSuiteV2.setPersistentMessage = setPersistent;
+        check(ok(st), "no persistent message suite: instanceChanged(reload) returns OK (status %d)", st);
+        check(gPersistentError.empty() && (occurrences(gMessages, "Cannot open the CDL file") == 1),
+              "no persistent message suite: instanceChanged(reload) sends the error (messages: \"%s\")", gMessages.c_str());
+    }
     check(ctx.params["slope"].nSet == 0 && ctx.params["offset"].nSet == 0 && ctx.params["power"].nSet == 0 && ctx.params["saturation"].nSet == 0,
           "instanceChanged(reload) leaves the grade params unchanged");
     p->mainEntry(kOfxActionEndInstanceEdit, H(inst), nullptr, nullptr);
@@ -589,6 +616,7 @@ testCCC(OfxPlugin* p, const std::string& dir)
         if (createReadFromFileInstance(p, ctx, inst, filename, &st, "second") && ok(st)) {
             checkRenderApplies(p, ctx, inst, kGrade2, "cccId \"second\"");
             st = instanceChanged(p, inst, "cccId");
+            check(ok(st), "instanceChanged(cccId) returns OK (status %d)", st);
             check(paramsAre(ctx, kGrade2), "instanceChanged(cccId) loads the grade of \"second\" into the params");
             p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
         } else {
