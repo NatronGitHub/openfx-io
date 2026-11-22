@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <cctype> // ::tolower
 #include <cfloat> // DBL_MAX
+#include <chrono> // std::chrono::milliseconds
 #include <climits> // INT_MAX
 #include <cmath> // std::ceil, std::fabs
 #include <cstdio>
@@ -47,6 +48,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility> // std::move
 #ifdef DEBUG
 #include <cstdio>
 #define DBG(x) x
@@ -1454,6 +1456,33 @@ private:
     AVDictionary* _dict = nullptr;
 };
 
+// Calls a function when it goes out of scope, unless release() was called: the cleanup of a function that has many
+// exits, including exceptions (C++ Core Guidelines E.6, E.19):
+// https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-raii
+// https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-finally
+template <class F>
+class ScopeExit {
+public:
+    explicit ScopeExit(F f)
+        : _f(std::move(f))
+    {
+    }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ~ScopeExit()
+    {
+        if (_active) {
+            _f();
+        }
+    }
+
+    void release() { _active = false; }
+
+private:
+    F _f;
+    bool _active = true;
+};
+
 static bool
 isOptionSeparator(char c)
 {
@@ -1889,6 +1918,11 @@ private:
     SwsContext* _convertCtx;
     MyAVStream _streamVideo;
     MyAVStream _streamAudio;
+    // _nextFrameToEncodeMutex guards _nextFrameToEncode, _firstFrameToEncode, _lastFrameToEncode, _frameStep, and,
+    // in encode(), _error and the encoding of a frame (writeToFile()), which the render threads do one at a time and in
+    // order; _nextFrameToEncodeCond is notified when _nextFrameToEncode changes. beginEncode() and endEncode()
+    // (beginSequenceRender and endSequenceRender) are not concurrent with the renders (C++ Core Guidelines CP.50
+    // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-mutex).
     tthread::mutex _nextFrameToEncodeMutex;
     tthread::condition_variable _nextFrameToEncodeCond;
     int _nextFrameToEncode; //< the frame index we need to encode next, INT_MIN means uninitialized
@@ -2237,6 +2271,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
 
 WriteFFmpegPlugin::~WriteFFmpegPlugin()
 {
+    // a host may destroy the instance without endSequenceRender, e.g. after a failed render (#289)
+    freeFormat();
 }
 
 bool
@@ -4852,6 +4888,10 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         return;
     }
 
+    // the state of the previous render does not apply to this one: until beginEncode() succeeds, endEncode() has
+    // nothing to finish (#289)
+    _error = IGNORE_FINISH;
+
     if (args.isInteractive) {
         setPersistentMessage(Message::eMessageError, "", "can only write files when in non-interactive mode.");
         throwSuiteStatusException(kOfxStatFailed);
@@ -4920,9 +4960,17 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         OFX::remove_utf8(filename.c_str());
     }
 
+    // From here on, any failure (also an exception, e.g. from configureVideoStream()) frees the format and codec
+    // contexts and closes the AVIOContext (a partially written file stays), so that endEncode() has nothing to finish
+    // and the next render can begin (#289).
+    ScopeExit freeFormatOnFailure([this] { freeFormat(); });
+
     assert(!_formatContext);
-    if (!_formatContext) {
-        avformat_alloc_output_context2(&_formatContext, avOutputFormat, nullptr, filename.c_str());
+    if (avformat_alloc_output_context2(&_formatContext, avOutputFormat, nullptr, filename.c_str()) < 0) {
+        setPersistentMessage(Message::eMessageError, "", "Unable to allocate the output format context");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
     }
 
     /////////////////////                            ////////////////////
@@ -4943,8 +4991,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 const AVCodec* audioCodec = nullptr;
                 addStream(_formatContext, audioReader_->getCodecID(), &audioCodec, &_streamAudio);
                 if (!_streamAudio.stream || !audioCodec) {
-                    freeFormat();
-
                     return false;
                 }
 
@@ -4970,8 +5016,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 avcodec_parameters_from_context(_streamAudio.stream->codecpar, _streamAudio.codecContext);
 
                 if (openCodec(_formatContext, audioCodec, &_streamAudio) < 0) {
-                    freeFormat();
-
                     return false;
                 }
 
@@ -5000,7 +5044,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
         setPersistentMessage(Message::eMessageError, "", "Unable to find codec");
-        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -5013,7 +5056,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
     if (!isCodecSupportedInContainer) {
         setPersistentMessage(Message::eMessageError, "", string("The codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name);
-        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -5025,7 +5067,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     if ((codecId == AV_CODEC_ID_V210) && (width % 2 != 0)) {
         setPersistentMessage(Message::eMessageError, "", string("The v210 codec needs an even width, and the image is ") + std::to_string(width)
                              + " pixels wide: crop or pad the image to an even width, or choose another codec.");
-        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -5049,7 +5090,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     if (!_streamVideo.stream) {
         addStream(_formatContext, codecId, &videoCodec, &_streamVideo);
         if (!_streamVideo.stream || !videoCodec) {
-            freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
@@ -5147,7 +5187,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         AVDictionaryHolder codecOptionsLeft;
         av_dict_copy(codecOptionsLeft.ptr(), codecOptions.get(), 0);
         if (openCodec(_formatContext, videoCodec, &_streamVideo, codecOptionsLeft.ptr()) < 0) {
-            freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
@@ -5177,7 +5216,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 char szError[1024] = { 0 };
                 av_strerror(error, szError, sizeof(szError));
                 setPersistentMessage(Message::eMessageError, "", string("Unable to open file: ") + szError);
-                freeFormat();
                 throwSuiteStatusException(kOfxStatFailed);
 
                 return;
@@ -5214,7 +5252,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             char szError[1024] = { 0 };
             av_strerror(error, szError, sizeof(szError));
             setPersistentMessage(Message::eMessageError, "", string("Unable to initialize output: ") + szError + (hasFormatOptions ? string("\nCheck the values in ") + kParamFormatOptionsLabel + "." : string()));
-            freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
@@ -5233,7 +5270,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             char szError[1024] = { 0 };
             av_strerror(error, szError, sizeof(szError));
             setPersistentMessage(Message::eMessageError, "", string("Unable to write file header: ") + szError);
-            freeFormat();
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
@@ -5397,6 +5433,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     _lastDts = AV_NOPTS_VALUE;
     _packetsWritten = 0;
     _error = CLEANUP;
+    freeFormatOnFailure.release();
 } // WriteFFmpegPlugin::beginEncode
 
 // If url is a local file for libavformat, set *path to it and return true, else return false
@@ -5503,78 +5540,92 @@ WriteFFmpegPlugin::encode(const string& filename,
                           const int rowBytes)
 {
     assert(dstNCompsStartIndex == 0);
-    if ((dstNComps != 4) && (dstNComps != 3)) {
-        setPersistentMessage(Message::eMessageError, "", "can only write RGBA or RGB components images");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
-    }
-
-    if (!_isOpen || !_formatContext) {
-        setPersistentMessage(Message::eMessageError, "", "file is not open");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-    if (!pixelData || !_streamVideo.stream) {
-        throwSuiteStatusException(kOfxStatErrBadHandle);
-
-        return;
-    }
-    // beginEncode() opened the file param at beginSequenceRender, and the frames of a movie can only go
-    // to that file: the param at this frame (if it is animated, or was changed during the render) must
-    // name the same file, maybe through another path (#137).
-    const string openUrl = _formatContext->url ? _formatContext->url : "";
-    if (!isSameOutputUrl(filename, openUrl)) {
-        stringstream ss;
-        ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
-        setPersistentMessage(Message::eMessageError, "", ss.str());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
-    if (pixelAspectRatio != _pixelAspectRatio) {
-        setPersistentMessage(Message::eMessageError, "", "all images in the sequence do not have the same pixel aspect ratio");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
-    }
+    // the frame number, which _nextFrameToEncode is compared with
+    const int frame = (int)std::lround(time);
 
     /// Check that we're really encoding in sequential order
     {
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+        // However encode() ends, wake up the threads that wait for their turn below: they check _nextFrameToEncode
+        // again, which is INT_MIN if this frame failed (#288).
+        ScopeExit notifyWaitingThreads([this] { _nextFrameToEncodeCond.notify_all(); });
 
         // A frame before the next one was already encoded, or will never be: waiting for it would never end.
         // The frame that was just encoded is rendered again (only view 0 gets here, see encodesMainViewOnly()):
         // nothing to do; any other one is an error. A host doesn't do that: Natron calls beginSequenceRender
         // before, and endSequenceRender after, each render of a Write node, which renders its frames in order.
-        if ((_nextFrameToEncode != INT_MIN) && (time < _nextFrameToEncode)) {
-            if (time == _nextFrameToEncode - _frameStep) {
+        // No other thread waits for such a frame, so the render goes on.
+        if ((_nextFrameToEncode != INT_MIN) && (frame < _nextFrameToEncode)) {
+            if (frame == _nextFrameToEncode - _frameStep) {
                 return;
             }
             stringstream ss;
-            ss << "Frame " << time << " was rendered after frame " << (_nextFrameToEncode - _frameStep)
+            ss << "Frame " << frame << " was rendered after frame " << (_nextFrameToEncode - _frameStep)
                << ": the frames of a movie must be rendered in increasing order";
             setPersistentMessage(Message::eMessageError, "", ss.str());
             throwSuiteStatusException(kOfxStatFailed);
 
             return;
         }
-        while (_nextFrameToEncode != time && _nextFrameToEncode != INT_MIN) {
-            _nextFrameToEncodeCond.wait(guard);
-        }
 
-        if (_nextFrameToEncode == INT_MIN) {
-            // Another thread aborted
-            if (abort()) {
-                setPersistentMessage(Message::eMessageError, "", "Render aborted");
-            }
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
         try {
+            if ((dstNComps != 4) && (dstNComps != 3)) {
+                setPersistentMessage(Message::eMessageError, "", "can only write RGBA or RGB components images");
+                throwSuiteStatusException(kOfxStatErrFormat);
+
+                return;
+            }
+
+            if (!_isOpen || !_formatContext) {
+                setPersistentMessage(Message::eMessageError, "", "file is not open");
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+            if (!pixelData || !_streamVideo.stream) {
+                throwSuiteStatusException(kOfxStatErrBadHandle);
+
+                return;
+            }
+            // beginEncode() opened the file param at beginSequenceRender, and the frames of a movie can only go
+            // to that file: the param at this frame (if it is animated, or was changed during the render) must
+            // name the same file, maybe through another path (#137).
+            const string openUrl = _formatContext->url ? _formatContext->url : "";
+            if (!isSameOutputUrl(filename, openUrl)) {
+                stringstream ss;
+                ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
+                setPersistentMessage(Message::eMessageError, "", ss.str());
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
+
+            if (pixelAspectRatio != _pixelAspectRatio) {
+                setPersistentMessage(Message::eMessageError, "", "all images in the sequence do not have the same pixel aspect ratio");
+                throwSuiteStatusException(kOfxStatErrFormat);
+
+                return;
+            }
+
+            // The frame this thread waits for may never come to encode(): GenericWriterPlugin::render() returns before
+            // it if the render is aborted. Check abort() while waiting, with a predicate (C++ Core Guidelines CP.42,
+            // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-wait).
+            const auto myTurnOrFailed = [this, frame] { return (_nextFrameToEncode == frame) || (_nextFrameToEncode == INT_MIN); };
+            while (!_nextFrameToEncodeCond.wait_for(guard, std::chrono::milliseconds(100), myTurnOrFailed)) {
+                if (abort()) {
+                    _nextFrameToEncode = INT_MIN;
+                }
+            }
+
+            if (_nextFrameToEncode == INT_MIN) {
+                // Another thread aborted
+                if (abort()) {
+                    setPersistentMessage(Message::eMessageError, "", "Render aborted");
+                }
+                throwSuiteStatusException(kOfxStatFailed);
+
+                return;
+            }
             _error = IGNORE_FINISH;
 
             if (_isOpen) {
@@ -5588,7 +5639,7 @@ WriteFFmpegPlugin::encode(const string& filename,
                 assert(_formatContext);
                 if (!writeToFile(_formatContext, false, time, pixelData, &bounds, pixelDataNComps, dstNComps, rowBytes)) {
                     _error = SUCCESS;
-                    _nextFrameToEncode = (int)time + _frameStep;
+                    _nextFrameToEncode = frame + _frameStep;
                     if (abort()) {
                         _nextFrameToEncode = INT_MIN;
                     }
@@ -5598,11 +5649,12 @@ WriteFFmpegPlugin::encode(const string& filename,
                     return;
                 }
             }
-        } catch (const std::exception& e) {
+        } catch (...) {
+            // this frame will never be encoded: the threads that wait for the next ones fail (#288)
             _nextFrameToEncode = INT_MIN;
-            throw e;
+            // the exception itself, not a copy (C++ Core Guidelines E.15, https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-exception-ref)
+            throw;
         }
-        _nextFrameToEncodeCond.notify_all();
     } // MultiThread::AutoMutex lock(_nextFrameToEncodeMutex);
 } // WriteFFmpegPlugin::encode
 

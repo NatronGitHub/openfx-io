@@ -43,6 +43,9 @@ make test-oiio     # OpenImageIO format roundtrip sanity check
 make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's encoder must not abort (#267)
+make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender after a render, then endSequenceRender (#289)
+make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
+make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -237,6 +240,22 @@ the real render pipeline, linked directly (no host binary):
 in a `uint8_t` (`libavcodec/dnxhdenc.h:101`) while its default qmax is 1024, so on such images it used to
 abort (`put_bits.h` assertion), which killed the host; WriteFFmpeg now limits qmax to 256. The frames must
 encode, or fail with "Cannot encode frame". It is a test of its own, so that an abort only fails it.
+
+`test-writeffmpeg-begin-failure` (issue #289) runs `ofx_render_test OUT --begin-failure`: WriteFFmpeg renders a
+movie, then on the same instance a beginSequenceRender fails (an interlaced source clip; DNxHD 36 in 720p at 25 fps;
+DNxHD 36 in 720p at 60 fps, which FFmpeg's encoder rejects in `avcodec_open2()`), then the host calls
+endSequenceRender, as Natron does. It used to write the trailer of a file whose header was never written (with a
+NULL `AVIOContext`), and crash. The next render of the instance must work.
+
+`test-writeffmpeg-encode-failure` (issue #288) runs `ofx_render_test OUT --encode-failure`: frames 2 to 4 are
+rendered on other threads, which wait in `encode()` for frame 1, then frame 1 is aborted (the host's abort stays
+true, as when the user cancels a render in Natron: `GenericWriterPlugin::render()` returns before `encode()`), or is
+rendered to another file (it fails a check of `encode()`). The waiting renders must fail instead of waiting forever (a
+deadlock in Natron, which waits for its render threads before endSequenceRender): the test fails after 60 s.
+`test-writeffmpeg-encode-failure-disk-full` (`--encode-failure-disk-full`) does the same, with frame 1 failing to be
+written because the file can not grow (`RLIMIT_FSIZE`, as on a full disk: the real write error path of avio, the
+muxer and `writeToFile()`, without a test hook in the plug-in). It is skipped (exit status 77) on MS Windows, which
+has no `RLIMIT_FSIZE`.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
@@ -949,7 +968,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 
