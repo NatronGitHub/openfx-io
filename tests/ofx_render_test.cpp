@@ -89,6 +89,16 @@
  *     - FFmpeg's dnxhd encoder must not abort (qscale above 255 in its 8-bit mb_qscale): the frames encode, or
  *       fail with "Cannot encode frame"
  *
+ *   WriteFFmpeg, beginSequenceRender fails after a render (issue #289), with the option --begin-failure (only this test):
+ *     - render a movie, then on the same instance with an interlaced input, DNxHD 36 in 720p at 25 fps, or DNxHD 36 in
+ *       720p at 60 fps (which FFmpeg's encoder rejects): beginSequenceRender fails, endSequenceRender must not crash,
+ *       and the next render must work
+ *
+ *   WriteFFmpeg, a frame fails to encode while other threads wait (issue #288), with the option --encode-failure (only
+ *   this test; not on MS Windows):
+ *     - frames 2..4 are rendered on other threads, which wait for frame 1; frame 1 fails to be written (RLIMIT_FSIZE):
+ *       the waiting renders must fail within 60 s instead of waiting forever, and the next render must work
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -110,12 +120,19 @@ extern "C" {
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
+#include <csignal>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <string>
+#include <thread>
 #include <vector>
 #ifndef _WIN32
 #include <stdlib.h> // mkstemps()
+#include <sys/resource.h> // setrlimit()
+#include <sys/stat.h> // stat()
 #include <unistd.h> // close()
 #endif
 
@@ -2289,6 +2306,277 @@ int testDNxHR444Noise(const std::string& outFile)
     return failures;
 }
 
+// A WriteFFmpeg instance that the tests of #288 and #289 render several times, as Natron renders a Write node:
+// beginSequenceRender, the frames (maybe on several threads), endSequenceRender. The source image is a constant
+// mid-gray, written once, so that concurrent renders only read it.
+class WriterSession {
+public:
+    WriterSession() = default;
+    WriterSession(const WriterSession&) = delete;
+    WriterSession& operator=(const WriterSession&) = delete;
+    ~WriterSession()
+    {
+        if (_created) {
+            _p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr);
+        }
+        if (_p) {
+            _p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+        }
+    }
+
+    // The instance (Writer context), with the params of wp (strings, ints and fps only); 0 if it was created.
+    int create(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp)
+    {
+        _W = W;
+        _H = H;
+        OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+        if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+        if (loadAndDescribe(p, _ctx, _ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+        _p = p;
+        setOverrideString(&_ctx, kOfxImageEffectFileParamName, outFile);
+        for (const auto& sp : wp.strings) {
+            if (!_ctx.params.count(sp.first)) { std::printf("  FAIL: no param %s\n", sp.first.c_str()); return 1; }
+            setOverrideString(&_ctx, sp.first.c_str(), sp.second);
+        }
+        for (const auto& ip : wp.ints) {
+            if (!_ctx.params.count(ip.first)) { std::printf("  FAIL: no param %s\n", ip.first.c_str()); return 1; }
+            setOverrideInt(&_ctx, ip.first.c_str(), ip.second);
+        }
+        if (wp.fps > 0.) {
+            setFps(wp.fps);
+        }
+        _inst.delegate = &_ctx;
+        setInstanceProps(_inst, W, H, nFrames, kOfxImageEffectContextWriter);
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+        _created = true;
+        _src = _ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? _ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
+        if (!_src) { std::printf("  FAIL: no Source clip\n"); return 1; }
+        _src->connected = true;
+        setupClipImage(_src, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+        std::fill(reinterpret_cast<float*>(_src->buffer.data()), reinterpret_cast<float*>(_src->buffer.data()) + (size_t)W * H * 4, 0.5f);
+        if (_ctx.clips.count(kOfxImageEffectOutputClipName)) {
+            Clip* o = _ctx.clips[kOfxImageEffectOutputClipName];
+            o->connected = false;
+            setupClipImage(o, W, H, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+            pSetInt(PH(&o->props), kOfxImageClipPropConnected, 0, 0);
+        }
+        PropSet outArgs;
+        p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, PH(&outArgs));
+        return 0;
+    }
+
+    void setFps(double fps)
+    {
+        _ctx.params["fps"].hasOv = true;
+        _ctx.params["fps"].ov.d = { fps };
+    }
+
+    void setInt(const char* name, int value) { setOverrideInt(&_ctx, name, value); }
+
+    // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
+    void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
+
+    OfxStatus begin(int nFrames) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, nFrames); }
+    OfxStatus end(int nFrames) { return sequenceAction(kOfxImageEffectActionEndSequenceRender, nFrames); }
+
+    // May be called concurrently.
+    OfxStatus render(int t)
+    {
+        PropSet a = makeRenderInArgs((double)t, _W, _H);
+        return _p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), nullptr);
+    }
+
+    // begin, render each frame in order, end: 0 if all succeeded
+    int renderAll(int nFrames)
+    {
+        OfxStatus st = begin(nFrames);
+        if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d (error: \"%s\")\n", st, persistentError().c_str()); return 1; }
+        int failures = 0;
+        for (int t = 1; t <= nFrames; ++t) {
+            st = render(t);
+            if (!ok(st)) { std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, persistentError().c_str()); ++failures; }
+        }
+        st = end(nFrames);
+        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, persistentError().c_str()); ++failures; }
+        return failures ? 1 : 0;
+    }
+
+    static std::string persistentError()
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        return gPersistentError;
+    }
+
+private:
+    OfxStatus sequenceAction(const char* action, int nFrames)
+    {
+        PropSet a;
+        OfxPropertySetHandle ap = PH(&a);
+        double fr[2] = { 1., (double)nFrames };
+        pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
+        pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
+        pSetInt(ap, kOfxPropIsInteractive, 0, 0);
+        double rs[2] = { 1., 1. };
+        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
+        pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
+        pSetInt(ap, kFnOfxImageEffectPropView, 0, 0);
+        return _p->mainEntry(action, reinterpret_cast<OfxImageEffectHandle>(&_inst), ap, nullptr);
+    }
+
+    OfxPlugin* _p = nullptr;
+    Effect _ctx;
+    Effect _inst;
+    Clip* _src = nullptr;
+    int _W = 0;
+    int _H = 0;
+    bool _created = false;
+};
+
+// #289: render a movie, then on the same instance a beginSequenceRender that fails in the settings of the video
+// stream (setFailure(true)), then endSequenceRender, which Natron calls after a failed beginSequenceRender: it used to
+// write the trailer of a file whose header was never written (av_write_trailer() with a NULL AVIOContext), which
+// crashed. Then a render with setFailure(false) must work again (not "Another render is currently active").
+int testWriteFFmpegBeginFailure(const std::string& outFile, int W, int H, const WriterParams& wp,
+                                const std::function<void(WriterSession&, bool)>& setFailure, const char* expectedError)
+{
+    const int N = 2;
+    std::remove(outFile.c_str());
+    WriterSession s;
+    if (s.create(outFile, W, H, N, wp)) return 1;
+    int failures = 0;
+    int nFrames = 0, nIFrames = 0;
+    setFailure(s, false);
+    if (s.renderAll(N) || probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
+        std::printf("  FAIL: the first render (%d frames written)\n", nFrames);
+        return 1;
+    }
+    setFailure(s, true);
+    OfxStatus st = s.begin(N);
+    const std::string error = WriterSession::persistentError();
+    if (ok(st) || (error.find(expectedError) == std::string::npos)) {
+        std::printf("  FAIL: beginSequenceRender = %d, expected a failure with \"%s\" (error: \"%s\")\n", st, expectedError, error.c_str());
+        ++failures;
+    }
+    st = s.end(N); // crashed in av_write_trailer() (#289)
+    std::printf("  failed beginSequenceRender (\"%s\"), then endSequenceRender = %d: no crash\n", error.c_str(), st);
+    setFailure(s, false);
+    nFrames = 0;
+    if (s.renderAll(N) || probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
+        std::printf("  FAIL: the render after the failed one (%d frames written)\n", nFrames);
+        ++failures;
+    }
+    std::remove(outFile.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+int testWriteFFmpegBeginFailures(const std::string& outFile)
+{
+    int failures = 0;
+    std::printf("==== WriteFFmpeg, render, then interlaced input: beginSequenceRender fails, endSequenceRender does not crash (issue #289) ====\n");
+    failures += testWriteFFmpegBeginFailure(outFile + ".i289-interlaced.mov", 128, 128, WriterParams(),
+                                            [](WriterSession& s, bool fail) { s.setSourceFieldOrder(fail ? kOfxImageFieldLower : kOfxImageFieldNone); },
+                                            "only progressive video is supported");
+    std::printf("==== WriteFFmpeg DNxHD 720p, render in 220x at 60 fps, then 36 at 25 fps: beginSequenceRender fails, endSequenceRender does not crash (issue #289) ====\n");
+    WriterParams dnxhd;
+    dnxhd.strings = { { "codecShortName", "dnxhd" } };
+    // DNxHD 220x (220 Mbit/s in 720p/60), then DNxHD 36 (no bitrate in 720p/25)
+    failures += testWriteFFmpegBeginFailure(outFile + ".i289-dnxhd.mov", 1280, 720, dnxhd,
+                                            [](WriterSession& s, bool fail) {
+                                                s.setInt("DNxHDCodecProfile", fail ? 9 : 6);
+                                                s.setFps(fail ? 25. : 60.);
+                                            },
+                                            "frameRate not supported for DNxHD");
+    // the failure is in avcodec_open2(), after the format context and the stream were allocated, which the cleanup of
+    // beginSequenceRender frees
+    std::printf("==== WriteFFmpeg DNxHD 720p, render in 220x at 60 fps, then 36 at 60 fps (100 Mbit/s, not a 720p bitrate of FFmpeg): beginSequenceRender fails in avcodec_open2(), endSequenceRender does not crash (issue #289) ====\n");
+    failures += testWriteFFmpegBeginFailure(outFile + ".i289-dnxhd.mov", 1280, 720, dnxhd,
+                                            [](WriterSession& s, bool fail) {
+                                                s.setInt("DNxHDCodecProfile", fail ? 9 : 6);
+                                                s.setFps(60.);
+                                            },
+                                            "Could not open video codec");
+    return failures;
+}
+
+// #288: encoding a frame fails (here, the file can not grow, as on a full disk) while other render threads wait in
+// encode() for their turn: they must be woken up and fail, instead of waiting forever (which deadlocked Natron, which
+// waits for its render threads before endSequenceRender). The failure is injected with RLIMIT_FSIZE, so that the
+// real write error path (avio, the muxer, writeToFile()) fails, without a test hook in the plug-in; flush_packets=1
+// makes the muxer write each packet to the file when it is muxed. Not on MS Windows (no RLIMIT_FSIZE).
+int testWriteFFmpegEncodeFailure(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg, a frame fails to encode while other threads wait for their turn: they fail, no deadlock (issue #288) ====\n");
+#ifdef _WIN32
+    (void)outFile;
+    std::printf("  SKIP: no RLIMIT_FSIZE on MS Windows\n");
+    return 0;
+#else
+    const int N = 4;
+    const int timeoutSeconds = 60;
+    std::remove(outFile.c_str());
+    // a write beyond RLIMIT_FSIZE fails with EFBIG, instead of killing the process with SIGXFSZ
+    std::signal(SIGXFSZ, SIG_IGN);
+    int failures = 0;
+    {
+        WriterSession s;
+        WriterParams wp;
+        wp.strings = { { "formatOptions", "flush_packets=1" } };
+        if (s.create(outFile, 128, 128, N, wp)) return 1;
+        OfxStatus st = s.begin(N);
+        if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); return 1; }
+
+        // Frames 2..N wait in encode() for frame 1.
+        std::vector<std::future<OfxStatus>> waiting;
+        for (int t = 2; t <= N; ++t) {
+            waiting.push_back(std::async(std::launch::async, [&s, t]() { return s.render(t); }));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        // The file can not grow any more: frame 1 fails to be written.
+        struct stat sb;
+        if (::stat(outFile.c_str(), &sb) != 0) { std::printf("  FAIL: no file %s\n", outFile.c_str()); std::_Exit(1); }
+        struct rlimit oldLimit;
+        ::getrlimit(RLIMIT_FSIZE, &oldLimit);
+        struct rlimit limit = oldLimit;
+        limit.rlim_cur = (rlim_t)sb.st_size;
+        ::setrlimit(RLIMIT_FSIZE, &limit);
+        const OfxStatus st1 = s.render(1);
+        ::setrlimit(RLIMIT_FSIZE, &oldLimit);
+        const std::string error = WriterSession::persistentError();
+        std::printf("  render frame 1 = %d (error: \"%s\")\n", st1, error.c_str());
+        if (ok(st1)) { std::printf("  FAIL: frame 1 was written: the failure injection did not work\n"); ++failures; }
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
+        for (size_t i = 0; i < waiting.size(); ++i) {
+            if (waiting[i].wait_until(deadline) != std::future_status::ready) {
+                // the waiting threads can not be joined: exit now
+                std::printf("  FAIL: the render of frame %d still waits after %d s: deadlock (issue #288)\n", (int)i + 2, timeoutSeconds);
+                std::printf("FAIL\n");
+                std::fflush(stdout);
+                std::_Exit(1);
+            }
+            const OfxStatus sti = waiting[i].get();
+            std::printf("  render frame %d = %d\n", (int)i + 2, sti);
+            if (ok(sti)) { std::printf("  FAIL: frame %d was rendered after frame 1 failed\n", (int)i + 2); ++failures; }
+        }
+        st = s.end(N);
+        std::printf("  endSequenceRender = %d\n", st);
+
+        // the next render of the same instance works
+        int nFrames = 0, nIFrames = 0;
+        if (s.renderAll(N) || probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
+            std::printf("  FAIL: the render after the failed one (%d frames written)\n", nFrames);
+            ++failures;
+        }
+    }
+    std::remove(outFile.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+#endif
+}
+
 int
 main(int argc, char** argv)
 {
@@ -2296,6 +2584,16 @@ main(int argc, char** argv)
     const std::string outFile = (argc > 1) ? argv[1] : "/tmp/iotest/ofx_render_out.mov";
     if ((argc > 2) && (std::string(argv[2]) == "--dnxhr444-noise")) {
         const int failures = testDNxHR444Noise(outFile);
+        std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
+        return failures ? 1 : 0;
+    }
+    if ((argc > 2) && (std::string(argv[2]) == "--begin-failure")) {
+        const int failures = testWriteFFmpegBeginFailures(outFile);
+        std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
+        return failures ? 1 : 0;
+    }
+    if ((argc > 2) && (std::string(argv[2]) == "--encode-failure")) {
+        const int failures = testWriteFFmpegEncodeFailure(outFile);
         std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
         return failures ? 1 : 0;
     }

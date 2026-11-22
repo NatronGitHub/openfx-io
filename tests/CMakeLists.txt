@@ -221,6 +221,12 @@ if(TARGET io_tests_ofx)
   io_test(test-render ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov")
   # test-dnxhr444-noise (#267): DNxHR 444 on binary RGB noise, FFmpeg's dnxhd encoder must not abort
   io_test(test-dnxhr444-noise ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i267.dnxhr444.mov" --dnxhr444-noise)
+  # test-writeffmpeg-begin-failure (#289): a beginSequenceRender that fails after a render of the same instance, then
+  # endSequenceRender: no crash, and the next render works
+  io_test(test-writeffmpeg-begin-failure ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --begin-failure)
+  # test-writeffmpeg-encode-failure (#288): a frame fails to encode while other threads wait for their turn: they fail
+  # instead of waiting forever (the test exits after 60 s; the ctest time limit is a backstop)
+  io_test(test-writeffmpeg-encode-failure TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288.mov" --encode-failure)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})
