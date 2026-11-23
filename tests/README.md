@@ -688,7 +688,9 @@ at frame Pi, and a frame in a gap must be identical to the last ramp frame at or
 before it, as players display it (and, with `--ramp`, hold its content).
 `--max-seeks N` checks that decoding every frame sequentially seeks at most N times
 (`FFmpegFile::getSeekCount()`), and `--order-seek F1,F2,...` and `--order-no-seek
-F1,F2,...` that the requests of these `--order` frames seek, or do not. `--matrix N` and `--range N` set the Y'CbCr matrix
+F1,F2,...` that the requests of these `--order` frames seek, or do not;
+`--order-no-start-seek` that no `--order` request seeks to the start of the file
+(`FFmpegFile::getStartSeekCount()`), and `--order-max-seeks N` that none seeks more than N times. `--matrix N` and `--range N` set the Y'CbCr matrix
 (0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020) and range (0 = Auto, 1 = Video,
 2 = Full) of the conversion to RGB (`FFmpegFile::setColorOverrides()`, the ReadFFmpeg
 "YCbCr Matrix" and "YCbCr Range" params), and `--rgb R,G,B[,TOL]` checks the mean RGB
@@ -743,6 +745,15 @@ MPEG-TS with a 20 s timestamp jump and an MPEG-4 ASF whose index is removed (wit
 must seek for requests far ahead, and an HEVC MP4 with open GOPs must decode forward for
 requests close ahead, also leading pictures; every frame must be the sequential one, with 1
 and 8 decoder threads.
+Leading pictures of open GOPs ([#328](https://github.com/NatronGitHub/openfx-io/issues/328)):
+HEVC (x265 `open-gop=1:bframes=3`) and H.264 (x264 `open-gop=1`, 3 B-frames) in MP4, with a GOP
+of 24 frames, are decoded in the orders 10, 23, 26, 47, 50, 70 (leading pictures after a far
+frame), 70, 47, 23, 95, 72, 46, 22, in reverse order and in a random order, with 1 and 8 decoder
+threads. The MP4 index is on the DTS, so a seek for a leading picture finds the keyframe displayed
+after it: every frame must be the sequential one, decoded from the keyframe before, with at most 2
+seeks per request and none to the start of the file. Open-GOP H.264 in MPEG-TS, whose index is not
+used for this, must not seek more than twice per request either. The script first checks with
+`ffprobe` that each clip has leading pictures (a keyframe packet followed by a lower PTS).
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a

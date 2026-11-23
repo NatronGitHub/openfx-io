@@ -74,6 +74,9 @@
 #     forward jumps in a GOP (decoded forward, without a seek), across a keyframe and backward (which seek); H.264
 #     MPEG-TS with a 20 s timestamp jump, and MPEG-4 ASF without an index, where requests far ahead seek; HEVC MP4
 #     with open GOPs, where requests close ahead decode forward, also leading pictures.
+#   * Open-GOP HEVC and H.264 in MP4 (#328): a seek for a leading picture decodes from the keyframe before, not from
+#     the start of the file (--order-no-start-seek), with at most 2 seeks per request; and open-GOP H.264 in MPEG-TS,
+#     whose index is not used for that: at most 2 seeks per request too (--order-max-seeks).
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -1047,6 +1050,54 @@ check_forward_open_gop() {
     run_forward "$name" 14,21,23,18,22,24 14,18 21,23,22,24 --tol 1 --frames 96
 }
 
+# check_open_gop_seek NAME DESCRIPTION ENCODER CHECKS FFMPEG_OUTPUT_ARGS...
+# Open GOPs (24 fps, GOP 24, 3 B-frames, 96 frames: the open-GOP keyframes at the 1-based frames 25, 49 and 73 are
+# decoded before their leading pictures, e.g. 22 to 24, which are displayed before them; the clip must have them: a
+# keyframe packet followed by one with a lower PTS), decoded after a far frame (23 after 10, 47 after 26, 70 after
+# 50), backward, in reverse order and in a random order, with 1 and 8 decoder threads: every frame must be the
+# sequential one, with the harness checks CHECKS (#328). In MP4, whose index is on the DTS, a seek for a leading
+# picture finds the keyframe after it, and the decoder drops the leading pictures after a seek: the request must
+# decode from the keyframe before, not from the start of the file (--order-no-start-seek), with at most 2 seeks. In
+# MPEG-TS, whose index cannot be trusted, the requests must not seek more than 2 times either.
+check_open_gop_seek() {
+    local name="$1" desc="$2" encoder="$3" checks="$4" order threads
+    shift 4
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=24 -frames:v 96 "$@" -pix_fmt yuv420p "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    if ! ffprobe -v error -select_streams v:0 -show_entries packet=pts,flags -of csv=p=0 "$tmp/$name" |
+        awk -F, 'key && ($1 < keyPts) { found = 1 } { key = ($2 ~ /K/); keyPts = $1 } END { exit !found }'; then
+        echo "FAIL: $name has no leading pictures (no keyframe packet followed by a lower PTS)"
+        rc=1
+        return
+    fi
+    for order in 10,23,26,47,50,70 70,47,23,95,72,46,22 "$(seq 96 -1 1 | paste -sd, -)" \
+        94,78,1,21,32,92,46,14,89,39,70,74,55,50,12,30,93,19,20,87,80,36,88,61,29,96,64,68,18,4,3,49; do
+        for threads in 1 8; do
+            # shellcheck disable=SC2086
+            if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --order "$order" $checks --tol 1 --frames 96 \
+                ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/$name.out" 2>/dev/null; then
+                grep -E '^  (ORDER|MISMATCH|CONTENT|OUT-OF-ORDER)' "$tmp/$name.out" | head -5
+                echo "FAIL (order ${order:0:40}, with $threads decoder threads)"
+                rc=1
+                return
+            fi
+        done
+    done
+    echo "PASS"
+}
+
 echo "Generating test clips in $tmp and checking them..."
 check ramp.mp4 "MP4 (H.264, start_time 0)" libx264 25 $X264
 check ramp_offset.mp4 "MP4 (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
@@ -1124,6 +1175,13 @@ check_forward ramp_forward.ts "MPEG-TS (H.264, GOP 50): forward requests within 
 check_forward_ts_jump forward_jump.ts "MPEG-TS (H.264, GOP 50, a 20 s timestamp jump): requests far ahead seek"
 check_forward_asf_noindex forward_noindex.asf "ASF (MPEG-4, GOP 25, no index): requests far ahead seek"
 check_forward_open_gop forward_open_gop.mp4 "MP4 (HEVC, open GOPs): requests close ahead decode forward, also leading pictures"
+X265_OPEN_GOP="keyint=24:min-keyint=24:scenecut=0:open-gop=1:bframes=3:log-level=error"
+check_open_gop_seek open_gop_seek_hevc.mp4 "MP4 (HEVC, open GOPs): seeks for leading pictures do not decode from the start" libx265 \
+    "--order-no-start-seek --order-max-seeks 2" -c:v libx265 -x265-params "$X265_OPEN_GOP"
+check_open_gop_seek open_gop_seek_h264.mp4 "MP4 (H.264, open GOPs): seeks for leading pictures do not decode from the start" libx264 \
+    "--order-no-start-seek --order-max-seeks 2" -c:v libx264 -g 24 -keyint_min 24 -bf 3 -x264-params open-gop=1:scenecut=0
+check_open_gop_seek open_gop_seek_h264.ts "MPEG-TS (H.264, open GOPs): at most 2 seeks per request (no index to trust)" libx264 \
+    "--order-max-seeks 2" -c:v libx264 -g 24 -keyint_min 24 -bf 3 -x264-params open-gop=1:scenecut=0 -f mpegts
 # Damaged packets (GOP 8: I0 P3 B1 B2 P6 B4 B5 P7 in decoding order, without scene cuts): the damaged
 # frame is a gap, and the frames of its GOP (and the last ones of the previous GOP, which the decoder
 # outputs after the next reference frame) show what the decoder conceals.
