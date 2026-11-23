@@ -32,8 +32,13 @@
 #     fewer samples than frame times.
 #   * MPEG-TS with two programs, MPEG-PS and VOB with B-frames, and an MPEG-PS cut in the
 #     middle of a GOP (1 and 8 decoder threads): the end read from their last packets.
-#   * NUT (MPEG-4 with B-frames), which has no start time, and an MPEG-2 elementary stream
-#     with B-frames, which has no timestamps.
+#   * NUT, whose duration is the start of the last packet (MPEG-4 with B-frames has no start time): FFV1,
+#     also with a non-zero start time and with audio, MPEG-4, ProRes, and MPEG-4 and H.264 with B-frames.
+#     NUT written without an index: FFV1, also with a non-zero start time, MPEG-4 and H.264 with B-frames.
+#     NUT files larger than the 4 MB that the end probe reads (FFV1), with and without an index, also with a
+#     non-zero start time and with a longer audio track, and a single GOP larger than that (H.264).
+#   * An MPEG-TS whose end probe fails (its last 4 MB are audio).
+#   * An MPEG-2 elementary stream with B-frames, which has no timestamps.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames, and MOV with one that does
 #     not display the first 2 (negative timestamps): they are counted in the stream's number of frames,
 #     but not displayed.
@@ -211,6 +216,75 @@ check_vfr() {
     fi
     # shellcheck disable=SC2086
     "$bin" "$tmp/$name" --tol 3 --ramp 16,4 --positions "$positions" ${framesarg[@]+"${framesarg[@]}"} ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_audio NAME DESCRIPTION ENCODER AUDIO_SECONDS EXPECTED_FRAMES FFMPEG_OUTPUT_ARGS...
+# A gray ramp of $NFRAMES frames at 24 fps with a silent audio track of AUDIO_SECONDS, of which the reader must
+# report EXPECTED_FRAMES: with a longer audio track, the frames after the last one hold it (--positions).
+check_audio() {
+    local name="$1" desc="$2" encoder="$3" audio="$4" expected="$5"
+    shift 5
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    local positions="" i
+    for ((i = 0; i < NFRAMES; i++)); do
+        positions="${positions:+$positions,}$i"
+    done
+    # (a trim, not -frames:v, which would also end the audio)
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -f lavfi -t "$audio" -i anullsrc=r=48000:cl=mono \
+        -vf "trim=end_frame=$NFRAMES" "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --ramp 16,4 --positions "$positions" --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+
+# check_large_nut NAME DESCRIPTION AUDIO_SECONDS EXPECTED_FRAMES FFMPEG_OUTPUT_ARGS... [-- HARNESS_ARGS...]
+# A 60-frame 24 fps 640x480 gray ramp with noise, in NUT (about 10 MB in FFV1 or lossless H.264: the last packets
+# are more than 4 MB after the start, so the end must be found by a seek), with a silent audio track of
+# AUDIO_SECONDS if it is not 0. The reader must report EXPECTED_FRAMES: with a longer audio track, the frames after
+# the last one hold it (--positions). FFMPEG_OUTPUT_ARGS select the encoder (the first one is -c:v ENCODER), and
+# HARNESS_ARGS are passed to the harness.
+check_large_nut() {
+    local name="$1" desc="$2" audio="$3" expected="$4" encoder="$6"
+    shift 4
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    local outargs=() harnessargs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        outargs+=("$1")
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        shift
+        harnessargs=("$@")
+    fi
+    local n=60 positions="" i
+    for ((i = 0; i < n; i++)); do
+        positions="${positions:+$positions,}$i"
+    done
+    local audioin=()
+    if [ "$audio" != 0 ]; then
+        audioin=(-f lavfi -t "$audio" -i anullsrc=r=48000:cl=mono -c:a pcm_s16le)
+    fi
+    # (a trim, not -frames:v, which would also end the audio)
+    if ! ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=640x480:r=24,format=gray,geq=lum='16+3*N+16*(random(1)-0.5)':cb=128:cr=128,format=yuv420p" \
+        ${audioin[@]+"${audioin[@]}"} -vf "trim=end_frame=$n" "${outargs[@]}" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --tol 3 --ramp 16,3 --positions "$positions" --frames "$expected" ${harnessargs[@]+"${harnessargs[@]}"} \
+        ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
 # The source for the clips with a corrupted frame: a textured ramp, so that the frames
@@ -1142,8 +1216,36 @@ check ramp_frag.mp4 "Fragmented MP4 (H.264 with B-frames, no edit list)" libx264
 check ramp_noeditlist.mov "MOV (H.264 with B-frames, no edit list)" libx264 24 $X264 -use_editlist 0
 check ramp_hevc_frag.mp4 "Fragmented MP4 (HEVC with B-frames, no edit list)" libx265 24 \
     -c:v libx265 -x265-params log-level=error:bframes=3:keyint=8 -tag:v hvc1 -pix_fmt yuv420p -movflags frag_keyframe+empty_moov
-# NUT has no start time, and its duration is counted from the first PTS.
+# NUT stores the largest PTS of any stream as its duration, the start of the last packet, not its end (#215).
+# With MPEG-4 B-frames the start time is unknown; with H.264 B-frames it is the B-frame delay (2 frames).
 check ramp_mpeg4_bf.nut "NUT (MPEG-4 with B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
+check ramp_ffv1.nut "NUT (FFV1)" ffv1 24 -c:v ffv1
+check ramp_ffv1_offset.nut "NUT (FFV1, non-zero start time)" ffv1 24 -c:v ffv1 -output_ts_offset 10
+check ramp_mpeg4.nut "NUT (MPEG-4, no B-frames)" mpeg4 24 -c:v mpeg4 -bf 0 -g 8 -q:v 2
+check ramp_prores.nut "NUT (ProRes)" prores_ks 24 -c:v prores_ks
+check ramp_h264_bf.nut "NUT (H.264 with B-frames)" libx264 24 $X264
+# Without an index (#331), the NUT duration is the PTS of the last syncpoint, several frames before the end.
+check ramp_ffv1_noidx.nut "NUT without an index (FFV1)" ffv1 24 -c:v ffv1 -write_index 0
+check ramp_ffv1_offset_noidx.nut "NUT without an index (FFV1, non-zero start time)" ffv1 24 -c:v ffv1 -output_ts_offset 10 -write_index 0
+check ramp_mpeg4_bf_noidx.nut "NUT without an index (MPEG-4 with B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2 -write_index 0
+check ramp_h264_bf_noidx.nut "NUT without an index (H.264 with B-frames)" libx264 24 $X264 -write_index 0
+# The largest PTS may be that of the audio: an audio track of the same length adds no frame, a longer one adds
+# the frames it covers (the last frame is held, as in Matroska).
+check_audio ramp_ffv1_pcm.nut "NUT (FFV1, PCM audio of the same length)" ffv1 1.6667 40 -c:v ffv1 -c:a pcm_s16le
+check_audio ramp_ffv1_long_pcm.nut "NUT (FFV1, 2 s PCM audio)" ffv1 2 48 -c:v ffv1 -c:a pcm_s16le
+# Files larger than the 4 MB that the end probe reads: the end is found by a seek, through the index or without one.
+check_large_nut large_ffv1.nut "Large NUT (FFV1, over 4 MB)" 0 60 -c:v ffv1
+check_large_nut large_ffv1_noidx.nut "Large NUT without an index (FFV1, over 4 MB)" 0 60 -c:v ffv1 -write_index 0
+check_large_nut large_ffv1_offset.nut "Large NUT (FFV1, over 4 MB, non-zero start time)" 0 60 -c:v ffv1 -output_ts_offset 10
+check_large_nut large_ffv1_offset_noidx.nut "Large NUT without an index (FFV1, over 4 MB, non-zero start time)" 0 60 -c:v ffv1 -output_ts_offset 10 -write_index 0
+check_large_nut large_ffv1_pcm.nut "Large NUT (FFV1, over 4 MB, 3 s PCM audio)" 3 72 -c:v ffv1
+check_large_nut large_ffv1_pcm_noidx.nut "Large NUT without an index (FFV1, over 4 MB, 3 s PCM audio)" 3 72 -c:v ffv1 -write_index 0
+# A single GOP longer than the probe: the probe gives up, and the end is the duration plus one frame. Only the
+# frame count is checked (--open-only): every seek in a single GOP decodes from its start, which takes 20 to 40 s.
+check_large_nut large_h264_gop.nut "Large NUT (lossless H.264, one GOP over 4 MB)" 0 60 \
+    -c:v libx264 -qp 0 -g 1000 -x264-params scenecut=0 -pix_fmt yuv420p -- --open-only
+check_large_nut large_h264_gop_noidx.nut "Large NUT without an index (lossless H.264, one GOP over 4 MB)" 0 60 \
+    -c:v libx264 -qp 0 -g 1000 -x264-params scenecut=0 -pix_fmt yuv420p -write_index 0 -- --open-only
 # An elementary stream has no timestamps: the last frame is a reference frame without a PTS.
 check ramp_bframes.m2v "MPEG-2 elementary stream (B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
 # An edit list that starts after the first frames (negative timestamps): they are not displayed.
@@ -1393,6 +1495,22 @@ if have_encoder mpeg2video && have_encoder mp2 && have_encoder ac3; then
         echo "FAIL: could not generate the MPEG-TS/PS clips"
         rc=1
     fi
+fi
+# An MPEG-TS whose end probe fails: 1 s of video and 8 s of 8-channel 32-bit SMPTE 302M audio (11 MB), so the
+# last 4 MB have no video packet. The end is FFmpeg's estimate, and the last frame is held until the end of the
+# audio (192 frames).
+echo "== MPEG-TS (MPEG-2 with B-frames, 8 s of SMPTE 302M audio after 1 s of video) =="
+if have_encoder mpeg2video && have_encoder s302m; then
+    if ffmpeg -y -loglevel error -f lavfi -i color=c=gray:s=128x128:r=24:d=1 -f lavfi -i anoisesrc=r=48000:d=8:a=0.5 \
+        -map 0:v -map 1:a -c:v mpeg2video -bf 2 -c:a s302m -strict -2 -ac 8 -sample_fmt s32 "$tmp/s302m_long.ts"; then
+        # shellcheck disable=SC2086
+        "$bin" "$tmp/s302m_long.ts" --frames 192 --open-only ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    else
+        echo "FAIL: could not generate s302m_long.ts"
+        rc=1
+    fi
+else
+    echo "SKIPPED: no mpeg2video or s302m encoder in the ffmpeg CLI"
 fi
 # A stream copy from a non-keyframe: fewer samples than frame times.
 check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6

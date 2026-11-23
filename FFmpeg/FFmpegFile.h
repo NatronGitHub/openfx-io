@@ -712,6 +712,12 @@ private:
             return _startPTS + (denominator ? av_rescale_rnd(frame, numerator, denominator, AV_ROUND_NEAR_INF) : int64_t(frame) * numerator);
         }
 
+        // The duration of a frame, in AV_TIME_BASE units.
+        int64_t frameDuration() const
+        {
+            return av_rescale(AV_TIME_BASE, _fpsDen, _fpsNum);
+        }
+
         int ptsToFrame(int64_t pts) const
         {
             int64_t numerator = int64_t(_avstream->time_base.num) * _fpsNum;

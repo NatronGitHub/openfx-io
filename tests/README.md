@@ -216,9 +216,8 @@ the real render pipeline, linked directly (no host binary):
   still shown after the render (and UYVY with a warning in Matroska). When a
   frame fails after a good one (another file in encode(), or an Output image
   that can not be fetched in render()) while a warning is set, the error must
-  stay the persistent message after endSequenceRender. The last
-  frame of the NUT files is not checked: ReadFFmpeg reads one frame less from
-  NUT.
+  stay the persistent message after endSequenceRender. Every frame of the NUT
+  files is checked, including the last one (#215).
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.
@@ -776,8 +775,20 @@ MPEG-PS cut at 10 offsets (in the middle of a GOP, or on an I-frame followed by 
 B-frames of an open GOP) must count its frames from the start time of the stream (its first PTS)
 to the last frame that ffprobe decodes, with 1 and 8 threads: the leading B-frames of an open GOP
 are before the start time, and not counted, while the frames after it whose reference frames are
-cut are counted (they fail); NUT (MPEG-4 with B-frames) has no start time; an MPEG-2
-elementary stream with B-frames has no timestamps, and its last frame has no PTS;
+cut are counted (they fail).
+NUT stores the start of the last packet of any stream as its duration (#215), and without an index,
+the PTS of the last syncpoint (#331). NUT clips must count all their frames, and the frames held by
+a longer audio track:
+- FFV1, also with a non-zero start time and with PCM audio of the same length or longer;
+- MPEG-4, ProRes, and MPEG-4 and H.264 with B-frames (MPEG-4 with B-frames has no start time);
+- without an index: FFV1, also with a non-zero start time, and MPEG-4 and H.264 with B-frames;
+- larger than the 4 MB that the end probe reads (about 10 MB of FFV1), with and without an index,
+  also with a non-zero start time and with 3 s of audio;
+- a single GOP larger than the probe (about 10 MB of lossless H.264), with and without an index (only
+  the frame count is checked: every seek in a single GOP decodes from its start).
+
+An MPEG-TS with 1 s of video and 8 s of SMPTE 302M audio, whose end probe fails, must count 192
+frames. An MPEG-2 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
 display the first 2 (negative timestamps), must not count these frames; a 150-frame MPEG-TS and
 M2TS (H.264 with B-frames, AC3 audio) stream-copied with `-output_ts_offset 95440` and `95441`, so
