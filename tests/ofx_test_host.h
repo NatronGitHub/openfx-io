@@ -39,6 +39,7 @@
 #include "ofxNatron.h" // kNatronOfxParamProcessR/G/B/A
 
 #include <atomic>
+#include <cassert>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -49,6 +50,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -203,40 +205,78 @@ bool defaulted(OfxPropertySetHandle h, const char* n) { return gDefaultUnsetProp
 OfxStatus unknownProp(const char* n) { return (gOfx14Only && !isOfx14Name(n)) ? kOfxStatErrUnknown : kOfxStatOK; }
 #define CHECK_PROP_KNOWN(n) do { if (unknownProp(n) != kOfxStatOK) return kOfxStatErrUnknown; } while (0)
 
+// The host's data (the property sets and the param values) is read and written under gHostDataMutex, for the duration
+// of each property or param suite call, as the OFX spec asks of a host whose main and render threads may access a
+// parameter simultaneously ("block write/read access, not block on read/read access, be fine grained at the level of
+// individual function calls", Thread and Recursion Safety): e.g. render threads read the params while the main thread
+// sets them in instanceChanged (oiio_layer_menu_test). A thread takes it once: the calls that the suite functions make
+// to each other (e.g. pSetStringN to pSetString) don't lock it again. A string that a property getter returns points
+// into the property set: it is valid until that property is set or reset (a string param's value is a copy, see
+// prmGetV). The tests that write the host's data directly (setOverrideString...) do it while no render runs.
+// (A single global lock synchronizes more than a real host does: it could hide a plug-in's data race from TSan in
+// other tests.)
+inline std::shared_mutex gHostDataMutex;
+inline thread_local int gHostDataDepth = 0;            // the calls of this thread that hold gHostDataMutex
+inline thread_local bool gHostDataExclusive = false;   // the mode of the outermost one, which locked it
+template <bool Exclusive>
+class HostDataLock {
+public:
+    HostDataLock()
+    {
+        if (gHostDataDepth == 0) {
+            if constexpr (Exclusive) gHostDataMutex.lock(); else gHostDataMutex.lock_shared();
+            gHostDataExclusive = Exclusive;
+        } else {
+            assert(!Exclusive || gHostDataExclusive); // never a write in a call that holds the lock shared
+        }
+        ++gHostDataDepth;
+    }
+    ~HostDataLock()
+    {
+        if (--gHostDataDepth == 0) {
+            if constexpr (Exclusive) gHostDataMutex.unlock(); else gHostDataMutex.unlock_shared();
+        }
+    }
+    HostDataLock(const HostDataLock&) = delete;
+    HostDataLock& operator=(const HostDataLock&) = delete;
+};
+using HostRead = HostDataLock<false>;
+using HostWrite = HostDataLock<true>;
+
 inline PropSet* PS(OfxPropertySetHandle h) { return reinterpret_cast<PropSet*>(h); }
 inline Effect* EF(OfxImageEffectHandle h) { return reinterpret_cast<Effect*>(h); }
 inline OfxPropertySetHandle PH(PropSet* ps) { return reinterpret_cast<OfxPropertySetHandle>(ps); }
 
 // ------------------------------------------------------------------ property suite
 OfxStatus pSetPointer(OfxPropertySetHandle h, const char* n, int idx, void* v)
-{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
+{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
 OfxStatus pSetString(OfxPropertySetHandle h, const char* n, int idx, const char* v)
-{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
+{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
 OfxStatus pSetDouble(OfxPropertySetHandle h, const char* n, int idx, double v)
-{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
+{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
 OfxStatus pSetInt(OfxPropertySetHandle h, const char* n, int idx, int v)
-{ CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
+{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
 // (setting N values sets the dimension of the property to N, e.g. 0 to empty a choice param's options)
-OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
-OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { CHECK_PROP_KNOWN(n); PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetDoubleN(OfxPropertySetHandle h, const char* n, int c, const double* v) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props[n].d.resize(c); for (int k = 0; k < c; ++k) pSetDouble(h, n, k, v[k]); return kOfxStatOK; }
+OfxStatus pSetIntN(OfxPropertySetHandle h, const char* n, int c, const int* v) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props[n].i.resize(c); for (int k = 0; k < c; ++k) pSetInt(h, n, k, v[k]); return kOfxStatOK; }
 
 OfxStatus pGetPointer(OfxPropertySetHandle h, const char* n, int idx, void** v)
-{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = nullptr; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
+{ HostRead lock; CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = nullptr; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.p.size() <= idx) return kOfxStatErrUnknown; *v = it->second.p[idx]; return kOfxStatOK; }
 OfxStatus pGetString(OfxPropertySetHandle h, const char* n, int idx, const char** v)
-{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = ""; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.s.size() <= idx) return kOfxStatErrUnknown; *v = it->second.s[idx].c_str(); return kOfxStatOK; }
+{ HostRead lock; CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = ""; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.s.size() <= idx) return kOfxStatErrUnknown; *v = it->second.s[idx].c_str(); return kOfxStatOK; }
 OfxStatus pGetDouble(OfxPropertySetHandle h, const char* n, int idx, double* v)
-{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = 0.; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.d.size() <= idx) return kOfxStatErrUnknown; *v = it->second.d[idx]; return kOfxStatOK; }
+{ HostRead lock; CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = 0.; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.d.size() <= idx) return kOfxStatErrUnknown; *v = it->second.d[idx]; return kOfxStatOK; }
 OfxStatus pGetInt(OfxPropertySetHandle h, const char* n, int idx, int* v)
-{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = 0; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.i.size() <= idx) return kOfxStatErrUnknown; *v = it->second.i[idx]; return kOfxStatOK; }
-OfxStatus pGetPointerN(OfxPropertySetHandle h, const char* n, int c, void** v) { for (int k = 0; k < c; ++k) if (pGetPointer(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
-OfxStatus pGetStringN(OfxPropertySetHandle h, const char* n, int c, const char** v) { for (int k = 0; k < c; ++k) if (pGetString(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
-OfxStatus pGetDoubleN(OfxPropertySetHandle h, const char* n, int c, double* v) { for (int k = 0; k < c; ++k) if (pGetDouble(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
-OfxStatus pGetIntN(OfxPropertySetHandle h, const char* n, int c, int* v) { for (int k = 0; k < c; ++k) if (pGetInt(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
-OfxStatus pReset(OfxPropertySetHandle h, const char* n) { CHECK_PROP_KNOWN(n); PS(h)->props.erase(n); return kOfxStatOK; }
+{ HostRead lock; CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n); if (it == PS(h)->props.end() && idx == 0 && defaulted(h, n)) { *v = 0; return kOfxStatOK; } if (it == PS(h)->props.end() || (int)it->second.i.size() <= idx) return kOfxStatErrUnknown; *v = it->second.i[idx]; return kOfxStatOK; }
+OfxStatus pGetPointerN(OfxPropertySetHandle h, const char* n, int c, void** v) { HostRead lock; for (int k = 0; k < c; ++k) if (pGetPointer(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
+OfxStatus pGetStringN(OfxPropertySetHandle h, const char* n, int c, const char** v) { HostRead lock; for (int k = 0; k < c; ++k) if (pGetString(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
+OfxStatus pGetDoubleN(OfxPropertySetHandle h, const char* n, int c, double* v) { HostRead lock; for (int k = 0; k < c; ++k) if (pGetDouble(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
+OfxStatus pGetIntN(OfxPropertySetHandle h, const char* n, int c, int* v) { HostRead lock; for (int k = 0; k < c; ++k) if (pGetInt(h, n, k, &v[k]) != kOfxStatOK) return kOfxStatErrUnknown; return kOfxStatOK; }
+OfxStatus pReset(OfxPropertySetHandle h, const char* n) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props.erase(n); return kOfxStatOK; }
 OfxStatus pGetDimension(OfxPropertySetHandle h, const char* n, int* c)
-{ CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n);
+{ HostRead lock; CHECK_PROP_KNOWN(n); auto it = PS(h)->props.find(n);
   if (it == PS(h)->props.end()) {
       if (!gDefaultUnsetProps) { *c = 0; return kOfxStatOK; }
       if (!belongsTo(PS(h), n)) return kOfxStatErrUnknown; // (as its getters)
@@ -313,9 +353,11 @@ const char* paramString(ParamRec* r)
 
 OfxStatus prmGetV(OfxParamHandle ph, va_list ap)
 {
+    HostRead lock;
     ParamRec* r = reinterpret_cast<ParamRec*>(ph);
     const std::string& t = r->type;
-    if (t == kOfxParamTypeString) { const char** o = va_arg(ap, const char**); *o = paramString(r); }
+    // a string: a copy, valid until the next call in this thread (another thread may set the param meanwhile)
+    if (t == kOfxParamTypeString) { thread_local std::string value; value = paramString(r); const char** o = va_arg(ap, const char**); *o = value.c_str(); }
     else if (t == kOfxParamTypeDouble) { double* o = va_arg(ap, double*); *o = paramDouble(r, 0); }
     else if (t == kOfxParamTypeDouble2D) { double* a = va_arg(ap, double*); double* b = va_arg(ap, double*); *a = paramDouble(r, 0); *b = paramDouble(r, 1); }
     else if (t == kOfxParamTypeDouble3D) { double* a = va_arg(ap, double*); double* b = va_arg(ap, double*); double* c = va_arg(ap, double*); *a = paramDouble(r, 0); *b = paramDouble(r, 1); *c = paramDouble(r, 2); }
@@ -329,6 +371,7 @@ OfxStatus prmGetV(OfxParamHandle ph, va_list ap)
 OfxStatus prmGetValue(OfxParamHandle ph, ...) { va_list ap; va_start(ap, ph); OfxStatus s = prmGetV(ph, ap); va_end(ap); return s; }
 OfxStatus prmGetValueAtTime(OfxParamHandle ph, OfxTime time, ...)
 {
+    HostRead lock;
     ParamRec* r = reinterpret_cast<ParamRec*>(ph);
     va_list ap;
     va_start(ap, time);
@@ -352,6 +395,7 @@ OfxStatus prmGetDerivative(OfxParamHandle, OfxTime, ...) { return kOfxStatErrUns
 OfxStatus prmGetIntegral(OfxParamHandle, OfxTime, OfxTime, ...) { return kOfxStatErrUnsupported; }
 OfxStatus prmSetV(OfxParamHandle ph, va_list ap)
 {
+    HostWrite lock;
     ParamRec* r = reinterpret_cast<ParamRec*>(ph);
     const std::string& t = r->type;
     r->hasOv = true;

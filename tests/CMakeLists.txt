@@ -14,8 +14,8 @@
 #   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
 #   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
 #                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug,
-#                         test-ocio-processor-cache-tsan (needs a compiler with -fsanitize=thread,undefined; not
-#                         with MinGW); default OFF
+#                         test-ocio-processor-cache-tsan, test-oiio-layer-menu-tsan (needs a compiler with
+#                         -fsanitize=thread,undefined; not with MinGW); default OFF
 # (tests/Makefile's bench-exr is not a test: run it with make.)
 
 option(IO_TESTS_WITH_LIBRAW "Build ReadOIIO's RAW support in the tests that link it, when the bundle has it" ON)
@@ -344,6 +344,20 @@ if(TARGET io_tests_ofx)
   # the 2-part EXR test, in a Natron-like host (tests/Makefile's second run of reader_window_test)
   io_test(test-reader-window-multiplane DIR "${B}/.reader_window_multiplane" ENV "${_io_ocio_env}" "${_io_asan_env}"
           READER_WINDOW_MULTIPLANE=1 COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window_multiplane")
+
+  # test-oiio-layer-menu: ReadOIIO's output-layer menu rebuilt on the main thread while render threads render the
+  # same instance and call isIdentity (#298), in a Natron-like host, with assert() (the menu's size in decodePlane)
+  set(_io_layer_menu_srcs ${T}/oiio_layer_menu_test.cpp ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp ${_io_reader_srcs})
+  io_test_program(oiio_layer_menu_test OFX THREADS SOURCES ${_io_layer_menu_srcs})
+  io_test(test-oiio-layer-menu DIR "${B}/.oiio_layer_menu" ENV "${_io_ocio_env}"
+          COMMAND $<TARGET_FILE:oiio_layer_menu_test> "${B}/.oiio_layer_menu")
+  if(IO_TESTS_SANITIZERS AND NOT WIN32)
+    # test-oiio-layer-menu-tsan: the same with ThreadSanitizer, without assert() (which would stop it before the report)
+    io_test_program(oiio_layer_menu_test_tsan OFX THREADS SOURCES ${_io_layer_menu_srcs} DEFINITIONS NDEBUG
+                    SANITIZE -fsanitize=thread)
+    io_test(test-oiio-layer-menu-tsan DIR "${B}/.oiio_layer_menu_tsan" ENV "${_io_ocio_env}"
+            "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}" COMMAND $<TARGET_FILE:oiio_layer_menu_test_tsan> "${B}/.oiio_layer_menu_tsan")
+  endif()
 
   # test-png-corrupt: ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files fail cleanly (no crash, no
   # AddressSanitizer report, no leak), with AddressSanitizer

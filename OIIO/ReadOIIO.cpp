@@ -541,6 +541,14 @@ private:
     BooleanParam* _offsetNegativeDispWindow;
     ChoiceParam* _edgePixels;
 
+    // _outputLayerMenuMutex guards _outputLayerMenu. Only buildOutputLayerMenu() writes it, on the main thread
+    // (createInstance, instanceChanged), and holds the lock until _outputLayer's options and value match the new
+    // menu. The main thread's other actions read it without the lock; the actions that may run on render threads
+    // (render, isIdentity, getClipComponents) copy what they need under the lock. No other mutex of the plug-in is
+    // taken, and no file is read, while it is held; host param calls are made under it (resetOptions, getValue,
+    // setValue...; lock order: this mutex, then the host's), so the host must not wait for renders in them.
+    // The lock removes the data race, not a render that started on one file using the menu of the next one: it then
+    // fails with a message, and the host aborts it and renders again (ofxThreadSafety.rst).
     Mutex _outputLayerMenuMutex;
     LayersUnionVect _outputLayerMenu;
 };
@@ -674,6 +682,7 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs& args,
             _outputLayerString->setValue(optionName);
 
             // only set the output components if this change comes from user interaction
+            // (on the main thread, which is the only one that writes _outputLayerMenu: no lock)
             for (LayersUnionVect::iterator it = _outputLayerMenu.begin(); it != _outputLayerMenu.end(); ++it) {
                 if (it->second.choiceOption == optionName) {
                     PixelComponentEnum comps;
@@ -2420,19 +2429,26 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 break;
             }
         } else {
-            // buildOutputLayerMenu should keep these in sync
-            assert(_outputLayer->getNOptions() == (int)_outputLayerMenu.size());
-            int layer_i = _outputLayer->getValue();
-            AutoMutex lock(_outputLayerMenuMutex);
-            if ((layer_i < (int)_outputLayerMenu.size()) && (layer_i >= 0)) {
-                const string& layerName = _outputLayerMenu[layer_i].first;
-                getOIIOChannelIndexesFromLayerName(filename, view, layerName, pixelComponents, subimages, channels, numChannels, subImageIndex);
-            } else {
+            // the main thread may rebuild the menu meanwhile: copy the layer name under the lock
+            string layerName;
+            bool found = false;
+            {
+                AutoMutex lock(_outputLayerMenuMutex);
+                // buildOutputLayerMenu keeps these in sync (under the lock)
+                assert(_outputLayer->getNOptions() == (int)_outputLayerMenu.size());
+                const int layer_i = _outputLayer->getValue();
+                if ((layer_i < (int)_outputLayerMenu.size()) && (layer_i >= 0)) {
+                    layerName = _outputLayerMenu[layer_i].first;
+                    found = true;
+                }
+            }
+            if (!found) {
                 setPersistentMessage(Message::eMessageError, "", "Failure to find requested layer in file");
                 throwSuiteStatusException(kOfxStatFailed);
 
                 return;
             }
+            getOIIOChannelIndexesFromLayerName(filename, view, layerName, pixelComponents, subimages, channels, numChannels, subImageIndex);
         }
     } // if (pixelComponents != ePixelComponentCustom) {
 #ifdef OFX_EXTENSIONS_NATRON
@@ -2996,20 +3012,27 @@ ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments& args, OFX::Clip*& ide
     // If the plane in argument is the color-plane and the user selected another plane in the output plane selector, be identity on that plane.
     // is the one selected in output of the plug-in as color plane
     if (_outputLayer && (args.plane == kOfxMultiplaneColorPlaneID)) {
-        int layer_i;
-        _outputLayer->getValue(layer_i);
-        if (layer_i >= 0 && layer_i < (int)_outputLayerMenu.size()) {
-            const string& layerName = _outputLayerMenu[layer_i].first;
-            if (startsWith(layerName, kReadOIIOColorLayer)) {
+        // (isIdentity may run on a render thread while the main thread rebuilds the menu: copy the layer under the lock)
+        const int layer_i = _outputLayer->getValue(); // (may be stale: checked under the lock)
+        string layerName;
+        vector<string> channelNames;
+        {
+            AutoMutex lock(_outputLayerMenuMutex);
+            if (layer_i < 0 || layer_i >= (int)_outputLayerMenu.size()) {
                 return false;
             }
-            identityClip = _outputClip;
-            identityTime = args.time;
-            view = args.view;
-            MultiPlane::ImagePlaneDesc planeDesc(layerName, "", "", _outputLayerMenu[layer_i].second.layer.channelNames);
-            plane = MultiPlane::ImagePlaneDesc::mapPlaneToOFXPlaneString(planeDesc);
-            return true;
+            layerName = _outputLayerMenu[layer_i].first;
+            channelNames = _outputLayerMenu[layer_i].second.layer.channelNames;
         }
+        if (startsWith(layerName, kReadOIIOColorLayer)) {
+            return false;
+        }
+        identityClip = _outputClip;
+        identityTime = args.time;
+        view = args.view;
+        MultiPlane::ImagePlaneDesc planeDesc(layerName, "", "", channelNames);
+        plane = MultiPlane::ImagePlaneDesc::mapPlaneToOFXPlaneString(planeDesc);
+        return true;
     }
     return false;
 } // isIdentity
