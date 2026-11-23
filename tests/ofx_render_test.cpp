@@ -100,6 +100,14 @@
  *       file: the waiting renders must fail within 60 s instead of waiting forever, and the next render must work
  *     - with --encode-failure-disk-full (not on MS Windows: exit status 77), frame 1 fails to be written (RLIMIT_FSIZE)
  *
+ *   The conversions between Y'CbCr and RGB give exact values (issues #207, #220, #316), with the option --swscale-exact
+ *   (only this test):
+ *     - ReadFFmpeg, rawvideo and FFV1 written without swscale (4:2:0, 4:2:2, 4:4:4, 8, 10 and 12 bits, video and full range,
+ *       alpha, odd widths): the exact R'G'B' of ITU-T H.273 §8.3 in every pixel, the last column included, rounded to
+ *       the nearest at 8 bits, and white is 1 at more than 8 bits; an MPEG-4 movie at an odd width: its last column
+ *     - WriteFFmpeg, decoded without swscale: 4:2:0 and 4:2:2 chroma is the average of the pixels (red and blue lines
+ *       and columns), and the Y'CbCr at 10 and 16 bits is the exact one, rounded to the nearest
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -111,6 +119,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
 #include <libavutil/frame.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 }
 
@@ -169,7 +178,8 @@ struct WriterParams {
     // not W x H (the size of the movie, the output RoD at beginSequenceRender), as when Natron changes the
     // project format during the render
     int renderW = 0, renderH = 0;
-    // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque); 3: binaryNoise()
+    // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque); 3: binaryNoise();
+    // 4 and 5: redBlue() lines and columns
     int pattern = 0;
     // the quantization of colorPattern() (see there)
     int patternQuant = 255;
@@ -208,6 +218,17 @@ void binaryNoise(int x, int r, int t, float* rgba)
         h ^= h >> 15;
         rgba[k] = (h & 1u) ? 1.f : 0.f;
     }
+    rgba[3] = 1.f;
+}
+
+// #207: opaque red (R' = 1) and blue (B' = 1) pixels, in alternating lines (red on the even rows of the image buffer)
+// or columns (red on the even columns).
+void redBlue(int x, int r, bool columns, float* rgba)
+{
+    const bool red = ((columns ? x : r) % 2) == 0;
+    rgba[0] = red ? 1.f : 0.f;
+    rgba[1] = 0.f;
+    rgba[2] = red ? 0.f : 1.f;
     rgba[3] = 1.f;
 }
 
@@ -335,6 +356,10 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             if (wp.pattern == 3) {
                 for (int r = 0; r < rh; ++r) {
                     for (int x = 0; x < rw; ++x) binaryNoise(x, r, t, &fp[((size_t)r * rw + x) * 4]);
+                }
+            } else if ((wp.pattern == 4) || (wp.pattern == 5)) {
+                for (int r = 0; r < rh; ++r) {
+                    for (int x = 0; x < rw; ++x) redBlue(x, r, wp.pattern == 5, &fp[((size_t)r * rw + x) * 4]);
                 }
             } else if (wp.pattern > 0) {
                 for (int r = 0; r < rh; ++r) {
@@ -2610,6 +2635,510 @@ int testWriteFFmpegEncodeFailureDiskFull(const std::string& outFile)
 #endif
 }
 
+// ---- #207, #220, #316: exact values of the conversions between Y'CbCr and RGB (option --swscale-exact) ----
+
+namespace {
+
+// The BT.601 matrix (ITU-T H.273 §8.3, MatrixCoefficients 6), which ReadFFmpeg (Auto, untagged or SMPTE 170M) and
+// WriteFFmpeg use in SD.
+constexpr double kKr601 = 0.299, kKb601 = 0.114;
+
+// The exact R', G', B' in [0, 1] (clamped) of a Y'CbCr sample with n bits, in video or full range: ITU-T H.273 §8.3
+// (video range: Y' = 219·2^(n-8)·E'Y + 16·2^(n-8), Cb = 224·2^(n-8)·E'PB + 2^(n-1); full range: Y' = (2^n - 1)·E'Y,
+// Cb = (2^n - 1)·E'PB + 2^(n-1)).
+void exactRgb(int y, int cb, int cr, int bits, bool fullRange, double rgb[3])
+{
+    const double scale = (double)(1 << (bits - 8)), half = (double)(1 << (bits - 1)), max = (double)((1 << bits) - 1);
+    const double ey = fullRange ? y / max : (y - 16. * scale) / (219. * scale);
+    const double pb = fullRange ? (cb - half) / max : (cb - half) / (224. * scale);
+    const double pr = fullRange ? (cr - half) / max : (cr - half) / (224. * scale);
+    const double r = ey + 2. * (1. - kKr601) * pr;
+    const double b = ey + 2. * (1. - kKb601) * pb;
+    const double g = (ey - kKr601 * r - kKb601 * b) / (1. - kKr601 - kKb601);
+    const double v[3] = { r, g, b };
+    for (int k = 0; k < 3; ++k) rgb[k] = std::min(1., std::max(0., v[k]));
+}
+
+// The exact Y', Cb, Cr (not rounded) of R', G', B' in [0, 1], n bits, video range (ITU-T H.273 §8.3, BT.601 matrix).
+void exactYCbCr(const float rgb[3], int bits, double ycbcr[3])
+{
+    const double scale = (double)(1 << (bits - 8));
+    const double ey = kKr601 * rgb[0] + (1. - kKr601 - kKb601) * rgb[1] + kKb601 * rgb[2];
+    ycbcr[0] = scale * (219. * ey + 16.);
+    ycbcr[1] = scale * (224. * (rgb[2] - ey) / (2. * (1. - kKb601)) + 128.);
+    ycbcr[2] = scale * (224. * (rgb[0] - ey) / (2. * (1. - kKr601)) + 128.);
+}
+
+// Frees what an FFmpeg muxing or decoding session allocated (C++ Core Guidelines R.1
+// https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-raii); not copyable (C.21
+// https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rc-five).
+struct AvSession {
+    AVFormatContext* fmt = nullptr;
+    bool output = false;
+    AVCodecContext* codec = nullptr;
+    AVFrame* frame = av_frame_alloc();
+    AVPacket* pkt = av_packet_alloc();
+    AvSession() = default;
+    AvSession(const AvSession&) = delete;
+    AvSession& operator=(const AvSession&) = delete;
+    ~AvSession()
+    {
+        av_packet_free(&pkt);
+        av_frame_free(&frame);
+        avcodec_free_context(&codec);
+        if (output) {
+            if (fmt && !(fmt->oformat->flags & AVFMT_NOFILE)) avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+        } else {
+            avformat_close_input(&fmt);
+        }
+    }
+};
+
+// Writes the packets that the encoder of s gives into stream st.
+int writePackets(AvSession& s, AVStream* st)
+{
+    int ret;
+    while ((ret = avcodec_receive_packet(s.codec, s.pkt)) >= 0) {
+        av_packet_rescale_ts(s.pkt, s.codec->time_base, st->time_base);
+        s.pkt->stream_index = st->index;
+        if (av_interleaved_write_frame(s.fmt, s.pkt) < 0) { std::printf("  FAIL: write packet\n"); return 1; }
+    }
+    return ((ret == AVERROR(EAGAIN)) || (ret == AVERROR_EOF)) ? 0 : 1;
+}
+
+// The value of component c (in the order of the pixel format's descriptor: Y', Cb, Cr, A) at sample (x, y) of the
+// component's plane (chroma coordinates for Cb and Cr), in frame t.
+using SampleFunction = std::function<uint32_t(int c, int x, int y, int t)>;
+
+// Writes nFrames frames in pixFmt with a lossless codec (rawvideo or FFV1), tagged with the BT.601 (SMPTE 170M) matrix
+// and the range, into file (the container is given by its extension), without swscale: the decoded samples are the
+// ones of sample().
+int writeLosslessVideo(const std::string& file, AVCodecID codecId, AVPixelFormat pixFmt, int W, int H, int nFrames, bool fullRange, const SampleFunction& sample)
+{
+    AvSession s;
+    s.output = true;
+    if ((avformat_alloc_output_context2(&s.fmt, nullptr, nullptr, file.c_str()) < 0) || !s.fmt) { std::printf("  FAIL: no muxer for %s\n", file.c_str()); return 1; }
+    const AVCodec* enc = avcodec_find_encoder(codecId);
+    AVStream* st = avformat_new_stream(s.fmt, nullptr);
+    if (!enc || !st || !(s.codec = avcodec_alloc_context3(enc)) || !s.frame || !s.pkt) { std::printf("  FAIL: no %s encoder\n", avcodec_get_name(codecId)); return 1; }
+    s.codec->width = W;
+    s.codec->height = H;
+    s.codec->pix_fmt = pixFmt;
+    s.codec->time_base = AVRational { 1, 24 };
+    s.codec->color_range = fullRange ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    s.codec->colorspace = AVCOL_SPC_SMPTE170M;
+    if (s.fmt->oformat->flags & AVFMT_GLOBALHEADER) s.codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER; // (FFV1 in Matroska)
+    if ((avcodec_open2(s.codec, enc, nullptr) < 0) || (avcodec_parameters_from_context(st->codecpar, s.codec) < 0)) {
+        std::printf("  FAIL: cannot open the %s encoder for %s\n", enc->name, av_get_pix_fmt_name(pixFmt));
+        return 1;
+    }
+    st->time_base = s.codec->time_base;
+    if (avio_open(&s.fmt->pb, file.c_str(), AVIO_FLAG_WRITE) < 0 || avformat_write_header(s.fmt, nullptr) < 0) { std::printf("  FAIL: cannot write %s\n", file.c_str()); return 1; }
+    s.frame->format = pixFmt;
+    s.frame->width = W;
+    s.frame->height = H;
+    if (av_frame_get_buffer(s.frame, 0) < 0) { std::printf("  FAIL: av_frame_get_buffer\n"); return 1; }
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(pixFmt);
+    std::vector<uint32_t> line((size_t)W);
+    for (int t = 1; t <= nFrames; ++t) {
+        if (av_frame_make_writable(s.frame) < 0) { std::printf("  FAIL: av_frame_make_writable\n"); return 1; }
+        // av_write_image_line2() ORs the samples into the planes (libavutil/pixdesc.c:163-190 in FFmpeg n9.0.2):
+        // clear them
+        size_t planeSizes[4] = {};
+        const ptrdiff_t linesizes[4] = { s.frame->linesize[0], s.frame->linesize[1], s.frame->linesize[2], s.frame->linesize[3] };
+        if (av_image_fill_plane_sizes(planeSizes, pixFmt, H, linesizes) < 0) { std::printf("  FAIL: av_image_fill_plane_sizes\n"); return 1; }
+        for (int i = 0; i < 4; ++i) {
+            if (s.frame->data[i]) std::memset(s.frame->data[i], 0, planeSizes[i]);
+        }
+        for (int c = 0; c < d->nb_components; ++c) {
+            const bool chroma = (c == 1 || c == 2) && (d->nb_components >= 3);
+            const int cw = chroma ? AV_CEIL_RSHIFT(W, d->log2_chroma_w) : W, ch = chroma ? AV_CEIL_RSHIFT(H, d->log2_chroma_h) : H;
+            for (int y = 0; y < ch; ++y) {
+                for (int x = 0; x < cw; ++x) line[(size_t)x] = sample(c, x, y, t);
+                av_write_image_line2(line.data(), s.frame->data, s.frame->linesize, d, 0, y, c, cw, 4);
+            }
+        }
+        s.frame->pts = t - 1;
+        if (avcodec_send_frame(s.codec, s.frame) < 0) { std::printf("  FAIL: %s encode\n", enc->name); return 1; }
+        if (writePackets(s, st)) return 1;
+    }
+    if ((avcodec_send_frame(s.codec, nullptr) < 0) || writePackets(s, st) || (av_write_trailer(s.fmt) < 0)) { std::printf("  FAIL: cannot finish %s\n", file.c_str()); return 1; }
+    return 0;
+}
+
+// Decodes the video stream of file with libavcodec (no swscale), and calls check(frame, index) for each frame.
+int decodeFrames(const std::string& file, const std::function<void(const AVFrame*, int)>& check)
+{
+    AvSession s;
+    if (avformat_open_input(&s.fmt, file.c_str(), nullptr, nullptr) < 0) { std::printf("  FAIL: cannot open %s\n", file.c_str()); return 1; }
+    const AVCodec* codec = nullptr;
+    const int si = (avformat_find_stream_info(s.fmt, nullptr) >= 0) ? av_find_best_stream(s.fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0) : -1;
+    if ((si < 0) || !codec || !(s.codec = avcodec_alloc_context3(codec)) || (avcodec_parameters_to_context(s.codec, s.fmt->streams[si]->codecpar) < 0)
+        || (avcodec_open2(s.codec, codec, nullptr) < 0) || !s.frame || !s.pkt) {
+        std::printf("  FAIL: cannot decode the video stream of %s\n", file.c_str());
+        return 1;
+    }
+    int index = 0;
+    auto drain = [&]() {
+        while (avcodec_receive_frame(s.codec, s.frame) >= 0) {
+            check(s.frame, index++);
+            av_frame_unref(s.frame);
+        }
+    };
+    while (av_read_frame(s.fmt, s.pkt) >= 0) {
+        if ((s.pkt->stream_index == si) && (avcodec_send_packet(s.codec, s.pkt) >= 0)) drain();
+        av_packet_unref(s.pkt);
+    }
+    avcodec_send_packet(s.codec, nullptr);
+    drain();
+    return index ? 0 : 1;
+}
+
+// Renders frames 1..nFrames of file with ReadFFmpeg (Auto Y'CbCr matrix, the YCbCr Range option whose label is range,
+// RGBA unpremultiplied output if rgba): frames[t - 1] is frame t, top-down (row 0 is the top of the movie), 3 or 4
+// components per pixel.
+int readFFmpegFrames(const std::string& file, int W, int H, int nFrames, bool rgba, const char* range, std::vector<std::vector<float>>* frames)
+{
+    frames->clear();
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, file);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextReader);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    {
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    }
+    const int optRange = choiceIndex(ctx, "ycbcrRange", range);
+    if (optRange < 0) { std::printf("  FAIL: no %s option in ycbcrRange\n", range); return 1; }
+    setOverrideInt(&ctx, "ycbcrRange", optRange);
+    if (rgba) {
+        const int optRGBA = choiceIndex(ctx, "outputComponents", "RGBA");
+        if (optRGBA < 0) { std::printf("  FAIL: no RGBA option in outputComponents\n"); return 1; }
+        setOverrideInt(&ctx, "outputComponents", optRGBA);
+        setOverrideInt(&ctx, "filePremult", 2); // unpremultiplied
+        setOverrideInt(&ctx, "outputPremult", 2);
+    }
+    Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+    if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
+    out->connected = true;
+    const int comps = rgba ? 4 : 3;
+    setupClipImage(out, W, H, rgba ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    float* fp = reinterpret_cast<float*>(out->buffer.data());
+    int failures = 0;
+    for (int t = 1; t <= nFrames; ++t) {
+        for (size_t i = 0; i < out->buffer.size() / sizeof(float); ++i) fp[i] = -1.f; // sentinel
+        PropSet a = makeRenderInArgs((double)t, W, H);
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        if (!ok(st)) { std::printf("  FAIL: ReadFFmpeg render frame %d = %d\n", t, st); ++failures; break; }
+        std::vector<float> f((size_t)W * H * comps);
+        for (int r = 0; r < H; ++r) { // the OFX image is bottom-up
+            std::copy(fp + (size_t)(H - 1 - r) * W * comps, fp + (size_t)(H - r) * W * comps, f.begin() + (ptrdiff_t)r * W * comps);
+        }
+        frames->push_back(std::move(f));
+    }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    return failures;
+}
+
+// A lossless Y'CbCr file that ReadFFmpeg must decode to the exact R'G'B' (ITU-T H.273 §8.3), within tolerance.
+struct ReadExactCase {
+    const char* label;
+    const char* ext;
+    AVCodecID codec;
+    AVPixelFormat pixFmt;
+    int W, H;
+    bool fullRange;
+    double tolerance;     // the largest error of R', G', B', A (x 255)
+    double biasTolerance; // the largest mean error of R', G', B' (x 255)
+};
+
+// #207, #220, #316: Y' is a ramp over every code value of the range (frame t starts at another value), Cb and Cr are
+// flat (so that chroma interpolation and siting do not matter): neutral in frame 1 (whose first pixels are black and
+// white: R' = G' = B' = 0 and 1), saturated in frames 2 and 3. Alpha, if any, is a ramp over every code value.
+// ReadFFmpeg must give the exact R'G'B' in every pixel, the last column included (#220: it was not written at odd
+// widths), rounded to the nearest at 8 bits (#207: the error was up to 1.5/255 with NEON, 2.9/255 without), and white
+// must be 1 at more than 8 bits (#316: it was 65283/65535, 0.99615).
+int testReadExact(const std::string& outFile, const ReadExactCase& c)
+{
+    const int N = 3;
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(c.pixFmt);
+    const int bits = d->comp[0].depth;
+    const bool alpha = (d->flags & AV_PIX_FMT_FLAG_ALPHA) != 0;
+    const int scale = 1 << (bits - 8);
+    const int lo = c.fullRange ? 0 : 16 * scale, hi = c.fullRange ? (1 << bits) - 1 : 235 * scale; // nominal black and white
+    const int chroma[N][2] = { { 128 * scale, 128 * scale }, { 60 * scale, 200 * scale }, { 210 * scale, 40 * scale } };
+    auto lumaAt = [&](int x, int y, int t) -> int {
+        const int i = x + y * c.W;
+        if (t == 1 && i < 2) return i ? hi : lo; // black and white
+        return lo + (i * 7 + t * 101) % (hi - lo + 1);
+    };
+    auto alphaAt = [&](int x, int y) -> int { return (x * 37 + y * c.W * 37) % (1 << bits); };
+    const SampleFunction sample = [&](int comp, int x, int y, int t) -> uint32_t {
+        if (comp == 0) return (uint32_t)lumaAt(x, y, t);
+        if (comp == 3) return (uint32_t)alphaAt(x, y);
+        return (uint32_t)chroma[(t - 1) % N][comp - 1];
+    };
+    const std::string file = outFile + "." + c.ext;
+    // one frame more than read: ReadFFmpeg reads one frame less from NUT (see testUncompressed())
+    if (writeLosslessVideo(file, c.codec, c.pixFmt, c.W, c.H, N + 1, c.fullRange, sample)) return 1;
+    std::vector<std::vector<float>> frames;
+    // Matroska stores the range (Auto); NUT does not: the YCbCr Range param
+    if (readFFmpegFrames(file, c.W, c.H, N, alpha, std::string(c.ext) == "nut" ? (c.fullRange ? "Full" : "Video") : "Auto", &frames)) return 1;
+    std::remove(file.c_str());
+    const int comps = alpha ? 4 : 3;
+    double maxErr = 0., maxAlphaErr = 0., sum = 0., lastColumnErr = 0.;
+    long n = 0;
+    int worst[3] = { 0, 0, 0 };
+    double worstGot = 0., worstRef = 0.;
+    for (int t = 1; t <= N; ++t) {
+        const std::vector<float>& f = frames[(size_t)t - 1];
+        for (int y = 0; y < c.H; ++y) {
+            for (int x = 0; x < c.W; ++x) {
+                double ref[3];
+                exactRgb(lumaAt(x, y, t), chroma[t - 1][0], chroma[t - 1][1], bits, c.fullRange, ref);
+                const float* v = &f[((size_t)y * c.W + x) * comps];
+                for (int k = 0; k < 3; ++k) {
+                    const double e = ((double)v[k] - ref[k]) * 255.;
+                    sum += e;
+                    ++n;
+                    if (!(std::fabs(e) <= maxErr)) { // (NaN is the largest)
+                        maxErr = std::fabs(e);
+                        worst[0] = x; worst[1] = y; worst[2] = t;
+                        worstGot = v[k]; worstRef = ref[k];
+                    }
+                    if ((x == c.W - 1) && !(std::fabs(e) <= lastColumnErr)) lastColumnErr = std::fabs(e);
+                }
+                if (alpha) {
+                    const double e = ((double)v[3] - alphaAt(x, y) / (double)((1 << bits) - 1)) * 255.;
+                    if (!(std::fabs(e) <= maxAlphaErr)) maxAlphaErr = std::fabs(e);
+                }
+            }
+        }
+    }
+    const float* first = frames[0].data();
+    std::printf("  frame 1: black %.6f %.6f %.6f, white %.6f %.6f %.6f (x 65535: %.1f)\n", first[0], first[1], first[2], first[comps], first[comps + 1],
+                first[comps + 2], first[comps] * 65535.);
+    const double bias = sum / (double)n;
+    std::printf("  R'G'B' error (x 255): mean %+.4f, max %.4f at (%d,%d) frame %d (%.6f, exact %.6f; Y' %d), last column %.4f (tolerance %.3f, mean %.3f)", bias,
+                maxErr, worst[0], worst[1], worst[2], worstGot, worstRef, lumaAt(worst[0], worst[1], worst[2]), lastColumnErr, c.tolerance, c.biasTolerance);
+    if (alpha) std::printf(", alpha max %.4f", maxAlphaErr);
+    std::printf("\n");
+    int failures = 0;
+    if (!(maxErr <= c.tolerance)) { std::printf("  FAIL: an R'G'B' error is %.4f/255\n", maxErr); ++failures; }
+    if (!(std::fabs(bias) <= c.biasTolerance)) { std::printf("  FAIL: the mean R'G'B' error is %+.4f/255\n", bias); ++failures; }
+    if (alpha && !(maxAlphaErr <= c.tolerance)) { std::printf("  FAIL: an alpha error is %.4f/255\n", maxAlphaErr); ++failures; }
+    std::printf(failures ? "  FAIL (%s)\n" : "  PASS (%s)\n", c.label);
+    return failures;
+}
+
+// #220: an odd-width MPEG-4 movie (4:2:0) written by WriteFFmpeg, gray frames of three levels: the last column that
+// ReadFFmpeg gives must be the same gray as the others (it was not written, and kept the values of another frame).
+int testReadOddWidthMpeg4(const std::string& outFile)
+{
+    const int W = 49, H = 48, N = 3;
+    WriterParams wp;
+    wp.strings = { { "codecShortName", "mpeg4" } };
+    wp.frameValues = { 0.25f, 0.75f, 0.5f };
+    const std::string file = outFile + ".i220.mov";
+    if (testWriteFFmpeg(file, W, H, N, wp)) return 1;
+    std::vector<std::vector<float>> frames;
+    if (readFFmpegFrames(file, W, H, N, false, "Auto", &frames)) return 1;
+    std::remove(file.c_str());
+    double maxErr = 0.; // the largest difference of the last column with the mean of the other columns of its row
+    for (const std::vector<float>& f : frames) {
+        for (int y = 0; y < H; ++y) {
+            for (int k = 0; k < 3; ++k) {
+                double mean = 0.;
+                for (int x = 0; x < W - 1; ++x) mean += f[((size_t)y * W + x) * 3 + k];
+                mean /= (W - 1);
+                const double e = std::fabs(f[((size_t)y * W + W - 1) * 3 + k] - mean) * 255.;
+                if (!(e <= maxErr)) maxErr = e;
+            }
+        }
+    }
+    const double tolerance = 2.;
+    std::printf("  last column: largest difference with its row (x 255) %.3f (tolerance %.1f)\n", maxErr, tolerance);
+    const bool pass = maxErr <= tolerance;
+    std::printf(pass ? "  PASS (MPEG-4 at 49x48)\n" : "  FAIL (MPEG-4 at 49x48)\n");
+    return pass ? 0 : 1;
+}
+
+// #207: WriteFFmpeg's 4:2:0 and 4:2:2 chroma of alternating red and blue lines (pattern 4) or columns (pattern 5),
+// decoded without swscale: each chroma sample must be the average of the two pixels it covers (it was one of them
+// with SWS_POINT: Cb 240 or 90, instead of 165). At an odd width, the last chroma sample covers one column, and must
+// be between red and blue.
+int testWriteChroma(const std::string& outFile, const char* label, const char* ext, int prefCoding, int pattern, int W, int H, const char* expectPixFmt)
+{
+    const int N = 2;
+    WriterParams wp;
+    wp.strings = { { "codecShortName", "rawvideo" } };
+    wp.ints = { { "prefPixelCoding", prefCoding }, { "prefBitDepth", 0 }, { "enableAlpha", 0 }, { "inputPremult", 2 } };
+    wp.pattern = pattern;
+    const std::string file = outFile + ".i207chroma." + ext;
+    if (testWriteFFmpeg(file, W, H, N, wp)) return 1;
+    const float red[3] = { 1.f, 0.f, 0.f }, blue[3] = { 0.f, 0.f, 1.f };
+    double yRed[3], yBlue[3];
+    exactYCbCr(red, 8, yRed);
+    exactYCbCr(blue, 8, yBlue);
+    double maxErr = 0.;
+    int failures = 0;
+    std::string pixFmt;
+    const int dec = decodeFrames(file, [&](const AVFrame* frame, int) {
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get((AVPixelFormat)frame->format);
+        pixFmt = av_get_pix_fmt_name((AVPixelFormat)frame->format);
+        const int cw = AV_CEIL_RSHIFT(frame->width, d->log2_chroma_w), ch = AV_CEIL_RSHIFT(frame->height, d->log2_chroma_h);
+        for (int c = 1; c <= 2; ++c) {
+            for (int y = 0; y < ch; ++y) {
+                const uint8_t* row = frame->data[c] + (ptrdiff_t)y * frame->linesize[c];
+                for (int x = 0; x < cw; ++x) {
+                    // the pixels the sample covers: two lines (pattern 4, 4:2:0) or two columns (pattern 5)
+                    const bool covers2 = (pattern == 4) ? (d->log2_chroma_h > 0) : ((2 * x + 1) < frame->width);
+                    const double lo = std::min(yRed[c], yBlue[c]), hi = std::max(yRed[c], yBlue[c]);
+                    const double e = covers2 ? std::fabs(row[x] - 0.5 * (yRed[c] + yBlue[c])) : ((row[x] < lo - 0.5) || (row[x] > hi + 0.5) ? 255. : 0.);
+                    if (!(e <= maxErr)) maxErr = e;
+                }
+            }
+        }
+    });
+    std::remove(file.c_str());
+    if (dec) return 1;
+    // the average is 165.1 for Cb, 174.9 for Cr; SWS_AREA gives 164 and 176 at odd widths (it resamples 49 to 25)
+    const double tolerance = 1.5;
+    std::printf("  %s: chroma error (code values) %.2f (tolerance %.1f)\n", pixFmt.c_str(), maxErr, tolerance);
+    if (pixFmt != expectPixFmt) { std::printf("  FAIL: pixel format %s, expected %s\n", pixFmt.c_str(), expectPixFmt); ++failures; }
+    if (!(maxErr <= tolerance)) { std::printf("  FAIL: a chroma sample is not the average of its pixels\n"); ++failures; }
+    std::printf(failures ? "  FAIL (%s)\n" : "  PASS (%s)\n", label);
+    return failures;
+}
+
+// #316, writer side: WriteFFmpeg's Y'CbCr at more than 8 bits, decoded without swscale, must be the exact one of the
+// image (colorPattern() on no grid), rounded to the nearest (it was too bright by 0.4%: Y' 943 for white at 10 bits).
+int testWriteExact(const std::string& outFile, const char* label, int prefCoding, int prefDepth, const char* expectPixFmt, double tolerance)
+{
+    const int W = 64, H = 48, N = 2;
+    WriterParams wp;
+    wp.strings = { { "codecShortName", "rawvideo" } };
+    wp.ints = { { "prefPixelCoding", prefCoding }, { "prefBitDepth", prefDepth }, { "enableAlpha", 0 }, { "inputPremult", 2 } };
+    wp.pattern = 1;
+    wp.patternQuant = 0;
+    const std::string file = outFile + ".i316w.nut";
+    if (testWriteFFmpeg(file, W, H, N, wp)) return 1;
+    double maxErr[3] = { 0., 0., 0. }, sum = 0.;
+    long n = 0;
+    std::string pixFmt;
+    const int dec = decodeFrames(file, [&](const AVFrame* frame, int index) {
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get((AVPixelFormat)frame->format);
+        pixFmt = av_get_pix_fmt_name((AVPixelFormat)frame->format);
+        const int bits = d->comp[0].depth;
+        for (int y = 0; y < frame->height; ++y) {
+            for (int x = 0; x < frame->width; ++x) {
+                // row y of the frame (top-down) is row H - 1 - y of the image (bottom-up)
+                float rgba[4];
+                colorPattern(x, H - 1 - y, index + 1, W, H, false, rgba, 0);
+                double ref[3];
+                exactYCbCr(rgba, bits, ref);
+                for (int c = 0; c < 3; ++c) {
+                    // 4:2:2: only the chroma samples of the even columns (the odd ones are averaged)
+                    if ((c > 0) && d->log2_chroma_w && (x & 1)) continue;
+                    if ((c > 0) && d->log2_chroma_w) {
+                        float next[4];
+                        colorPattern(x + 1, H - 1 - y, index + 1, W, H, false, next, 0);
+                        double refNext[3];
+                        exactYCbCr(next, bits, refNext);
+                        ref[c] = 0.5 * (ref[c] + refNext[c]);
+                    }
+                    const uint16_t* row = reinterpret_cast<const uint16_t*>(frame->data[c] + (ptrdiff_t)y * frame->linesize[c]);
+                    const double e = row[c ? (x >> d->log2_chroma_w) : x] - ref[c];
+                    if (c == 0) { sum += e; ++n; }
+                    if (!(std::fabs(e) <= maxErr[c])) maxErr[c] = std::fabs(e);
+                }
+            }
+        }
+    });
+    std::remove(file.c_str());
+    if (dec) return 1;
+    int failures = 0;
+    const double bias = sum / (double)n;
+    std::printf("  %s: error (code values) Y' mean %+.3f max %.3f, Cb max %.3f, Cr max %.3f (tolerance %.2f)\n", pixFmt.c_str(), bias, maxErr[0], maxErr[1], maxErr[2], tolerance);
+    if (pixFmt != expectPixFmt) { std::printf("  FAIL: pixel format %s, expected %s\n", pixFmt.c_str(), expectPixFmt); ++failures; }
+    for (int c = 0; c < 3; ++c) {
+        if (!(maxErr[c] <= tolerance)) { std::printf("  FAIL: component %d differs by %.3f\n", c, maxErr[c]); ++failures; }
+    }
+    std::printf(failures ? "  FAIL (%s)\n" : "  PASS (%s)\n", label);
+    return failures;
+}
+
+int testSwscaleExact(const std::string& outFile)
+{
+    int failures = 0;
+    // Tolerances, x 255. 8 bits: rounded to the nearest, plus swscale's fixed-point coefficients (measured: 0.514 at
+    // most, +0.003 on average, on FFmpeg 8.0 and 9.0.2). More than 8 bits: the 16-bit rounding and the scaling to white
+    // (measured: 0.019 at most).
+    // The mean error at 8 bits: +0.006 in video range; up to +0.13 in full range with saturated chroma (measured with a
+    // flat Cb, Cr of 60, 200 and 210, 40: the full-range chroma of swscale is a little strong), where every value is
+    // still within 0.5 (before: -0.22 to -0.94, and 1.5 to 2.9 at most).
+    const double tol8 = 0.52, bias8 = 0.15, tol16 = 0.03, bias16 = 0.01;
+    // 8 bits: rawvideo (Matroska has no rawvideo tag for planar 4:2:2: NUT); more than 8 bits: FFV1, whose decoder
+    // gives the bit depth (ReadFFmpeg takes it from bits_per_raw_sample, which rawvideo does not set)
+    const AVCodecID raw = AV_CODEC_ID_RAWVIDEO, ffv1 = AV_CODEC_ID_FFV1;
+    const ReadExactCase reads[] = {
+        { "ReadFFmpeg 4:2:0 8-bit, video range, odd width (rawvideo I420 in Matroska)", "mkv", raw, AV_PIX_FMT_YUV420P, 49, 48, false, tol8, bias8 },
+        { "ReadFFmpeg 4:2:2 8-bit, video range, odd width (rawvideo Y42B in NUT)", "nut", raw, AV_PIX_FMT_YUV422P, 49, 48, false, tol8, bias8 },
+        { "ReadFFmpeg 4:2:0 8-bit, full range (rawvideo in Matroska)", "mkv", raw, AV_PIX_FMT_YUV420P, 64, 48, true, tol8, bias8 },
+        { "ReadFFmpeg 4:2:0 8-bit, video range (rawvideo I420 in Matroska)", "mkv", raw, AV_PIX_FMT_YUV420P, 64, 48, false, tol8, bias8 },
+        { "ReadFFmpeg 4:2:0 10-bit, video range, odd width (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUV420P10LE, 49, 48, false, tol16, bias16 },
+        { "ReadFFmpeg 4:2:2 10-bit, video range (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUV422P10LE, 64, 48, false, tol16, bias16 },
+        { "ReadFFmpeg 4:2:0 12-bit, video range (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUV420P12LE, 64, 48, false, tol16, bias16 },
+        { "ReadFFmpeg 4:4:4 12-bit, video range (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUV444P12LE, 64, 48, false, tol16, bias16 },
+        { "ReadFFmpeg 4:2:0 10-bit, full range (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUV420P10LE, 64, 48, true, tol16, bias16 },
+        { "ReadFFmpeg 4:2:0 12-bit, full range (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUV420P12LE, 64, 48, true, tol16, bias16 },
+        { "ReadFFmpeg 4:4:4 10-bit with alpha, video range (FFV1)", "mkv", ffv1, AV_PIX_FMT_YUVA444P10LE, 64, 48, false, tol16, bias16 },
+    };
+    for (size_t i = 0; i < sizeof(reads) / sizeof(reads[0]); ++i) {
+        std::printf("==== %s: exact R'G'B' (issues #207, #220, #316) ====\n", reads[i].label);
+        failures += testReadExact(outFile + ".i207-" + std::to_string(i), reads[i]);
+    }
+    std::printf("==== ReadFFmpeg MPEG-4 at an odd width: the last column (issue #220) ====\n");
+    failures += testReadOddWidthMpeg4(outFile);
+    struct ChromaCase { const char* label; const char* ext; int prefCoding; int pattern; int W, H; const char* pixFmt; };
+    const ChromaCase chromas[] = {
+        { "WriteFFmpeg 4:2:0, red and blue lines", "mkv", 0, 4, 64, 48, "yuv420p" },
+        { "WriteFFmpeg 4:2:0, red and blue lines, odd width", "mkv", 0, 4, 49, 48, "yuv420p" },
+        { "WriteFFmpeg 4:2:0, red and blue columns, odd width", "mkv", 0, 5, 49, 48, "yuv420p" },
+        { "WriteFFmpeg 4:2:2, red and blue columns, odd width (NUT)", "nut", 1, 5, 49, 48, "yuv422p" },
+    };
+    for (const ChromaCase& c : chromas) {
+        std::printf("==== %s: the chroma is the average (issue #207) ====\n", c.label);
+        failures += testWriteChroma(outFile, c.label, c.ext, c.prefCoding, c.pattern, c.W, c.H, c.pixFmt);
+    }
+    // the exact Y'CbCr rounded to the nearest (0.5 code value), plus the error of swscale's BT.601 coefficients, which
+    // only shows in Cb and Cr (measured on FFmpeg 8.0 and 9.0.2, from 16-bit RGB with the 65280 white: Y' 0.52, Cb and
+    // Cr 0.75 code value at 10 bits; Y' 2.2, Cb and Cr 16.5 at 16 bits, i.e. 0.065/255; before, Y' was up to 3.9 code
+    // values too high at 10 bits, 205 at 16 bits)
+    std::printf("==== WriteFFmpeg 4:4:4 10-bit: exact Y'CbCr (issue #316) ====\n");
+    failures += testWriteExact(outFile, "WriteFFmpeg 4:4:4 10-bit", 2, 1, "yuv444p10le", 0.8);
+    std::printf("==== WriteFFmpeg 4:2:2 10-bit: exact Y'CbCr (issue #316) ====\n");
+    failures += testWriteExact(outFile, "WriteFFmpeg 4:2:2 10-bit", 1, 1, "yuv422p10le", 0.8);
+    std::printf("==== WriteFFmpeg 4:4:4 16-bit: exact Y'CbCr (issue #316) ====\n");
+    failures += testWriteExact(outFile, "WriteFFmpeg 4:4:4 16-bit", 2, 3, "yuv444p16le", 24.);
+    return failures;
+}
+
+} // namespace
+
 int
 main(int argc, char** argv)
 {
@@ -2631,6 +3160,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegEncodeFailures(outFile);
         } else if (mode == "--encode-failure-disk-full") {
             failures = testWriteFFmpegEncodeFailureDiskFull(outFile);
+        } else if (mode == "--swscale-exact") {
+            failures = testSwscaleExact(outFile);
         } else {
             std::printf("unknown option %s\n", mode.c_str());
             return 2;
@@ -2956,13 +3487,16 @@ main(int argc, char** argv)
     {
         // #170: uncompressed codecs. RGB is exact (the pattern is on the 8-bit grid). Y'CbCr: the rounding of 8-bit or
         // 10-bit video range (8 bits: Y' has 219 levels, Cb and Cr 224), plus the error of the 4:2:2 or 4:2:0 chroma
-        // interpolation (measured: 4:4:4 at most 2/255 in 8 bits and 0.5/255 in 10 bits, 4:2:2 5/255 in 8 bits and
-        // 2.1/255 in 10 bits, 4:2:0 7/255). A wrong range would give about 16/255 in black and white, and a wrong
-        // matrix more than 10/255 in the saturated corners of the pattern.
+        // interpolation (measured on FFmpeg 8.0 and 9.0.2: 4:4:4 at most 2/255 in 8 bits and 0.5/255 in 10 bits, 4:2:2
+        // 2/255 in 8 bits and 1.3/255 in 10 bits, 4:2:0 3/255, 4/255 at an odd width). The tolerances of 4:2:2 and
+        // 4:2:0 were 6/255, 3/255 (10 bits) and 8/255 when ReadFFmpeg's conversion to 8-bit RGB had a bias, and
+        // WriteFFmpeg point-sampled the chroma (#207: the errors were 5/255, 2.1/255 and 7/255). A wrong range would
+        // give about 16/255 in black and white, and a wrong matrix more than 10/255 in the saturated corners of the
+        // pattern.
         // With values on no grid (quant 0): 8-bit RGB rounds to the nearest of 255 levels (0.5/255), 16-bit RGB is exact
         // within 1e-4 (6.5/65535, much less than the 8-bit rounding).
-        const double rgbTol = 1e-4, rgb8Tol = 0.5 / 255. + 1e-5, yuv8Tol = 2.5 / 255., yuv10Tol = 1. / 255., yuv422Tol = 6. / 255.,
-                     yuv422p10Tol = 3. / 255., yuv420Tol = 8. / 255.;
+        const double rgbTol = 1e-4, rgb8Tol = 0.5 / 255. + 1e-5, yuv8Tol = 2.5 / 255., yuv10Tol = 1. / 255., yuv422Tol = 3. / 255.,
+                     yuv422p10Tol = 2. / 255., yuv420Tol = 5. / 255.;
         std::vector<UncompressedCase> cases = {
             { "v210 in QuickTime", "mov", "v210", 1, 1, false, "v210", "v210", "yuv422p10le", yuv422p10Tol },
             { "rawvideo 2vuy in QuickTime", "mov", "rawvideo", 1, 0, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol },

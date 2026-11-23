@@ -231,6 +231,9 @@ if(TARGET io_tests_ofx)
   # (exit status 77) on MS Windows
   io_test(test-writeffmpeg-encode-failure-disk-full TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288-disk-full.mov" --encode-failure-disk-full)
   set_tests_properties(test-writeffmpeg-encode-failure-disk-full PROPERTIES SKIP_RETURN_CODE 77)
+  # test-swscale-exact (#207, #220, #316): the conversions between Y'CbCr and RGB of ReadFFmpeg and WriteFFmpeg give
+  # exact values (rawvideo written and decoded without swscale)
+  io_test(test-swscale-exact ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --swscale-exact)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})
