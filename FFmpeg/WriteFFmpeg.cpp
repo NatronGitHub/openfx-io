@@ -1892,6 +1892,9 @@ private:
     int writeVideo(AVFormatContext* avFormatContext, MyAVStream* myAVStream, bool flush, double time, const float* pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
     int writeToFile(AVFormatContext* avFormatContext, bool finalise, double time, const float* pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
 
+    // Creates _convertCtx, which converts the images (srcPixelFormat) to the frames of the encoder (dstPixelFormat),
+    // and sets _rgb16White. Returns a negative value on error (then _convertCtx is null).
+    int initConvertCtx(AVPixelFormat srcPixelFormat, AVPixelFormat dstPixelFormat, AVCodecContext* avCodecContext);
     int colourSpaceConvert(AVFrame* avFrameIn, AVFrame* avFrameOut, AVPixelFormat srcPixelFormat, AVPixelFormat dstPixelFormat, AVCodecContext* avCodecContext);
 
     // Returns true if the selected channels contain alpha and that the channel is valid
@@ -1916,6 +1919,9 @@ private:
     WriterError _error;
     AVFormatContext* _formatContext;
     SwsContext* _convertCtx;
+    // the value of the 16-bit R', G' and B' of the images that _convertCtx converts to white (see MeasureRgb16White()):
+    // like _convertCtx, set by the encoding of a frame (writeToFile(), under _nextFrameToEncodeMutex) and endEncode()
+    unsigned _rgb16White;
     MyAVStream _streamVideo;
     MyAVStream _streamAudio;
     // _nextFrameToEncodeMutex guards _nextFrameToEncode, _firstFrameToEncode, _lastFrameToEncode, _frameStep, and,
@@ -2198,6 +2204,7 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _error(IGNORE_FINISH)
     , _formatContext(nullptr)
     , _convertCtx(nullptr)
+    , _rgb16White(FFmpeg::kWhite16)
     , _streamVideo({ nullptr, nullptr })
     , _streamAudio({ nullptr, nullptr })
     , _nextFrameToEncodeMutex()
@@ -4414,6 +4421,147 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
 
 #endif // if OFX_FFMPEG_AUDIO
 
+// The flags of the conversion to Y'CbCr when the size does not change (#207): SWS_AREA gives each chroma sample of
+// 4:2:0 and 4:2:2 the average of the pixels it covers, the 2x2 box (2x1 in 4:2:2). SWS_POINT point-sampled the chroma:
+// one of the two lines in 4:2:0, and one of the two columns at odd widths (at even widths, swscale averages pairs of
+// pixels anyway: the *ToUV_half input functions, libswscale/utils.c:1380-1401 and libswscale/input.c:1155-1170 in
+// n9.0.2). Measured on FFmpeg 8.0 and 9.0.2 (BT.601), with alternating red and blue lines in 4:2:0: Cb 240 (the blue
+// line) with SWS_POINT, 165 with SWS_AREA (the average, 165.1); with alternating columns at an odd width (49): Cb 90
+// (red) with SWS_POINT, 164 with SWS_AREA, which resamples the 49 columns to 25 samples. Luma, and the rounding of RGB
+// to Y'CbCr (at most 0.51 code value at 8 bits), do not change. SWS_BICUBIC and SWS_BILINEAR would blur flat 2x2
+// blocks, and SWS_ACCURATE_RND changes nothing here.
+constexpr int kWriterSwsFlagsSameSize = SWS_AREA;
+
+// #316, writer side: the value of the 16-bit R', G' and B' (RGB48 or RGBA64) that the conversion to Y'CbCr takes for
+// white. swscale's conversion from 16-bit RGB to Y'CbCr (FFmpeg 8.0 to 9.1) takes 255·256 = 65280, not 65535, as
+// white (upstream: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/25681, the same scaling as for the reader).
+// Measured on FFmpeg 8.0 and 9.0.2 (BT.709): in video range, R' = G' = B' = 65535 gives Y' = 943 at 10 bits (exact:
+// 940), 3774 at 12 bits (3760) and 236 at 8 bits (235), and 32768 gives 504 at 10 bits (502.0); in full range, 32768
+// gives 514 at 10 bits (511.5), and the values above 65280 are clipped. Alpha is not scaled (65535 gives 1023 at 10
+// bits). The RGB48 input functions (rgb48ToY_c_template(), libswscale/input.c:134-148 in n9.0.2) use the table that
+// fill_rgb2yuv_table() (libswscale/utils.c:625-700) computes for 8-bit input.
+// The conversion of a small image whose R', G' and B' are 65280 measures it: if it gives the nominal white Y'
+// (235·2^(n-8) in video range, 2^n - 1 in full range, ITU-T H.273 §8.3) within half an 8-bit step, white is 65280;
+// else it is 65535 (a conversion that takes 65535 as white gives 0.85 8-bit step less, e.g. 937 at 10 bits): no
+// scaling once swscale is fixed.
+unsigned
+MeasureRgb16White(AVPixelFormat srcPixelFormat,
+                  AVPixelFormat dstPixelFormat,
+                  int swsFlags,
+                  int colorspace,
+                  int dstRange)
+{
+    using FFmpeg::kWhite16;
+    constexpr unsigned kLegacyWhite16 = 255u << 8;
+    const AVPixFmtDescriptor* srcDesc = av_pix_fmt_desc_get(srcPixelFormat);
+    const AVPixFmtDescriptor* dstDesc = av_pix_fmt_desc_get(dstPixelFormat);
+    if (!srcDesc || !dstDesc || (srcDesc->comp[0].depth != 16) || !FFmpeg::pixelFormatIsYUV(dstPixelFormat)
+        || (dstDesc->comp[0].depth < 8) || (dstDesc->comp[0].depth > 16)) {
+        return kWhite16;
+    }
+    // 16x4: whole blocks of any chroma subsampling
+    const int width = 16, height = 4;
+    uint8_t* srcData[4] = {};
+    int srcLinesize[4] = {};
+    if (av_image_alloc(srcData, srcLinesize, width, height, srcPixelFormat, 64) < 0) {
+        return kWhite16;
+    }
+    const FFmpeg::AvBuffer srcBuffer(srcData[0], &av_free);
+    uint8_t* dstData[4] = {};
+    int dstLinesize[4] = {};
+    if (av_image_alloc(dstData, dstLinesize, width, height, dstPixelFormat, 64) < 0) {
+        return kWhite16;
+    }
+    const FFmpeg::AvBuffer dstBuffer(dstData[0], &av_free);
+    const int nbComponents = srcDesc->nb_components; // 3 (RGB48) or 4 (RGBA64), in this order
+    for (int y = 0; y < height; ++y) {
+        uint16_t* row = reinterpret_cast<uint16_t*>(srcData[0] + (ptrdiff_t)y * srcLinesize[0]);
+        for (int i = 0; i < width * nbComponents; ++i) {
+            row[i] = ((i % nbComponents) == 3) ? kWhite16 : kLegacyWhite16; // (native endianness: AV_PIX_FMT_RGB48)
+        }
+    }
+    SwsContext* context = sws_getContext(width, height, srcPixelFormat, width, height, dstPixelFormat, swsFlags, nullptr, nullptr, nullptr);
+    if (!context) {
+        return kWhite16;
+    }
+    const int details = sws_setColorspaceDetails(context, sws_getCoefficients(SWS_CS_DEFAULT), 1, sws_getCoefficients(colorspace), dstRange, 0, 1 << 16, 1 << 16);
+    const int lines = (details < 0) ? 0 : sws_scale(context, srcData, srcLinesize, 0, height, dstData, dstLinesize);
+    sws_freeContext(context);
+    if (lines != height) { // (no correction)
+        return kWhite16;
+    }
+    uint32_t luma = 0; // Y' in the middle of the image
+    av_read_image_line2(&luma, const_cast<const uint8_t**>(dstData), dstLinesize, dstDesc, width / 2, height / 2, 0, 1, 0, 4);
+    const int depth = dstDesc->comp[0].depth;
+    const int nominalWhite = dstRange ? ((1 << depth) - 1) : (235 << (depth - 8));
+    const int halfStep8 = (1 << (depth - 8)) / 2; // half an 8-bit step (0 at 8 bits: equal)
+
+    return (std::abs((int)luma - nominalWhite) <= halfStep8) ? kLegacyWhite16 : kWhite16;
+} // MeasureRgb16White
+
+// Maps 0.-1. to 0-white (see MeasureRgb16White()), rounded to the nearest and clamped to 0-65535: the values above 1
+// keep the headroom that the conversion to Y'CbCr has above white. With white = 65535, this is floatToInt<65536>(); a
+// NaN gives 0, as there.
+inline unsigned short
+floatToRgb16(float value,
+             unsigned white)
+{
+    if (!(value > 0.f)) {
+        return 0;
+    }
+    const float v = value * (float)white + 0.5f;
+
+    return (v < 65535.f) ? (unsigned short)v : (unsigned short)65535;
+}
+
+int
+WriteFFmpegPlugin::initConvertCtx(AVPixelFormat srcPixelFormat,
+                                  AVPixelFormat dstPixelFormat,
+                                  AVCodecContext* avCodecContext)
+{
+    assert(!_convertCtx);
+    int ret = 0;
+    const int width = (_rodPixel.x2 - _rodPixel.x1);
+    const int height = (_rodPixel.y2 - _rodPixel.y1);
+    const int swsFlags = (width == avCodecContext->width && height == avCodecContext->height) ? kWriterSwsFlagsSameSize : SWS_BICUBIC;
+    _convertCtx = sws_getContext(width, height, srcPixelFormat, // from
+                                 avCodecContext->width, avCodecContext->height, dstPixelFormat, // to
+                                 swsFlags, nullptr, nullptr, nullptr);
+    if (!_convertCtx) {
+        return -1;
+    }
+
+    // Only apply colorspace conversions for YUV.
+    if (FFmpeg::pixelFormatIsYUV(dstPixelFormat)) {
+        // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
+        // The Y'CbCr matrix the stream is tagged with (setColorTags())
+        int colorspace = FFmpeg::swsColorspaceFromAVColorSpace(avCodecContext->colorspace);
+        if (colorspace < 0) {
+            colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
+        }
+        // The range of the stream (e.g. the DNxHD Output Range), or full range for MJPEG
+        const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
+
+        ret = sws_setColorspaceDetails(_convertCtx,
+                                       sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
+                                       1, // srcRange - 0 = 16..235, 1 = 0..255
+                                       sws_getCoefficients(colorspace), // table
+                                       dstRange, // dstRange - 0 = 16..235, 1 = 0..255
+                                       0, // brightness fixed point, with 0 meaning no change,
+                                       1 << 16, // contrast   fixed point, with 1<<16 meaning no change,
+                                       1 << 16); // saturation fixed point, with 1<<16 meaning no change);
+        _rgb16White = MeasureRgb16White(srcPixelFormat, dstPixelFormat, swsFlags, colorspace, dstRange);
+    } else {
+        _rgb16White = FFmpeg::kWhite16;
+    }
+    if (ret < 0) { // every frame fails
+        sws_freeContext(_convertCtx);
+        _convertCtx = nullptr;
+    }
+
+    return ret;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // More of a utility function added since supported DNxHD.
 // This codec requires colour space conversions, and more to the point, requires
@@ -4430,40 +4578,14 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
     if (!avFrameIn || !avFrameOut || !avCodecContext) {
         return -1;
     }
-    int ret = 0;
-    int width = (_rodPixel.x2 - _rodPixel.x1);
-    int height = (_rodPixel.y2 - _rodPixel.y1);
+    (void)srcPixelFormat;
+    (void)dstPixelFormat;
+    assert(_convertCtx); // (writeVideo(): initConvertCtx())
     if (!_convertCtx) {
-        const int swsFlags = (width == avCodecContext->width && height == avCodecContext->height) ? SWS_POINT : SWS_BICUBIC;
-        _convertCtx = sws_getContext(width, height, srcPixelFormat, // from
-                                     avCodecContext->width, avCodecContext->height, dstPixelFormat, // to
-                                     swsFlags, nullptr, nullptr, nullptr);
-        if (!_convertCtx) {
-            return -1;
-        }
-
-        // Only apply colorspace conversions for YUV.
-        if (FFmpeg::pixelFormatIsYUV(dstPixelFormat)) {
-            // Set up the sws (SoftWareScaler) to convert colourspaces correctly, in the sws_scale function below
-            // The Y'CbCr matrix the stream is tagged with (setColorTags())
-            int colorspace = FFmpeg::swsColorspaceFromAVColorSpace(avCodecContext->colorspace);
-            if (colorspace < 0) {
-                colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
-            }
-            // The range of the stream (e.g. the DNxHD Output Range), or full range for MJPEG
-            const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
-
-            ret = sws_setColorspaceDetails(_convertCtx,
-                                           sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
-                                           1, // srcRange - 0 = 16..235, 1 = 0..255
-                                           sws_getCoefficients(colorspace), // table
-                                           dstRange, // dstRange - 0 = 16..235, 1 = 0..255
-                                           0, // brightness fixed point, with 0 meaning no change,
-                                           1 << 16, // contrast   fixed point, with 1<<16 meaning no change,
-                                           1 << 16); // saturation fixed point, with 1<<16 meaning no change);
-        }
+        return -1;
     }
 
+    const int height = (_rodPixel.y2 - _rodPixel.y1);
     sws_scale(_convertCtx,
               avFrameIn->data, // src
               avFrameIn->linesize, // src rowbytes
@@ -4472,7 +4594,7 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
               avFrameOut->data, // dst
               avFrameOut->linesize); // dst rowbytes
 
-    return ret;
+    return 0;
 }
 
 bool
@@ -4576,9 +4698,13 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
             }
         }
         ret = inputFrame_ ? 0 : -1;
+        // the conversion to the pixel format of the encoder, and the 16-bit value it takes for white (_rgb16White,
+        // used below): the frame fails without it
+        if (inputFrame_ && !_convertCtx && (initConvertCtx(pixelFormatNuke, pixelFormatCodec, avCodecContext) < 0)) {
+            ret = -1;
+        }
 
-        if (inputFrame_) {
-            ret = 0;
+        if (!ret) {
             // Convert floating point values to unsigned values.
             // The frames of the movie have the size it was opened with (_rodPixel, the output RoD at
             // beginSequenceRender), but the image may have other bounds: the output RoD may change during
@@ -4613,13 +4739,15 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                     assert(pixelFormatNuke == AV_PIX_FMT_RGBA64 || pixelFormatNuke == AV_PIX_FMT_RGB48);
 
                     unsigned short* dst_pixels = reinterpret_cast<unsigned short*>(dst_row);
+                    // the value that the conversion to the encoder's pixel format takes for white (#316)
+                    const unsigned white = _rgb16White;
 
                     for (int x = xBegin; x < xEnd; ++x) {
                         int srcCol = (x - xBegin) * pixelDataNComps;
                         int dstCol = x * numDestChannels;
-                        dst_pixels[dstCol + 0] = floatToInt<65536>(src_pixels[srcCol + 0]);
-                        dst_pixels[dstCol + 1] = floatToInt<65536>(src_pixels[srcCol + 1]);
-                        dst_pixels[dstCol + 2] = floatToInt<65536>(src_pixels[srcCol + 2]);
+                        dst_pixels[dstCol + 0] = floatToRgb16(src_pixels[srcCol + 0], white);
+                        dst_pixels[dstCol + 1] = floatToRgb16(src_pixels[srcCol + 1], white);
+                        dst_pixels[dstCol + 2] = floatToRgb16(src_pixels[srcCol + 2], white);
                         if (hasAlpha) {
                             dst_pixels[dstCol + 3] = floatToInt<65536>((pixelDataNComps == 4) ? src_pixels[srcCol + 3] : 1.);
                         }
@@ -6389,6 +6517,7 @@ WriteFFmpegPlugin::freeFormat()
         sws_freeContext(_convertCtx);
         _convertCtx = nullptr;
     }
+    _rgb16White = FFmpeg::kWhite16;
     {
         tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
         _nextFrameToEncode = INT_MIN;

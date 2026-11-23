@@ -44,9 +44,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
+
+extern "C" {
+#include <libavutil/intreadwrite.h>
+#include <libavutil/pixdesc.h>
+}
 
 #include <ofxsImageEffect.h>
 #include <ofxsMacros.h>
@@ -420,6 +427,207 @@ FFmpegFile::Stream::getSwsSrcRange(AVPixelFormat srcPixelFormat,
     return isYUV() ? 0 : 1;
 }
 
+namespace {
+// The flags of the conversion to RGB (#207, #220). Measured on FFmpeg 8.0 and 9.0.2 (4:2:0, BT.601 video range, against
+// the exact equations of ITU-T H.273 §8.3, in 1/255): to 8-bit RGB, the error is +0.003 on average and 0.514 at most,
+// i.e. the result is rounded to the nearest; with SWS_BICUBIC alone, it was -0.22 / 1.46 (aarch64 NEON) or
+// -0.94 / 2.88 (C), and adding SWS_ACCURATE_RND alone gave -0.94 / 2.88.
+// - SWS_ACCURATE_RND turns off the unscaled yuv420p/yuv422p/yuva420p to RGB path (in FFmpeg n9.0.2,
+//   libswscale/swscale_unscaled.c:2426-2430), which never writes the last column at an odd width and even height: its
+//   loop writes blocks of 8, 4 and 2 pixels (libswscale/yuv2rgb.c:158, :198, :207-236) (#220).
+// - SWS_FULL_CHR_H_INT computes each RGB pixel from interpolated chroma, without the 8-bit lookup tables of
+//   ff_yuv2rgb_c_init_tables() (libswscale/yuv2rgb.c:756-787), which round with a bias.
+// The 16-bit output is then scaled to white (see MeasureWhite16()).
+// Converting a 1080p frame on one thread (arm64) takes 7.7 ms instead of 0.23 ms (4:2:0 8-bit, NEON; 1.2 ms without),
+// 2.4 ms instead of 0.30 ms (4:2:2 8-bit), and, with the scaling to white, 10.8 ms instead of 4.8 ms (4:2:0 10-bit)
+// and 5.3 ms instead of 2.6 ms (4:2:2 10-bit).
+constexpr int kReaderSwsFlags = SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT;
+
+using FFmpeg::AvBuffer;
+using FFmpeg::kWhite16;
+
+// Creates the reader's swscale context. yuv: set up the conversion from Y'CbCr with the given matrix (SWS_CS_*) and
+// range (0 = video, 1 = full) to full-range RGB.
+SwsContext*
+CreateReaderSwsContext(AVPixelFormat srcPixelFormat,
+                       int srcWidth,
+                       int srcHeight,
+                       AVPixelFormat dstPixelFormat,
+                       int dstWidth,
+                       int dstHeight,
+                       bool yuv,
+                       int srcRange,
+                       int swsColorspace)
+{
+    SwsContext* context = sws_getContext(srcWidth, srcHeight, srcPixelFormat, // src format
+                                         dstWidth, dstHeight, dstPixelFormat, // dest format
+                                         kReaderSwsFlags, nullptr, nullptr, nullptr);
+
+    // Set up the SoftWareScaler to convert colorspaces correctly.
+    // Colorspace conversion makes no sense for RGB->RGB conversions
+    if (!context || !yuv) {
+        return context;
+    }
+
+    int result = sws_setColorspaceDetails(context,
+                                          sws_getCoefficients(swsColorspace), // inv_table
+                                          srcRange, // srcRange -flag indicating the white-black range of the input (1=jpeg / 0=mpeg) 0 = 16..235, 1 = 0..255
+                                          sws_getCoefficients(SWS_CS_DEFAULT), // table
+                                          1, // dstRange - 0 = 16..235, 1 = 0..255
+                                          0, // brightness fixed point, with 0 meaning no change,
+                                          1 << 16, // contrast   fixed point, with 1<<16 meaning no change,
+                                          1 << 16); // saturation fixed point, with 1<<16 meaning no change);
+
+    assert(result != -1);
+    (void)result;
+
+    return context;
+}
+
+// What swscale converts nominal white and opaque alpha to (16-bit values).
+struct White16 {
+    unsigned colour; // R', G' and B'
+    unsigned alpha;
+};
+
+// #316: the 16-bit values that the reader's conversion gives for nominal white and for opaque alpha. swscale's
+// conversion from Y'CbCr to 16-bit RGB (FFmpeg 8.0 to 9.1) does not map white to 65535, whatever the flags, nor does
+// the ffmpeg CLI (upstream: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/25681). Measured on FFmpeg 8.0 and 9.0.2,
+// for the Y'CbCr pixel formats (planar, semi-planar and packed, 4:2:0 to 4:4:4, with alpha), at odd and even widths:
+// - video range: Y' = 16·2^(n-8), the nominal white Y' = 235·2^(n-8) and the mid-gray in between give 0, 65283 and
+//   32641 (exact: 0, 65535 and 32767.5), whatever the bit depth n: 255/219 is scaled in 8-bit units
+//   (libswscale/yuv2rgb.c:756-761 in n9.0.2), and the output of yuv2rgba64_full_X_c_template()
+//   (libswscale/output.c:1374-1432) reaches about 255·256 = 65280;
+// - full range: Y' = 2^n - 1 gives (2^n - 1)·2^(16-n), e.g. 65472 at 10 bits and 65520 at 12 bits, a shift without
+//   bit replication (16 bits: 65535);
+// - alpha: A = 2^n - 1 gives (2^n - 1)·2^(16-n) too (output.c:1400-1406, :1430).
+// The nominal white must give 1: Y' = 219·2^(n-8)·E'Y + 16·2^(n-8) in video range, (2^n - 1)·E'Y in full range
+// (ITU-T H.273 §8.3; the quantization levels of ITU-R BT.709-6 Part 2 and ITU-R BT.2100-3 Table 9: narrow range
+// 64-940 and full range 0-1023 at 10 bits).
+// Rather than hard-coding these values, the conversion of a small image of nominal white and opaque alpha in the
+// source pixel format measures them, with the same context parameters: no scaling once swscale is fixed.
+// A value below 254·256 is not a scaling error, and is not corrected (nor are pixel formats that
+// av_image_fill_color() can not fill, e.g. hardware or bitstream formats).
+White16
+MeasureWhite16(AVPixelFormat srcPixelFormat,
+               int srcWidth,
+               AVPixelFormat dstPixelFormat,
+               bool yuv,
+               int srcRange,
+               int swsColorspace)
+{
+    const White16 none = { kWhite16, kWhite16 };
+    const AVPixFmtDescriptor* srcDesc = av_pix_fmt_desc_get(srcPixelFormat);
+    const AVPixFmtDescriptor* dstDesc = av_pix_fmt_desc_get(dstPixelFormat);
+    // only Y'CbCr to 16-bit RGB: from RGB, the conversion is exact (measured: gbrp10, gbrp12, gbrap12, x2rgb10)
+    if (!yuv || !srcDesc || !dstDesc || (dstDesc->comp[0].depth != 16) || (srcDesc->comp[0].depth < 8) || (srcDesc->comp[0].depth > 16)) {
+        return none;
+    }
+    // 4 lines: enough for any vertical chroma subsampling (4:1:0 included)
+    const int width = srcWidth, height = 4;
+    uint8_t* srcData[4] = {};
+    int srcLinesize[4] = {};
+    uint8_t* dstData[4] = {};
+    int dstLinesize[4] = {};
+    if (av_image_alloc(srcData, srcLinesize, width, height, srcPixelFormat, 64) < 0) {
+        return none;
+    }
+    const AvBuffer srcBuffer(srcData[0], &av_free);
+    if (av_image_alloc(dstData, dstLinesize, width, height, dstPixelFormat, 64) < 0) {
+        return none;
+    }
+    const AvBuffer dstBuffer(dstData[0], &av_free);
+
+    // the components in the order of srcDesc->comp[] (Y', Cb, Cr, A or Y', A): nominal white, no chroma, opaque
+    uint32_t color[4] = {};
+    const bool hasChroma = srcDesc->nb_components >= 3;
+    for (int c = 0; c < srcDesc->nb_components; ++c) {
+        const int depth = srcDesc->comp[c].depth;
+        if (c == 0) {
+            color[c] = srcRange ? ((1u << depth) - 1) : (235u << (depth - 8));
+        } else if (hasChroma && (c <= 2)) {
+            color[c] = 1u << (depth - 1);
+        } else {
+            color[c] = (1u << depth) - 1; // alpha
+        }
+    }
+    const ptrdiff_t fillLinesize[4] = { srcLinesize[0], srcLinesize[1], srcLinesize[2], srcLinesize[3] };
+    if (av_image_fill_color(srcData, fillLinesize, srcPixelFormat, color, width, height, 0) < 0) {
+        return none;
+    }
+    SwsContext* context = CreateReaderSwsContext(srcPixelFormat, width, height, dstPixelFormat, width, height, yuv, srcRange, swsColorspace);
+    if (!context) {
+        return none;
+    }
+    const int lines = sws_scale(context, srcData, srcLinesize, 0, height, dstData, dstLinesize);
+    sws_freeContext(context);
+    if (lines != height) {
+        return none;
+    }
+
+    // a value is a scaling error to correct if it is at least 254·256 (and not 65535); the pixel in the middle
+    constexpr unsigned kMinWhite16 = 254u << 8;
+    const int nbComponents = dstDesc->nb_components; // 3 (RGB48LE) or 4 (RGBA64LE)
+    const uint8_t* pixel = dstData[0] + (height / 2) * dstLinesize[0] + (width / 2) * nbComponents * 2;
+    const unsigned colour = AV_RL16(pixel);
+    const unsigned alpha = (nbComponents == 4) ? AV_RL16(pixel + 6) : kWhite16;
+
+    return White16 { (colour >= kMinWhite16) ? colour : kWhite16, (alpha >= kMinWhite16) ? alpha : kWhite16 };
+} // MeasureWhite16
+
+// The scaling of a 16-bit value v so that den gives 65535: (v·65535 + den/2) / den, clamped to 65535 (values above
+// white), for den in [254·256, 65535]. A multiplication is 1.5 times as fast as the division (1.9 ms instead of 2.9 ms
+// for a 1080p RGB48 frame on arm64) and gives the same value for every v < 2^16: with M = ceil(65535·2^40 / den),
+// v·M exceeds v·65535·2^40 / den by less than 2^16, so (v·M + 2^39) >> 40 differs from the rounded quotient only if
+// the fraction of v·65535 / den + 1/2 were above 1 - 2^-24, but it is a multiple of 1 / (2·den), at most
+// 1 - 1/131070 (checked for every v and den).
+class ScaleTo16 {
+public:
+    explicit ScaleTo16(unsigned den)
+        : _m(((uint64_t(kWhite16) << 40) + den - 1) / den)
+    {
+        assert((den >= (254u << 8)) && (den <= kWhite16));
+    }
+
+    unsigned operator()(unsigned v) const
+    {
+        const uint64_t scaled = (v * _m + (uint64_t(1) << 39)) >> 40;
+
+        return (scaled < kWhite16) ? (unsigned)scaled : kWhite16;
+    }
+
+private:
+    uint64_t _m;
+};
+
+// Scales the 16-bit RGB (RGB48LE) or RGBA (RGBA64LE) image so that white (R', G', B') and opaque (A) give 65535 (#316),
+// rounded to the nearest.
+void
+ScaleToWhite16(const AVFrame* frame,
+               unsigned white,
+               unsigned opaque)
+{
+    const int nbComponents = av_pix_fmt_desc_get((AVPixelFormat)frame->format)->nb_components;
+    const bool sameScale = (nbComponents == 3) || (white == opaque);
+    const ScaleTo16 colour(white), alpha(opaque);
+    for (int y = 0; y < frame->height; ++y) {
+        uint8_t* row = frame->data[0] + (ptrdiff_t)y * frame->linesize[0];
+        const int samples = frame->width * nbComponents;
+        if (sameScale) { // (the loop of most frames: no alpha)
+            for (int i = 0; i < samples; ++i) {
+                uint8_t* sample = row + (ptrdiff_t)i * 2;
+                AV_WL16(sample, colour(AV_RL16(sample)));
+            }
+        } else {
+            for (int i = 0; i < samples; ++i) {
+                uint8_t* sample = row + (ptrdiff_t)i * 2;
+                AV_WL16(sample, ((i & 3) == 3) ? alpha(AV_RL16(sample)) : colour(AV_RL16(sample)));
+            }
+        }
+    }
+}
+} // namespace
+
 SwsContext*
 FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
                                   int srcWidth,
@@ -484,27 +692,11 @@ FFmpegFile::Stream::getConvertCtx(AVPixelFormat srcPixelFormat,
             break;
         }
 
-        _convertCtx = sws_getContext(srcWidth, srcHeight, srcPixelFormat, // src format
-                                     dstWidth, dstHeight, dstPixelFormat, // dest format
-                                     SWS_BICUBIC, nullptr, nullptr, nullptr);
-
-        // Set up the SoftWareScaler to convert colorspaces correctly.
-        // Colorspace conversion makes no sense for RGB->RGB conversions
-        if (!_convertCtx || !isYUV()) {
-            return _convertCtx;
-        }
-
-        int result = sws_setColorspaceDetails(_convertCtx,
-                                              sws_getCoefficients(swsColorspace), // inv_table
-                                              srcRange, // srcRange -flag indicating the white-black range of the input (1=jpeg / 0=mpeg) 0 = 16..235, 1 = 0..255
-                                              sws_getCoefficients(SWS_CS_DEFAULT), // table
-                                              1, // dstRange - 0 = 16..235, 1 = 0..255
-                                              0, // brightness fixed point, with 0 meaning no change,
-                                              1 << 16, // contrast   fixed point, with 1<<16 meaning no change,
-                                              1 << 16); // saturation fixed point, with 1<<16 meaning no change);
-
-        assert(result != -1);
-        (void)result;
+        const bool yuv = isYUV();
+        _convertCtx = CreateReaderSwsContext(srcPixelFormat, srcWidth, srcHeight, dstPixelFormat, dstWidth, dstHeight, yuv, srcRange, swsColorspace);
+        const White16 white = _convertCtx ? MeasureWhite16(srcPixelFormat, srcWidth, dstPixelFormat, yuv, srcRange, swsColorspace) : White16 { kWhite16, kWhite16 };
+        _convertCtxWhite16 = white.colour;
+        _convertCtxOpaque16 = white.alpha;
     }
 
     return _convertCtx;
@@ -2915,6 +3107,9 @@ FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
             avFrameIn->height,
             avFrameOut->data,
             avFrameOut->linesize);
+        if ((stream->_convertCtxWhite16 != kWhite16) || (stream->_convertCtxOpaque16 != kWhite16)) {
+            ScaleToWhite16(avFrameOut, stream->_convertCtxWhite16, stream->_convertCtxOpaque16);
+        }
     } else {
         return false;
     }

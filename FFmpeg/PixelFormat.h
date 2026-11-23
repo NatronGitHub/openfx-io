@@ -20,13 +20,24 @@
 #ifndef PixelFormat_h
 #define PixelFormat_h
 
+#include <cstdint>
+#include <memory>
+
 extern "C" {
+#include <libavutil/mem.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 }
 
 namespace OFX {
 namespace FFmpeg {
+
+    // 16-bit white
+    constexpr unsigned kWhite16 = 65535;
+
+    // A buffer allocated by av_malloc() or av_image_alloc(), freed by av_free() (C++ Core Guidelines R.20
+    // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-owner)
+    using AvBuffer = std::unique_ptr<uint8_t, decltype(&av_free)>;
 
     // these are ordered
     enum PixelCodingEnum {

@@ -46,6 +46,7 @@ make test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's e
 make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender after a render, then endSequenceRender (#289)
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
+make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -245,6 +246,16 @@ deadlock in Natron, which waits for its render threads before endSequenceRender)
 written because the file can not grow (`RLIMIT_FSIZE`, as on a full disk: the real write error path of avio, the
 muxer and `writeToFile()`, without a test hook in the plug-in). It is skipped (exit status 77) on MS Windows, which
 has no `RLIMIT_FSIZE`.
+
+`test-swscale-exact` (issues #207, #220, #316) runs `ofx_render_test OUT --swscale-exact`. ReadFFmpeg reads rawvideo
+(8 bits) and FFV1 (10 and 12 bits) written with libavcodec, without swscale (4:2:0, 4:2:2 and 4:4:4, 8, 10 and 12 bits, video and full range, with alpha,
+odd widths), and must give the exact R'G'B' of [ITU-T H.273](https://www.itu.int/rec/T-REC-H.273) §8.3 in every pixel:
+the last column included (#220: swscale's unscaled 4:2:0/4:2:2 path never wrote it at odd widths), rounded to the
+nearest at 8 bits (#207), and white is 1 at more than 8 bits (#316: swscale gave 65283/65535,
+[FFmpeg #25681](https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/25681)). An MPEG-4 movie at 49x48 checks the last column of
+a real codec. WriteFFmpeg's files, decoded without swscale: the 4:2:0 and 4:2:2 chroma of red and blue lines and columns
+must be the average of the pixels (#207: `SWS_POINT` took one of them), and the Y'CbCr at 10 and 16 bits the exact one
+(#316: white was 943 at 10 bits).
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test

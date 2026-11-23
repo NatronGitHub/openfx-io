@@ -224,6 +224,10 @@ private:
         AVPixelFormat _convertCtxDstPixelFormat;
         int _convertCtxDstWidth;
         int _convertCtxDstHeight;
+        // The 16-bit values that _convertCtx gives for nominal white (R', G' and B') and for opaque alpha, which
+        // imageConvert() scales to 65535 (see MeasureWhite16() in FFmpegFile.cpp); 65535 if they need no scaling.
+        unsigned _convertCtxWhite16;
+        unsigned _convertCtxOpaque16;
 
         int _fpsNum;
         int _fpsDen;
@@ -311,6 +315,8 @@ private:
             , _convertCtxDstPixelFormat(AV_PIX_FMT_NONE)
             , _convertCtxDstWidth(0)
             , _convertCtxDstHeight(0)
+            , _convertCtxWhite16(65535)
+            , _convertCtxOpaque16(65535)
             , _fpsNum(1)
             , _fpsDen(1)
             , _startPTS(0)
