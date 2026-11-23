@@ -23,6 +23,7 @@
  */
 
 #include <algorithm>
+#include <cctype> // std::isdigit, std::isalnum
 #include <mutex>
 #include <new>
 #ifdef DEBUG
@@ -230,7 +231,7 @@ private:
         string ret;
         unsigned int i = 0;
 
-        while (isdigit(str[i]) && (i < str.size())) {
+        while (i < str.size() && std::isdigit((unsigned char)str[i])) { // (<cctype> on a negative char is UB)
             ++i;
         }
         for (; i < str.size(); ++i) {
@@ -245,7 +246,7 @@ private:
         string ret;
 
         for (unsigned int i = 0; i < str.size(); i++) {
-            if (!isalnum(str[i])) {
+            if (!std::isalnum((unsigned char)str[i])) {
                 ret.push_back('_');
             } else {
                 ret.push_back(str[i]);
@@ -272,6 +273,10 @@ private:
             }
         }
 
+        // A name made only of digits and dots ("1", "2.3", "..") leaves nothing: it is not R, G, B or A.
+        if (newSplits.empty()) {
+            return false;
+        }
         if (newSplits.size() > 1) {
             for (size_t i = 0; i < (newSplits.size() - 1); ++i) {
                 vector<string>::const_iterator foundView = std::find(views.begin(), views.end(), newSplits[i]);
@@ -286,7 +291,7 @@ private:
             }
             _chan = newSplits.back();
         } else {
-            _chan = newSplits[0];
+            _chan = newSplits.front();
         }
 
         try {

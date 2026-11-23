@@ -563,7 +563,8 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   pixel and channel of the image, must be exact (the display window moved to (0,0), y
   flipped, the 1-pixel border black); the channels that are not in the file are 0; UINT
   channels are normalized by 2^32-1, as in ReadOIIO; luminance/chroma files (Y, RY, BY)
-  are read as before (not converted).
+  are read as before (not converted); channels whose names are empty once the digits and dots are
+  removed (`1`, `2.3`, `.`, `..`), or not ASCII, are ignored (ReadEXR read out of bounds on them, #293).
 * **render windows**: narrower than the data window (decode()'s buffer, in blocks of
   256 lines): exact inside, nothing written outside; render scale 1/2.
 * **alpha 1 for files without alpha** (#234): an RGB and a grey PFM, TIFF, and an RGB PNG, read as RGBA with each
