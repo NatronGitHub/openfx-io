@@ -34,7 +34,7 @@
 #define DBG(x) (void)0
 #endif
 #include <cerrno>
-#include <cstdlib>
+#include <cstdlib> // mkostemp (glibc)
 #include <cstring> // strerror
 #include <sstream>
 #include <stdio.h> // for snprintf & _snprintf
@@ -45,10 +45,11 @@
 #define snprintf _snprintf
 #endif
 #else
+#include <fcntl.h> // O_CLOEXEC
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h> // WIFEXITED, WEXITSTATUS
-#include <unistd.h>
+#include <unistd.h> // mkostemp (macOS)
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
 #include "ofxsCopier.h"
@@ -58,7 +59,7 @@
 #ifdef RUNSCRIPT_WIN32
 #include "RunScriptWin32.h"
 #else
-#include "pstream.h"
+#include "RunScriptPosix.h"
 #endif
 
 using namespace OFX;
@@ -100,11 +101,6 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "`python3` or `python` in the PATH may be the Microsoft Store installer stub: prefer `#!py -3` (the Python launcher) or a full path. " \
     "Arguments are always quoted, so that MSYS2/Cygwin programs do not expand wildcards in them, but some programs read an argument that begins with `@` as a file of arguments.\n" \
     "The script runs without a console window, with no standard input. Rendering waits for the script to exit (not for the programs it started with `start`), and aborting the render kills the script and the programs it started.\n"
-#ifdef RUNSCRIPT_WIN32
-#define kPluginDescriptionPstream ""
-#else
-#define kPluginDescriptionPstream "This plugin uses pstream (http://pstreams.sourceforge.net), which is distributed under the Boost Software License, Version 1.0.\n"
-#endif
 #define kPluginGrouping "Image"
 #define kPluginDescription                                                                                                                                                                                                         \
     "Run a script with the given arguments.\n"                                                                                                                                                                                     \
@@ -150,9 +146,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "rm \"$1\" \"$2\"\n"                                                                                                                                                                                                           \
     "```\n"                                                                                                                                                                                                                        \
     "\n"                                                                                                                                                                                                                           \
-    kPluginDescriptionWindows                                                                                                                                                                                                      \
-    "\n"                                                                                                                                                                                                                           \
-    kPluginDescriptionPstream
+    "Under Unix, the script runs in a new process group, with no standard input (/dev/null). Rendering waits for the script to exit and for its standard error to be closed (a program that it started in the background may keep it open), and aborting the render kills the script and the programs of its process group.\n" \
+    "\n" \
+    kPluginDescriptionWindows
 
 #define kPluginIdentifier "fr.inria.openfx.RunScript"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
@@ -216,13 +212,29 @@ enum ERunScriptPluginParamType {
     eRunScriptPluginParamTypeInteger
 };
 
-#ifdef RUNSCRIPT_WIN32
 // polled while the script runs
 static bool
 runScriptAborted(void* effect)
 {
     return static_cast<const ImageEffect*>(effect)->abort();
 }
+
+#ifndef RUNSCRIPT_WIN32
+// removes the script file when it goes out of scope
+class ScriptFileRemover
+{
+public:
+    explicit ScriptFileRemover(const char* name)
+        : _name(name)
+    {
+    }
+    ~ScriptFileRemover() { (void)unlink(_name); }
+    ScriptFileRemover(const ScriptFileRemover&) = delete;
+    ScriptFileRemover& operator=(const ScriptFileRemover&) = delete;
+
+private:
+    const char* const _name;
+};
 #endif
 
 static string
@@ -385,16 +397,18 @@ RunScriptPlugin::render(const RenderArguments& args)
     // Coverity suggests to call umask here for compatibility with POSIX<2008 systems,
     // but umask affects the whole process. We prefer to ignore this.
     // coverity[secure_temp]
-    int fd = mkstemp(scriptname); // modifies template
-    if (fd < 0) {
+    // close-on-exec: a script spawned by a concurrent render must not inherit it (exec() would fail with ETXTBSY)
+    RunScriptPosix::UniqueFd fd(mkostemp(scriptname, O_CLOEXEC)); // modifies template
+    if (fd.get() < 0) {
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
     }
+    const ScriptFileRemover scriptRemover(scriptname);
     string script;
     _script->getValue(script);
-    ssize_t s = write(fd, script.c_str(), script.size());
-    close(fd);
+    ssize_t s = write(fd.get(), script.c_str(), script.size());
+    fd.reset(); // closed before it is executed (else ETXTBSY on Linux)
     if (s < 0) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -502,12 +516,11 @@ RunScriptPlugin::render(const RenderArguments& args)
         }
     }
 #else
-    redi::ipstream in(scriptname, argv, redi::pstreambuf::pstderr);
-    if (!in.rdbuf()->is_open()) {
-        // fork() or exec() failed (pstream gets the errno of execvp() from the child): e.g. the interpreter on the
-        // shebang line does not exist (ENOENT), or /tmp is mounted noexec (EACCES)
-        const int err = in.rdbuf()->error();
-        (void)unlink(scriptname);
+    RunScriptPosix::Process process(scriptname, argv);
+    if (!process.started()) {
+        // posix_spawn() failed (it returns the error of exec()): e.g. the interpreter on the shebang line does not
+        // exist (ENOENT), or /tmp is mounted noexec (EACCES)
+        const int err = process.error();
         string msg = string("RunScript: cannot execute ") + scriptname + ": " + (err ? std::strerror(err) : "unknown error");
         if (err == ENOENT) {
             msg += " (check the interpreter on the first line of the script)";
@@ -520,12 +533,15 @@ RunScriptPlugin::render(const RenderArguments& args)
     {
         // not std::getline(): a lone '\r' (progress output) starts the line again, and a long line is cut
         RunScriptOutput::LineCollector lines(&errors);
-        RunScriptOutput::readAll(in.rdbuf(), &lines);
+        // reads stderr until its end and waits for the script to exit, or kills it if the render is aborted
+        if (process.run(lines, &runScriptAborted, static_cast<ImageEffect*>(this)) == RunScriptPosix::eRunAborted) {
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
+        }
     }
     DBG(for (size_t i = 0; i < errors.size(); ++i) std::cout << "output: " << errors[i] << std::endl);
-    // wait for the script, and get its exit status
-    in.close();
-    const int status = in.rdbuf()->status();
+    const int status = process.status();
     if (status != -1) {
         if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
             failure = "exited with code " + std::to_string(WEXITSTATUS(status));
@@ -533,9 +549,6 @@ RunScriptPlugin::render(const RenderArguments& args)
             failure = "was killed by signal " + std::to_string(WTERMSIG(status));
         }
     }
-
-    // remove the script
-    (void)unlink(scriptname);
 #endif // RUNSCRIPT_WIN32
     if (failure.empty()) {
         clearPersistentMessage(); // a warning from a previous run

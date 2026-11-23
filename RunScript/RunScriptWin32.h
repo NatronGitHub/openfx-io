@@ -18,7 +18,7 @@
  * ***** END LICENSE BLOCK ***** */
 
 /*
- * OFX RunScript plugin: running the script on MS Windows (the POSIX version uses pstream).
+ * OFX RunScript plugin: running the script on MS Windows (the POSIX version is RunScriptPosix.h).
  */
 
 #ifndef IO_RunScriptWin32_h
@@ -28,6 +28,8 @@
 
 #include <string>
 #include <vector>
+
+#include "RunScriptOutput.h" // AbortCallback
 
 namespace RunScriptWin32 {
 
@@ -75,8 +77,7 @@ bool buildCommandLine(const std::wstring& program,
                       std::wstring* commandLine,
                       std::string* error);
 
-// polled while the process runs: return true to kill it
-typedef bool (*AbortCallback)(void* context);
+typedef RunScriptOutput::AbortCallback AbortCallback;
 
 enum RunResult {
     eRunOK = 0, // the process ran (its exit code may be non-zero)
@@ -86,7 +87,7 @@ enum RunResult {
 
 // Run a command line built by buildCommandLine(), in a job object, without a console window, with stdin from NUL,
 // stdout to the host's stdout if it is a file or a pipe (else NUL), and stderr captured line by line into
-// *errLines (like the POSIX version, which reads the script's stderr with pstream), split by
+// *errLines (like the POSIX version, RunScriptPosix.h), split by
 // RunScriptOutput::LineCollector (a lone '\r' starts the line again; long lines are cut, and only the last lines are
 // kept). Waits for the process to exit, polling aborted(abortContext) if aborted is not NULL (at least every 64 KB
 // of stderr). Processes that it started

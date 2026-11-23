@@ -105,9 +105,11 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # ---- (3) RunScript's MS Windows process launching (a no-op elsewhere) ------------
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
+# runscript_render_test: RunScript's render on POSIX only (runscript_win32_test tests abort on MS Windows)
+RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
 
 .PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS) ../FFmpeg/FFmpegFile.h ../FFmpeg/PixelFormat.h
@@ -548,8 +550,13 @@ endif
 runscript_win32_test: runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp ../RunScript/RunScriptWin32.h ../RunScript/RunScriptOutput.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_win32_test.cpp ../RunScript/RunScriptWin32.cpp $(RUNSCRIPT_LIBS) -o $@
 
-runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h ../RunScript/pstream.h
+runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h ../RunScript/RunScriptPosix.h
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
+
+# RunScript's render on POSIX (#287): an aborted render kills the script. Only the OFX Support library: no OFX_LIBS.
+RUNSCRIPT_RENDER_SRCS := ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp
+runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $(RUNSCRIPT_RENDER_SRCS) ../RunScript/RunScriptOutput.h ../RunScript/RunScriptPosix.h $(OFX_SUPPORT)
+	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
 test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
@@ -644,9 +651,10 @@ test-writeffmpeg-selected-encoder: ofx_render_test
 
 # RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70);
 # on all systems: splitting the script's stderr into lines, with bounded memory (#111)
-test-runscript: runscript_win32_test runscript_output_test
+test-runscript: runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST)
 	./runscript_win32_test
 	./runscript_output_test
+	$(if $(RUNSCRIPT_RENDER_TEST),./runscript_render_test)
 
 # ReadOIIO's EXR channel name -> view/layer mapping (multi-view EXRs, #75)
 test-layers: oiio_layers_test
@@ -714,4 +722,5 @@ clean:
 	       exr_read_test exr_read_test.dSYM exr_read_test_tsan exr_read_test_tsan.dSYM exr_read_bench exr_read_bench.dSYM .exr_read .exr_read_tsan .exr_bench \
 	       exr_read_test_tsan_debug exr_read_test_tsan_debug.dSYM reader_hooks_test_tsan_debug reader_hooks_test_tsan_debug.dSYM \
 	       .exr_read_tsan_debug .reader_hooks_tsan_debug.still.tst .reader_hooks_tsan_debug.video.tst .reader_hooks_tsan_debug.big.tst \
-	       runscript_win32_test runscript_win32_test.dSYM runscript_output_test runscript_output_test.dSYM
+	       runscript_win32_test runscript_win32_test.dSYM runscript_output_test runscript_output_test.dSYM \
+	       runscript_render_test runscript_render_test.dSYM

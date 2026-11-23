@@ -3,8 +3,10 @@
  * (RunScript/RunScriptOutput.h, used on all systems), with bounded memory:
  * - "\n" and "\r\n" end a line, a lone "\r" (progress output) starts it again, so the last segment is kept;
  * - long lines are cut (at a UTF-8 sequence boundary), and only the last lines are kept;
- * - on POSIX, the same through pstream, as RunScript runs a script there: "\r"-only output, a script that floods
- *   stderr with one huge line, and the detection of an exec() failure (a missing interpreter).
+ * - on POSIX, the same through RunScriptPosix::Process, as RunScript runs a script there: "\r"-only output, a script
+ *   that floods stderr with one huge line, and the detection of an exec() failure (a missing interpreter);
+ * - on POSIX, aborting (#287): a script that sleeps, one that closed its stderr and sleeps, and one whose background
+ *   child keeps stderr open, are killed with their process group within a second of the abort.
  * The MS Windows process launching is tested by runscript_win32_test.
  */
 
@@ -21,8 +23,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "pstream.h"
-#define TEST_PSTREAM
+#include <chrono>
+#include <csignal>
+#include <set>
+
+#include "RunScriptPosix.h"
+#define TEST_POSIX
 #endif
 
 using RunScriptOutput::LineCollector;
@@ -160,15 +166,38 @@ testBounds()
           ("bytes bounded (" + std::to_string(l.size()) + " lines, " + std::to_string(bytes) + " bytes)").c_str());
 }
 
-#ifdef TEST_PSTREAM
-// write a script to a temporary file, and run it as RunScript does on POSIX
+#ifdef TEST_POSIX
+// aborted() of runScript(): true once deadline is passed and, if readyFile is set, that file is not empty (the
+// script wrote it), or 10 s after the deadline
+struct AbortAt {
+    std::chrono::steady_clock::time_point deadline;
+    const char* readyFile;
+};
+
+static bool
+abortAt(void* context)
+{
+    const AbortAt* at = static_cast<const AbortAt*>(context);
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (now < at->deadline) {
+        return false;
+    }
+    struct stat st;
+    return !at->readyFile || (stat(at->readyFile, &st) == 0 && st.st_size > 0) || now >= at->deadline + std::chrono::seconds(10);
+}
+
+// write a script to a temporary file, and run it as RunScript does on POSIX; abortAfterMs >= 0: abort after that
+// time, once readyFile (if any) is not empty (*result is eRunAborted if the script was killed)
 static bool
 runScript(const string& script,
           vector<string>* lines,
-          int* execError)
+          int* execError,
+          int abortAfterMs = -1,
+          RunScriptPosix::RunResult* result = NULL,
+          const char* readyFile = NULL)
 {
     char name[] = "/tmp/runscript_output_testXXXXXX";
-    int fd = mkstemp(name);
+    int fd = mkostemp(name, O_CLOEXEC); // (not inherited by the scripts of other threads: ETXTBSY)
     if (fd < 0) {
         return false;
     }
@@ -178,13 +207,18 @@ runScript(const string& script,
     *execError = 0;
     if (ok) {
         vector<string> argv(1, name);
-        redi::ipstream in(name, argv, redi::pstreambuf::pstderr);
-        if (!in.rdbuf()->is_open()) {
-            *execError = in.rdbuf()->error();
+        RunScriptPosix::Process process(name, argv);
+        if (!process.started()) {
+            *execError = process.error();
         } else {
             LineCollector c(lines);
-            RunScriptOutput::readAll(in.rdbuf(), &c);
-            in.close();
+            AbortAt at;
+            at.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(abortAfterMs);
+            at.readyFile = readyFile;
+            const RunScriptPosix::RunResult r = process.run(c, abortAfterMs >= 0 ? &abortAt : NULL, &at);
+            if (result) {
+                *result = r;
+            }
         }
     }
     unlink(name);
@@ -193,9 +227,9 @@ runScript(const string& script,
 }
 
 static void
-testPstream()
+testPosix()
 {
-    std::printf("pstream (as RunScript on POSIX):\n");
+    std::printf("RunScriptPosix::Process (as RunScript on POSIX):\n");
     vector<string> l;
     int err = 0;
     CHECK(runScript("#!/bin/sh\necho one >&2\nprintf 'two\\r\\n' >&2\nprintf 'no newline' >&2\n", &l, &err) && err == 0
@@ -214,10 +248,192 @@ testPstream()
               && l.size() == 2 && l[0].size() == 64 * 1024 + 3 && l[1] == "last",
           ("a 20 MB line is cut: " + show(l)).c_str());
 
+    // stdin is /dev/null: read gets the end of file at once (and does not wait for, or read, the host's stdin). The
+    // host's stdin is then a pipe with a line in it, so that a script that inherited it would read it.
+    // (If this test was started with fd 0 closed, dup() fails: fd 0 is closed again afterwards.)
+    l.clear();
+    int hostIn[2];
+    const int savedStdin = dup(STDIN_FILENO);
+    if (pipe(hostIn) == 0) {
+        const char line[] = "host\n";
+        const bool filled = write(hostIn[1], line, sizeof(line) - 1) == (ssize_t)(sizeof(line) - 1);
+        close(hostIn[1]);
+        if (hostIn[0] != STDIN_FILENO) { // (it is fd 0 if fd 0 was closed)
+            dup2(hostIn[0], STDIN_FILENO);
+            close(hostIn[0]);
+        }
+        CHECK(filled && runScript("#!/bin/sh\nif read x; then echo \"read: $x\" >&2; else echo eof >&2; fi\n", &l, &err) && l == V("eof"),
+              ("stdin is /dev/null, not the host's: " + show(l)).c_str());
+        if (savedStdin >= 0) {
+            dup2(savedStdin, STDIN_FILENO);
+        } else {
+            close(STDIN_FILENO); // the pipe
+        }
+    } else {
+        CHECK(false, "pipe for the host's stdin");
+    }
+    if (savedStdin >= 0) {
+        close(savedStdin);
+    }
+
+    // The host closed some of its standard streams: the stderr pipe must not be fd 2 already (0 and 2 closed: pipe()
+    // gives fds 0 and 2), and a closed stdout is not inherited (posix_spawn() would fail with EBADF on macOS).
+    const int closedSets[2][2] = { { STDIN_FILENO, STDERR_FILENO }, { STDOUT_FILENO, -1 } };
+    for (const auto& closed : closedSets) {
+        int saved[2] = { -1, -1 };
+        for (int i = 0; i < 2 && closed[i] >= 0; ++i) {
+            saved[i] = fcntl(closed[i], F_DUPFD_CLOEXEC, 10);
+            close(closed[i]);
+        }
+        l.clear();
+        const bool ran = runScript("#!/bin/sh\necho captured >&2\n", &l, &err);
+        for (int i = 0; i < 2 && closed[i] >= 0; ++i) {
+            dup2(saved[i], closed[i]);
+            close(saved[i]);
+        }
+        CHECK(ran && err == 0 && l == V("captured"),
+              ("host's fd " + std::to_string(closed[0]) + (closed[1] >= 0 ? " and " + std::to_string(closed[1]) : string()) + " closed: " + show(l) + " (error " + std::to_string(err) + ")").c_str());
+    }
+
+    // no "#!" line: run by /bin/sh, as execvp() does (ENOEXEC from exec())
+    l.clear();
+    CHECK(runScript("echo \"no shebang: $#\" >&2\n", &l, &err) && err == 0 && l == V("no shebang: 0"),
+          ("a script without \"#!\" is run by /bin/sh: " + show(l)).c_str());
+
     // exec() failure, which RunScript reports as "cannot execute ...: No such file or directory"
     l.clear();
     CHECK(runScript("#!/nonexistent/interpreter\n", &l, &err) && err == ENOENT,
-          ("missing interpreter: is_open() is false, error() is ENOENT (" + string(err ? std::strerror(err) : "no error") + ")").c_str());
+          ("missing interpreter: started() is false, error() is ENOENT (" + string(err ? std::strerror(err) : "no error") + ")").c_str());
+}
+
+// the file descriptors of this process that are pipes
+static std::set<int>
+pipeFds()
+{
+    std::set<int> fds;
+    for (int fd = 0; fd < 256; ++fd) {
+        struct stat st;
+        if (fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode)) {
+            fds.insert(fd);
+        }
+    }
+
+    return fds;
+}
+
+// The script of a concurrent render does not inherit the stderr pipe of a running script (it would hold it open, and
+// that script's render would wait for it): while a script runs, another script does not have its pipe open. (This
+// only catches a pipe that is not close-on-exec on Linux: on macOS, POSIX_SPAWN_CLOEXEC_DEFAULT closes it anyway.)
+static void
+testPipeNotInherited()
+{
+    std::printf("the stderr pipe of a script is not inherited by another one:\n");
+    char name[] = "/tmp/runscript_output_testXXXXXX";
+    const int fd = mkostemp(name, O_CLOEXEC);
+    if (fd < 0) {
+        CHECK(false, "mkostemp");
+
+        return;
+    }
+    const string sleeps = "#!/bin/sh\nsleep 2\n";
+    const bool written = write(fd, sleeps.data(), sleeps.size()) == (ssize_t)sleeps.size();
+    close(fd);
+    if (written && chmod(name, S_IRWXU) == 0) {
+        const std::set<int> before = pipeFds();
+        RunScriptPosix::Process running(name, vector<string>(1, name)); // (killed by its destructor)
+        std::set<int> pipes = pipeFds();
+        for (int b : before) {
+            pipes.erase(b);
+        }
+        CHECK(running.started() && pipes.size() == 1, ("the running script's pipe: " + std::to_string(pipes.size()) + " new pipe(s)").c_str());
+        if (pipes.size() == 1) {
+            const string n = std::to_string(*pipes.begin());
+            vector<string> l;
+            int err = 0;
+            CHECK(runScript("#!/bin/sh\nif [ -e /dev/fd/" + n + " ]; then echo inherited >&2; else echo closed >&2; fi\n", &l, &err)
+                      && l == V("closed"),
+                  ("file descriptor " + n + " in the other script: " + show(l)).c_str());
+        }
+    } else {
+        CHECK(false, "write the script");
+    }
+    unlink(name);
+}
+
+// #287: an aborted script is killed, with the processes of its group, and run() returns soon after the abort
+static void
+testAbort()
+{
+    std::printf("abort (as RunScript on POSIX):\n");
+    struct Case {
+        const char* what;
+        const char* script;
+    };
+    // pidfile: the PID of a process that must be killed (the script or a background child); the abort waits for it
+    char pidfile[] = "/tmp/runscript_output_test_pidXXXXXX";
+    const int fd = mkstemp(pidfile);
+    if (fd < 0) {
+        CHECK(false, "mkstemp");
+
+        return;
+    }
+    close(fd);
+    const string p = pidfile;
+    const string sleeps = "#!/bin/sh\necho $$ > " + p + "\nsleep 60\n";
+    const string floods = "#!/bin/sh\nyes >&2 &\necho $! > " + p + "\nwait\n";
+    const string closed = "#!/bin/sh\nexec 2>&-\nsleep 60 &\necho $! > " + p + "\nwait\n";
+    const string bg = "#!/bin/sh\nsleep 60 &\necho $! > " + p + "\nexit 0\n";
+    const Case cases[] = {
+        { "a script that sleeps", sleeps.c_str() },
+        { "a script whose child floods stderr", floods.c_str() },
+        { "a script that closed its stderr and waits for its child", closed.c_str() },
+        { "a script that exited, with a child that keeps stderr open", bg.c_str() },
+    };
+    for (const Case& c : cases) {
+        if (std::FILE* f = std::fopen(pidfile, "w")) { // empty: this case has no background child yet
+            std::fclose(f);
+        }
+        vector<string> l;
+        int err = 0;
+        RunScriptPosix::RunResult r = RunScriptPosix::eRunOK;
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        const bool ran = runScript(c.script, &l, &err, 300, &r, pidfile);
+        const long long ms = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        CHECK(ran && err == 0 && r == RunScriptPosix::eRunAborted && ms < 10000,
+              (string(c.what) + ": aborted after " + std::to_string(ms) + " ms").c_str());
+        // the process that it wrote to pidfile was killed (the background child, with the process group)
+        long pid = 0;
+        if (std::FILE* f = std::fopen(pidfile, "r")) {
+            if (std::fscanf(f, "%ld", &pid) != 1) {
+                pid = 0;
+            }
+            std::fclose(f);
+        }
+        CHECK(pid > 0, (string(c.what) + ": it wrote a PID before the abort").c_str());
+        if (pid > 0) {
+            // (a background child is reaped by PID 1 once killed, since the script, its parent, was killed too: this
+            // assumes that PID 1 reaps orphans, which it does not in a container run without --init)
+            bool gone = false;
+            for (int i = 0; i < 100 && !gone; ++i) {
+                gone = ::kill((pid_t)pid, 0) != 0 && errno == ESRCH;
+                if (!gone) {
+                    usleep(10 * 1000);
+                }
+            }
+            if (!gone) {
+                (void)::kill((pid_t)pid, SIGKILL);
+            }
+            CHECK(gone, (string(c.what) + ": the process was killed").c_str());
+        }
+    }
+    std::remove(pidfile);
+
+    // not aborted: the script runs to its end
+    vector<string> l;
+    int err = 0;
+    RunScriptPosix::RunResult r = RunScriptPosix::eRunAborted;
+    CHECK(runScript("#!/bin/sh\nsleep 1\necho done >&2\n", &l, &err, 10000, &r) && r == RunScriptPosix::eRunOK && l == V("done"),
+          ("a script that ends before the abort deadline: " + show(l)).c_str());
 }
 #endif
 
@@ -226,8 +442,10 @@ main()
 {
     testSplit();
     testBounds();
-#ifdef TEST_PSTREAM
-    testPstream();
+#ifdef TEST_POSIX
+    testPosix();
+    testPipeNotInherited();
+    testAbort();
 #endif
     std::printf("Result: failures=%d\n", gFailures);
 

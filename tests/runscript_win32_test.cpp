@@ -11,7 +11,7 @@
  * ("flood"), or prints "\r"-only progress output ("cr"), to test abort and the line splitting (#111), or prints the
  * DACL of a directory ("acl"). PowerShell scripts, wsl, CR line endings and the private temporary directory (#126).
  *
- * On other systems, it does nothing (RunScript uses pstream there).
+ * On other systems, it does nothing (RunScript uses RunScriptPosix.h there).
  */
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)

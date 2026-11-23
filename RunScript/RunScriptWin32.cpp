@@ -18,7 +18,7 @@
  * ***** END LICENSE BLOCK ***** */
 
 /*
- * OFX RunScript plugin: running the script on MS Windows (the POSIX version uses pstream).
+ * OFX RunScript plugin: running the script on MS Windows (the POSIX version is RunScriptPosix.h).
  */
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
