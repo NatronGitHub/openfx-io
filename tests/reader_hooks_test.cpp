@@ -55,6 +55,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <thread>
@@ -146,6 +147,8 @@ public:
     std::function<void()> onDecode;
     // decode() throws (after recording and onDecode)
     bool throwInDecode = false;
+    // the alpha that decode() writes
+    float alpha = 1.f;
 
     // getRenderTime() is protected
     static double renderTime() { return getRenderTime(); }
@@ -229,7 +232,7 @@ private:
             float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes) + (ptrdiff_t)(renderWindow.x1 - bounds.x1) * pixelComponentCount;
             for (int x = renderWindow.x1; x < renderWindow.x2; ++x, pix += pixelComponentCount) {
                 for (int c = 0; c < pixelComponentCount; ++c) {
-                    pix[c] = (c == 3) ? 1.f : v;
+                    pix[c] = (c == 3) ? alpha : v;
                 }
             }
         }
@@ -583,7 +586,8 @@ struct Reader {
         return range;
     }
 
-    OfxStatus render(double t)
+    // plane: the plane to render, kFnOfxImagePlaneColour or a Natron custom plane (then also the output image's components)
+    OfxStatus render(double t, const char* plane = kFnOfxImagePlaneColour)
     {
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, t);
@@ -596,6 +600,9 @@ struct Reader {
             return st;
         }
         PropSet r = makeRenderInArgs(t, kWidth, kHeight);
+        pSetString(PH(&r), kOfxImageEffectPropRenderPlanes, 0, plane);
+        const bool colour = !std::strcmp(plane, kFnOfxImagePlaneColour);
+        pSetString(PH(&out->image), kOfxImageEffectPropComponents, 0, colour ? kOfxImageComponentRGBA : plane);
 
         return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&r), nullptr);
     }
@@ -1165,6 +1172,33 @@ testDecodePlane(OfxPlugin* pMultiPlanar, const std::string& still, const std::st
     }
 }
 
+// 2e. An Opaque file (File Premult) has alpha = 1 in its color plane only: the other RGBA planes of a multi-planar
+// file keep the alpha that decodePlane() wrote, as the layers of a PSD file whose composite is RGB (Natron#1632)
+void
+testOpaquePlanes(OfxPlugin* pMultiPlanar, const std::string& still)
+{
+    std::printf("==== Opaque file: alpha = 1 in the color plane only (multi-planar reader, Natron#1632) ====\n");
+    Reader r;
+    if (!r.create(pMultiPlanar, still)) {
+        ++gFailures;
+
+        return;
+    }
+    setParamInt(r.ctx, "filePremult", 0); // Opaque
+    r.plugin->alpha = 0.5f;
+    const std::string layer = std::string(kNatronOfxImageComponentsPlaneName) + "Layer" +
+                              kNatronOfxImageComponentsPlaneChannel + "R" + kNatronOfxImageComponentsPlaneChannel + "G" +
+                              kNatronOfxImageComponentsPlaneChannel + "B" + kNatronOfxImageComponentsPlaneChannel + "A";
+    const char* planes[] = { kFnOfxImagePlaneColour, layer.c_str() };
+    for (const char* plane : planes) {
+        const bool colour = (plane == planes[0]);
+        OfxStatus st = r.render(1., plane);
+        const float a = reinterpret_cast<const float*>(r.out->buffer.data())[3];
+        check(ok(st) && a == (colour ? 1.f : 0.5f), "%s plane: render = %d, alpha = %g (expected %g)",
+              colour ? "color" : "custom RGBA", st, a, colour ? 1. : 0.5);
+    }
+}
+
 // Waits until n threads arrived, or a timeout (if the renders are serialized), so that both
 // threads are in decode() at the same time.
 class Rendezvous {
@@ -1708,6 +1742,7 @@ main(int argc, char** argv)
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);
+    testOpaquePlanes(pMultiPlanar, still);
     testMipmap(pMipmap, still);
     testRefreshFrameBounds(pTiles, still);
     testRefreshFrameBoundsPar(pTiles, prefix);

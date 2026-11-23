@@ -1953,7 +1953,9 @@ GenericReaderPlugin::render(const RenderArguments& args)
             //   - premult is unpremultiplied
             bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
             // An Opaque file has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
-            const bool opaqueAlpha = (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
+            // File Premult is the state of the color plane: the other planes of a multi-planar file keep their alpha
+            // (e.g. the RGBA layers of a PSD file, whose composite is RGB, NatronGitHub/Natron#1632).
+            const bool opaqueAlpha = !isCustom && (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
             if (opaqueAlpha) {
                 mustPremult = false;
             }
