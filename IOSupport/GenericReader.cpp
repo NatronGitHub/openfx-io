@@ -1952,7 +1952,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
             //   OR
             //   - premult is unpremultiplied
             bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
-            // An Opaque file has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
+            // An Opaque color plane has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
             // Opaque (alpha = 1) applies to the color plane only (it is forced for an RGB one): it says nothing about the
             // alpha of the other RGBA planes of a multi-planar file, which keep the decoded alpha (NatronGitHub/Natron#1632).
             const bool opaqueAlpha = !isCustom && (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
