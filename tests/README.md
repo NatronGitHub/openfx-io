@@ -47,6 +47,7 @@ make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender 
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
+make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -256,6 +257,15 @@ nearest at 8 bits (#207), and white is 1 at more than 8 bits (#316: swscale gave
 a real codec. WriteFFmpeg's files, decoded without swscale: the 4:2:0 and 4:2:2 chroma of red and blue lines and columns
 must be the average of the pixels (#207: `SWS_POINT` took one of them), and the Y'CbCr at 10 and 16 bits the exact one
 (#316: white was 943 at 10 bits).
+
+`test-writeffmpeg-param-change` (issue #304) runs `ofx_render_test OUT --param-change`: the frames of a movie are
+rendered on a render thread, and between them the main thread calls `kOfxActionInstanceChanged` on the params and
+the clip whose change updates the pixel format info (Codec, Format, the Pref. params, Show Avail., DNxHD Codec
+Profile, Hap Format, the Source clip), as Natron does when the user edits them during a render, and
+`kOfxActionSyncPrivateData`, as when the project is saved. Each action must succeed, every frame must be encoded and
+the file complete: these actions used to free the format context of the render (`freeFormat()`), which made the next
+frame fail ("file is not open") and lost the trailer, or, if a frame was being encoded, freed it under the render
+thread.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
@@ -968,7 +978,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 

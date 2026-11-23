@@ -106,7 +106,7 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-writeffmpeg-param-change test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -499,7 +499,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-writeffmpeg-param-change test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -542,6 +542,12 @@ test-writeffmpeg-encode-failure-disk-full: ofx_render_test
 # written and decoded without swscale)
 test-swscale-exact: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --swscale-exact
+
+# #304: WriteFFmpeg, param and clip changes (kOfxActionInstanceChanged) and kOfxActionSyncPrivateData between the frames
+# of a render: every frame is encoded (they used to free the format context of the render). By itself, so that a crash
+# only fails this test.
+test-writeffmpeg-param-change: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i304.mov --param-change
 
 # RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70);
 # on all systems: splitting the script's stderr into lines, with bounded memory (#111)

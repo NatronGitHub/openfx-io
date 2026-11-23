@@ -234,6 +234,9 @@ if(TARGET io_tests_ofx)
   # test-swscale-exact (#207, #220, #316): the conversions between Y'CbCr and RGB of ReadFFmpeg and WriteFFmpeg give
   # exact values (rawvideo written and decoded without swscale)
   io_test(test-swscale-exact ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --swscale-exact)
+  # test-writeffmpeg-param-change (#304): param and clip changes (kOfxActionInstanceChanged) and
+  # kOfxActionSyncPrivateData between the frames of a render: every frame is encoded
+  io_test(test-writeffmpeg-param-change ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i304.mov" --param-change)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})

@@ -6142,6 +6142,8 @@ pix_fmt_name_canonical(const char* name)
     return ret;
 }
 
+// Called from changedParam(), changedClip() or syncPrivateData(), maybe during a render: it owns nothing that outlives
+// the call, and must not call freeFormat(), which would free the format and codec contexts of the render (#304).
 void
 WriteFFmpegPlugin::updatePixelFormat()
 {
@@ -6170,7 +6172,6 @@ WriteFFmpegPlugin::updatePixelFormat()
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
         updatePersistentMessage(); // "Unable to find codec", and the other errors
-        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -6186,7 +6187,6 @@ WriteFFmpegPlugin::updatePixelFormat()
         _infoBitDepth->setValue(0);
         _infoBPP->setValue(0);
         updatePersistentMessage(); // "The codec X is not supported in container Y", and the other errors
-        freeFormat();
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -6202,7 +6202,6 @@ WriteFFmpegPlugin::updatePixelFormat()
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_YUV422P;
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_RGB24;
     getPixelFormats(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat);
-    freeFormat();
 
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(targetPixelFormat);
     _infoPixelFormat->setValue(desc ? pix_fmt_name_canonical(desc->name) : "unknown");
@@ -6210,6 +6209,8 @@ WriteFFmpegPlugin::updatePixelFormat()
     _infoBPP->setValue(FFmpeg::pixelFormatBPP(targetPixelFormat));
 }
 
+// Called from changedParam(), changedClip() or syncPrivateData(), maybe during a render: it owns nothing that outlives
+// the call, and must not call freeFormat(), which would free the format and codec contexts of the render (#304).
 void
 WriteFFmpegPlugin::availPixelFormats()
 {
@@ -6233,7 +6234,6 @@ WriteFFmpegPlugin::availPixelFormats()
     AVCodecID codecId = AV_CODEC_ID_NONE;
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
-        freeFormat();
         sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (cannot initialize codec)", false);
 
         return;
@@ -6246,7 +6246,6 @@ WriteFFmpegPlugin::availPixelFormats()
     // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
     if (!isCodecSupportedInContainer) {
         string ret = string("Supported pixel codings:\nnone (codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name + ")";
-        freeFormat();
         sendMessage(Message::eMessageError, "", ret);
 
         return;
@@ -6277,7 +6276,6 @@ WriteFFmpegPlugin::availPixelFormats()
         }
         ret += '.';
     }
-    freeFormat();
 
     sendMessage(Message::eMessageMessage, "", ret, false);
 }

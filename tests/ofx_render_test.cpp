@@ -108,6 +108,11 @@
  *     - WriteFFmpeg, decoded without swscale: 4:2:0 and 4:2:2 chroma is the average of the pixels (red and blue lines
  *       and columns), and the Y'CbCr at 10 and 16 bits is the exact one, rounded to the nearest
  *
+ *   WriteFFmpeg, param and clip changes during a render (issue #304), with the option --param-change (only this test):
+ *     - between the frames of a render, kOfxActionInstanceChanged on the params and the clip that update the pixel
+ *       format info (Codec, Format, the Pref. params, Show Avail., DNxHD Codec Profile, Hap Format, the Source clip),
+ *       and kOfxActionSyncPrivateData: each action must succeed, and every frame must be encoded
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -2401,6 +2406,23 @@ public:
 
     void setFilename(const std::string& file) { setOverrideString(&_ctx, kOfxImageEffectFileParamName, file); }
 
+    // kOfxActionInstanceChanged on the param or clip name (a user edit), as the host calls it on its main thread
+    OfxStatus instanceChanged(const char* type, const char* name)
+    {
+        PropSet a;
+        OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, type);
+        pSetString(ap, kOfxPropName, 0, name);
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. };
+        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        return _p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&_inst), ap, nullptr);
+    }
+
+    // kOfxActionSyncPrivateData, as the host calls it before it saves the project
+    OfxStatus syncPrivateData() { return _p->mainEntry(kOfxActionSyncPrivateData, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr); }
+
     // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
     void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
 
@@ -3139,6 +3161,62 @@ int testSwscaleExact(const std::string& outFile)
 
 } // namespace
 
+// #304: while a movie is rendered (between beginSequenceRender and endSequenceRender, the frames on a render thread),
+// the host calls, on its main thread, kOfxActionInstanceChanged for the params and the clip whose change updates the
+// pixel format info (updatePixelFormat(), availPixelFormats()), and kOfxActionSyncPrivateData (when it saves the
+// project), which updates it too. They must not free the format context of the render: every frame must be encoded,
+// and the file must be complete. The changes are between frames, not during one, so that the test host, whose params
+// are not thread-safe, has no data race.
+int testWriteFFmpegParamChangeDuringRender(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg, param and clip changes, and sync private data, during a render: every frame is encoded (issue #304) ====\n");
+    struct Change {
+        const char* type; // nullptr: kOfxActionSyncPrivateData
+        const char* name;
+    };
+    const Change changes[] = { { kOfxTypeParameter, "codec" }, { kOfxTypeParameter, "format" },
+                               { kOfxTypeParameter, "prefPixelCoding" }, { kOfxTypeParameter, "prefBitDepth" },
+                               { kOfxTypeParameter, "enableAlpha" }, { kOfxTypeParameter, "prefShow" },
+                               { kOfxTypeParameter, "DNxHDCodecProfile" }, { kOfxTypeParameter, "HapFormat" },
+                               { kOfxTypeClip, kOfxImageEffectSimpleSourceClipName }, { nullptr, "syncPrivateData" } };
+    const int nChanges = (int)(sizeof(changes) / sizeof(changes[0]));
+    const int N = nChanges + 1;
+    std::remove(outFile.c_str());
+    int failures = 0;
+    {
+        WriterSession s;
+        if (s.create(outFile, 128, 128, N, WriterParams())) return 1;
+        OfxStatus st = s.begin(N);
+        if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); return 1; }
+        for (int t = 1; t <= N; ++t) {
+            st = std::async(std::launch::async, [&s, t]() { return s.render(t); }).get();
+            if (!ok(st)) {
+                std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, WriterSession::persistentError().c_str());
+                ++failures;
+            }
+            if (t <= nChanges) {
+                const Change& c = changes[t - 1];
+                st = c.type ? s.instanceChanged(c.type, c.name) : s.syncPrivateData();
+                std::printf("  after frame %d: %s(%s %s) = %d\n", t, c.type ? "instanceChanged" : "syncPrivateData", c.type ? c.type : "", c.name, st);
+                if ((st != kOfxStatOK) && (st != kOfxStatReplyDefault)) {
+                    std::printf("  FAIL: %s = %d (error: \"%s\")\n", c.name, st, WriterSession::persistentError().c_str());
+                    ++failures;
+                }
+            }
+        }
+        st = s.end(N);
+        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, WriterSession::persistentError().c_str()); ++failures; }
+    }
+    int nFrames = 0, nIFrames = 0;
+    if (probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
+        std::printf("  FAIL: %d frames in the file, expected %d\n", nFrames, N);
+        ++failures;
+    }
+    std::remove(outFile.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
 int
 main(int argc, char** argv)
 {
@@ -3162,6 +3240,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegEncodeFailureDiskFull(outFile);
         } else if (mode == "--swscale-exact") {
             failures = testSwscaleExact(outFile);
+        } else if (mode == "--param-change") {
+            failures = testWriteFFmpegParamChangeDuringRender(outFile);
         } else {
             std::printf("unknown option %s\n", mode.c_str());
             return 2;
