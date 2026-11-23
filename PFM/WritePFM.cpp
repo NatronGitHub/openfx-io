@@ -165,6 +165,14 @@ WritePFMPlugin::encode(const string& filename,
         OFX::remove_utf8(filename.c_str());
     }
 
+    int width = (bounds.x2 - bounds.x1);
+    int height = (bounds.y2 - bounds.y1);
+    const int depth = (dstNComps == 1 ? 1 : 3);
+    const unsigned int buf_size = width * depth;
+    // (allocated before fopen(), so that a bad_alloc can not leak the file)
+    vector<float> buffer(buf_size);
+    std::fill(buffer.begin(), buffer.end(), 0.);
+
     std::FILE* const nfile = fopen_utf8(filename.c_str(), "wb");
     if (!nfile) {
         setPersistentMessage(Message::eMessageError, "", "Cannot open file \"" + filename + "\"");
@@ -172,16 +180,12 @@ WritePFMPlugin::encode(const string& filename,
 
         return;
     }
-    int width = (bounds.x2 - bounds.x1);
-    int height = (bounds.y2 - bounds.y1);
-    const int depth = (dstNComps == 1 ? 1 : 3);
-    const unsigned int buf_size = width * depth;
-    vector<float> buffer(buf_size);
-    std::fill(buffer.begin(), buffer.end(), 0.);
 
-    std::fprintf(nfile, "P%c\n%u %u\n%d.0\n", (dstNComps == 1 ? 'f' : 'F'), width, height, endianness() ? 1 : -1);
+    // A failed write (e.g. a full disk) must fail the render, or the host takes the truncated file for a written one
+    // (#294).
+    bool written = std::fprintf(nfile, "P%c\n%u %u\n%d.0\n", (dstNComps == 1 ? 'f' : 'F'), width, height, endianness() ? 1 : -1) >= 0;
 
-    for (int y = 0; y < height; ++y) {
+    for (int y = 0; written && y < height; ++y) {
         // now copy to the dstImg
         if (depth == 1) {
             assert(dstNComps == 1);
@@ -195,9 +199,13 @@ WritePFMPlugin::encode(const string& filename,
             }
         }
 
-        std::fwrite(&buffer.front(), sizeof(float), buf_size, nfile);
+        written = std::fwrite(&buffer.front(), sizeof(float), buf_size, nfile) == buf_size;
     }
-    std::fclose(nfile);
+    // (fclose() writes what is left in the buffer: it may fail too)
+    if ((std::fclose(nfile) != 0) || !written) {
+        setPersistentMessage(Message::eMessageError, "", "Cannot write file \"" + filename + "\"");
+        throwSuiteStatusException(kOfxStatFailed);
+    }
 }
 
 bool

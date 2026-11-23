@@ -124,6 +124,12 @@
  *       format info (Codec, Format, the Pref. params, Show Avail., DNxHD Codec Profile, Hap Format, the Source clip),
  *       and kOfxActionSyncPrivateData: each action must succeed, and every frame must be encoded
  *
+ *   WritePFM and ReadPFM fail on errors (issues #294, #296), each with its option (only this test):
+ *     - --pfm-write-errors (not on MS Windows: exit status 77): WritePFM, the file can not grow beyond 16 KB
+ *       (RLIMIT_FSIZE, as on a full disk): the render must fail with an error that names the file, and the same
+ *       instance must then write the file without the limit
+ *     - --pfm-read-errors: ReadPFM, a header with an empty, negative or huge size: getRegionOfDefinition must fail
+ *
  *   ReadFFmpeg, DestroyInstance closes the movie (issue #290), with the option --destroy-closes-file (only this test):
  *     - render a frame, destroy the instance: the movie is no longer open, before Unload; twice, with the movie
  *       rewritten at another size in between: the second instance (maybe at the address of the first one) reads it
@@ -2371,9 +2377,9 @@ static void setDefaultCheckboxesSecret(Effect& ctx)
     }
 }
 
-// A writer instance (WriteFFmpeg by default) that the tests of #288, #289 and #292 render several times, as Natron
-// renders a Write node: beginSequenceRender, the frames (maybe on several threads), endSequenceRender. The source
-// image is a constant mid-gray, written once, so that concurrent renders only read it.
+// A writer instance (WriteFFmpeg by default) that the tests of #288, #289, #292 and #294 render several times, as
+// Natron renders a Write node: beginSequenceRender, the frames (maybe on several threads), endSequenceRender. The
+// source image is a constant mid-gray, written once, so that concurrent renders only read it.
 class WriterSession {
 public:
     WriterSession() = default;
@@ -2923,6 +2929,123 @@ int testWriteOIIODiskFull(const std::string& outFile)
     if (!failures) std::printf("  PASS\n");
     return failures;
 #endif
+}
+
+// ---- #294, #296: the PFM plug-ins fail on write errors and on invalid headers (options --pfm-write-errors, --pfm-read-errors) ----
+
+// #294, POSIX only: WritePFM, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full disk), so that fwrite()
+// or fclose() fails: the render must fail with an error that names the file. The same instance then writes the whole
+// file without the limit, to check that the failure came from the limit. Exits with 77 (skipped) on MS Windows, which
+// has no RLIMIT_FSIZE.
+int testWritePFMDiskFull(const std::string& outFile)
+{
+#ifdef _WIN32
+    (void)outFile;
+    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
+    std::exit(77);
+#else
+    const int W = 512, H = 512;
+    const rlim_t kMaxFileSize = 16384; // more than the header, much less than the file (3 MB)
+    const std::string file = outFile + ".i294.pfm";
+    std::printf("==== WritePFM, the disk is full after %d bytes (issue #294) ====\n", (int)kMaxFileSize);
+    std::remove(file.c_str());
+    int failures = 0;
+    FileSizeLimit fileSizeLimit(file);
+    WriterSession s;
+    if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
+    OfxStatus st = s.begin(1);
+    if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); return 1; }
+    if (!fileSizeLimit.limit(kMaxFileSize)) return 1;
+    st = s.render(1);
+    if (!fileSizeLimit.restore()) return 1;
+    const std::string error = WriterSession::persistentError();
+    struct stat sb;
+    const long size = (::stat(file.c_str(), &sb) == 0) ? (long)sb.st_size : -1L;
+    std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, error.c_str(), size);
+    if (ok(st)) { std::printf("  FAIL: the render succeeded, the file is truncated\n"); ++failures; }
+    else if (error.find(file) == std::string::npos) { std::printf("  FAIL: the error does not name the file\n"); ++failures; }
+    s.end(1);
+
+    // without the limit, the same instance writes the whole file: the header, then W x H RGB floats
+    if (s.renderAll(1)) { std::printf("  FAIL: the render without the limit\n"); ++failures; }
+    else if ((::stat(file.c_str(), &sb) != 0) || (sb.st_size <= (off_t)W * H * 3 * 4)) {
+        std::printf("  FAIL: the file without the limit is not larger than %d bytes\n", W * H * 3 * 4);
+        ++failures;
+    }
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+#endif
+}
+
+// #296: ReadPFM, a header with an empty, negative or huge size: getRegionOfDefinition must fail (as decode() does),
+// instead of giving the host that RoD. A valid header gives the RoD of the image.
+int testReadPFMHeaderSize(const std::string& outFile)
+{
+    std::printf("==== ReadPFM, a header with an empty, negative or huge size: the RoD fails (issue #296) ====\n");
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadPFM");
+    if (!p) { std::printf("  FAIL: ReadPFM not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    struct Header {
+        const char* size; // "W H" in the header
+        bool valid;
+    };
+    const Header headers[] = { { "3 2", true }, { "-5 3", false }, { "3 -5", false }, { "0 2", false }, { "3 0", false },
+                               { "65536 2", false }, { "3 65536", false }, { "2000000000 2000000000", false } };
+    const std::string file = outFile + ".i296.pfm";
+    int failures = 0;
+    for (const Header& h : headers) {
+        {
+            // a little-endian RGB file, with the pixels of a 3x2 image (the invalid sizes fail before the pixels)
+            std::FILE* f = std::fopen(file.c_str(), "wb");
+            const float pixels[3 * 2 * 3] = {};
+            const bool written = f && (std::fprintf(f, "PF\n%s\n-1.0\n", h.size) > 0) && (std::fwrite(pixels, sizeof(pixels), 1, f) == 1);
+            if (!f || (std::fclose(f) != 0) || !written) { std::printf("  FAIL: cannot write %s\n", file.c_str()); ++failures; continue; }
+        }
+        // (cleared, so that an error can only come from this header)
+        {
+            std::lock_guard<std::mutex> lock(gMessagesMutex);
+            gPersistentError.clear();
+        }
+        setOverrideString(&ctx, kOfxImageEffectFileParamName, file);
+        Effect inst;
+        inst.delegate = &ctx;
+        setInstanceProps(inst, 3, 2, 1, kOfxImageEffectContextReader);
+        const OfxImageEffectHandle handle = reinterpret_cast<OfxImageEffectHandle>(&inst);
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); ++failures; continue; }
+        {
+            PropSet a; OfxPropertySetHandle ap = PH(&a);
+            pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+            pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+            pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+            pSetDouble(ap, kOfxPropTime, 0, 1.);
+            double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+            p->mainEntry(kOfxActionInstanceChanged, handle, PH(&a), nullptr);
+        }
+        PropSet a; pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, handle, PH(&a), PH(&o));
+        double rod[4] = { -1, -1, -1, -1 }; pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
+        const std::string error = WriterSession::persistentError();
+        std::printf("  \"%s\": getRegionOfDefinition = %d, [%.0f %.0f %.0f %.0f] (error: \"%s\")\n", h.size, st, rod[0], rod[1], rod[2], rod[3], error.c_str());
+        if (h.valid && (!ok(st) || (rod[0] != 0) || (rod[1] != 0) || (rod[2] != 3) || (rod[3] != 2))) {
+            std::printf("  FAIL: the RoD must be [0 0 3 2]\n");
+            ++failures;
+        } else if (!h.valid && (st != kOfxStatFailed)) {
+            std::printf("  FAIL: getRegionOfDefinition must fail\n");
+            ++failures;
+        } else if (!h.valid && (error.find(file) == std::string::npos)) {
+            std::printf("  FAIL: the error does not name the file\n");
+            ++failures;
+        }
+        p->mainEntry(kOfxActionDestroyInstance, handle, nullptr, nullptr);
+    }
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    std::remove(file.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
 }
 
 // ---- #207, #220, #316: exact values of the conversions between Y'CbCr and RGB (option --swscale-exact) ----
@@ -3905,6 +4028,10 @@ main(int argc, char** argv)
             failures = testWriteFFmpegCodecParams(outFile);
         } else if (mode == "--destroy-closes-file") {
             failures = testReadFFmpegDestroyClosesFile(outFile);
+        } else if (mode == "--pfm-write-errors") {
+            failures = testWritePFMDiskFull(outFile);
+        } else if (mode == "--pfm-read-errors") {
+            failures = testReadPFMHeaderSize(outFile);
         } else {
             std::printf("unknown option %s\n", mode.c_str());
             return 2;
