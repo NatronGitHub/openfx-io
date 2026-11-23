@@ -37,6 +37,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cctype> // ::tolower
 #include <cfloat> // DBL_MAX
 #include <chrono> // std::chrono::milliseconds
@@ -650,65 +651,65 @@ enum X26xSpeedEnum {
 #define kProresProfile4444XQName "Apple ProRes 4444 XQ"
 #define kProresProfile4444XQFourCC "ap4x"
 
-// Valid DNxHD profiles (as of FFmpeg 3.2.2):
-// Frame size: 1920x1080p; bitrate: 175Mbps; pixel format: yuv422p10; framerate: 24000/1001
-// Frame size: 1920x1080p; bitrate: 185Mbps; pixel format: yuv422p10; framerate: 25/1
-// Frame size: 1920x1080p; bitrate: 365Mbps; pixel format: yuv422p10; framerate: 50/1
-// Frame size: 1920x1080p; bitrate: 440Mbps; pixel format: yuv422p10; framerate: 60000/1001
-// Frame size: 1920x1080p; bitrate: 115Mbps; pixel format: yuv422p; framerate: 24000/1001
-// Frame size: 1920x1080p; bitrate: 120Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1920x1080p; bitrate: 145Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1920x1080p; bitrate: 240Mbps; pixel format: yuv422p; framerate: 50/1
-// Frame size: 1920x1080p; bitrate: 290Mbps; pixel format: yuv422p; framerate: 60000/1001
-// Frame size: 1920x1080p; bitrate: 175Mbps; pixel format: yuv422p; framerate: 24000/1001
-// Frame size: 1920x1080p; bitrate: 185Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1920x1080p; bitrate: 220Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1920x1080p; bitrate: 365Mbps; pixel format: yuv422p; framerate: 50/1
-// Frame size: 1920x1080p; bitrate: 440Mbps; pixel format: yuv422p; framerate: 60000/1001
-// Frame size: 1920x1080i; bitrate: 185Mbps; pixel format: yuv422p10; framerate: 25/1
-// Frame size: 1920x1080i; bitrate: 220Mbps; pixel format: yuv422p10; framerate: 30000/1001
-// Frame size: 1920x1080i; bitrate: 120Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1920x1080i; bitrate: 145Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1920x1080i; bitrate: 185Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1920x1080i; bitrate: 220Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1440x1080i; bitrate: 120Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1440x1080i; bitrate: 145Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1280x720p; bitrate: 90Mbps; pixel format: yuv422p10; framerate: 24000/1001
-// Frame size: 1280x720p; bitrate: 90Mbps; pixel format: yuv422p10; framerate: 25/1
-// Frame size: 1280x720p; bitrate: 180Mbps; pixel format: yuv422p10; framerate: 50/1
-// Frame size: 1280x720p; bitrate: 220Mbps; pixel format: yuv422p10; framerate: 60000/1001
-// Frame size: 1280x720p; bitrate: 90Mbps; pixel format: yuv422p; framerate: 24000/1001
-// Frame size: 1280x720p; bitrate: 90Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1280x720p; bitrate: 110Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1280x720p; bitrate: 180Mbps; pixel format: yuv422p; framerate: 50/1
-// Frame size: 1280x720p; bitrate: 220Mbps; pixel format: yuv422p; framerate: 60000/1001
-// Frame size: 1280x720p; bitrate: 60Mbps; pixel format: yuv422p; framerate: 24000/1001
-// Frame size: 1280x720p; bitrate: 60Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1280x720p; bitrate: 75Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1280x720p; bitrate: 120Mbps; pixel format: yuv422p; framerate: 50/1
-// Frame size: 1280x720p; bitrate: 145Mbps; pixel format: yuv422p; framerate: 60000/1001
-// Frame size: 1920x1080p; bitrate: 36Mbps; pixel format: yuv422p; framerate: 24000/1001
-// Frame size: 1920x1080p; bitrate: 36Mbps; pixel format: yuv422p; framerate: 25/1
-// Frame size: 1920x1080p; bitrate: 45Mbps; pixel format: yuv422p; framerate: 30000/1001
-// Frame size: 1920x1080p; bitrate: 75Mbps; pixel format: yuv422p; framerate: 50/1
-// Frame size: 1920x1080p; bitrate: 90Mbps; pixel format: yuv422p; framerate: 60000/1001
-// Frame size: 1920x1080p; bitrate: 350Mbps; pixel format: yuv422p10; framerate: 24000/1001
-// Frame size: 1920x1080p; bitrate: 390Mbps; pixel format: yuv422p10; framerate: 25/1
-// Frame size: 1920x1080p; bitrate: 440Mbps; pixel format: yuv422p10; framerate: 30000/1001
-// Frame size: 1920x1080p; bitrate: 730Mbps; pixel format: yuv422p10; framerate: 50/1
-// Frame size: 1920x1080p; bitrate: 880Mbps; pixel format: yuv422p10; framerate: 60000/1001
-// Frame size: 960x720p; bitrate: 42Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 960x720p; bitrate: 60Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 960x720p; bitrate: 75Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 960x720p; bitrate: 115Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080p; bitrate: 63Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080p; bitrate: 84Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080p; bitrate: 100Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080p; bitrate: 110Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080i; bitrate: 80Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080i; bitrate: 90Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080i; bitrate: 100Mbps; pixel format: yuv422p; framerate: 0/0
-// Frame size: 1440x1080i; bitrate: 110Mbps; pixel format: yuv422p; framerate: 0/0
+// Valid DNxHD profiles, as FFmpeg's dnxhd encoder prints them when no compression ID (CID) matches
+// (ff_dnxhd_print_profiles(), libavcodec/dnxhddata.c:1157, from dnxhd_cid_table, dnxhddata.c:937; the same list in
+// n8.0, n9.0.2 and n9.1). FFmpeg neither checks nor prints the frame rate (ba79a101a2, "lavc/dnxhddata: Do not print
+// frame rates with supported profiles"): the frame rates in the profile hints are only Avid's names, see
+// dnxhdBitrateMbps(). The yuv444p10/gbrp10 entries are CID 1256 (DNxHD 444), which ff_dnxhd_find_cid() never selects.
+// Frame size: 1920x1080p; bitrate: 175Mbps; pixel format: yuv422p10
+// Frame size: 1920x1080p; bitrate: 185Mbps; pixel format: yuv422p10
+// Frame size: 1920x1080p; bitrate: 365Mbps; pixel format: yuv422p10
+// Frame size: 1920x1080p; bitrate: 440Mbps; pixel format: yuv422p10
+// Frame size: 1920x1080p; bitrate: 115Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 120Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 145Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 240Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 290Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 175Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 185Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 220Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 365Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 440Mbps; pixel format: yuv422p
+// Frame size: 1920x1080i; bitrate: 185Mbps; pixel format: yuv422p10
+// Frame size: 1920x1080i; bitrate: 220Mbps; pixel format: yuv422p10
+// Frame size: 1920x1080i; bitrate: 120Mbps; pixel format: yuv422p
+// Frame size: 1920x1080i; bitrate: 145Mbps; pixel format: yuv422p
+// Frame size: 1920x1080i; bitrate: 185Mbps; pixel format: yuv422p
+// Frame size: 1920x1080i; bitrate: 220Mbps; pixel format: yuv422p
+// Frame size: 1440x1080i; bitrate: 120Mbps; pixel format: yuv422p
+// Frame size: 1440x1080i; bitrate: 145Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 90Mbps; pixel format: yuv422p10
+// Frame size: 1280x720p; bitrate: 180Mbps; pixel format: yuv422p10
+// Frame size: 1280x720p; bitrate: 220Mbps; pixel format: yuv422p10
+// Frame size: 1280x720p; bitrate: 90Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 110Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 180Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 220Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 60Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 75Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 120Mbps; pixel format: yuv422p
+// Frame size: 1280x720p; bitrate: 145Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 36Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 45Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 75Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 90Mbps; pixel format: yuv422p
+// Frame size: 1920x1080p; bitrate: 350Mbps; pixel format: yuv444p10, gbrp10
+// Frame size: 1920x1080p; bitrate: 390Mbps; pixel format: yuv444p10, gbrp10
+// Frame size: 1920x1080p; bitrate: 440Mbps; pixel format: yuv444p10, gbrp10
+// Frame size: 1920x1080p; bitrate: 730Mbps; pixel format: yuv444p10, gbrp10
+// Frame size: 1920x1080p; bitrate: 880Mbps; pixel format: yuv444p10, gbrp10
+// Frame size: 960x720p; bitrate: 42Mbps; pixel format: yuv422p
+// Frame size: 960x720p; bitrate: 60Mbps; pixel format: yuv422p
+// Frame size: 960x720p; bitrate: 75Mbps; pixel format: yuv422p
+// Frame size: 960x720p; bitrate: 115Mbps; pixel format: yuv422p
+// Frame size: 1440x1080p; bitrate: 63Mbps; pixel format: yuv422p
+// Frame size: 1440x1080p; bitrate: 84Mbps; pixel format: yuv422p
+// Frame size: 1440x1080p; bitrate: 100Mbps; pixel format: yuv422p
+// Frame size: 1440x1080p; bitrate: 110Mbps; pixel format: yuv422p
+// Frame size: 1440x1080i; bitrate: 80Mbps; pixel format: yuv422p
+// Frame size: 1440x1080i; bitrate: 90Mbps; pixel format: yuv422p
+// Frame size: 1440x1080i; bitrate: 100Mbps; pixel format: yuv422p
+// Frame size: 1440x1080i; bitrate: 110Mbps; pixel format: yuv422p
 
 #ifdef DNXHD_444
 #pragma message WARN("This version of FFmpeg seems to support DNxHD 444")
@@ -723,17 +724,17 @@ enum X26xSpeedEnum {
 
 #define kParamDNxHDCodecProfile "DNxHDCodecProfile"
 #define kParamDNxHDCodecProfileLabel "DNxHD Codec Profile"
-#define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. The stream may be resized to 1920x1080 if resolution is not supported. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it.\nA frame that does not fit in the bit rate (e.g. noise in DNxHR 444) fails to encode. Do not set qmax above 256 in Codec Options: FFmpeg's encoder may crash."
+#define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. DNxHD only encodes 1920x1080 and 1280x720 (DNxHD 440x and 36: 1920x1080 only), and the stream is resized to 1920x1080 if its size is neither; its bitrate depends on the frame rate. DNxHR is resolution-independent. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it.\nA frame that does not fit in the bit rate (e.g. noise in DNxHR 444) fails to encode. Do not set qmax above 256 in Codec Options: FFmpeg's encoder may crash."
 #define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (10 bit, RGB, 4.5:1 compression)", "dnxhr444"
 #define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (10 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
 #define kParamDNxHDCodecProfileOptionHRHQ "DNxHR HQ", "DNxHR High Quality (8 bit, 4:2:2 chroma sub-sampling, 4.5:1 compression)", "dnxhrhq"
 #define kParamDNxHDCodecProfileOptionHRSQ "DNxHR SQ", "DNxHR Standard Quality (8 bit, 4:2:2 chroma sub-sampling, 7:1 compression)", "dnxhrsq"
 #define kParamDNxHDCodecProfileOptionHRLB "DNxHR LB", "DNxHR Low Bandwidth (8 bit, 4:2:2 chroma sub-sampling, 22:1 compression)", "dnxhrlb"
-#define kParamDNxHDCodecProfileOption440x AVID_DNXHD_422_440X_NAME, "880x in 1080p/60 or 1080p/59.94, 730x in 1080p/50, 440x in 1080p/30, 390x in 1080p/25, 350x in 1080p/24", "dnxhd422_440x"
-#define kParamDNxHDCodecProfileOption220x AVID_DNXHD_422_220X_NAME, "440x in 1080p/60 or 1080p/59.94, 365x in 1080p/50, 220x in 1080i/60 or 1080i/59.94, 185x in 1080i/50 or 1080p/25, 175x in 1080p/24 or 1080p/23.976, 220x in 1080p/29.97, 220x in 720p/59.94, 175x in 720p/50", "dnxhd422_220x"
-#define kParamDNxHDCodecProfileOption220 AVID_DNXHD_422_220_NAME, "440 in 1080p/60 or 1080p/59.94, 365 in 1080p/50, 220 in 1080i/60 or 1080i/59.94, 185 in 1080i/50 or 1080p/25, 175 in 1080p/24 or 1080p/23.976, 220 in 1080p/29.97, 220 in 720p/59.94, 175 in 720p/50", "dnxhd422_220"
-#define kParamDNxHDCodecProfileOption145 AVID_DNXHD_422_145_NAME, "290 in 1080p/60 or 1080p/59.94, 240 in 1080p/50, 145 in 1080i/60 or 1080i/59.94, 120 in 1080i/50 or 1080p/25, 115 in 1080p/24 or 1080p/23.976, 145 in 1080p/29.97, 145 in 720p/59.94, 115 in 720p/50", "dnxhd422_145"
-#define kParamDNxHDCodecProfileOption36 AVID_DNXHD_422_36_NAME, "90 in 1080p/60 or 1080p/59.94, 75 in 1080p/50, 45 in 1080i/60 or 1080i/59.94, 36 in 1080i/50 or 1080p/25, 36 in 1080p/24 or 1080p/23.976, 45 in 1080p/29.97, 100 in 720p/59.94, 85 in 720p/50", "dnxhd422_36"
+#define kParamDNxHDCodecProfileOption440x AVID_DNXHD_422_440X_NAME, "10 bit, 4:2:2, 1920x1080 only: the same stream as DNxHD 220x in 1080p (CID 1235), which is 440x in 1080p/59.94 or 1080p/60. FFmpeg cannot write DNxHD 444 (CID 1256, 880 Mbit/s in 1080p/60): use DNxHR 444.", "dnxhd422_440x"
+#define kParamDNxHDCodecProfileOption220x AVID_DNXHD_422_220X_NAME, "10 bit, 4:2:2. 1080p (CID 1235): 175x in 1080p/23.976 or 1080p/24, 185x in 1080p/25, 220x in 1080p/29.97 or 1080p/30, 365x in 1080p/50, 440x in 1080p/59.94 or 1080p/60. 720p (CID 1250): 90x in 720p/23.976 to 720p/25, 110x in 720p/29.97 or 720p/30, 175x in 720p/50, 220x in 720p/59.94 or 720p/60", "dnxhd422_220x"
+#define kParamDNxHDCodecProfileOption220 AVID_DNXHD_422_220_NAME, "8 bit, 4:2:2. 1080p (CID 1238): 175 in 1080p/23.976 or 1080p/24, 185 in 1080p/25, 220 in 1080p/29.97 or 1080p/30, 365 in 1080p/50, 440 in 1080p/59.94 or 1080p/60. 720p (CID 1251): 90 in 720p/23.976 to 720p/25, 110 in 720p/29.97 or 720p/30, 175 in 720p/50, 220 in 720p/59.94 or 720p/60", "dnxhd422_220"
+#define kParamDNxHDCodecProfileOption145 AVID_DNXHD_422_145_NAME, "8 bit, 4:2:2. 1080p (CID 1237): 115 in 1080p/23.976 or 1080p/24, 120 in 1080p/25, 145 in 1080p/29.97 or 1080p/30, 240 in 1080p/50, 290 in 1080p/59.94 or 1080p/60. 720p (CID 1252): 60 in 720p/23.976 to 720p/25, 75 in 720p/29.97 or 720p/30, 115 in 720p/50, 145 in 720p/59.94 or 720p/60", "dnxhd422_145"
+#define kParamDNxHDCodecProfileOption36 AVID_DNXHD_422_36_NAME, "8 bit, 4:2:2, 1920x1080 only (CID 1253): 36 in 1080p/23.976 to 1080p/25, 45 in 1080p/29.97 or 1080p/30, 75 in 1080p/50, 90 in 1080p/59.94 or 1080p/60. In 720p, use DNxHD 145.", "dnxhd422_36"
 
 enum DNxHDCodecProfileEnum {
     eDNxHDCodecProfileHR444,
@@ -747,6 +748,74 @@ enum DNxHDCodecProfileEnum {
     eDNxHDCodecProfile145,
     eDNxHDCodecProfile36,
 };
+
+// #305: the bitrate (in Mbit/s) that makes FFmpeg's dnxhd encoder use the compression ID (CID) of a DNxHD profile in
+// 1920x1080 or 1280x720 (is720p), at the frame rate frameRate (rounded down), or 0 if that profile does not exist in
+// that size (DNxHD 440x and 36 are 1080p only).
+// FFmpeg's encoder only uses the bitrate to choose the CID: ff_dnxhd_find_cid() (libavcodec/dnxhddata.c:1127, the
+// same in n8.0, n9.0.2 and n9.1) returns the first CID of the frame size and bit depth (8 for yuv422p, 10 for
+// yuv422p10) whose bit_rates (dnxhd_cid_table, dnxhddata.c:937) contain bit_rate / 1000000, and avcodec_open2()
+// fails if there is none. It never checks the frame rate: the bitrate of the stream is the frame size of the CID
+// times the frame rate (SMPTE ST 2019-1:2016, section 7.1 and Table C.1). The bitrates below are those of FFmpeg's
+// bit_rates, by frame rate; the hints use Avid's names (the table "Avid DNxHD family of mastering resolutions" in
+// "Avid DNxHD Technology", 2012, p. 9,
+// https://web.archive.org/web/20160304091149/http://www.avid.com/static/resources/US/documents/DNxHD.pdf).
+// FFmpeg lists no 220 for CID 1235 and no 110 for CID 1250 (the 29.97 fps bitrates): another bitrate of the same CID
+// gives the same stream.
+static int
+dnxhdBitrateMbps(DNxHDCodecProfileEnum profile,
+                 bool is720p,
+                 int frameRate)
+{
+    // the bitrates at 23.976/24, 25, 29.97/30, 50 and 59.94/60 fps
+    static const std::array<int, 5> cid1235 = { 175, 185, 185, 365, 440 }; // 1920x1080, 10 bit (220 at 29.97 fps)
+    static const std::array<int, 5> cid1238 = { 175, 185, 220, 365, 440 }; // 1920x1080, 8 bit
+    static const std::array<int, 5> cid1237 = { 115, 120, 145, 240, 290 }; // 1920x1080, 8 bit
+    static const std::array<int, 5> cid1253 = { 36, 36, 45, 75, 90 }; // 1920x1080, 8 bit
+    static const std::array<int, 5> cid1250 = { 90, 90, 90, 180, 220 }; // 1280x720, 10 bit (110 at 29.97 fps)
+    static const std::array<int, 5> cid1251 = { 90, 90, 110, 180, 220 }; // 1280x720, 8 bit
+    static const std::array<int, 5> cid1252 = { 60, 60, 75, 120, 145 }; // 1280x720, 8 bit
+    const std::array<int, 5>* mbs = nullptr;
+    switch (profile) {
+    case eDNxHDCodecProfile440x:
+        mbs = is720p ? nullptr : &cid1235;
+        break;
+    case eDNxHDCodecProfile220x:
+        mbs = is720p ? &cid1250 : &cid1235;
+        break;
+    case eDNxHDCodecProfile220:
+        mbs = is720p ? &cid1251 : &cid1238;
+        break;
+    case eDNxHDCodecProfile145:
+        mbs = is720p ? &cid1252 : &cid1237;
+        break;
+    case eDNxHDCodecProfile36:
+        mbs = is720p ? nullptr : &cid1253;
+        break;
+    case eDNxHDCodecProfileHR444:
+    case eDNxHDCodecProfileHRHQX:
+    case eDNxHDCodecProfileHRHQ:
+    case eDNxHDCodecProfileHRSQ:
+    case eDNxHDCodecProfileHRLB:
+        // DNxHR is resolution-independent, its CID is chosen by the profile option
+        break;
+    }
+    if (!mbs) {
+        return 0;
+    }
+    size_t i = 0; // 23.976 or 24 fps
+    if (frameRate > 50) {
+        i = 4;
+    } else if (frameRate >= 40) {
+        i = 3;
+    } else if (frameRate > 25) {
+        i = 2;
+    } else if (frameRate == 25) {
+        i = 1;
+    }
+
+    return (*mbs)[i];
+}
 
 #define kParamDNxHDEncodeVideoRange "DNxHDEncodeVideoRange"
 #define kParamDNxHDEncodeVideoRangeLabel "DNxHD Output Range"
@@ -2931,19 +3000,24 @@ WriteFFmpegPlugin::getPixelFormatsFromList(const AVOutputFormat* fmt,
         }
     } else if (AV_CODEC_ID_DNXHD == videoCodec->id) {
         DNxHDCodecProfileEnum dnxhdCodecProfile = (DNxHDCodecProfileEnum)_dnxhdCodecProfile->getValue();
-        // As of FFmpeg 3.3.3, ffmpeg seems to encode only 10 bits
+        // FFmpeg's dnxhd encoder takes yuv422p (8 bit), and yuv422p10, yuv444p10 and gbrp10 (10 bit), and
+        // dnxhd_encode_init() checks the pixel format of each DNxHR profile (libavcodec/dnxhdenc.c:358-390 and :1355
+        // in n9.1, the same one line further in n8.0)
         if (dnxhdCodecProfile == eDNxHDCodecProfileHR444) {
-            // see libavcodec/dnxhdenc.c:392 in FFmpeg 3.3.3
+            // yuv444p10 or gbrp10 (dnxhdenc.c:369-376)
             outTargetPixelFormat = AV_PIX_FMT_GBRP10;
         } else if (dnxhdCodecProfile == eDNxHDCodecProfileHRHQX) {
-            // see libavcodec/dnxhdenc.c:401 in FFmpeg 3.3.3
+            // yuv422p10 only (dnxhdenc.c:378-382)
             outTargetPixelFormat = AV_PIX_FMT_YUV422P10;
         } else if ((dnxhdCodecProfile == eDNxHDCodecProfileHRHQ) || (dnxhdCodecProfile == eDNxHDCodecProfileHRSQ) || (dnxhdCodecProfile == eDNxHDCodecProfileHRLB)) {
-            // see libavcodec/dnxhdenc.c:407 in FFmpeg 3.3.3
+            // yuv422p only (dnxhdenc.c:384-390)
             outTargetPixelFormat = AV_PIX_FMT_YUV422P;
         } else if ((dnxhdCodecProfile == eDNxHDCodecProfile220x) || (dnxhdCodecProfile == eDNxHDCodecProfile440x)) {
+            // DNxHD: the bit depth of the pixel format selects the CID (ff_dnxhd_find_cid()): 10 bit for CIDs 1235
+            // and 1250
             outTargetPixelFormat = AV_PIX_FMT_YUV422P10;
         } else {
+            // 8 bit for CIDs 1237, 1238, 1251, 1252 and 1253
             outTargetPixelFormat = AV_PIX_FMT_YUV422P;
         }
     } else if (encoderPixelFormats(videoCodec, fmt) != nullptr) {
@@ -3946,133 +4020,21 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
             mbs = -1;
             break;
         case eDNxHDCodecProfile440x:
-            // 880x in 1080p/60 or 1080p/59.94, 730x in 1080p/50, 440x in 1080p/30, 390x in 1080p/25, 350x in 1080p/24
-            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
-                if (frameRate > 50) {
-                    // case 60:
-                    // case 59:
-                    mbs = progressive ? 880 : /*0*/ 220;
-                } else if (frameRate > 29) {
-                    // case 50:
-                    mbs = progressive ? 730 : /*0*/ 220;
-                } else if (frameRate > 25) {
-                    // case 29:
-                    mbs = progressive ? 440 : /*0*/ 220;
-                } else if (frameRate > 24) {
-                    // case 25:
-                    mbs = progressive ? 390 : /*0*/ 185;
-                } else {
-                    // case 24:
-                    // case 23:
-                    mbs = progressive ? 350 : /*0*/ 145;
-                }
-            }
-            break;
         case eDNxHDCodecProfile220x:
         case eDNxHDCodecProfile220:
-            // 440x in 1080p/60 or 1080p/59.94, 365x in 1080p/50, 220x in 1080i/60 or 1080i/59.94, 185x in 1080i/50 or 1080p/25, 175x in 1080p/24 or 1080p/23.976, 220x in 1080p/29.97, 220x in 720p/59.94, 175x in 720p/50
-            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
-                if (frameRate > 50) {
-                    // case 60:
-                    // case 59:
-                    mbs = progressive ? 440 : 220;
-                } else if (frameRate > 29) {
-                    // case 50:
-                    mbs = progressive ? 365 : 185;
-                } else if (frameRate > 25) {
-                    // case 29:
-                    mbs = progressive ? 220 : /*0*/ 145;
-                } else if (frameRate > 24) {
-                    // case 25:
-                    mbs = progressive ? 185 : /*0*/ 120;
-                } else {
-                    // case 24:
-                    // case 23:
-                    mbs = progressive ? 175 : /*0*/ 120;
-                }
-            } else {
-                if (frameRate > 50) {
-                    // case 60:
-                    // case 59:
-                    mbs = progressive ? 220 : 0; // 720i unsupported in ffmpeg
-                } else {
-                    // case 50:
-                    mbs = progressive ? 175 : 0; // 720i unsupported in ffmpeg
-                }
-            }
-            break;
         case eDNxHDCodecProfile145:
-            // 290 in 1080p/60 or 1080p/59.94, 240 in 1080p/50, 145 in 1080i/60 or 1080i/59.94, 120 in 1080i/50 or 1080p/25, 115 in 1080p/24 or 1080p/23.976, 145 in 1080p/29.97, 145 in 720p/59.94, 115 in 720p/50
-            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
-                if (frameRate > 50) {
-                    // case 60:
-                    // case 59:
-                    mbs = progressive ? 290 : 145;
-                } else if (frameRate > 29) {
-                    // case 50:
-                    mbs = progressive ? 240 : 120;
-                } else if (frameRate > 25) {
-                    // case 29:
-                    mbs = progressive ? 145 : /*0*/ 120; // 120 is the lowest possible bitrate for 1920x1080i
-                } else if (frameRate > 24) {
-                    // case 25:
-                    mbs = 120 /*progressive ? 120 : 0*/; // 120 is the lowest possible bitrate for 1920x1080i
-                } else {
-                    // case 24:
-                    // case 23:
-                    mbs = progressive ? 115 : /*0*/ 120; // 120 is the lowest possible bitrate for 1920x1080i
-                }
-            } else {
-                if (frameRate > 50) {
-                    // case 60:
-                    // case 59:
-                    mbs = progressive ? 145 : 0; // 720i unsupported
-                } else {
-                    // case 50:
-                    mbs = progressive ? 115 : 0; // 720i unsupported
-                }
-            }
-            break;
         case eDNxHDCodecProfile36:
-            // 90 in 1080p/60 or 1080p/59.94, 75 in 1080p/50, 45 in 1080i/60 or 1080i/59.94, 36 in 1080i/50 or 1080p/25, 36 in 1080p/24 or 1080p/23.976, 45 in 1080p/29.97, 100 in 720p/59.94, 85 in 720p/50
-            if ((avCodecContext->width == 1920) && (avCodecContext->height == 1080)) {
-                if (frameRate > 50) {
-                    // case 60:
-                    // case 59:
-                    mbs = progressive ? 90 : /*45*/ 120; // 45 is not unsupported by ffmpeg for 1920x1080i
-                } else if (frameRate > 29) {
-                    // case 50:
-                    mbs = progressive ? 75 : /*36*/ 120; // 36 is not unsupported by ffmpeg 1920x1080i
-                } else if (frameRate > 25) {
-                    // case 29:
-                    mbs = progressive ? 45 : /*0*/ 120;
-                } else if (frameRate > 24) {
-                    // case 25:
-                    mbs = progressive ? 36 : /*0*/ 120;
-                } else {
-                    // case 24:
-                    // case 23:
-                    mbs = progressive ? 36 : /*0*/ 120;
-                }
-            } else {
-                switch (frameRate) {
-                case 60:
-                case 59:
-                    mbs = progressive ? 100 : 0; // 720i unsupported in ffmpeg
-                    break;
-                case 50:
-                    mbs = progressive ? 85 : 0; // 720i unsupported in ffmpeg
-                    break;
-                default:
-                    break;
-                }
+            // the size is 1920x1080 or 1280x720 (see above), and the video is progressive
+            mbs = dnxhdBitrateMbps(dnxhdCodecProfile, avCodecContext->height == 720, frameRate);
+            if (mbs == 0) {
+                const bool is36 = (dnxhdCodecProfile == eDNxHDCodecProfile36);
+                setPersistentMessage(Message::eMessageError, "",
+                                     string(is36 ? AVID_DNXHD_422_36_NAME : AVID_DNXHD_422_440X_NAME) + " is only available in 1920x1080: use "
+                                         + (is36 ? AVID_DNXHD_422_145_NAME : AVID_DNXHD_422_220X_NAME) + " in 1280x720");
+                throwSuiteStatusException(kOfxStatFailed);
             }
             break;
         } // switch
-        if (mbs == 0) {
-            setPersistentMessage(Message::eMessageError, "", "frameRate not supported for DNxHD");
-            throwSuiteStatusException(kOfxStatFailed);
-        }
         if (mbs > 0) {
             avCodecContext->bit_rate = mbs * 1000000;
         }

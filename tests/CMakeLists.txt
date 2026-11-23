@@ -226,6 +226,9 @@ if(TARGET io_tests_ofx)
   io_test(test-writeffmpeg-begin-failure ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --begin-failure)
   # test-readffmpeg-destroy-closes-file (#290): DestroyInstance closes the movie file, before Unload
   io_test(test-readffmpeg-destroy-closes-file ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i290.mov" --destroy-closes-file)
+  # test-writeffmpeg-dnxhd-profiles (#305): each DNxHD/DNxHR Codec Profile in 1080p and 720p at 23.976 to 60 fps: the
+  # expected compression ID, or a clear error where the profile does not exist
+  io_test(test-writeffmpeg-dnxhd-profiles TIMEOUT 600 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --dnxhd-profiles)
   # test-writeffmpeg-encode-failure (#288): frame 1 is aborted or fails a check of encode() while other threads wait
   # for their turn: they fail instead of waiting forever (the test exits after 60 s; the ctest time limit is a backstop)
   io_test(test-writeffmpeg-encode-failure TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288.mov" --encode-failure)
