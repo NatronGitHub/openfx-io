@@ -496,7 +496,7 @@ main(int argc, char** argv)
 
     int w = 0, h = 0, frames = 0;
     double aspect = 1.0;
-    if (!file.getInfo(w, h, aspect, frames)) {
+    if (!file.getInfo(/*streamIndex=*/0, w, h, aspect, frames)) {
         std::fprintf(stderr, "FAIL: getInfo failed\n");
         return 1;
     }
@@ -536,7 +536,7 @@ main(int argc, char** argv)
         const long long bytes0 = file.getBytesRead();
         bool ok = false;
         try {
-            ok = file.decode(nullptr, seekBytesFrame, loadNearest, seekBuf.data());
+            ok = file.decode(nullptr, /*streamIndex=*/0, seekBytesFrame, loadNearest, seekBuf.data());
         } catch (const std::exception& e) {
             ok = false;
         }
@@ -558,7 +558,7 @@ main(int argc, char** argv)
             bool ok = false;
             std::string error;
             try {
-                ok = file.decode(nullptr, f, loadNearest, rgbBuf.data(), &error);
+                ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, rgbBuf.data(), &error);
             } catch (const std::exception& e) {
                 error = e.what();
             }
@@ -600,7 +600,7 @@ main(int argc, char** argv)
         bool ok = false;
         std::string error;
         try {
-            ok = file.decode(nullptr, 1, loadNearest, rampBuf.data(), &error);
+            ok = file.decode(nullptr, /*streamIndex=*/0, 1, loadNearest, rampBuf.data(), &error);
         } catch (const std::exception& e) {
             error = e.what();
         }
@@ -704,7 +704,7 @@ main(int argc, char** argv)
         {
             FFmpegFile clean(referenceFile.c_str());
             for (int f : referenceFrames) {
-                if ((f < 1) || (f > frames) || !clean.decode(nullptr, f, loadNearest, refBuf.data())) {
+                if ((f < 1) || (f > frames) || !clean.decode(nullptr, /*streamIndex=*/0, f, loadNearest, refBuf.data())) {
                     std::fprintf(stderr, "FAIL: --reference: frame %d of %s cannot be decoded\n", f, referenceFile.c_str());
                     return 1;
                 }
@@ -741,7 +741,7 @@ main(int argc, char** argv)
                 bool ok = false;
                 std::memset(refBuf.data(), 0, refBytes);
                 try {
-                    ok = file->decode(nullptr, f, loadNearest, refBuf.data());
+                    ok = file->decode(nullptr, /*streamIndex=*/0, f, loadNearest, refBuf.data());
                 } catch (const std::exception& e) {
                     ok = false;
                 }
@@ -814,7 +814,7 @@ main(int argc, char** argv)
     auto checkFails = [&](int f, const char* phase) {
         bool ok = false;
         try {
-            ok = file.decode(nullptr, f, loadNearest, buf.data());
+            ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
         } catch (const std::exception& e) {
             ok = false;
         }
@@ -848,7 +848,7 @@ main(int argc, char** argv)
         }
         bool ok = false;
         try {
-            ok = file.decode(nullptr, f, loadNearest, buf.data());
+            ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
         } catch (const std::exception& e) {
             std::fprintf(stderr, "FAIL: sequential decode frame %d threw: %s\n", f, e.what());
             return 1;
@@ -942,7 +942,7 @@ main(int argc, char** argv)
         }
         bool ok = false;
         try {
-            ok = file.decode(nullptr, f, loadNearest, buf.data());
+            ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
         } catch (const std::exception& e) {
             std::printf("  OUT-OF-ORDER decode frame %d threw: %s\n", f, e.what());
             ++mismatches;
@@ -985,7 +985,7 @@ main(int argc, char** argv)
             const unsigned long seeks0 = orderFile.getSeekCount();
             const unsigned long startSeeks0 = orderFile.getStartSeekCount();
             try {
-                ok = orderFile.decode(nullptr, f, loadNearest, buf.data());
+                ok = orderFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
             } catch (const std::exception& e) {
                 ok = false;
             }
@@ -1033,7 +1033,7 @@ main(int argc, char** argv)
         const long long bytes0 = reverseFile.getBytesRead();
         for (int f = frames; f >= 1; --f) {
             try {
-                (void)reverseFile.decode(nullptr, f, loadNearest, buf.data());
+                (void)reverseFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
             } catch (const std::exception& e) {
             }
         }
@@ -1051,7 +1051,7 @@ main(int argc, char** argv)
         std::memset(buf.data(), 0, bufBytes);
         bool ok = false;
         try {
-            ok = freshFile.decode(nullptr, f, loadNearest, buf.data());
+            ok = freshFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
         } catch (const std::exception& e) {
             ok = false;
         }

@@ -89,3 +89,7 @@
 /raw_unload
 /raw_unload.dSYM/
 /.raw_unload/
+/ofx_render_test_tsan
+/ofx_render_test_tsan.dSYM/
+/.render_out.mov.i291.mov
+/.render_out.mov.i291.tsan.mov

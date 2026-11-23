@@ -838,12 +838,13 @@ private:
     // AV structure
     AVFormatContext* _context;
 
-    // store all video streams available in the file
+    // store all video streams available in the file (the views: they match the first one, see
+    // CheckStreamPropertiesMatch()). Set by the constructor only, so it may be read without a lock; the Streams
+    // themselves are decoded under _lock.
     std::vector<Stream*> _streams;
 
-    // The stream selected as the one from which data will be read. The constructor sets this to the
-    // viewIndex^th stream if there is one, otherwise the first (i.e. zeroth) stream.
-    Stream* _selectedStream;
+    // The stream that the last decode() demuxed (nullptr before the first one), guarded by _lock
+    Stream* _demuxedStream;
 
     // reader error state
     std::string _errorMsg; // internal decoding error string
@@ -855,7 +856,14 @@ private:
     bool _damagedPacketWarned; // a warning was logged for a damaged packet
 
 #ifdef OFX_IO_MT_FFMPEG
-    // internal lock for multithread access
+    // _lock guards the decoding state: _context (demuxing, seeking), _demuxedStream, the state of every Stream
+    // (codec context, held frames, conversion context, color overrides), _seekCount and _startSeekCount. decode()
+    // holds it from the choice of the stream (the view) to the end of the decode, so that concurrent renders of
+    // different views do not decode each other's stream (#291).
+    // _invalidStateLock guards _invalidState. _errorMsg is written with both locks held (decode() holds _lock), and
+    // read under either one.
+    // Lock order: _lock, then _invalidStateLock (decode() sets errors). FFmpegFileManager's lock is taken before
+    // _invalidStateLock (isInvalid()), never while _lock is held.
     mutable Mutex _lock;
     mutable Mutex _invalidStateLock;
 #endif
@@ -920,7 +928,7 @@ public:
         return _filename;
     }
 
-    // The frame of the largest timestamp in the index of the selected stream (-1 if none), for tests
+    // The frame of the largest timestamp in the index of the first stream (-1 if none), for tests
     int getLastIndexedFrame() const;
 
     // The number of bytes read from the file when it was opened (by the constructor), for tests
@@ -948,8 +956,6 @@ public:
     {
         return _streams.size();
     }
-
-    void setSelectedStream(int streamIndex);
 
     // The Y'CbCr matrix and range of the conversion to RGB (the ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params).
     // Auto takes them from the tags of the stream (see Stream::getConvertCtx()).
@@ -1094,19 +1100,21 @@ public:
         return _streams[0]->_bitDepth > 8 ? sizeof(unsigned short) : sizeof(unsigned char);
     }
 
-    // decode a single frame into the buffer. Thread safe
+    // decode a single frame of the stream streamIndex (the view; the first stream if there is no such stream) into
+    // the buffer. Thread safe.
     // If it fails and errorMsg is not null, *errorMsg is the error message of this frame.
-    bool decode(const OFX::ImageEffect* plugin, int frame, bool loadNearest, unsigned char* buffer, std::string* errorMsg = nullptr);
+    bool decode(const OFX::ImageEffect* plugin, int streamIndex, int frame, bool loadNearest, unsigned char* buffer, std::string* errorMsg = nullptr);
 
     // get stream information
     bool getFPS(double& fps,
                 unsigned streamIdx = 0);
 
-    // get stream information
-    bool getInfo(int& width,
+    // get the information of the stream streamIndex (the first stream if there is no such stream). Thread safe.
+    bool getInfo(int streamIndex,
+                 int& width,
                  int& height,
                  double& aspect,
-                 int& frames);
+                 int& frames) const;
 
     const char* getColorspace() const;
 
@@ -1134,14 +1142,21 @@ public:
     static bool isCodecAllowedForWriting(const char* name);
 
 private:
+    // The stream streamIndex, or the first stream if there is no such stream (as a view of a multi-view project
+    // beyond the streams of the file), or nullptr if the file has no stream. The non-const one is for decode(), which
+    // holds _lock.
+    const Stream* getStream(int streamIndex) const;
+    Stream* getStream(int streamIndex);
+
     // flush the decoder, or open it again after damage
+    // (these are called by decode(), with _lock held, on the stream that it decodes)
     void flushDecoder(Stream* stream);
-    bool seekToFrame(int64_t frame, int seekFlags);
+    bool seekToFrame(Stream* stream, int64_t frame, int seekFlags);
 
     // damagedFrom: intra-only, the first frame of the frames up to the requested one known to be damaged (-1 if none)
-    bool demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame, int damagedFrom = -1);
+    bool demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame, int damagedFrom = -1);
 
-    bool imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut);
+    bool imageConvert(Stream* stream, AVFrame* avFrameIn, AVFrame* avFrameOut);
 };
 
 class FFmpegFileManager {

@@ -1389,10 +1389,12 @@ FFmpegFile::probeEnd(Stream& stream,
 int
 FFmpegFile::getLastIndexedFrame() const
 {
-    if (!_selectedStream) {
+    // (for tests: reads the index without _lock, so no decode() must run meanwhile)
+    const Stream* stream = getStream(0);
+    if (!stream) {
         return -1;
     }
-    AVStream* st = _selectedStream->_avstream;
+    AVStream* st = stream->_avstream;
     int64_t last = AV_NOPTS_VALUE;
     const int entries = avformat_index_get_entries_count(st);
     for (int i = 0; i < entries; ++i) {
@@ -1402,7 +1404,7 @@ FFmpegFile::getLastIndexedFrame() const
         }
     }
 
-    return (last == int64_t(AV_NOPTS_VALUE)) ? -1 : _selectedStream->ptsToFrame(last);
+    return (last == int64_t(AV_NOPTS_VALUE)) ? -1 : stream->ptsToFrame(last);
 }
 
 // Get the video stream duration in frames...
@@ -1722,7 +1724,7 @@ FFmpegFile::FFmpegFile(const string& filename)
     : _filename(filename)
     , _context(nullptr)
     , _streams()
-    , _selectedStream(nullptr)
+    , _demuxedStream(nullptr)
     , _errorMsg()
     , _invalidState(false)
     , _seekCount(0)
@@ -1984,17 +1986,6 @@ FFmpegFile::FFmpegFile(const string& filename)
     _bytesReadAtOpen = (_context && _context->pb) ? _context->pb->bytes_read : 0;
     if (_streams.empty()) {
         setError(unsupported_codec ? "unsupported codec or format/codec combination" : "unable to find video stream");
-        _selectedStream = nullptr;
-    } else {
-#pragma message WARN("should we build a separate FFmpegfile for each view? see also FFmpegFileManager")
-        const int viewIndex = 0; // TODO: pass as parameter?
-        assert(viewIndex >= 0 && "Negative view index specified.");
-
-        if (static_cast<size_t>(viewIndex) < _streams.size()) {
-            _selectedStream = _streams[viewIndex];
-        } else {
-            _selectedStream = _streams[0];
-        }
     }
 }
 
@@ -2018,15 +2009,21 @@ FFmpegFile::~FFmpegFile()
     _errorMsg.clear();
 }
 
-void
-FFmpegFile::setSelectedStream(int streamIndex)
+const FFmpegFile::Stream*
+FFmpegFile::getStream(int streamIndex) const
 {
-    if ((streamIndex >= 0) && (streamIndex < static_cast<int>(_streams.size()))) {
-        _selectedStream = _streams[streamIndex];
-    } else {
-        assert(false && "setSelectedStream: Invalid streamIndex");
-        _selectedStream = !_streams.empty() ? _streams[0] : nullptr;
+    assert(streamIndex >= 0);
+    if (_streams.empty()) {
+        return nullptr;
     }
+    // _streams is only set by the constructor: no lock needed
+    return ((streamIndex >= 0) && (static_cast<size_t>(streamIndex) < _streams.size())) ? _streams[streamIndex] : _streams[0];
+}
+
+FFmpegFile::Stream*
+FFmpegFile::getStream(int streamIndex)
+{
+    return const_cast<Stream*>(static_cast<const FFmpegFile*>(this)->getStream(streamIndex));
 }
 
 std::string
@@ -2095,9 +2092,10 @@ FFmpegFile::getColorspace() const
     // Special case for prores - the util YUV will report RGB, due to pixel format support, but for
     // compatibility and consistency with official quicktime, we need to be using 2.2 for 422 material
     // and 1.8 for 4444. Protected to deal with ffmpeg vagaries.
-    assert((_streams.empty() || _selectedStream) && "_streams not empty but null _selectedStream");
-    if (!_streams.empty() && _selectedStream->_codecContext && _selectedStream->_codecContext->codec_id) {
-        if (_selectedStream->_codecContext->codec_id == AV_CODEC_ID_PRORES) {
+    // the streams match (see CheckStreamPropertiesMatch()): the first one tells
+    const Stream* stream = getStream(0);
+    if (stream && stream->_codecContext && stream->_codecContext->codec_id) {
+        if (stream->_codecContext->codec_id == AV_CODEC_ID_PRORES) {
             if ((_streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'h')) || (_streams[0]->_codecContext->codec_tag == MKTAG('a', 'p', '4', 'x'))) {
                 return "Gamma1.8";
             } else {
@@ -2105,22 +2103,23 @@ FFmpegFile::getColorspace() const
             }
         }
     }
-    if (!_streams.empty() && _selectedStream->_codecContext) {
-        if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_BT709 || _selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE240M) {
+    if (stream && stream->_codecContext) {
+        if (stream->_codecContext->color_trc == AVCOL_TRC_BT709 || stream->_codecContext->color_trc == AVCOL_TRC_SMPTE240M) {
             return "rec709";
-        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_GAMMA22) {
+        } else if (stream->_codecContext->color_trc == AVCOL_TRC_GAMMA22) {
             return "Gamma2.2";
-        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE170M) {
+        } else if (stream->_codecContext->color_trc == AVCOL_TRC_SMPTE170M) {
             return "rec601";
-        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_SMPTE2084) {
+        } else if (stream->_codecContext->color_trc == AVCOL_TRC_SMPTE2084) {
             return "st2084";
-        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_IEC61966_2_1) {
+        } else if (stream->_codecContext->color_trc == AVCOL_TRC_IEC61966_2_1) {
             return "sRGB";
-        } else if (_selectedStream->_codecContext->color_trc == AVCOL_TRC_LINEAR) {
+        } else if (stream->_codecContext->color_trc == AVCOL_TRC_LINEAR) {
             return "linear";
         }
     }
-    return (!_streams.empty() && _streams[0]->isYUV()) ? "Gamma2.2" : "Gamma1.8"; // (FFmpegFile::isYUV() takes the lock)
+    // (Stream::isYUV(), under the lock taken above: FFmpegFile::isYUV() would take it again)
+    return (stream && stream->isYUV()) ? "Gamma2.2" : "Gamma1.8";
 } // FFmpegFile::getColorspace
 
 void
@@ -2206,16 +2205,15 @@ FFmpegFile::isInvalid() const
 }
 
 // Whether the codec only has keyframes: its descriptor has AV_CODEC_PROP_INTRA_ONLY ("Codec uses only intra
-// compression", libavcodec/codec_desc.h:68-72 in FFmpeg 4.4, 8.0 and 9.0), e.g. ProRes, DNxHD, MJPEG, rawvideo, v210,
+// compression", libavcodec/codec_desc.h:68-72 in FFmpeg 8.0 and 9.0), e.g. ProRes, DNxHD, MJPEG, rawvideo, v210,
 // r210, r10k, HuffYUV, FFVHuff, JPEG-LS, JPEG 2000, Hap, EXR (libavcodec/codec_desc.c), or it is in the list
-// below, which overrides the descriptor: PNG has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:470 in FFmpeg 8.0 and 9.0,
-// 463 in 4.4; animated PNG is AV_CODEC_ID_APNG), but each PNG packet is a complete image. The other codecs of the list
-// have AV_CODEC_PROP_INTRA_ONLY in FFmpeg 4.4 to 9.0: they are kept as they were before the descriptor was used.
+// below, which overrides the descriptor: PNG has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:470 in FFmpeg 8.0 and 9.0;
+// animated PNG is AV_CODEC_ID_APNG), but each PNG packet is a complete image. The other codecs of the list have
+// AV_CODEC_PROP_INTRA_ONLY in FFmpeg 8.0 and 9.0: they are kept as they were before the descriptor was used.
 // AVCodecContext::gop_size does not tell: it is "unused" for decoding (libavcodec/avcodec.h:1016-1021 in FFmpeg 9.0,
-// 1000-1005 in 8.0, 726-731 in 4.4), and avcodec_alloc_context3() sets it to 12, its default (the "g" option,
-// libavcodec/options_table.h:96 in 9.0, 95 in 8.0, 88 in 4.4, set for video decoders too by init_context_defaults(),
-// libavcodec/options.c:90-110 in 8.0 and 9.0, 107-126 in 4.4), so the former gop_size == 0 test was never true when
-// decoding.
+// 1000-1005 in 8.0), and avcodec_alloc_context3() sets it to 12, its default (the "g" option,
+// libavcodec/options_table.h:96 in 9.0, 95 in 8.0, set for video decoders too by init_context_defaults(),
+// libavcodec/options.c:90-110 in 8.0 and 9.0), so the former gop_size == 0 test was never true when decoding.
 // Not CineForm (AV_CODEC_ID_CFHD), whose descriptor has no AV_CODEC_PROP_INTRA_ONLY (codec_desc.c:1530 in 9.0): it may
 // have inter frames.
 static bool
@@ -2347,6 +2345,7 @@ FFmpegFile::Stream::previousKeyframeTs(int frame) const
 // decode a single frame into the buffer thread safe
 bool
 FFmpegFile::decode(const ImageEffect* /*plugin*/,
+                   int streamIndex,
                    int frame,
                    bool loadNearest,
                    unsigned char* buffer,
@@ -2356,13 +2355,14 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     AutoMutex guard(_lock);
 #endif
 
-    if (_streams.empty() || !_selectedStream) {
+    // chosen under _lock, and passed to the functions that decode it (#291)
+    Stream* stream = getStream(streamIndex);
+    if (!stream) {
         if (errorMsg) {
             *errorMsg = _errorMsg.empty() ? string("FFmpeg Reader: no video stream") : _errorMsg;
         }
         return false;
     }
-    Stream* stream = _selectedStream;
 
     // The error message of the previous frame, if any (unless the file is invalid)
     clearDecodeError();
@@ -2412,9 +2412,12 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // Only seek and reset for non-sequential frames as this can be very costly: the frame may be
     // the one held since the previous request (e.g. in a timestamp gap of a variable frame rate
     // movie), or the next one out of the decoder.
-    if (!stream->isSequential(frame) || stream->_restartSingleThread) {
-        seekToFrame(stream->frameToPts(frame), AVSEEK_FLAG_BACKWARD);
+    // The demuxer is shared by the streams (the views), and drops the packets of the other streams: after a decode of
+    // another stream, this one must seek (#291).
+    if (!stream->isSequential(frame) || stream->_restartSingleThread || (stream != _demuxedStream)) {
+        seekToFrame(stream, stream->frameToPts(frame), AVSEEK_FLAG_BACKWARD);
     }
+    _demuxedStream = stream;
 
     // Setup the output frame struct with the buffer passed in
     avFrameOut->width = stream->_width;
@@ -2483,7 +2486,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         // A frame decoded after a seek may be corrupt (e.g. a reference frame is missing): it is
         // only used for a timestamp gap when decoding from the start (Stream::_decodingFromStart),
         // or for intra-only codecs, see demuxAndDecode().
-        hasPicture = demuxAndDecode(avFrameOut, frame, /*acceptCorruptHeldFrame=*/isIntraOnly);
+        hasPicture = demuxAndDecode(stream, avFrameOut, frame, /*acceptCorruptHeldFrame=*/isIntraOnly);
         if (stream->_invalidDataSkipped) {
             requestDamageError = stream->_invalidDataSkipped;
         }
@@ -2494,7 +2497,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
             clearDecodeError();
             const bool fromStart = retriedSeek && stream->_decodingFromStart;
             const int64_t restartTs = ((earlierKeyTs != int64_t(AV_NOPTS_VALUE)) && !retriedSeek) ? earlierKeyTs : stream->frameToPts(frame);
-            if (fromStart ? seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD) : seekToFrame(restartTs, AVSEEK_FLAG_BACKWARD)) {
+            if (fromStart ? seekToFrame(stream, 0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD) : seekToFrame(stream, restartTs, AVSEEK_FLAG_BACKWARD)) {
                 stream->_decodingFromStart = fromStart;
                 retriedDecode = false; // (this attempt again)
                 continue;
@@ -2519,7 +2522,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
             !Stream::hasFrame(stream->_avHeldFrame) && (stream->_firstOutputFrame > frame) &&
             !stream->_invalidDataSkipped && !stream->_tooManyDroppedPackets && !stream->_noTimestamps && _errorMsg.empty()) {
             earlierKeyTs = stream->previousKeyframeTs(frame);
-            if ((earlierKeyTs != int64_t(AV_NOPTS_VALUE)) && seekToFrame(earlierKeyTs, AVSEEK_FLAG_BACKWARD)) {
+            if ((earlierKeyTs != int64_t(AV_NOPTS_VALUE)) && seekToFrame(stream, earlierKeyTs, AVSEEK_FLAG_BACKWARD)) {
                 continue;
             }
             clearDecodeError(); // (a failed seek: from the start of the file, below)
@@ -2531,7 +2534,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         // stream with B-frames.
         if (!hasPicture && !isIntraOnly && !retriedSeek && !stream->_tooManyDroppedPackets && !stream->_noTimestamps) {
             retriedSeek = true;
-            if (seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)) {
+            if (seekToFrame(stream, 0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)) {
                 // Until the next seek (which resets it), including the next sequential requests:
                 // otherwise each of them would refuse the same corrupt frame and decode from the
                 // start again.
@@ -2563,10 +2566,10 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         clearDecodeError();
         stream->_stoppedOnDamagedPacket = false;
         stream->_invalidDataSkipped = 0;
-        if (!seekToFrame(stream->frameToPts(from), AVSEEK_FLAG_BACKWARD)) {
+        if (!seekToFrame(stream, stream->frameToPts(from), AVSEEK_FLAG_BACKWARD)) {
             break;
         }
-        hasPicture = demuxAndDecode(avFrameOut, frame, /*acceptCorruptHeldFrame=*/isIntraOnly, damagedFrom);
+        hasPicture = demuxAndDecode(stream, avFrameOut, frame, /*acceptCorruptHeldFrame=*/isIntraOnly, damagedFrom);
         if (stream->_invalidDataSkipped) {
             lastDamageError = stream->_invalidDataSkipped;
         }
@@ -2734,10 +2737,8 @@ FFmpegFile::flushDecoder(Stream* stream)
 }
 
 bool
-FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
+FFmpegFile::seekToFrame(Stream* stream, int64_t frame, int seekFlags)
 {
-    Stream* stream = _selectedStream;
-
     stream->resetHeldFrames(); // also resets _decodingFromStart
     flushDecoder(stream);
     stream->clearTaint();
@@ -2801,9 +2802,8 @@ FFmpegFile::seekToFrame(int64_t frame, int seekFlags)
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 
 bool
-FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame, int damagedFrom)
+FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame, int damagedFrom)
 {
-    Stream* stream = _selectedStream;
     MyAVPacket avPacket;
 
     av_frame_unref(stream->_avIntermediateFrame);
@@ -2841,15 +2841,15 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         assert(heldFrameIdx <= frame);
         if (heldFrameIdx > frame) {
             // Should not happen, but the held frames would give a wrong frame: seek, which resets them.
-            seekToFrame(stream->frameToPts((int)frame), AVSEEK_FLAG_BACKWARD);
+            seekToFrame(stream, stream->frameToPts((int)frame), AVSEEK_FLAG_BACKWARD);
         } else if (heldFrameIdx == frame) {
-            return imageConvert(held, avFrameOut);
+            return imageConvert(stream, held, avFrameOut);
         } else if (Stream::hasFrame(next) || stream->_heldFrameIsLast) {
             // The requested frame is in a gap after the held frame.
             if (!canHoldFrame(held)) {
                 return false;
             }
-            return imageConvert(held, avFrameOut);
+            return imageConvert(stream, held, avFrameOut);
         }
     }
 
@@ -2965,7 +2965,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             // may not be in presentation order).
             av_frame_unref(held);
             av_frame_move_ref(held, decodedFrame);
-            hasPicture = imageConvert(held, avFrameOut);
+            hasPicture = imageConvert(stream, held, avFrameOut);
             return true;
         }
 
@@ -2991,7 +2991,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             if (!canHoldFrame(held)) {
                 return true; // stop without a picture
             }
-            hasPicture = imageConvert(held, avFrameOut);
+            hasPicture = imageConvert(stream, held, avFrameOut);
             return true;
         }
 
@@ -3354,7 +3354,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             if (!canHoldFrame(held)) {
                 return false;
             }
-            return imageConvert(held, avFrameOut);
+            return imageConvert(stream, held, avFrameOut);
         }
         stream->_reachedEnd = true;
         markOnlyDamaged(); // e.g. a file damaged up to its end
@@ -3364,14 +3364,12 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
 }
 
 bool
-FFmpegFile::imageConvert(AVFrame* avFrameIn, AVFrame* avFrameOut)
+FFmpegFile::imageConvert(Stream* stream, AVFrame* avFrameIn, AVFrame* avFrameOut)
 {
     if (!avFrameIn || !avFrameOut) {
         setDecodeError("mov64Reader no input or output frame provided for conversion");
         return false;
     }
-
-    Stream* stream = _selectedStream;
 
     AVPixelFormat dstPixFmt = (AVPixelFormat)avFrameOut->format;
     AVPixelFormat srcPixFmt = (AVPixelFormat)avFrameIn->format;
@@ -3439,27 +3437,21 @@ FFmpegFile::getFPS(double& fps,
 
 // get stream information
 bool
-FFmpegFile::getInfo(int& width,
+FFmpegFile::getInfo(int streamIndex,
+                    int& width,
                     int& height,
                     double& aspect,
-                    int& frames)
+                    int& frames) const
 {
-#ifdef OFX_IO_MT_FFMPEG
-    AutoMutex guard(_lock);
-#endif
-
-    if (_streams.empty()) {
+    // set by the constructor only: no lock needed
+    const Stream* stream = getStream(streamIndex);
+    if (!stream) {
         return false;
     }
-
-    assert(_selectedStream && "Null _selectedStream");
-    if (!_selectedStream) {
-        return false;
-    }
-    width = _selectedStream->_width;
-    height = _selectedStream->_height;
-    aspect = _selectedStream->_aspect;
-    frames = (int)_selectedStream->_frames;
+    width = stream->_width;
+    height = stream->_height;
+    aspect = stream->_aspect;
+    frames = (int)stream->_frames;
 
     return true;
 }
