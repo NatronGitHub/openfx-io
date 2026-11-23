@@ -1066,11 +1066,45 @@ FlvLastTagsStart(AVIOContext* pb,
     return start;
 }
 
+// Whether the demuxer may give timestamp discontinuities (MPEG-TS and MPEG-PS). Their demuxers resync after a byte
+// seek, and libavformat counts a duration estimated from their timestamps from the start time.
+static bool
+HasTsDiscontinuities(const AVFormatContext* context)
+{
+    return (context->iformat->flags & AVFMT_TS_DISCONT) != 0;
+}
+
+// The end of the movie given by a duration that libavformat estimated from the timestamps (AVFMT_DURATION_FROM_PTS),
+// in AV_TIME_BASE units. videoStart is the start of the video stream, used when the start time is unknown, and
+// frameDuration the duration of a video frame.
+// With timestamp discontinuities (MPEG-TS and MPEG-PS), the duration is counted from the start time, up to the end
+// of the last packet. Otherwise (NUT), it is the largest PTS, counted from 0: the start of the last packet, which
+// lasts one frame. The largest PTS may also be that of an audio packet, and the result may then be one frame long.
+// Without an index, the NUT duration is the PTS of the last syncpoint. When the probe fails (a GOP longer than the
+// probe), the result may then be short with B-frames: e.g. 58 of 60 frames for a 640x480 noise clip encoded with
+// "libx264 -preset veryfast -qp 8 -bf 3 -g 1000 -x264-params scenecut=0" (one keyframe) and -write_index 0.
+// A duration that does not reach the start cannot be counted from 0, and is then counted from the start.
+static int64_t
+TimestampDurationEnd(const AVFormatContext* context,
+                     int64_t videoStart,
+                     int64_t frameDuration)
+{
+    const int64_t start = (context->start_time == int64_t(AV_NOPTS_VALUE)) ? videoStart : context->start_time;
+    if (HasTsDiscontinuities(context) || (context->duration <= start)) {
+        return start + context->duration;
+    }
+
+    return context->duration + frameDuration;
+}
+
 // Read the last packets of the file, to get the end of the movie (the largest PTS + duration of the packets of all
 // streams, in AV_TIME_BASE units) and the largest PTS of the video stream (in its time base). This reads at most
-// kMaxEndProbeBytes: the demuxer is positioned through its index (the MOV/MP4 samples, the Matroska cues) or, in FLV,
-// at one of the last tags. Returns false if they cannot be read (e.g. the input is not seekable, there is no
-// index, or the last FLV tag is not valid, as in a truncated file), and the caller then uses the duration.
+// kMaxEndProbeBytes. The demuxer is positioned in one of these ways:
+// - through its index (the MOV/MP4 samples, the Matroska cues);
+// - in FLV, at one of the last tags;
+// - when the duration was estimated from the timestamps, near the end that this duration gives (see below).
+// Returns false if they cannot be read (e.g. the input is not seekable, the index does not reach the end, or the
+// last FLV tag is not valid, as in a truncated file), and the caller then uses the duration.
 // A video packet without a duration lasts one frame. Another stream that ends after the last frame of the video
 // stream (e.g. the last audio packet) only adds the whole frames it covers (the last frame is held until the end
 // of the movie, see demuxAndDecode()): audio that ends a few milliseconds after the video does not add a frame.
@@ -1093,22 +1127,39 @@ FFmpegFile::probeEnd(Stream& stream,
     // seeks only read the index: the cues, read at the first seek, or nothing). This is per video stream: with
     // several matching video streams (views), each one is probed.
     const int64_t kMaxEndProbeBytes = int64_t(4) << 20;
-    const char* formatName = _context->iformat ? _context->iformat->name : "";
+    const char* formatName = _context->iformat->name;
     const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
     const bool isMatroska = std::strstr(formatName, "matroska") != nullptr;
-    const bool isMpegTsPs = (std::strcmp(formatName, "mpegts") == 0) || (std::strcmp(formatName, "mpeg") == 0);
     _readAtOpen = true;
-    // MPEG-TS/PS have no index, but their demuxers resync after a byte seek: read the last 1 MB (or 4 MB if it
-    // has too few video packets, e.g. a high bit rate), to get the end that FFmpeg's estimate may miss.
-    int64_t tsWindow = int64_t(1) << 20;
+    // A byte seek goes to the last 1 MB. If that has too few video packets (e.g. at a high bit rate), the probe
+    // seeks again, to the last 4 MB.
+    int64_t byteSeekWindow = int64_t(1) << 20;
+    auto seekToLastBytes = [&]() -> bool {
+        return av_seek_frame(_context, -1, (std::max)(int64_t(0), size - byteSeekWindow), AVSEEK_FLAG_BYTE) >= 0;
+    };
+    // When the duration was estimated from the timestamps, the formats with timestamp discontinuities (MPEG-TS and
+    // MPEG-PS) resync after a byte seek, so the probe reads their last bytes. Their index, if any, does not reach
+    // the end: it only has the entries that the demuxer added while reading.
+    // The other formats (NUT) may not resync forward after a byte seek. The NUT demuxer goes back to the last
+    // syncpoint that it knows instead. So the probe seeks by timestamp, to the end that the duration gives: the
+    // demuxer finds the syncpoint before it through its index, or by a search without one.
+    const int64_t frameDuration = stream.frameDuration();
+    const bool durationFromPts = _context->duration_estimation_method == AVFMT_DURATION_FROM_PTS;
+    const bool seekByBytes = durationFromPts && HasTsDiscontinuities(_context);
     if (isFlv) {
         // Enough video tags for the reordered frames (with B-frames, the last tag is not the last frame).
         const int64_t pos = FlvLastTagsStart(pb, size, kMaxEndProbeBytes);
         if ((pos < 0) || (av_seek_frame(_context, -1, pos, AVSEEK_FLAG_BYTE) < 0)) {
             return false;
         }
-    } else if (isMpegTsPs) {
-        if (av_seek_frame(_context, -1, (std::max)(int64_t(0), size - tsWindow), AVSEEK_FLAG_BYTE) < 0) {
+    } else if (seekByBytes) {
+        if (!seekToLastBytes()) {
+            return false;
+        }
+    } else if (durationFromPts) {
+        const int64_t videoStart = av_rescale_q(stream._startPTS, stream._avstream->time_base, AV_TIME_BASE_Q);
+        const int64_t target = av_rescale_q(TimestampDurationEnd(_context, videoStart, frameDuration), AV_TIME_BASE_Q, stream._avstream->time_base);
+        if (av_seek_frame(_context, stream._idx, target, AVSEEK_FLAG_BACKWARD) < 0) {
             return false;
         }
     } else {
@@ -1139,7 +1190,6 @@ FFmpegFile::probeEnd(Stream& stream,
             return false;
         }
     }
-    const int64_t frameDuration = av_rescale(AV_TIME_BASE, stream._fpsDen, stream._fpsNum);
     int64_t end = AV_NOPTS_VALUE;
     int64_t videoEnd = AV_NOPTS_VALUE;
     bool eof = false;
@@ -1170,15 +1220,15 @@ FFmpegFile::probeEnd(Stream& stream,
     MyAVPacket avPacket;
     while (pb->bytes_read - bytesRead0 <= kMaxEndProbeBytes) {
         const int res = av_read_frame(_context, avPacket.pkt());
-        if ((res == AVERROR_EOF) && isMpegTsPs && (videoPackets < 8) && (tsWindow < kMaxEndProbeBytes) && (tsWindow < size)) {
+        if ((res == AVERROR_EOF) && seekByBytes && (videoPackets < 8) && (byteSeekWindow < kMaxEndProbeBytes) && (byteSeekWindow < size)) {
             // too few video packets in the last bytes: read more
-            tsWindow = kMaxEndProbeBytes;
+            byteSeekWindow = kMaxEndProbeBytes;
             end = videoEnd = lastVideoPts = AV_NOPTS_VALUE;
             videoPackets = 0;
             refPending = false;
             unplacedRefs = 0;
             bytesRead0 = pb->bytes_read;
-            if (av_seek_frame(_context, -1, (std::max)(int64_t(0), size - tsWindow), AVSEEK_FLAG_BYTE) < 0) {
+            if (!seekToLastBytes()) {
                 break;
             }
             continue;
@@ -1248,7 +1298,7 @@ FFmpegFile::probeEnd(Stream& stream,
         end = (end == int64_t(AV_NOPTS_VALUE)) ? e : (std::max)(end, e);
         videoEnd = (videoEnd == int64_t(AV_NOPTS_VALUE)) ? e : (std::max)(videoEnd, e);
     }
-    if (isMpegTsPs && (videoPackets <= stream._codecContext->has_b_frames)) {
+    if (seekByBytes && (videoPackets <= stream._codecContext->has_b_frames)) {
         eof = false; // too few video packets to know the last frame (with B-frames): use the duration
     }
     if (!eof || (end == int64_t(AV_NOPTS_VALUE)) || (videoEnd == int64_t(AV_NOPTS_VALUE))) {
@@ -1339,7 +1389,7 @@ FFmpegFile::getStreamFrames(Stream& stream)
         // frame). But FFmpeg reports the duration stored by some containers as is, and it is not counted from the
         // start of the movie: Matroska/WebM store the duration of their timeline, which begins at timestamp 0 (e.g.
         // with a start time of 10 s, a 40-frame 24 fps movie has a duration of 11.667 s), and FLV see below.
-        const char* formatName = _context->iformat ? _context->iformat->name : "";
+        const char* formatName = _context->iformat->name;
         const bool isMatroska = std::strstr(formatName, "matroska") != nullptr;
         const bool isMov = std::strstr(formatName, "mov") != nullptr;
         const bool isFlv = (std::strcmp(formatName, "flv") == 0) || (std::strcmp(formatName, "live_flv") == 0);
@@ -1350,6 +1400,9 @@ FFmpegFile::getStreamFrames(Stream& stream)
             const int64_t divisor = int64_t(AV_TIME_BASE) * stream._fpsDen;
             return (duration > tick) ? ((duration - tick) * stream._fpsNum + divisor - 1) / divisor : 0;
         };
+        // A probed end is not trusted far from the duration (e.g. a damaged last FLV tag, or a timestamp
+        // discontinuity): it must be within 10 % of the duration, and at least 2 s.
+        const int64_t probeTolerance = (std::max)(_context->duration / 10, int64_t(2) * AV_TIME_BASE);
         int64_t movieEnd = AV_NOPTS_VALUE;
         if (isFlv) {
             // FLV timestamps are DTS (with a composition time offset for the PTS). FFmpeg's FLV muxer stores the
@@ -1362,12 +1415,25 @@ FFmpegFile::getStreamFrames(Stream& stream)
             // includes the B-frame delay: never fewer frames than the duration.
             const int64_t durationEnd = _context->duration + videoStart;
             int64_t lastVideoPts;
-            // A probed end far beyond the duration is not trusted (e.g. a damaged last tag).
-            if (!probeEnd(stream, movieEnd, lastVideoPts) || (movieEnd > durationEnd + (std::max)(_context->duration / 10, int64_t(2) * AV_TIME_BASE))) {
+            if (!probeEnd(stream, movieEnd, lastVideoPts) || (movieEnd > durationEnd + probeTolerance)) {
                 movieEnd = durationEnd;
             }
+        } else if (_context->duration_estimation_method == AVFMT_DURATION_FROM_PTS) {
+            // The duration was estimated from the timestamps (#215, #331). For MPEG-TS and MPEG-PS, libavformat
+            // reads it from the last packets, and may miss the last video frames (e.g. at a high bit rate). For
+            // NUT, it is the largest PTS: the start of the last packet, not its end. Without an index, it is the
+            // PTS of the last syncpoint. So the end (PTS + duration) is read from the last packets.
+            // With timestamp discontinuities, the probed end is only trusted near the estimate.
+            movieEnd = TimestampDurationEnd(_context, videoStart, stream.frameDuration());
+            int64_t probedEnd, lastVideoPts;
+            if (probeEnd(stream, probedEnd, lastVideoPts)) {
+                const bool nearEstimate = std::abs(double(probedEnd - movieEnd)) <= double(probeTolerance);
+                if (!HasTsDiscontinuities(_context) || nearEstimate) {
+                    movieEnd = probedEnd;
+                }
+            }
         } else if (_context->start_time == int64_t(AV_NOPTS_VALUE)) {
-            // the start is unknown (e.g. NUT with B-frames, whose duration is counted from the first PTS)
+            // the start is unknown: count the duration from the start of the video stream
             movieEnd = _context->duration + videoStart;
         } else if (isMatroska) {
             // Matroska: the duration is the end of the movie (from timestamp 0). But a muxer may write a length
@@ -1398,14 +1464,6 @@ FFmpegFile::getStreamFrames(Stream& stream)
             }
         } else {
             movieEnd = _context->start_time + _context->duration;
-            // MPEG-TS/PS: FFmpeg estimates the duration from the timestamps of packets near the end, and may miss
-            // the last frames of the video (e.g. with a high bit rate): read the last packets.
-            int64_t probedEnd, lastVideoPts;
-            // (only near FFmpeg's estimate: within 10 % of the duration, at least 2 s)
-            if (((std::strcmp(formatName, "mpegts") == 0) || (std::strcmp(formatName, "mpeg") == 0)) && probeEnd(stream, probedEnd, lastVideoPts) &&
-                (std::abs(double(probedEnd - movieEnd)) <= double((std::max)(_context->duration / 10, int64_t(2) * AV_TIME_BASE)))) {
-                movieEnd = probedEnd;
-            }
         }
         frames = framesUntil(movieEnd);
 

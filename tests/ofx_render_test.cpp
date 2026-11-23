@@ -2188,13 +2188,6 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
         PropSet a = makeRenderInArgs((double)t, W, H);
         OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: read render frame %d = %d\n", t, st); ++failures; continue; }
-        if ((t == N) && (std::string(c.ext) == "nut")) {
-            // Not checked: ReadFFmpeg reads one frame less from a NUT file (the file has the N frames, see
-            // probeStream() above): the NUT demuxer gives the PTS of the last frame as the duration, not its end, and
-            // FFmpegFile counts the frames from it, so that the last frame is the one before.
-            std::printf("  frame %d: not checked (ReadFFmpeg reads one frame less from NUT)\n", t);
-            continue;
-        }
         double frameErr = 0.;
         for (int r = 0; r < H; ++r) {
             for (int x = 0; x < W; ++x) {
