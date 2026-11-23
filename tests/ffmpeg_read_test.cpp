@@ -10,12 +10,13 @@
  *   1. opens a file, prints stream info,
  *   2. decodes every frame sequentially, recording a per-frame signature
  *      (mean of the first component, on a 0-255 scale) — the "ground truth",
- *   3. re-decodes frames in a seek-forcing order (reverse + jumps) and checks
- *      each seeked frame's signature matches the sequential one,
+ *   3. re-decodes frames out of order (reverse + jumps: the backward and long jumps seek, the short
+ *      forward ones may decode forward without a seek, see FFmpegFile's Stream::decodeForwardIsCheaper())
+ *      and checks each out-of-order frame's signature matches the sequential one,
  *   4. optionally checks the sequential signatures are strictly monotonic
  *      (for the generated gray-ramp clips), proving sequential frames are distinct,
  *   5. optionally (--ramp OFFSET,STEP) checks that every decoded frame, sequential
- *      or seeked, holds the expected content: the generated clips put the frame
+ *      or out of order, holds the expected content: the generated clips put the frame
  *      number in the pixels, so frame f (1-based) must have a signature of
  *      OFFSET + STEP * (f - 1), within 0.4 * STEP. This catches a wrong frame as
  *      well as a missing one,
@@ -63,7 +64,10 @@
  *      reads at most N bytes,
  *  17. optionally (--order F1,F2,...) decodes the 1-based frames Fi in that order in a newly opened
  *      file, and checks each one against the sequential decode (or that it fails, for a --fail
- *      frame): e.g. a render order that must not make a good frame fail,
+ *      frame): e.g. a render order that must not make a good frame fail, and that the requests of the
+ *      frames of --order-seek F1,F2,... seek (FFmpegFile::getSeekCount()), and those of --order-no-seek
+ *      F1,F2,... do not: e.g. a forward request within the GOP of the decoder position must decode forward,
+ *      and one across a keyframe, or backward, must seek,
  *  18. optionally (--reference CLEAN --reference-frames F1,F2,...) only checks that the 1-based
  *      frames Fi give exactly the image of the same frame of the file CLEAN (e.g. the undamaged
  *      file), whatever the other frames give: every frame is decoded sequentially, in reverse
@@ -80,20 +84,23 @@
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]
  * Exit status: 0 = all checks passed, non-zero = failure.
  */
 
 #include "FFmpegFile.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -130,13 +137,39 @@ meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeO
     return meanComponent(buf, w, h, nComps, sizeOfData, 0, 256.0);
 }
 
+// Parses a comma-separated list of positive integers (1-based frames): nothing if it is empty, or if an item is
+// empty, is not a whole decimal number, or is out of range.
+std::optional<std::vector<int>>
+parseFrameList(const char* arg)
+{
+    std::istringstream is(arg);
+    std::string item;
+    std::vector<int> frames;
+    while (std::getline(is, item, ',')) {
+        if (item.empty()) {
+            return std::nullopt;
+        }
+        char* end = nullptr;
+        errno = 0;
+        const long v = std::strtol(item.c_str(), &end, 10);
+        if ((errno != 0) || (end != item.c_str() + item.size()) || (v < 1) || (v > std::numeric_limits<int>::max())) {
+            return std::nullopt;
+        }
+        frames.push_back(static_cast<int>(v));
+    }
+    if (frames.empty()) {
+        return std::nullopt;
+    }
+    return frames;
+}
+
 } // namespace
 
 int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -159,6 +192,8 @@ main(int argc, char** argv)
     long long maxSeqBytes = -1;
     long long maxReverseBytes = -1;
     std::vector<int> renderOrder; // 1-based frames to decode in that order in a newly opened file
+    std::vector<int> orderSeek; // --order-seek: the 1-based frames whose --order request must seek
+    std::vector<int> orderNoSeek; // --order-no-seek: the 1-based frames whose --order request must not seek
     std::string referenceFile; // --reference: the clean file
     std::vector<int> referenceFrames; // --reference-frames: the 1-based frames that must be those of the clean file
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
@@ -218,6 +253,14 @@ main(int argc, char** argv)
             while (std::getline(is, item, ',')) {
                 renderOrder.push_back(std::atoi(item.c_str()));
             }
+        } else if ((a == "--order-seek" || a == "--order-no-seek") && i + 1 < argc) {
+            const std::optional<std::vector<int>> list = parseFrameList(argv[++i]);
+            if (!list) {
+                std::fprintf(stderr, "bad %s value: %s\n", a.c_str(), argv[i]);
+                return 2;
+            }
+            std::vector<int>& dst = (a == "--order-seek") ? orderSeek : orderNoSeek;
+            dst.insert(dst.end(), list->begin(), list->end());
         } else if (a == "--max-seq-bytes" && i + 1 < argc) {
             maxSeqBytes = std::atoll(argv[++i]);
         } else if (a == "--max-open-bytes" && i + 1 < argc) {
@@ -366,9 +409,19 @@ main(int argc, char** argv)
         return 0;
     }
 
+    // --order-seek and --order-no-seek frames must be --order frames.
+    for (const std::vector<int>* list : { &orderSeek, &orderNoSeek }) {
+        for (int f : *list) {
+            if (std::find(renderOrder.begin(), renderOrder.end(), f) == renderOrder.end()) {
+                std::fprintf(stderr, "--order-seek/--order-no-seek: frame %d is not an --order frame\n", f);
+                return 2;
+            }
+        }
+    }
+
     // --reference: the --reference-frames must be exactly those of the clean file, in every order.
     if (!referenceFile.empty()) {
-        if (!mustFail.empty() || !gaps.empty() || !concealed.empty() || !fresh.empty() || !positions.empty() || (rampStep > 0) ||
+        if (!orderSeek.empty() || !orderNoSeek.empty() || !mustFail.empty() || !gaps.empty() || !concealed.empty() || !fresh.empty() || !positions.empty() || (rampStep > 0) ||
             (maxSeqBytes >= 0) || (maxReverseBytes >= 0) || checkMonotonic) {
             std::fprintf(stderr, "--reference only checks the --reference-frames (with --order): it cannot be combined with the other checks\n");
             return 2;
@@ -589,7 +642,8 @@ main(int argc, char** argv)
         }
     }
 
-    // 2) Seek-forcing order: full reverse, then a set of jumps, then forward jumps of 3 frames.
+    // 2) Out of order: full reverse, then a set of jumps, then forward jumps of 3 frames (which may decode forward,
+    // without a seek).
     std::vector<int> order;
     for (int f = frames; f >= 1; --f) {
         order.push_back(f);
@@ -609,38 +663,38 @@ main(int argc, char** argv)
     for (int f : order) {
         std::memset(buf.data(), 0, bufBytes);
         if (isMustFail(f)) {
-            checkFails(f, "seeked");
+            checkFails(f, "out-of-order");
             continue;
         }
         bool ok = false;
         try {
             ok = file.decode(nullptr, f, loadNearest, buf.data());
         } catch (const std::exception& e) {
-            std::printf("  SEEK decode frame %d threw: %s\n", f, e.what());
+            std::printf("  OUT-OF-ORDER decode frame %d threw: %s\n", f, e.what());
             ++mismatches;
             continue;
         }
         if (!ok) {
-            std::printf("  SEEK decode frame %d returned false (%s)\n", f, file.getError().c_str());
+            std::printf("  OUT-OF-ORDER decode frame %d returned false (%s)\n", f, file.getError().c_str());
             ++mismatches;
             continue;
         }
         if (file.isInvalid()) {
             // A successful decode must not leave the file invalid: the plug-in would refuse every
             // later render.
-            std::printf("  INVALID after seeked frame %d decoded: %s\n", f, file.getError().c_str());
+            std::printf("  INVALID after out-of-order frame %d decoded: %s\n", f, file.getError().c_str());
             ++seekErrors;
         }
         const double s = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
         const double diff = std::fabs(s - seqSig[f]);
         const bool seekCheck = (std::find(noSeekCheck.begin(), noSeekCheck.end(), f) == noSeekCheck.end()) && !isConcealed(f);
         if (seekCheck && (diff > tol)) {
-            std::printf("  MISMATCH frame %d: sequential=%.3f seeked=%.3f diff=%.3f (tol=%.3f)\n",
+            std::printf("  MISMATCH frame %d: sequential=%.3f out-of-order=%.3f diff=%.3f (tol=%.3f)\n",
                         f, seqSig[f], s, diff, tol);
             ++mismatches;
         }
         if (rampStep > 0 && !isConcealed(f) && std::fabs(s - rampExpected(f)) > rampTol) {
-            std::printf("  CONTENT seeked frame %d: sig=%.3f expected=%.3f (ramp frame %d, looks like ramp frame %.2f)\n",
+            std::printf("  CONTENT out-of-order frame %d: sig=%.3f expected=%.3f (ramp frame %d, looks like ramp frame %.2f)\n",
                         f, s, rampExpected(f), rampDisplayed(f), rampFrame(s));
             ++contentErrors;
         }
@@ -654,10 +708,21 @@ main(int argc, char** argv)
         for (int f : renderOrder) {
             std::memset(buf.data(), 0, bufBytes);
             bool ok = false;
+            const unsigned long seeks0 = orderFile.getSeekCount();
             try {
                 ok = orderFile.decode(nullptr, f, loadNearest, buf.data());
             } catch (const std::exception& e) {
                 ok = false;
+            }
+            const unsigned long seeks = orderFile.getSeekCount() - seeks0;
+            const bool mustSeek = std::find(orderSeek.begin(), orderSeek.end(), f) != orderSeek.end();
+            const bool mustNotSeek = std::find(orderNoSeek.begin(), orderNoSeek.end(), f) != orderNoSeek.end();
+            if (verbose || mustSeek || mustNotSeek) {
+                std::printf("  --order frame %d: %lu seeks\n", f, seeks);
+            }
+            if ((mustSeek && (seeks == 0)) || (mustNotSeek && (seeks != 0))) {
+                std::printf("  ORDER-SEEKS --order frame %d: %lu seeks, expected %s\n", f, seeks, mustSeek ? "at least 1" : "none");
+                ++seekErrors;
             }
             if (isMustFail(f)) {
                 if (ok || orderFile.isInvalid() || orderFile.getError().empty()) {

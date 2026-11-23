@@ -1606,6 +1606,9 @@ FFmpegFile::FFmpegFile(const string& filename)
         std::cout << "      NumberOfComponents=" << stream->_numberOfComponents << std::endl;
 #endif
 
+        // Indexes of formats with timestamp discontinuities cannot be trusted (see Stream::decodeForwardIsCheaper()).
+        stream->_indexReliable = !(_context->iformat->flags & AVFMT_TS_DISCONT);
+
         // If FPS is specified, record it.
         // Otherwise assume 1 fps (default value).
         if ((avstream->r_frame_rate.num != 0) && (avstream->r_frame_rate.den != 0)) {
@@ -1906,6 +1909,82 @@ IsIntraOnly(const AVCodecContext* ctx)
     const AVCodecDescriptor* desc = avcodec_descriptor_get(id);
 
     return desc && (desc->props & AV_CODEC_PROP_INTRA_ONLY);
+}
+
+// A forward request more than one frame after the held frame (e.g. every other frame, a retime, or a render
+// that skips frames) is decoded from the current position of the decoder, without a seek, when that is cheaper:
+// demuxAndDecode() skips the frames before the requested one without converting them, whereas a seek restarts
+// at a keyframe at or before the requested frame (with an index), or wherever the binary search of the demuxer
+// lands (MPEG-TS, MPEG-PS, ASF without an index, seek.c:290 in FFmpeg 9.0.2), and decodes from there. FFmpeg has
+// no model for this: ffplay seeks on every user seek, and the ffmpeg CLI never seeks after -ss.
+// The forward distance is always bounded by Stream::forwardWindow(): the largest keyframe interval seen (in
+// packets, so that a timestamp jump does not make it longer; with field-coded video, a packet per field doubles
+// it), at least 1 s and at most 10 s. This bounds the cost of decoding forward when a keyframe comes between
+// unseen (e.g. in an index with holes: ASF and RealMedia add the packets found by their binary search,
+// asf_read_pts(), asfdec_f.c:1486 in FFmpeg 9.0.2, and rmdec.c:1148). Then:
+// - With an index that covers the requested frame (its last entry is at or after it, and the format has no
+//   timestamp discontinuities, Stream::_indexReliable; e.g. MOV/MP4, AVI, Matroska with cues), the keyframe that
+//   a seek would restart at is the last entry at or before the requested frame (av_index_search_timestamp() with
+//   AVSEEK_FLAG_BACKWARD, libavformat/seek.c:245 in FFmpeg 9.0.2 and 8.0). Decode forward if it was already read
+//   (its timestamp is at most the largest PTS read, Stream::_maxReadTs). The index is on the DTS (MOV/MP4:
+//   pkt->dts = sample->timestamp, mov.c:11679 in FFmpeg 9.0.2, and mov_seek_stream() searches it with the PTS
+//   minus the decoding delay, mov.c:12008-12010; the generic index, demux.c:1504 and 1672) or on the PTS
+//   (Matroska: the cues and the block timestamps, matroskadec.c:2023 and 4331, pkt->pts = timecode,
+//   matroskadec.c:3986). Searching with the PTS of the requested frame finds the keyframe of the seek or a later
+//   one, as the DTS is at most the PTS.
+//   - With an index on the DTS, the keyframe found may be displayed after the requested frame: a frame decoded
+//     before it (or, with open GOPs, e.g. an HEVC CRA, a leading picture, decoded after it but displayed before
+//     it). Decode forward if the PTS of the keyframe is after the requested frame. With an index on the DTS, its
+//     PTS is at least its DTS plus the decoding delay of the stream: with a constant frame rate, the frames
+//     decoded before a keyframe are displayed before it. The delay is _startPTS - _startDTS, at most
+//     has_b_frames frame durations (an edit-list pre-roll may make _startPTS - _startDTS larger: this would
+//     only cost time, never a wrong frame). With an index on the PTS (Matroska), the keyframe's PTS is its
+//     timestamp, and the delay only makes this decode forward a little more often, within the window.
+//     The bound does not see the leading pictures: a leading picture whose CRA is not read yet seeks (mov.c then
+//     only goes back to the previous keyframe for HEVC with an sgpd sync sample group, mov.c:4718-4742 and
+//     can_seek_to_key_sample(), mov.c:11973, which FFmpeg's mov muxer does not write; H.264 open GOPs are never
+//     handled there: see #328).
+//   At worst (e.g. a keyframe whose DTS is just below the largest PTS read, not read yet), decoding forward reads a
+//   few packets that a seek would not; the decoded frame is the same either way.
+// - Without such an index (MPEG-TS and MPEG-PS, which have AVFMT_TS_DISCONT, mpegts.c:3880 and mpeg.c:707 in
+//   FFmpeg 9.0.2, and whose index holds any packet with a DTS, mpegts.c:3805 and mpeg.c:472; Matroska without
+//   cues, raw streams, whose index only grows as packets are read), where seeks are the expensive part (they
+//   search the file), decode forward within the window.
+// Not for intra-only codecs (each frame is decoded from its own packet, and a seek is cheap), nor after damage
+// (Stream::_tainted: a seek restarts the decoder cleanly).
+bool
+FFmpegFile::Stream::decodeForwardIsCheaper(int frame,
+                                           int held) const
+{
+    assert(frame > held + 1);
+    if (_tainted || IsIntraOnly(_codecContext) || allKeyframesAfterDamage()) {
+        return false;
+    }
+    if (_maxReadTs == int64_t(AV_NOPTS_VALUE)) {
+        return false; // the position of the demuxer is unknown
+    }
+    const int window = forwardWindow();
+    if (frame - held > window) {
+        return false;
+    }
+    const int64_t targetTs = frameToPts(frame);
+    const int entries = avformat_index_get_entries_count(_avstream);
+    if (!_indexReliable || (entries <= 0) || (avformat_index_get_entry(_avstream, entries - 1)->timestamp < targetTs)) {
+        return true; // no index to trust: within the window
+    }
+    const int i = av_index_search_timestamp(_avstream, targetTs, AVSEEK_FLAG_BACKWARD);
+    const AVIndexEntry* keyframe = (i >= 0) ? avformat_index_get_entry(_avstream, i) : nullptr;
+    if (!keyframe) {
+        return true; // no keyframe before the requested frame: a seek would start from the first one
+    }
+    if (keyframe->timestamp <= _maxReadTs) {
+        return true; // already read
+    }
+    const int64_t frameDuration = frameToPts(1) - frameToPts(0);
+    const int64_t maxDelay = int64_t((std::max)({ 0, _codecContext->has_b_frames, _avstream->codecpar->video_delay })) * frameDuration;
+    const int64_t decodingDelay = (std::min)((std::max)(int64_t(0), _startPTS - _startDTS), maxDelay);
+
+    return keyframe->timestamp + decodingDelay > targetTs; // an open-GOP keyframe displayed after the requested frame
 }
 
 // decode a single frame into the buffer thread safe
@@ -2759,7 +2838,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
             }
         }
         if (!resending) {
-            stream->packetSent(avPacket->pts, frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1, (avPacket->flags & AV_PKT_FLAG_KEY) != 0);
+            stream->packetSent(*avPacket.pkt(), frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1);
         }
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
         if ((res >= 0) && !acceptCorruptHeldFrame) {

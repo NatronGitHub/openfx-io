@@ -676,17 +676,19 @@ It also passes when built with `-O3 -ffast-math` and with `-fsanitize=undefined,
 
 `ffmpeg_read_test.cpp` links `FFmpeg/FFmpegFile.cpp` directly (plus `ofx_stubs.cpp`
 for the one Support symbol it references, `OFX::MultiThread::getNumCPUs`). It
-decodes sequentially for a ground-truth per-frame signature, then re-decodes in a
-seek-forcing order and asserts frame-accuracy; `--monotonic` also checks the
+decodes sequentially for a ground-truth per-frame signature, then re-decodes out of
+order (backward and long jumps seek; short forward jumps may decode forward, without a
+seek) and asserts frame-accuracy; `--monotonic` also checks the
 sequential signatures strictly increase. `--ramp OFFSET,STEP` checks that every
-decoded frame f, sequential or seeked, holds the content of that frame
+decoded frame f, sequential or out of order, holds the content of that frame
 (OFFSET + STEP * (f - 1)), which catches a wrong frame as well as a missing one,
 `--frames N` checks the number of frames the reader reports, and `--positions
 P0,P1,...` describes a variable frame rate clip with timestamp gaps: ramp frame i is
 at frame Pi, and a frame in a gap must be identical to the last ramp frame at or
 before it, as players display it (and, with `--ramp`, hold its content).
 `--max-seeks N` checks that decoding every frame sequentially seeks at most N times
-(`FFmpegFile::getSeekCount()`). `--matrix N` and `--range N` set the Y'CbCr matrix
+(`FFmpegFile::getSeekCount()`), and `--order-seek F1,F2,...` and `--order-no-seek
+F1,F2,...` that the requests of these `--order` frames seek, or do not. `--matrix N` and `--range N` set the Y'CbCr matrix
 (0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020) and range (0 = Auto, 1 = Video,
 2 = Full) of the conversion to RGB (`FFmpegFile::setColorOverrides()`, the ReadFFmpeg
 "YCbCr Matrix" and "YCbCr Range" params), and `--rgb R,G,B[,TOL]` checks the mean RGB
@@ -731,6 +733,16 @@ that their 33-bit timestamps wrap during the clip (libavformat then gives the fr
 negative timestamps), must count all 150 frames and give exactly the images of the clean clip in
 every order, with 1 and 8 threads (issue #189: only the MOV/MP4 demuxer has edit-list pre-rolls); AVI (MPEG-4 with B-frames) has no PTS, and every frame must
 still decode at its own frame.
+Forward requests ([#311](https://github.com/NatronGitHub/openfx-io/issues/311)): a request
+up to the largest keyframe interval seen (in packets, at least 1 s and at most 10 s) after the
+held frame decodes forward, without a seek, unless the index shows a keyframe between. H.264
+with a GOP of 50 frames in MP4, Matroska and MPEG-TS is decoded in the order 10, 12, 15, 60,
+55: 12 and 15 must not seek, 60 (after the next keyframe) and 55 (backward) must; and in
+the order 30, 40, 45, where 40 and 45 must not seek. An H.264
+MPEG-TS with a 20 s timestamp jump and an MPEG-4 ASF whose index is removed (with `perl`)
+must seek for requests far ahead, and an HEVC MP4 with open GOPs must decode forward for
+requests close ahead, also leading pictures; every frame must be the sequential one, with 1
+and 8 decoder threads.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a
