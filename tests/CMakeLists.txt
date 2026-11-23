@@ -243,6 +243,9 @@ if(TARGET io_tests_ofx)
   # test-writeffmpeg-param-change (#304): param and clip changes (kOfxActionInstanceChanged) and
   # kOfxActionSyncPrivateData between the frames of a render: every frame is encoded
   io_test(test-writeffmpeg-param-change ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i304.mov" --param-change)
+  # test-writeffmpeg-codec-params (#343): the settings that WriteFFmpeg shows and the pixel format it selects for each
+  # encoder of its Codec menu, and each encoder encodes with them
+  io_test(test-writeffmpeg-codec-params ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i343" --codec-params)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})

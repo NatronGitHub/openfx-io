@@ -135,6 +135,7 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 }
 
@@ -2429,6 +2430,12 @@ public:
 
     void setFilename(const std::string& file) { setOverrideString(&_ctx, kOfxImageEffectFileParamName, file); }
 
+    // the params (and clips) of the instance
+    Effect& context() { return _ctx; }
+
+    // the RGBA float pixels of the source image (W x H)
+    float* sourcePixels() { return reinterpret_cast<float*>(_src->buffer.data()); }
+
     // kOfxActionInstanceChanged on the param or clip name (a user edit), as the host calls it on its main thread
     OfxStatus instanceChanged(const char* type, const char* name)
     {
@@ -3497,6 +3504,244 @@ int testReadFFmpegDestroyClosesFile(const std::string& outFile)
     return failures;
 }
 
+// Whether the muxer of a container takes a video stream of an encoder's codec: avformat_query_codec(), and
+// avformat_init_output(), which refuses some of them (e.g. VP8 and AV1 in mov), with the first pixel format of the
+// encoder (rawvideo, which lists none: uyvy422, which mov and nut tag).
+bool muxerTakesEncoder(const char* ext, const AVCodec* c)
+{
+    const std::string name = std::string("x.") + ext;
+    const AVOutputFormat* f = av_guess_format(nullptr, name.c_str(), nullptr);
+    if (!f || (avformat_query_codec(f, c->id, FF_COMPLIANCE_NORMAL) != 1)) return false;
+    AvSession s;
+    s.output = true;
+    if ((avformat_alloc_output_context2(&s.fmt, f, nullptr, name.c_str()) < 0) || !s.fmt) return false;
+    AVStream* st = avformat_new_stream(s.fmt, nullptr);
+    if (!st) return false;
+    const void* pixFmts = nullptr;
+    int nPixFmts = 0;
+    avcodec_get_supported_config(nullptr, c, AV_CODEC_CONFIG_PIX_FORMAT, 0, &pixFmts, &nPixFmts);
+    st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    st->codecpar->codec_id = c->id;
+    st->codecpar->width = 256;
+    st->codecpar->height = 144;
+    st->codecpar->format = (pixFmts && (nPixFmts > 0)) ? static_cast<const AVPixelFormat*>(pixFmts)[0] : AV_PIX_FMT_UYVY422;
+    st->time_base = AVRational { 1, 25 };
+    if (avio_open_dyn_buf(&s.fmt->pb) < 0) return false;
+    const bool initialized = (avformat_init_output(s.fmt, nullptr) >= 0);
+    uint8_t* buf = nullptr;
+    avio_close_dyn_buf(s.fmt->pb, &buf);
+    av_free(buf);
+    s.fmt->pb = nullptr;
+    return initialized;
+}
+
+// The container of the movies of an encoder: the first of mov, mkv, nut and avi that takes it, or an empty string.
+std::string testContainerFor(const std::string& encoderName)
+{
+    const AVCodec* c = avcodec_find_encoder_by_name(encoderName.c_str());
+    if (!c) return std::string();
+    const int level = av_log_get_level();
+    av_log_set_level(AV_LOG_QUIET); // the muxers that do not take the codec say it
+    std::string container;
+    for (const char* ext : { "mov", "mkv", "nut", "avi" }) {
+        if (muxerTakesEncoder(ext, c)) {
+            container = ext;
+            break;
+        }
+    }
+    av_log_set_level(level);
+    return container;
+}
+
+// The video stream of a movie: its codec, profile, pixel format and color tags, its number of packets and of key
+// packets, and a hash (FNV-1a) of their data, which do not depend on the container (Matroska writes a random segment
+// UID).
+std::string videoStreamSignature(const std::string& file)
+{
+    AvSession s;
+    if (avformat_open_input(&s.fmt, file.c_str(), nullptr, nullptr) < 0) return "cannot open";
+    const int si = (avformat_find_stream_info(s.fmt, nullptr) >= 0) ? av_find_best_stream(s.fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) : -1;
+    if ((si < 0) || !s.pkt) return "no video stream";
+    const AVCodecParameters* par = s.fmt->streams[si]->codecpar;
+    uint64_t h = 14695981039346656037ull;
+    int nPackets = 0;
+    int nKeyPackets = 0;
+    while (av_read_frame(s.fmt, s.pkt) >= 0) {
+        if (s.pkt->stream_index == si) {
+            ++nPackets;
+            if (s.pkt->flags & AV_PKT_FLAG_KEY) ++nKeyPackets;
+            for (int i = 0; i < s.pkt->size; ++i) {
+                h = (h ^ (uint64_t)s.pkt->data[i]) * 1099511628211ull;
+            }
+        }
+        av_packet_unref(s.pkt);
+    }
+    const char* pixFmt = av_get_pix_fmt_name((AVPixelFormat)par->format);
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%s profile %d %s range %d matrix %d primaries %d trc %d, %d packets (%d key), hash %016llx",
+                  avcodec_get_name(par->codec_id), par->profile, pixFmt ? pixFmt : "none", (int)par->color_range,
+                  (int)par->color_space, (int)par->color_primaries, (int)par->color_trc, nPackets, nKeyPackets, (unsigned long long)h);
+    return buf;
+}
+
+// Encode 3 frames (256x144, colorPattern() with its alpha ramp, which changes with the frame) with an encoder of the
+// Codec menu and extra int params. Returns 0 on success, else 1 and the persistent error in *error.
+int encodeCodecVariant(const std::string& file, const std::string& shortName, const std::vector<std::pair<std::string, int>>& ints,
+                       std::string* error)
+{
+    const int W = 256;
+    const int H = 144;
+    const int nFrames = 3;
+    std::remove(file.c_str());
+    WriterParams wp;
+    wp.strings = { { "codecShortName", shortName } };
+    wp.ints = ints;
+    WriterSession s;
+    if (s.create(file, W, H, nFrames, wp)) {
+        *error = "cannot create the instance";
+        return 1;
+    }
+    bool succeeded = ok(s.begin(nFrames));
+    for (int t = 1; succeeded && (t <= nFrames); ++t) {
+        float* rgba = s.sourcePixels();
+        for (int r = 0; r < H; ++r) {
+            for (int x = 0; x < W; ++x) colorPattern(x, r, t, W, H, true, &rgba[((size_t)r * W + x) * 4]);
+        }
+        succeeded = ok(s.render(t));
+    }
+    succeeded = ok(s.end(nFrames)) && succeeded;
+    if (!succeeded) {
+        *error = WriterSession::persistentError();
+        std::replace(error->begin(), error->end(), '\n', ' '); // one line per movie
+    }
+    return succeeded ? 0 : 1;
+}
+
+// The value of a string param that the plug-in set, or "?".
+std::string stringParamValue(const Effect& ctx, const char* name)
+{
+    const auto it = ctx.params.find(name);
+    return ((it != ctx.params.end()) && it->second.hasOv && !it->second.ov.s.empty()) ? it->second.ov.s[0] : std::string("?");
+}
+
+// #343: for each encoder of the Codec menu, the encoder settings that WriteFFmpeg shows (- hidden, d disabled, E
+// enabled) and the pixel format it selects for each Pref. Pixel Coding, Bit Depth and Alpha, and movies encoded with
+// the default settings (in the container given by testContainerFor()), with Keyframe Interval = 1, Max B-Frames = 2
+// and Output Quality = Lossless if they are shown, and with Alpha checked: each one must encode, or, for Lossless with
+// an encoder that has no lossless mode (e.g. libvpx), fail with an error that says it. The output (with the signature of the video
+// stream of each movie) is the same with two builds if the settings and the movies are the same: compare it with diff.
+int testWriteFFmpegCodecParams(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg: the settings of each encoder, and its movies (issue #343) ====\n");
+    av_log_set_level(AV_LOG_ERROR);
+    std::vector<std::string> shortNames;
+    {
+        WriterSession s;
+        if (s.create(outFile + ".mov", 64, 48, 1, WriterParams())) return 1;
+        const Effect& ctx = s.context();
+        const auto codec = ctx.params.find("codec");
+        if (codec == ctx.params.end()) { std::printf("  FAIL: no codec param\n"); return 1; }
+        const auto opt = codec->second.props->props.find(kOfxParamPropChoiceOption);
+        const size_t nCodecs = (opt == codec->second.props->props.end()) ? 0 : opt->second.s.size();
+        for (size_t i = 0; i < nCodecs; ++i) {
+            s.setInt("codec", (int)i);
+            s.instanceChanged(kOfxTypeParameter, "codec");
+            shortNames.push_back(stringParamValue(ctx, "codecShortName"));
+        }
+    }
+    if (shortNames.empty()) { std::printf("  FAIL: no codec\n"); return 1; }
+    const char* const settings[] = { "crf", "x26xSpeed", "qscale", "bitrateMbps", "bitrateToleranceMbps", "quality", "gopSize", "bFrames" };
+    int failures = 0;
+    for (const std::string& shortName : shortNames) {
+        const std::string encoder = (shortName.compare(0, 9, "prores_ks") == 0) ? std::string("prores_ks") : shortName;
+        const AVCodec* c = avcodec_find_encoder_by_name(encoder.c_str());
+        const std::string ext = testContainerFor(encoder);
+        if (!c || ext.empty()) { std::printf("  FAIL: %s: no container takes the encoder %s\n", shortName.c_str(), encoder.c_str()); ++failures; continue; }
+        const std::string file = outFile + "." + ext;
+        bool bFramesShown = false;
+        bool crfShown = false;
+        bool gopShown = false;
+        {
+            WriterParams wp;
+            wp.strings = { { "codecShortName", shortName } };
+            WriterSession s;
+            if (s.create(file, 64, 48, 1, wp)) { ++failures; continue; }
+            const Effect& ctx = s.context();
+            std::string line = "  " + shortName + " (" + ext + "):";
+            for (const char* name : settings) {
+                const auto it = ctx.params.find(name);
+                int secret = 0;
+                int enabled = 0;
+                if ((it == ctx.params.end()) || (pGetInt(PH(it->second.props), kOfxParamPropSecret, 0, &secret) != kOfxStatOK)
+                    || (pGetInt(PH(it->second.props), kOfxParamPropEnabled, 0, &enabled) != kOfxStatOK)) {
+                    std::printf("  FAIL: %s: no param %s, or its secret or enabled property is not set\n", shortName.c_str(), name);
+                    ++failures;
+                    continue;
+                }
+                line += std::string(" ") + name + "=" + (secret ? "-" : (enabled ? "E" : "d"));
+                if (!secret && !std::strcmp(name, "bFrames")) bFramesShown = true;
+                if (!secret && !std::strcmp(name, "crf")) crfShown = true;
+                if (!secret && !std::strcmp(name, "gopSize")) gopShown = true;
+            }
+            std::printf("%s\n", line.c_str());
+            for (int alpha = 0; alpha <= 1; ++alpha) {
+                line = std::string("    pixel formats, alpha ") + (alpha ? "1" : "0") + ":";
+                for (int coding = 0; coding <= 4; ++coding) {
+                    for (int depth = 0; depth <= 3; ++depth) {
+                        s.setInt("enableAlpha", alpha);
+                        s.setInt("prefPixelCoding", coding);
+                        s.setInt("prefBitDepth", depth);
+                        s.instanceChanged(kOfxTypeParameter, "enableAlpha");
+                        line += " " + stringParamValue(ctx, "infoPixelFormat");
+                    }
+                }
+                std::printf("%s\n", line.c_str());
+            }
+        }
+        // CRF 0 may be lossless if the encoder has a lossless option or its codec a lossless mode (else it may fail)
+        const AVCodecDescriptor* desc = avcodec_descriptor_get(c->id);
+        const bool lossless = (c->priv_class && av_opt_find(const_cast<const AVClass**>(&c->priv_class), "lossless", nullptr, 0, AV_OPT_SEARCH_FAKE_OBJ))
+                              || (desc && (desc->props & AV_CODEC_PROP_LOSSLESS));
+        // #348: WriteFFmpeg opens the default encoder of the codec ID, libx264, which refuses the RGB pixel formats
+        // selected for libx264rgb
+        const std::string knownFailure = ((encoder == "libx264rgb") && (avcodec_find_encoder(c->id) != c))
+                                             ? std::string("#348: WriteFFmpeg opens ") + avcodec_find_encoder(c->id)->name + " instead"
+                                             : std::string();
+        struct Variant {
+            const char* label;
+            std::vector<std::pair<std::string, int>> ints;
+            bool enabled;
+            const char* failureHint; // if not nullptr, the encode may fail, with an error that contains it
+        };
+        const Variant variants[] = { { "default", {}, true, nullptr },
+                                     { "gopSize=1", { { "gopSize", 1 } }, gopShown, nullptr },
+                                     { "bFrames=2", { { "bFrames", 2 } }, bFramesShown, nullptr },
+                                     { "crf=Lossless", { { "crf", 1 } }, crfShown, lossless ? nullptr : "Lossless (CRF 0) may not be available" },
+                                     { "alpha", { { "enableAlpha", 1 } }, true, nullptr } };
+        for (const Variant& v : variants) {
+            if (!v.enabled) continue;
+            std::string error;
+            const int fail = encodeCodecVariant(file, shortName, v.ints, &error);
+            if (!knownFailure.empty()) {
+                std::printf("    %s: %s (%s)\n", v.label, fail ? "KNOWN FAILURE" : "UNEXPECTED PASS", knownFailure.c_str());
+                failures += fail ? 0 : 1;
+            } else if (fail && v.failureHint) {
+                const bool hinted = (error.find(v.failureHint) != std::string::npos);
+                std::printf("    %s: %s: %s\n", v.label, hinted ? "failed with the expected error" : "FAIL, the error must contain", hinted ? error.c_str() : v.failureHint);
+                failures += hinted ? 0 : 1;
+            } else if (fail) {
+                std::printf("    %s: FAIL: %s\n", v.label, error.c_str());
+                ++failures;
+            } else {
+                std::printf("    %s: encoded, %s\n", v.label, videoStreamSignature(file).c_str());
+            }
+        }
+        std::remove(file.c_str());
+    }
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
 int
 main(int argc, char** argv)
 {
@@ -3525,6 +3770,8 @@ main(int argc, char** argv)
             failures = testSwscaleExact(outFile);
         } else if (mode == "--param-change") {
             failures = testWriteFFmpegParamChangeDuringRender(outFile);
+        } else if (mode == "--codec-params") {
+            failures = testWriteFFmpegCodecParams(outFile);
         } else if (mode == "--destroy-closes-file") {
             failures = testReadFFmpegDestroyClosesFile(outFile);
         } else {

@@ -489,7 +489,7 @@ enum PrefBitDepthEnum {
 
 #define kParamCRF "crf"
 #define kParamCRFLabel "Output Quality"
-#define kParamCRFHint "Constant Rate Factor (CRF); tradeoff between video quality and file size. Used by avc1, hev1, VP80, VP9, and CAVS codecs.\n" \
+#define kParamCRFHint "Constant Rate Factor (CRF); tradeoff between video quality and file size. Used by the encoders with a crf option, e.g. libx264 and libx264rgb (avc1), libx265 (hev1), libvpx (VP80), libvpx-vp9 (VP9), libaom-av1 (AV1) and libxavs (CAVS). libvpx and libaom-av1 use a 0-63 scale. Lossless (CRF 0) is only lossless with the encoders that have a lossless mode, e.g. libx264 and libvpx-vp9.\n" \
                       "Option -crf in ffmpeg."
 #define kParamCRFOptionNone "None", "Use constant bit-rate rather than constant output quality", "none"
 #define kParamCRFOptionLossless "Lossless", "Corresponds to CRF = 0.", "crf0"
@@ -1090,7 +1090,7 @@ CreateCodecKnobLabelsMap()
     m["avrp"] = "AVrp\tAvid 1:1 10-bit RGB Packer";
     m["ayuv"] = "AYUV\tUncompressed packed MS 4:4:4:4";
     m["cfhd"] = "CFHD\tGoPro Cineform HD";
-    m["cinepak"] = "cvid\tCinepak"; // disabled in allowlist (bad quality)
+    m["cinepak"] = "cvid\tCinepak";
     m["dnxhd"] = "AVdn\tAvid DNxHD / DNxHR / SMPTE VC-3";
     m["dpx"] = "dpx \tDPX (Digital Picture Exchange) image";
     m["exr"] = "exr \tEXR image";
@@ -1101,8 +1101,8 @@ CreateCodecKnobLabelsMap()
     m["h263p"] = "H263\tH.263+ / H.263-1998 / H.263 version 2";
     m["hap"] = "Hap1\tVidvox Hap";
     m["huffyuv"] = "HFYU\tHuffYUV";
-    m["jpeg2000"] = "mjp2\tJPEG 2000"; // disabled in allowlist (bad quality)
-    m["jpegls"] = "MJLS\tJPEG-LS"; // disabled in allowlist
+    m["jpeg2000"] = "mjp2\tJPEG 2000";
+    m["jpegls"] = "MJLS\tJPEG-LS";
     m["libaom-av1"] = "AV1\tlibaom AV1 encoder";
     m["libopenh264"] = "H264\tCisco libopenh264 H.264/MPEG-4 AVC encoder";
     m["libopenjpeg"] = "mjp2\tOpenJPEG JPEG 2000";
@@ -1110,14 +1110,14 @@ CreateCodecKnobLabelsMap()
     m["libschroedinger"] = "drac\tSMPTE VC-2 (previously BBC Dirac Pro)";
     m["libtheora"] = "theo\tTheora";
     m["libvpx"] = "VP80\tOn2 VP8"; // write doesn't work yet
-    m["libvpx-vp9"] = "VP90\tGoogle VP9"; // disabled in allowlist (bad quality)
+    m["libvpx-vp9"] = "VP90\tGoogle VP9";
     m["libx264"] = "avc1\tH.264 / AVC / MPEG-4 AVC / MPEG-4 part 10";
     m["libx264rgb"] = "avc1\tH.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB";
-    m["libx265"] = "hev1\tH.265 / HEVC (High Efficiency Video Coding)"; // disabled in allowlist (does not work will all sizes)
+    m["libx265"] = "hev1\tH.265 / HEVC (High Efficiency Video Coding)";
     m["libxavs"] = "CAVS\tChinese AVS (Audio Video Standard)"; // disabled in allowlist
 
     m["libxvid"] = "mp4v\tMPEG-4 part 2";
-    m["ljpeg"] = "LJPG\tLossless JPEG"; // disabled in allowlist
+    m["ljpeg"] = "LJPG\tLossless JPEG";
     m["mjpeg"] = "jpeg\tPhoto JPEG";
     m["mpeg1video"] = "m1v \tMPEG-1 Video"; // disabled in allowlist (random blocks)
     m["mpeg2video"] = "m2v1\tMPEG-2 Video";
@@ -1131,7 +1131,7 @@ CreateCodecKnobLabelsMap()
     m["rawvideo"] = "raw \tUncompressed RGB or Y'CbCr (pixel format from the container and the Pref. params)";
     m["svq1"] = "SVQ1\tSorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1";
     m["targa"] = "tga \tTruevision Targa image";
-    m["tiff"] = "tiff\tTIFF image"; // disabled in allowlist
+    m["tiff"] = "tiff\tTIFF image";
     m["v210"] = "v210\tUncompressed 10-bit 4:2:2";
     m["v308"] = "v308\tUncompressed 8-bit 4:4:4";
     m["v408"] = "v408\tUncompressed 8-bit QT 4:4:4:4";
@@ -1836,6 +1836,7 @@ private:
             , qrange(false)
             , interGOP(false)
             , interB(false)
+            , crfLossless(false)
         {
         }
 
@@ -1848,6 +1849,7 @@ private:
         bool qrange; // qmin, qmax
         bool interGOP; // gop_size
         bool interB; // "bf" option or max_b_frames
+        bool crfLossless; // the Output Quality Lossless (CRF 0) may be lossless
     };
 
 public:
@@ -1951,7 +1953,7 @@ private:
     void setColorTags(AVCodecContext* avCodecContext, AVStream* avStream, AVPixelFormat pixelFormat) const;
     static bool IsYUVFromShortName(const char* shortName, int codecProfile);
     static AVPixelFormat GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
-    static void GetCodecSupportedParams(const AVCodec* codec, CodecParams* p);
+    static CodecParams GetCodecSupportedParams(const AVCodec* codec);
 
     void configureAudioStream(const AVCodec* avCodec, AVStream* avStream);
     void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
@@ -2640,6 +2642,80 @@ WriteFFmpegPlugin::getStartTimecode(const AVOutputFormat* fmt,
     return true;
 }
 
+namespace {
+// The AVOption of an encoder's private class (not an AV_OPT_TYPE_CONST), or nullptr. With AV_OPT_SEARCH_FAKE_OBJ,
+// av_opt_find() searches the class without an encoder instance: its first argument is then a pointer to a pointer
+// to the AVClass, which it only reads, but whose type is void* (FFmpeg n9.1 libavutil/opt.h), hence the const_cast.
+const AVOption*
+encoderOption(const AVCodec* codec,
+              const char* name)
+{
+    if (!codec->priv_class) {
+        return nullptr;
+    }
+
+    return av_opt_find(const_cast<const AVClass**>(&codec->priv_class), name, nullptr, 0, AV_OPT_SEARCH_FAKE_OBJ);
+}
+
+// The rate control settings that a lossy encoder reads from AVCodecContext: bit_rate, bit_rate_tolerance,
+// global_quality (with AV_CODEC_FLAG_QSCALE), and qmin and qmax. FFmpeg exposes no property for which of these generic
+// fields an encoder reads: they are AVCodecContext fields, which every encoder has, and the encoder defaults that would
+// tell (FFCodecDefault) are internal to libavcodec. The mpegvideo encoders are detected by their shared options (see
+// GetCodecSupportedParams()); the others are in kEncoderRateControl.
+enum class RateControl : unsigned
+{
+    eNone = 0,
+    eBitrate = 1u << 0,
+    eBitrateTol = 1u << 1,
+    eQScale = 1u << 2,
+    eQRange = 1u << 3,
+};
+
+constexpr RateControl
+operator|(RateControl a,
+          RateControl b)
+{
+    return static_cast<RateControl>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+
+constexpr bool
+hasRateControl(RateControl set,
+               RateControl flag)
+{
+    return (static_cast<unsigned>(set) & static_cast<unsigned>(flag)) != 0;
+}
+
+struct EncoderRateControl {
+    const char* encoder; // AVCodec::name
+    RateControl flags;
+};
+
+// The lossy encoders that are not in this table and not mpegvideo encoders get RateControl::eBitrate |
+// RateControl::eQRange. This is wrong for snow (mpegvideo rate control without mpv_flags, FFmpeg n9.1
+// libavcodec/snowenc.c:236 and :1833), asv1/asv2 (global_quality, asvenc.c:384-388) and a64multi (a64multienc.c:217-220),
+// which are not in the Codec menu (FFmpegFile.cpp's allowlist). Only the mpegvideo encoders (ratecontrol.c:994) and
+// libxavs (libxavs.c:320) read bit_rate_tolerance; libopenh264 reads bit_rate, qmax and qmin (libopenh264enc.c:142-148).
+// svq1, jpeg2000, cinepak and libxvid read Global Quality from the quality of each frame (AVFrame.quality), which
+// encode() copies from global_quality, as fftools does (fftools/ffmpeg_enc.c:887).
+// For libxvid, libopenjpeg, libopenh264 and libx264rgb, the settings only change the UI until #348: WriteFFmpeg
+// encodes with the default encoder of their codec (mpeg4, jpeg2000, libx264).
+const EncoderRateControl kEncoderRateControl[] = {
+    { "svq1", RateControl::eQScale }, // svq1enc.c:641 (svq1 has its own AVClass, without mpv_flags, svq1enc.c:700)
+    { "jpeg2000", RateControl::eQScale }, // j2kenc.c:1487
+    { "cinepak", RateControl::eQScale }, // cinepakenc.c:1173
+    { "libxvid", RateControl::eBitrate | RateControl::eQScale | RateControl::eQRange }, // libxvid.c:548-551, 607, 799
+    { "libtheora", RateControl::eBitrate | RateControl::eQScale }, // libtheoraenc.c:232-241
+    { "libxavs", RateControl::eBitrate | RateControl::eBitrateTol | RateControl::eQRange }, // libxavs.c:232, 286-287, 320
+    { "vc2", RateControl::eBitrate }, // vc2enc.c:969
+    // no rate control field: options of their own, or none
+    { "libopenjpeg", RateControl::eNone }, // its rate is compression_level (libopenjpegenc.c:339)
+    { "hap", RateControl::eNone }, // its "format", "chunks" and "compressor" options (hapenc.c:334)
+    { "jpegls", RateControl::eNone }, // its "pred" option (jpeglsenc.c:460)
+    { "cfhd", RateControl::eNone }, // its "quality" option (cfhdenc.c:831)
+    { "exr", RateControl::eNone }, // its "compression" option (exrenc.c:526)
+};
+} // namespace
+
 // The errors in the current settings that make beginEncode() fail, one per line, or an empty string.
 string
 WriteFFmpegPlugin::getSettingsErrors() const
@@ -3191,28 +3267,25 @@ WriteFFmpegPlugin::getPixelFormatsFromList(const AVOutputFormat* fmt,
         }
 #endif
 
-        if (AV_CODEC_ID_QTRLE == videoCodec->id) {
-            if (hasAlphaInt && (AV_PIX_FMT_ARGB != outTargetPixelFormat) && (AV_PIX_FMT_RGBA != outTargetPixelFormat) && (AV_PIX_FMT_ABGR != outTargetPixelFormat) && (AV_PIX_FMT_BGRA != outTargetPixelFormat)) {
-                // WARNING: Workaround.
-                //
-                // If the source has alpha, then the alpha channel must be
-                // preserved. QT RLE supports an alpha channel, however
-                // |avcodec_find_best_pix_fmt_of_list| above seems to default
-                // to RGB24 always, despite having support for ARGB and the
-                // |hasAlpha| flag being set.
-                //
-                // So search for a suitable RGB+alpha pixel format that is
-                // supported by the QT RLE codec and force the output pixel
-                // format.
-                //
-                currPixFormat = pixFormats;
-                while (*currPixFormat != -1) {
-                    AVPixelFormat avPixelFormat = *currPixFormat++;
-                    if ((AV_PIX_FMT_ARGB == avPixelFormat) || (AV_PIX_FMT_RGBA == avPixelFormat) || (AV_PIX_FMT_ABGR == avPixelFormat) || (AV_PIX_FMT_BGRA == avPixelFormat)) {
-                        outTargetPixelFormat = avPixelFormat;
-                        break;
+        // Alpha is wanted, and the format selected above has none, although the encoder has formats with alpha:
+        // select the best one of those that fit the pixel coding and bit depth preferences, or else of all of them
+        // (avcodec_find_best_pix_fmt_of_list() above may prefer a format without alpha, e.g. rgb24 for qtrle, which
+        // has rgb24, rgb555be, argb and gray).
+        if (hasAlphaInt && !FFmpeg::pixelFormatAlpha(outTargetPixelFormat)) {
+            vector<AVPixelFormat> alphaFormats;
+            vector<AVPixelFormat> prefAlphaFormats;
+            for (currPixFormat = pixFormats; *currPixFormat != AV_PIX_FMT_NONE; ++currPixFormat) {
+                if (FFmpeg::pixelFormatAlpha(*currPixFormat)) {
+                    alphaFormats.push_back(*currPixFormat);
+                    if (((int)FFmpeg::pixelFormatCoding(*currPixFormat) >= (int)prefPixelCoding) && (FFmpeg::pixelFormatBitDepth(*currPixFormat) >= prefBitDepth)) {
+                        prefAlphaFormats.push_back(*currPixFormat);
                     }
                 }
+            }
+            vector<AVPixelFormat>& candidates = prefAlphaFormats.empty() ? alphaFormats : prefAlphaFormats;
+            if (!candidates.empty()) {
+                candidates.push_back(AV_PIX_FMT_NONE);
+                outTargetPixelFormat = avcodec_find_best_pix_fmt_of_list(candidates.data(), outRgbBufferPixelFormat, hasAlphaInt, nullptr);
             }
         }
 
@@ -3247,328 +3320,73 @@ WriteFFmpegPlugin::GetRGBPixelFormatFromBitDepth(const int bitDepth,
 }
 
 /*static*/
-void
-WriteFFmpegPlugin::GetCodecSupportedParams(const AVCodec* codec,
-                                           CodecParams* p)
+WriteFFmpegPlugin::CodecParams
+WriteFFmpegPlugin::GetCodecSupportedParams(const AVCodec* codec)
 {
-    bool lossy = false;
-
     assert(codec);
-    if (!codec) {
-        p->crf = false;
-        p->x26xSpeed = false;
-        p->bitrate = false;
-        p->bitrateTol = false;
-        p->qscale = false;
-        p->qrange = false;
-        p->interGOP = false;
-        p->interB = false;
+    CodecParams p;
+    const AVCodecDescriptor* codecDesc = codec ? avcodec_descriptor_get(codec->id) : nullptr;
+    if (!codecDesc) {
+        return p;
+    }
 
-        return;
-    }
-    // The flags on the codec can't be trusted to indicate capabilities, so use the props bitmask on the descriptor instead.
-    const AVCodecDescriptor* codecDesc = avcodec_descriptor_get(codec->id);
+    // ProRes and DNxHD are profile-based: they do not use the rate control params (https://trac.ffmpeg.org/wiki/Encode/VFX)
+    const bool profileBased = (codec->id == AV_CODEC_ID_PRORES) || (codec->id == AV_CODEC_ID_DNXHD);
+    const bool lossy = !profileBased && (codecDesc->props & AV_CODEC_PROP_LOSSY);
+    const string codecShortName = codec->name;
 
-    lossy = codecDesc ? !!(codecDesc->props & AV_CODEC_PROP_LOSSY) : false;
-    p->interGOP = codecDesc ? !(codecDesc->props & AV_CODEC_PROP_INTRA_ONLY) : false;
-    p->interB = codecDesc ? !(codecDesc->props & AV_CODEC_PROP_INTRA_ONLY) : false;
-
-    // Overrides for specific cases where the codecs don't follow the rules.
-    // PNG doesn't observe the params, despite claiming to be lossy.
-    if (codecDesc && (codecDesc->id == AV_CODEC_ID_PNG)) {
-        lossy = p->interGOP = p->interB = false;
+    p.interGOP = !(codecDesc->props & AV_CODEC_PROP_INTRA_ONLY);
+    // The png, vc2 (Dirac) and cfhd encoders only write intra frames (they do not read gop_size), but their codecs
+    // are not AV_CODEC_PROP_INTRA_ONLY (their decoders read inter frames), and FFmpeg has no encoder property for it.
+    if ((codec->id == AV_CODEC_ID_PNG) || (codec->id == AV_CODEC_ID_DIRAC) || (codec->id == AV_CODEC_ID_CFHD)) {
+        p.interGOP = false;
     }
-    // Mpeg4 ms var 3 / AV_CODEC_ID_MSMPEG4V3 doesn't have a descriptor, but needs the params.
-    if (codecDesc && (codec->id == AV_CODEC_ID_MSMPEG4V3 || codec->id == AV_CODEC_ID_H264)) {
-        lossy = p->interGOP = p->interB = true;
-    }
-    // QTRLE supports differing GOPs, but any b frame settings causes unreadable files.
-    if (codecDesc && (codecDesc->id == AV_CODEC_ID_QTRLE)) {
-        lossy = p->interB = false;
-        p->interGOP = true;
-    }
-    // Prores is profile-based, we don't need the bitrate parameters
-    if (codecDesc && (codecDesc->id == AV_CODEC_ID_PRORES)) {
-        // https://trac.ffmpeg.org/wiki/Encode/VFX
-        lossy = p->interB = p->interGOP = false;
-    }
-    // DNxHD is profile-based, we don't need the bitrate parameters
-    if (codecDesc && (codecDesc->id == AV_CODEC_ID_DNXHD)) {
-        lossy = p->interB = p->interGOP = false;
-    }
-    /* && codec->id != AV_CODEC_ID_PRORES*/
+    // B-frames: the codec reorders frames (AV_CODEC_PROP_REORDER), and the encoder can delay its output
+    // (AV_CODEC_CAP_DELAY), which is what the mpegvideo encoders check (FFmpeg n9.1 libavcodec/mpegvideo_enc.c:605:
+    // "B-frames not supported by codec"). This is necessary, not sufficient: libkvazaar and libvvenc have both and
+    // ignore max_b_frames, and the AV1 hardware encoders write B-frames without AV_CODEC_PROP_REORDER (none of them
+    // is in the Codec menu). libxvid has no AV_CODEC_CAP_DELAY, but writes B-frames (libxvid.c:675, in packed
+    // bitstream mode outside of QuickTime and MP4, :678-679).
+    p.interB = (codecDesc->props & AV_CODEC_PROP_REORDER) && ((codec->capabilities & AV_CODEC_CAP_DELAY) || (codecShortName == "libxvid"));
 
     if (!lossy) {
-        p->crf = p->x26xSpeed = p->bitrate = p->bitrateTol = p->qscale = p->qrange = false;
-    } else {
-        string codecShortName = codec->name;
-        p->crf = p->x26xSpeed = p->qscale = false;
-        p->bitrate = p->bitrateTol = p->qrange = true;
+        return p;
+    }
+    // the encoders that have a "crf" option, e.g. libx264.c:1544, libx265.c:1047, libvpxenc.c:2011, libaomenc.c:1599
+    p.crf = (encoderOption(codec, "crf") != nullptr);
+    // CRF 0 may be lossless if the encoder has a "lossless" option (libvpxenc.c:2049, which configureVideoStream() sets),
+    // or if the codec has a lossless mode (e.g. H.264; HEVC and AV1 since FFmpeg 9); not with libvpx (VP8) or libxavs,
+    // where it may fail (openCodec() then says it)
+    p.crfLossless = p.crf && (encoderOption(codec, "lossless") || (codecDesc->props & AV_CODEC_PROP_LOSSLESS));
+    // the encoders that have a "preset" string option take the names of the x264 and x265 presets (libx264.c:1535,
+    // libx265.c:1050), which the Encoding Speed sets; the other "preset" options are integers, with other names
+    // (e.g. libsvtav1.c:793, nvenc_h264.c:29)
+    const AVOption* preset = encoderOption(codec, "preset");
+    p.x26xSpeed = preset && (preset->type == AV_OPT_TYPE_STRING);
 
-        // handle codec-specific cases.
-        // Note that x264 is used in qpmin/qpmax mode
-        if (codecShortName == "mpeg4") {
-            // mpeg4videoenc.c
-            // supports qscale and bit_rate according to https://trac.ffmpeg.org/wiki/Encode/MPEG-4
-            // but bitrate is used for two-pass encoding, and seems to produce non-reproductible low-quality results:
-            // disable it and always use qscale instead.
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = true;
-            // p->interGOP = false;
-            // p->interB = false;
-        } else if (codecShortName == "libxvid") {
-            // libxvid.c
-            // https://trac.ffmpeg.org/wiki/Encode/MPEG-4
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-libxvid
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = true;
-            p->interGOP = true;
-            p->interB = true;
-        } else if (codecShortName == "libx264" || codecShortName == "libx264rgb") {
-            // libx264.c
-            // https://trac.ffmpeg.org/wiki/Encode/H.264
-            p->crf = true; // -qscale is ignored, -crf is recommended
-            p->x26xSpeed = true;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false; // true; // the code uses it, but it's disturbing to have qmin/qmax with CRF
-            p->interGOP = true;
-            p->interB = true;
-        } else if (codecShortName == "libx265") {
-            // libx265.c
-            // https://trac.ffmpeg.org/wiki/Encode/H.265
-            p->crf = true;
-            p->x26xSpeed = true;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "libopenh264") {
-            // libopenh264enc.c
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-libopenh264
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = true;
-            p->interB = false;
-        } else if (codecShortName == "cinepak") {
-            // cinepakenc.c
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "mpeg2video") {
-            // mpeg12enc.c and mpegvideo_enc.c
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-mpeg2
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false; // true; // disable this in favor of qscale, as for mpeg4
-            p->bitrateTol = false; // true;
-            p->qscale = true;
-            p->qrange = true;
-            p->interGOP = true;
-            p->interB = true;
-        } else if (codecShortName == "ffv1") {
-            // https://trac.ffmpeg.org/wiki/Encode/FFV1
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = true;
-            p->interB = false;
-        } else if (codecShortName == "mpeg1video") {
-            // mpeg12enc.c and mpegvideo_enc.c
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false; // true; // disable this in favor of qscale, as for mpeg4
-            p->bitrateTol = false; // true;
-            p->qscale = true;
-            p->qrange = true;
-            p->interGOP = true;
-            p->interB = true;
-        } else if (codecShortName == "flv") {
-            // https://trac.ffmpeg.org/wiki/EncodingForStreamingSites
-            // flvenc.c
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false; // true; // disable this in favor of qscale, as for mpeg4
-            p->bitrateTol = false; // true;
-            p->qscale = true;
-            p->qrange = true;
-            // p->interGOP = false;
-            // p->interB = false;
-        } else if (codecShortName == "gif") {
-            // GIF Animation
-            // always use the default palette
-            // gifflags: set GIF flags
-            //  offsetting: enable picture offsetting
-            //  transdiff: enable transparency detection between frames
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "hap") {
-            // VidVox Hap
-            // options are:
-            // format: hap, hap_alpha, hap_q
-            // chunks: (int) max chunk count
-            // compressor: none, snappy
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "svq1") {
-            // svq1enc.c
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = false;
-            p->interGOP = true;
-            p->interB = false;
-        } else if (codecShortName == "msmpeg4" || codecShortName == "msmpeg4v2" || codecShortName == "h263p") {
-            // msmpeg4 is h263-based
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false; // bitrate is supported in msmpeg4v4 aka wmv1
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = true;
-            // p->interGOP = p->interGOP;
-            // p->interB = p->interB;
-        } else if (codecShortName == "mjpeg") {
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "jpeg2000") {
-            // j2kenc.c
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "libopenjpeg") {
-            // liboenjpeg can output DCI-compliant jpeg2000, see
-            // http://www.michaelcinquin.com/ressources/ffmpeg
-            // openjpeg also has options profile and cinema_mode,
-            // as well as numresolution (to set the number of image resolutions)
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "jpegls") {
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = false;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "libvpx") {
-            // https://trac.ffmpeg.org/wiki/Encode/VP8
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-libvpx
-            p->crf = true;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false; // true; // the code uses it, but it's disturbing to have qmin/qmax with CRF
-            p->interGOP = true;
-            p->interB = false;
-        } else if (codecShortName == "libvpx-vp9") {
-            // https://trac.ffmpeg.org/wiki/Encode/VP9
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-libvpx
-            p->crf = true;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false; // true; // the code uses it, but it's disturbing to have qmin/qmax with CRF
-            p->interGOP = true;
-            p->interB = false;
-        } else if (codecShortName == "libschroedinger") {
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = false;
-            // p->interGOP = p->interGOP;
-            // p->interB = p->interB;
-        } else if (codecShortName == "vc2") {
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-vc2
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = false;
-            p->qrange = false;
-            p->interGOP = false;
-            p->interB = false;
-        } else if (codecShortName == "libtheora") {
-            // https://www.mankier.com/1/ffmpeg-codecs#Video_Encoders-libtheora
-            p->crf = false;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = false;
-            p->qscale = true;
-            p->qrange = false;
-            p->interGOP = true;
-            p->interB = false;
-        } else if (codecShortName == "libxavs") {
-            // libxavs.c
-            p->crf = true;
-            p->x26xSpeed = false;
-            p->bitrate = true;
-            p->bitrateTol = true;
-            p->qscale = false; // could use the "qp" option
-            p->qrange = false; // could be enabled if qrange is enabled too
-            p->interGOP = true;
-            p->interB = true;
+    RateControl rateControl = RateControl::eBitrate | RateControl::eQRange;
+    if (encoderOption(codec, "mpv_flags")) {
+        // An mpegvideo encoder (its options include FF_MPV_COMMON_OPTS, FFmpeg n9.1 libavcodec/mpegvideoenc.h:339,
+        // e.g. mpeg4, mpeg1video, mpeg2video, flv, h263p, msmpeg4, msmpeg4v2 and mjpeg): Global Quality
+        // (AV_CODEC_FLAG_QSCALE, mpegvideo_enc.c:622) and qmin and qmax (mpegvideo_enc.c:219), rather than bit_rate,
+        // which is meant for two-pass encoding, and gives irreproducible low-quality results
+        // (https://trac.ffmpeg.org/wiki/Encode/MPEG-4)
+        rateControl = RateControl::eQScale | RateControl::eQRange;
+    } else {
+        for (const EncoderRateControl& rc : kEncoderRateControl) {
+            if (codecShortName == rc.encoder) {
+                rateControl = rc.flags;
+                break;
+            }
         }
     }
+    p.bitrate = hasRateControl(rateControl, RateControl::eBitrate);
+    p.bitrateTol = hasRateControl(rateControl, RateControl::eBitrateTol);
+    p.qscale = hasRateControl(rateControl, RateControl::eQScale);
+    // qmin and qmax are confusing next to the Output Quality (CRF), although e.g. libx264 reads them
+    p.qrange = !p.crf && hasRateControl(rateControl, RateControl::eQRange);
+
+    return p;
 } // WriteFFmpegPlugin::GetCodecSupportedParams
 
 #if OFX_FFMPEG_AUDIO
@@ -3629,10 +3447,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
 
     // Only update the relevant context variables where the user is able to set them.
     // This deals with cases where values are left on an old value when knob disabled.
-    CodecParams p;
-    if (avCodec) {
-        GetCodecSupportedParams(avCodec, &p);
-    }
+    const CodecParams p = avCodec ? GetCodecSupportedParams(avCodec) : CodecParams();
 
     assert(_crf && _x26xSpeed && _qscale && _bitrate && _bitrateTolerance && _quality);
     bool setqscale = p.qscale;
@@ -3683,9 +3498,16 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
         }
         if (crf >= 0) {
             setqscale = setbitrate = false;
-            av_opt_set_int(avCodecContext->priv_data, "crf", crf, 0);
-            if (crf == 0 && AV_CODEC_ID_VP9 == avCodecContext->codec_id) {
-                // set the lossless flag for VP90, see https://trac.ffmpeg.org/wiki/Encode/VP9
+            const int error = av_opt_set_int(avCodecContext->priv_data, "crf", crf, 0);
+            if (error < 0) {
+                // e.g. out of the range of the option (libvpx and libaom use a 0-63 scale)
+                char szError[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+                av_strerror(error, szError, sizeof(szError));
+                av_log(avCodecContext, AV_LOG_WARNING, "Output Quality: cannot set crf=%d: %s\n", crf, szError);
+            }
+            if ((crf == 0) && encoderOption(avCodec, "lossless")) {
+                // CRF 0 is not lossless in the encoders that have a "lossless" option, e.g. libvpx-vp9 (FFmpeg n9.1
+                // libavcodec/libvpxenc.c:2049, https://trac.ffmpeg.org/wiki/Encode/VP9)
                 av_opt_set_int(avCodecContext->priv_data, "lossless", 1, 0);
             }
             if (p.x26xSpeed) {
@@ -4249,6 +4071,12 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
             char szError[1024] = { 0 };
             av_strerror(error, szError, sizeof(szError));
             string msg = string("Could not open video codec: ") + szError;
+            const CodecParams p = GetCodecSupportedParams(avCodec);
+            if (p.crf && !p.crfLossless && ((CRFEnum)_crf->getValue() == eCRFLossless)) {
+                // e.g. libvpx (VP8), whose CRF 0 is out of its quantizer range (FFmpeg n9.1 libavcodec/libvpxenc.c:1145)
+                msg += string("\nThe ") + kParamCRFLabel + " Lossless (CRF 0) may not be available with the " + avCodec->name
+                       + " encoder: it has no lossless mode. Choose another " + kParamCRFLabel + ".";
+            }
             if (hasOptions) {
                 msg += string("\nCheck the values in ") + kParamCodecOptionsLabel + ".";
             }
@@ -4501,8 +4329,9 @@ WriteFFmpegPlugin::initConvertCtx(AVPixelFormat srcPixelFormat,
         if (colorspace < 0) {
             colorspace = isRec709Format(height) ? SWS_CS_ITU709 : SWS_CS_ITU601;
         }
-        // The range of the stream (e.g. the DNxHD Output Range), or full range for MJPEG
-        const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEG || avCodecContext->codec_id == AV_CODEC_ID_MJPEGB) ? 1 : 0; // 0 = 16..235, 1 = 0..255
+        // The range of the stream (e.g. the DNxHD Output Range, or full range for the encoders that only write it, such
+        // as mjpeg: see beginEncode())
+        const int dstRange = (avCodecContext->color_range == AVCOL_RANGE_JPEG) ? 1 : 0; // 0 = 16..235, 1 = 0..255
 
         ret = sws_setColorspaceDetails(_convertCtx,
                                        sws_getCoefficients(SWS_CS_DEFAULT), // inv_table
@@ -4767,8 +4596,8 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 if (outputFrame_) {
                     colourSpaceConvert(inputFrame_.get(), outputFrame_.get(), pixelFormatNuke, pixelFormatCodec, avCodecContext);
 
-                    // see ffmpeg.c:1199 from ffmpeg 3.2.2
-                    // MJPEG ignores global_quality, and only uses the quality setting in the pictures.
+                    // as fftools does (FFmpeg n9.1 fftools/ffmpeg_enc.c:887): the encoders that read Global Quality
+                    // from the quality of each frame (e.g. mjpeg, svq1, jpeg2000, cinepak and libxvid) need it
                     outputFrame_->quality = avCodecContext->global_quality;
                     outputFrame_->pict_type = AV_PICTURE_TYPE_NONE;
                     outputFrame_->pts = _pts_counter;
@@ -5151,8 +4980,10 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         return;
     }
 
-    // The v210 encoder needs an even width (FFmpeg n9.0 libavcodec/v210enc.c:56-59, n4.4 v210enc.c:99-102), and fails
-    // in avcodec_open2() with "Invalid argument" otherwise.
+    // The v210 encoder needs an even width (FFmpeg n9.1 libavcodec/v210enc.c:56-59), and fails in avcodec_open2() with
+    // "Invalid argument" otherwise. Its own message ("v210 needs even width") only goes to av_log(): reporting it
+    // would need av_log_set_callback(), which is process-wide (it would replace the host's callback, and get the
+    // messages of every thread), so this special case stays.
     const int width = rodPixel.x2 - rodPixel.x1;
     if ((codecId == AV_CODEC_ID_V210) && (width % 2 != 0)) {
         setPersistentMessage(Message::eMessageError, "", string("The v210 codec needs an even width, and the image is ") + std::to_string(width)
@@ -5230,6 +5061,16 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         if (((AV_CODEC_ID_V210 == avCodecContext->codec_id) || (AV_CODEC_ID_RAWVIDEO == avCodecContext->codec_id))
             && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
             avCodecContext->color_range = AVColorRange::AVCOL_RANGE_MPEG;
+        }
+        // An encoder that only writes full range Y'CbCr, e.g. mjpeg at the default strictness (FFmpeg n9.1
+        // libavcodec/mjpegenc.c:666-680): colourSpaceConvert() converts to full range.
+        if ((avCodecContext->color_range == AVCOL_RANGE_UNSPECIFIED) && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
+            const void* ranges = nullptr;
+            int nRanges = 0;
+            if ((avcodec_get_supported_config(avCodecContext, nullptr, AV_CODEC_CONFIG_COLOR_RANGE, 0, &ranges, &nRanges) >= 0)
+                && (nRanges == 1) && (static_cast<const AVColorRange*>(ranges)[0] == AVCOL_RANGE_JPEG)) {
+                avCodecContext->color_range = AVCOL_RANGE_JPEG;
+            }
         }
 
         // Bug 45010 The following flags must be set BEFORE calling
@@ -5886,10 +5727,7 @@ WriteFFmpegPlugin::updateVisibility()
     }
 
     const AVCodec* codec = avcodec_find_encoder_by_name(getCodecFromShortName(codecShortName));
-    CodecParams p;
-    if (codec) {
-        GetCodecSupportedParams(codec, &p);
-    }
+    const CodecParams p = codec ? GetCodecSupportedParams(codec) : CodecParams();
 
     _crf->setIsSecretAndDisabled(!p.crf);
     _x26xSpeed->setIsSecretAndDisabled(!p.x26xSpeed);
