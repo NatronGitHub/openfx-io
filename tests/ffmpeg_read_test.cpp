@@ -75,13 +75,20 @@
  *      ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params), and (--rgb R,G,B[,TOL]) checks that the mean of each
  *      component of the first and the last frame is R, G and B (on a 0-255 scale) within TOL (default 1.5): e.g. a
  *      clip of a constant Y'CbCr color, whose RGB value is computed from its matrix and range by the script.
+ *  20. optionally (--bit-depth N) checks that the reader reports a bit depth of N (FFmpegFile::getBitDepth()), and
+ *      (--fine-ramp MAX_STEP,MIN_LEVELS) that the first frame, a horizontal gray ramp with one code value per column
+ *      (e.g. 10-bit luma 64 + X), is decoded without the steps of a lower bit depth: the means of the first
+ *      component of adjacent columns (on a 0-255 scale) differ by at most MAX_STEP, and the first component takes
+ *      at least MIN_LEVELS distinct values (more than 256 needs more than 8 bits; issue #213). With
+ *      --skip-without-decoder, the harness exits with status 77 (skipped) instead of failing if the libavcodec it
+ *      links has no decoder for the stream (e.g. no libdav1d for AV1: the native av1 decoder needs a hwaccel).
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]
- * Exit status: 0 = all checks passed, non-zero = failure.
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]
+ * Exit status: 0 = all checks passed, 77 = skipped (--skip-without-decoder), other = failure.
  */
 
 #include "FFmpegFile.h"
@@ -130,13 +137,57 @@ meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeO
     return meanComponent(buf, w, h, nComps, sizeOfData, 0, 256.0);
 }
 
+// Exit status of a skipped check (--skip-without-decoder), as in automake and ctest's SKIP_RETURN_CODE.
+constexpr int kExitSkipped = 77;
+
+// --skip-without-decoder, after FFmpegFile failed to open the file: whether the linked libavcodec has a decoder for
+// none of its video streams (avcodec_find_decoder() fails, or the decoder could not tell the pixel format, e.g. a
+// Bayer FFV1 stream for the FFV1 decoder of FFmpeg 8). False if libavformat cannot open the file (a real failure).
+bool
+hasNoVideoDecoder(const std::string& filename)
+{
+    AVFormatContext* ctx = nullptr;
+    if (avformat_open_input(&ctx, filename.c_str(), nullptr, nullptr) < 0) {
+        return false;
+    }
+    const auto close = [](AVFormatContext* c) { avformat_close_input(&c); };
+    const std::unique_ptr<AVFormatContext, decltype(close)> guard(ctx, close);
+    if (avformat_find_stream_info(ctx, nullptr) < 0) {
+        return false;
+    }
+    bool video = false;
+    for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+        const AVCodecParameters* par = ctx->streams[i]->codecpar;
+        if (par->codec_type != AVMEDIA_TYPE_VIDEO) {
+            continue;
+        }
+        video = true;
+        if ((avcodec_find_decoder(par->codec_id) != nullptr) && (par->format != AV_PIX_FMT_NONE)) {
+            return false;
+        }
+    }
+
+    return video;
+}
+
+// --skip-without-decoder, after a decode failed: whether the error is AVERROR(ENOSYS), which a decoder that is not
+// implemented returns (e.g. the native av1 decoder without a hwaccel, when libavcodec has no libdav1d).
+bool
+isNotImplementedError(const std::string& error)
+{
+    char enosys[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(AVERROR(ENOSYS), enosys, sizeof(enosys));
+
+    return error.find(enosys) != std::string::npos;
+}
+
 } // namespace
 
 int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]\n", argv[0]);
         return 2;
     }
     const std::string filename = argv[1];
@@ -167,6 +218,10 @@ main(int argc, char** argv)
     int colorRange = 0; // --range: FFmpegFile::ColorRangeEnum
     double expectedRgb[3] = { -1., -1., -1. }; // --rgb
     double rgbTol = 1.5;
+    int expectedBitDepth = 0; // --bit-depth
+    double fineRampMaxStep = -1.; // --fine-ramp
+    int fineRampMinLevels = 0;
+    bool skipWithoutDecoder = false; // --skip-without-decoder
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--matrix" && i + 1 < argc) {
@@ -187,6 +242,19 @@ main(int argc, char** argv)
                 std::fprintf(stderr, "bad --rgb value: %s\n", argv[i]);
                 return 2;
             }
+        } else if (a == "--bit-depth" && i + 1 < argc) {
+            expectedBitDepth = std::atoi(argv[++i]);
+            if (expectedBitDepth <= 0) {
+                std::fprintf(stderr, "bad --bit-depth value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--fine-ramp" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%lf,%d", &fineRampMaxStep, &fineRampMinLevels) != 2 || fineRampMaxStep <= 0) {
+                std::fprintf(stderr, "bad --fine-ramp value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--skip-without-decoder") {
+            skipWithoutDecoder = true;
         } else if (a == "--tol" && i + 1 < argc) {
             tol = std::atof(argv[++i]);
         } else if (a == "--monotonic") {
@@ -275,6 +343,10 @@ main(int argc, char** argv)
 
     FFmpegFile file(filename);
     if (file.isInvalid()) {
+        if (skipWithoutDecoder && hasNoVideoDecoder(filename)) {
+            std::printf("SKIPPED: no decoder in the linked libavcodec: %s\n", file.getError().c_str());
+            return kExitSkipped;
+        }
         std::fprintf(stderr, "FAIL: open failed: %s\n", file.getError().c_str());
         return 1;
     }
@@ -291,8 +363,8 @@ main(int argc, char** argv)
     const int nComps = file.getNumberOfComponents();
     const int sizeOfData = static_cast<int>(file.getSizeOfData());
 
-    std::printf("file=%s\n  %dx%d par=%.4f frames=%d fps=%.4f comps=%d bytesPerSample=%d colorspace=%s\n",
-                filename.c_str(), w, h, aspect, frames, fps, nComps, sizeOfData, file.getColorspace());
+    std::printf("file=%s\n  %dx%d par=%.4f frames=%d fps=%.4f comps=%d bitDepth=%d bytesPerSample=%d colorspace=%s\n",
+                filename.c_str(), w, h, aspect, frames, fps, nComps, file.getBitDepth(), sizeOfData, file.getColorspace());
 
     if (w <= 0 || h <= 0 || frames <= 0 || (nComps != 3 && nComps != 4)) {
         std::fprintf(stderr, "FAIL: implausible stream info\n");
@@ -359,6 +431,72 @@ main(int argc, char** argv)
                     return 1;
                 }
             }
+        }
+    }
+    if ((expectedBitDepth > 0) && (file.getBitDepth() != expectedBitDepth)) {
+        std::fprintf(stderr, "FAIL: --bit-depth: the reader reports %d bits, expected %d\n", file.getBitDepth(), expectedBitDepth);
+        return 1;
+    }
+    if (fineRampMaxStep > 0.) {
+        const size_t samples = static_cast<size_t>(w) * h * nComps;
+        std::vector<unsigned char> rampBuf(samples * sizeOfData);
+        bool ok = false;
+        std::string error;
+        try {
+            ok = file.decode(nullptr, 1, loadNearest, rampBuf.data(), &error);
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        if (!ok) {
+            if (skipWithoutDecoder && isNotImplementedError(error)) {
+                std::printf("SKIPPED: no decoder in the linked libavcodec: %s\n", error.c_str());
+                return kExitSkipped;
+            }
+            std::fprintf(stderr, "FAIL: --fine-ramp: frame 1 failed to decode: %s\n", error.c_str());
+            return 1;
+        }
+        // the samples, as integers (copied: rampBuf holds bytes)
+        std::vector<int> values;
+        if (sizeOfData == 2) {
+            std::vector<uint16_t> values16(samples);
+            std::memcpy(values16.data(), rampBuf.data(), samples * sizeof(uint16_t));
+            values.assign(values16.begin(), values16.end());
+        } else {
+            values.assign(rampBuf.begin(), rampBuf.end());
+        }
+        // the mean of the first component of each column, on a 0-255 scale, and the distinct values it takes
+        const auto sample = [&](int x, int y) -> int {
+            return values[(static_cast<size_t>(y) * w + x) * nComps];
+        };
+        const double scale = sizeOfData == 2 ? 257. : 1.; // 65535 is 255
+        std::vector<bool> seen(65536, false);
+        int levels = 0;
+        double maxStep = 0.;
+        int maxStepColumn = 0;
+        double previous = 0.;
+        for (int x = 0; x < w; ++x) {
+            double sum = 0.;
+            for (int y = 0; y < h; ++y) {
+                const int v = sample(x, y);
+                sum += v;
+                if (!seen[v]) {
+                    seen[v] = true;
+                    ++levels;
+                }
+            }
+            const double mean = sum / h / scale;
+            if ((x > 0) && (std::fabs(mean - previous) > maxStep)) {
+                maxStep = std::fabs(mean - previous);
+                maxStepColumn = x;
+            }
+            previous = mean;
+        }
+        std::printf("  fine ramp: %d distinct values, largest step %.3f at column %d (expected at least %d values, steps of at most %.3f)\n",
+                    levels, maxStep, maxStepColumn, fineRampMinLevels, fineRampMaxStep);
+        if ((levels < fineRampMinLevels) || (maxStep > fineRampMaxStep)) {
+            std::fprintf(stderr, "FAIL: --fine-ramp: %d distinct values, largest step %.3f, expected at least %d values and steps of at most %.3f\n",
+                         levels, maxStep, fineRampMinLevels, fineRampMaxStep);
+            return 1;
         }
     }
     if (openOnly) {

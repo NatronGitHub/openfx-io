@@ -731,7 +731,16 @@ before it, as players display it (and, with `--ramp`, hold its content).
 (0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020) and range (0 = Auto, 1 = Video,
 2 = Full) of the conversion to RGB (`FFmpegFile::setColorOverrides()`, the ReadFFmpeg
 "YCbCr Matrix" and "YCbCr Range" params), and `--rgb R,G,B[,TOL]` checks the mean RGB
-of the first and the last frame (0-255 scale, default tolerance 1.5).
+of the first and the last frame (0-255 scale, default tolerance 1.5). `--bit-depth N` checks
+the bit depth the reader reports (`FFmpegFile::getBitDepth()`), and `--fine-ramp MAX_STEP,MIN_LEVELS`
+that the first frame, a horizontal gray ramp with one code value per column, decodes to at
+least MIN_LEVELS distinct values (more than 256 needs more than 8 bits) with steps of at most
+MAX_STEP (0-255 scale) between the means of adjacent columns. `run_ffmpeg_read_test.sh` uses
+them on 10-bit VP9 (4:2:0 and 4:2:2), AV1 (decoded by libdav1d), HEVC Main 10 (libx265, or
+VideoToolbox on macOS) and H.264 High 10, 12-bit VP9, 16-bit Bayer FFV1, and an 8-bit VP9
+control (issue #213: the VP9, HEVC and libdav1d decoders leave `bits_per_raw_sample` at 0, and
+4:2:0 10-bit was decoded to 8 bits). With `--skip-without-decoder`, a stream that the linked
+libavcodec cannot decode (e.g. AV1 without libdav1d) exits with status 77 (skipped).
 
 `run_ffmpeg_read_test.sh` generates 40-frame gray-ramp clips (frame N luma = 16 + 4*N,
 H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 with a

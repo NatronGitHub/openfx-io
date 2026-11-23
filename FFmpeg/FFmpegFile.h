@@ -890,9 +890,7 @@ public:
         }
 
         // mov64Reader::decode always uses stream 0
-        // Sometimes AVCodec reports a bitdepth of 0 (eg PNG codec).
-
-        // In this case, assume 8 bit.
+        // Pixel formats with less than 8 bits per component (e.g. monow: 1, bgr8: 3) are decoded to 8 bits.
         return (std::max)(8, _streams[0]->_bitDepth);
     }
 
