@@ -99,6 +99,10 @@
 #     10-bit VP9 (4:2:0 and 4:2:2), AV1, HEVC Main 10 and H.264 High 10, 12-bit VP9, 16-bit Bayer FFV1, and an 8-bit
 #     VP9 control: the reader must report the bit depth of the decoded pixel format, and decode the ramp without
 #     8-bit steps.
+#   * Alpha and palettes (see check_alpha, issues #321 and #375): half-transparent PNG pal8 (MOV, NUT), PNG ya8 and
+#     ya16be (MOV) and FFV1 ya8 (NUT) must give RGBA with the alpha of the clip; GIF and PNG rgba are controls, and opaque
+#     PNG gray and rgb24 give RGB. Opaque pal8 (PNG in MOV, raw in MOV and AVI) must give its colors with an
+#     alpha of 255, also after seeks (AVI and MOV give the palette only with the first packet).
 # Clips whose encoder is not available in the ffmpeg CLI are skipped.
 #
 # Environment:
@@ -1759,6 +1763,106 @@ check_bitdepth bitdepth_hevc_vt_10.mp4 "Bit depth: HEVC Main 10 (VideoToolbox)" 
 check_bitdepth bitdepth_h264_10.mkv "Bit depth: H.264 High 10 (libx264, sets bits_per_raw_sample)" 10 yuv420p10le libx264 -profile:v high10 -qp 1 -preset ultrafast
 # Bayer (FFV1 sets bits_per_raw_sample to 16, and the components of bayer_rggb16 have 4, 8 and 4 bits)
 check_bitdepth bitdepth_ffv1_bayer16.mkv "Bit depth: FFV1 bayer_rggb16le" 16 bayer_rggb16le ffv1 -level 4 -strict experimental
+
+# Alpha and palettes (issues #321 and #375): 6 frames made by the ffmpeg CLI from SOURCE, encoded by ENCODER in PIXFMT,
+# which must decode to DECODED_PIXFMT (else the clip is skipped), then read by the harness with HARNESS_ARGS:
+# - half: red, the left half transparent and the right half opaque (8-bit alpha 0 and 255);
+# - half16: the same from a 16-bit source (alpha 0 and 65535; from an 8-bit one, the ffmpeg CLI converts 255 to 65280);
+# - half8: the same from an 8-bit source;
+# - opaque: an opaque color (48,128,192);
+# - for a pal8 PIXFMT, a palette made from the source (palettegen), with a transparent entry for half.
+# The reader must give RGBA, with the alpha of the clip (--alpha, mean 127.5 for a half-transparent clip), for every
+# pixel format that has an alpha channel (AV_PIX_FMT_FLAG_ALPHA), including those with fewer than 4 components:
+# a palette (PNG pal8 + tRNS; the GIF decoder gives bgra, so GIF is a control) and gray + alpha (ya8, ya16). Opaque
+# formats stay RGB (--components 3), except a palette, whose entries may have any alpha: an opaque one gives RGBA
+# with an alpha of 255. Palette streams in AVI and MOV get their palette once, as side data of the first packet
+# (#375): it must be used after the seeks of the open, and after the seeks of an out-of-order decode (--order).
+# With --expect-fail first, the alpha check of the harness must fail (exit status 1): it must catch a wrong alpha.
+# check_alpha [--expect-fail] NAME DESCRIPTION SOURCE PIXFMT ENCODER DECODED_PIXFMT HARNESS_ARGS... [-- FFMPEG_OUTPUT_ARGS...]
+check_alpha() {
+    local expectFail=0
+    if [ "$1" = "--expect-fail" ]; then
+        expectFail=1
+        shift
+    fi
+    local name="$1" desc="$2" source="$3" pixfmt="$4" encoder="$5" decoded="$6" got status filter
+    shift 6
+    local harnessArgs=() outputArgs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        harnessArgs+=("$1")
+        shift
+    done
+    if [ $# -gt 0 ]; then
+        shift
+        outputArgs=("$@")
+    fi
+    echo "== $desc =="
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    case "$source" in
+    half | half8) filter="color=c=red:s=64x48:r=24:d=0.25,format=rgba,geq=r=255:g=0:b=0:a='if(lt(X,32),0,255)'" ;;
+    half16) filter="color=c=red:s=64x48:r=24:d=0.25,format=rgba64le,geq=r=65535:g=0:b=0:a='if(lt(X,32),0,65535)'" ;;
+    opaque) filter="color=c=0x3080C0:s=64x48:r=24:d=0.25,format=rgb24" ;;
+    *) echo "FAIL: check_alpha: unknown source $source"; rc=1; return ;;
+    esac
+    if [ "$pixfmt" = pal8 ]; then
+        local reserve=0
+        if [ "$source" = half ]; then
+            reserve=1
+        fi
+        filter="$filter,split[a][b];[a]palettegen=reserve_transparent=$reserve:stats_mode=single[p];[b][p]paletteuse=alpha_threshold=128:new=1"
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$filter" -c:v "$encoder" ${outputArgs[@]+"${outputArgs[@]}"} -pix_fmt "$pixfmt" "$tmp/$name" \
+        2>"$tmp/$name.log"; then
+        echo "SKIPPED: the ffmpeg CLI could not encode $pixfmt with $encoder: $(head -1 "$tmp/$name.log")"
+        return
+    fi
+    got="$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "$tmp/$name")"
+    if [ "$got" != "$decoded" ]; then
+        echo "SKIPPED: $name decodes to $got, not $decoded"
+        return
+    fi
+    status=0
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" "${harnessArgs[@]}" ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/$name.out" 2>&1 || status=$?
+    cat "$tmp/$name.out"
+    if [ "$expectFail" -eq 1 ]; then
+        # the failure must be that of the alpha check, not another one (e.g. the number of components)
+        if [ "$status" -eq 1 ] && grep -q "^FAIL: --alpha: " "$tmp/$name.out"; then
+            echo "PASS (the alpha check failed, as expected)"
+        else
+            echo "FAIL: the harness exited with status $status, expected a failure (1) of the alpha check"
+            rc=1
+        fi
+    elif [ "$status" -ne 0 ]; then
+        rc=1
+    fi
+}
+check_alpha alpha_pal8.mov "Alpha: PNG pal8 with a transparent palette entry in MOV" half pal8 png pal8 --open-only --alpha 127.5
+check_alpha alpha_pal8.nut "Alpha: PNG pal8 with a transparent palette entry in NUT" half pal8 png pal8 --open-only --alpha 127.5
+check_alpha alpha_pal8.gif "Alpha: GIF with a transparent palette entry (decoded as bgra: control)" half pal8 gif bgra --open-only --alpha 127.5
+check_alpha alpha_ya8.mov "Alpha: PNG gray + alpha (ya8) in MOV" half ya8 png ya8 --open-only --alpha 127.5
+check_alpha alpha_ya16.mov "Alpha: PNG 16-bit gray + alpha (ya16be) in MOV" half16 ya16be png ya16be --open-only --alpha 127.5 --bit-depth 16
+check_alpha --expect-fail alpha_ya16_from8.mov "Alpha: PNG ya16be from an 8-bit source (alpha 65280: mean 127.00, must fail --alpha 127.5)" \
+    half8 ya16be png ya16be --open-only --alpha 127.5
+check_alpha alpha_ya8_ffv1.nut "Alpha: FFV1 gray + alpha (ya8) in NUT" half ya8 ffv1 ya8 --open-only --alpha 127.5
+check_alpha alpha_rgba.mov "Alpha: PNG rgba in MOV (control)" half rgba png rgba --open-only --alpha 127.5
+check_alpha alpha_pal8_opaque.mov "Alpha: PNG pal8 without a transparent entry in MOV (opaque palette: alpha 255)" opaque pal8 png pal8 \
+    --open-only --alpha 255 --rgb 48,128,192,0.1
+check_alpha alpha_gray.mov "Alpha: PNG gray in MOV (opaque control: RGB)" half gray png gray --open-only --components 3
+check_alpha alpha_rgb24.mov "Alpha: PNG rgb24 in MOV (opaque control: RGB)" opaque rgb24 png rgb24 --open-only --components 3 --rgb 48,128,192,0.1
+# Raw pal8 in AVI is also "BMP in AVI" (an uncompressed DIB, codec tag 0); the ffmpeg CLI's bmp encoder in AVI writes
+# whole BMP files with that tag, which FFmpeg itself decodes as raw (black), so it is not a test clip.
+check_alpha palette_raw.mov "Palette: raw pal8 in MOV (palette in the first packet only, #375), out of order" opaque pal8 rawvideo pal8 \
+    --alpha 255 --rgb 48,128,192,0.1 --order 6,1,4,2,5,3,1
+check_alpha palette_raw.avi "Palette: raw pal8 (DIB) in AVI (palette in the first packet only, #375), out of order" opaque pal8 rawvideo pal8 \
+    --alpha 255 --rgb 48,128,192,0.1 --order 6,1,4,2,5,3,1
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"

@@ -24,7 +24,7 @@ CXXFLAGS += $(CXXSTD) -O2 -g -Wall
 READ_CXXFLAGS := $(CXXFLAGS) $(shell $(PKGCONF) --cflags $(FFMPEG_PKGS)) \
     -I../FFmpeg -I../IOSupport -I../SupportExt -I../openfx/include -I../openfx/Support/include
 READ_LIBS := $(shell $(PKGCONF) --libs $(FFMPEG_PKGS))
-READ_SRCS := ffmpeg_read_test.cpp ../FFmpeg/FFmpegFile.cpp ofx_stubs.cpp
+READ_SRCS := ffmpeg_read_test.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp ofx_stubs.cpp
 
 # ---- (2) Direct-link OFX plugin/host tests -------------------------------------
 # OpenImageIO 3.1 requires C++17; its headers also pull in fmt.
@@ -110,7 +110,7 @@ RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
-ffmpeg_read_test: $(READ_SRCS)
+ffmpeg_read_test: $(READ_SRCS) ../FFmpeg/FFmpegFile.h ../FFmpeg/PixelFormat.h
 	$(CXX) $(READ_CXXFLAGS) $(READ_SRCS) $(READ_LIBS) -o $@
 
 ofx_entrypoints_test: ofx_entrypoints_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)

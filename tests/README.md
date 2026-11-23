@@ -783,6 +783,16 @@ VideoToolbox on macOS) and H.264 High 10, 12-bit VP9, 16-bit Bayer FFV1, and an 
 control (issue #213: the VP9, HEVC and libdav1d decoders leave `bits_per_raw_sample` at 0, and
 4:2:0 10-bit was decoded to 8 bits). With `--skip-without-decoder`, a stream that the linked
 libavcodec cannot decode (e.g. AV1 without libdav1d) exits with status 77 (skipped).
+`--components N` checks that the reader gives N components (3 = RGB, 4 = RGBA), and `--alpha A[,TOL]`
+that it gives RGBA with a mean alpha of A on the first and the last frame (0-255 scale, default
+tolerance 0.1: the alpha of the test clips is exact; `--alpha` with `--components 3` is an error).
+`run_ffmpeg_read_test.sh` uses them on half-transparent clips (issue #321): PNG pal8 with a transparent
+palette entry (in MOV and NUT), gray + alpha (PNG ya8 and ya16be in MOV, FFV1 ya8 in NUT), and as
+controls a GIF (FFmpeg decodes GIF to bgra) and PNG rgba; a ya16be clip made from an 8-bit source
+(alpha 65280, mean 127.00) must fail `--alpha 127.5`. An opaque PNG pal8 gives RGBA with an alpha of
+255, and PNG gray and rgb24 give RGB. Raw pal8 in MOV and AVI (an uncompressed DIB, as "BMP in AVI"),
+whose palette is only in the first packet (issue #375), must give the colors of the clip with an alpha
+of 255, also in an out-of-order decode (`--order`).
 
 `run_ffmpeg_read_test.sh` generates 40-frame gray-ramp clips (frame N luma = 16 + 4*N,
 H.264 with GOP 8 + B-frames unless noted): MP4 (`start_time 0`, edit list), MP4 with a

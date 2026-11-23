@@ -377,7 +377,7 @@ ReadFFmpegPlugin::guessParamsFromFilename(const string& filename,
 
     *componentCount = file->getNumberOfComponents();
     *components = (*componentCount > 3) ? ePixelComponentRGBA : ePixelComponentRGB;
-    /// Ffmpeg is RGB opaque.
+    // FFmpeg's alpha is always straight (FFmpeg n9.0.2 libavutil/pixdesc.h:138-141).
     *filePremult = (*componentCount > 3) ? eImageUnPreMultiplied : eImageOpaque;
 
     return true;
