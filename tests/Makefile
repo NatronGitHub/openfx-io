@@ -106,7 +106,7 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-writeffmpeg-param-change test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-writeffmpeg-param-change test-readffmpeg-destroy-closes-file test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -499,7 +499,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-writeffmpeg-param-change test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-swscale-exact test-writeffmpeg-param-change test-readffmpeg-destroy-closes-file test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -527,6 +527,11 @@ test-dnxhr444-noise: ofx_render_test
 # crash, and the next render works. By itself, so that a crash only fails this test.
 test-writeffmpeg-begin-failure: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --begin-failure
+
+# #290: ReadFFmpeg, DestroyInstance closes the movie file (before Unload). By itself, so that a crash only fails this
+# test.
+test-readffmpeg-destroy-closes-file: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i290.mov --destroy-closes-file
 
 # #288: WriteFFmpeg, frame 1 is aborted or fails a check of encode() while other threads wait for their turn: they fail
 # instead of waiting forever (the test fails after 60 s). By itself, so that a deadlock only fails this test.
@@ -612,7 +617,7 @@ clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxTestLog.txt \
+	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxTestLog.txt \
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \

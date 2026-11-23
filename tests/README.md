@@ -48,6 +48,7 @@ make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails 
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
+make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -266,6 +267,14 @@ Profile, Hap Format, the Source clip), as Natron does when the user edits them d
 the file complete: these actions used to free the format context of the render (`freeFormat()`), which made the next
 frame fail ("file is not open") and lost the trailer, or, if a frame was being encoded, freed it under the render
 thread.
+
+`test-readffmpeg-destroy-closes-file` (issue #290) runs `ofx_render_test OUT --destroy-closes-file`: a ReadFFmpeg
+instance renders a frame of a movie, which must then be open, and is destroyed: the movie must be closed before
+kOfxActionUnload (the open files of ReadFFmpeg belong to the plug-in, keyed by the address of the instance, and used
+to stay open until Unload). Twice, with the movie rewritten at another size in between: the second instance, which
+may get the address of the first one (the test prints whether it does), must have the region of definition of the new
+movie. "Open" is a file descriptor of the process on the same device and inode (`/proc/self/fd` on Linux, `/dev/fd`
+on macOS), or, on MS Windows, a sharing violation when the test opens the file with `DELETE` access.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
@@ -978,7 +987,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 

@@ -206,6 +206,10 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
 
 ReadFFmpegPlugin::~ReadFFmpegPlugin()
 {
+    // Close the files of this instance (their AVFormatContext, decoder and frames) now: the manager belongs to the
+    // factory, which outlives every instance (kOfxActionUnload: "all instances of a plugin have been destroyed"), and
+    // is keyed by this address, which a later instance may reuse (issue #290).
+    _manager.clear(this);
 }
 
 /**
