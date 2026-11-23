@@ -381,10 +381,16 @@ if(TARGET io_tests_ofx)
   endif()
 
   # test-png-corrupt: ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files fail cleanly (no crash, no
-  # AddressSanitizer report, no leak), with AddressSanitizer
+  # AddressSanitizer report, no leak); an image offset out of range and a huge image (#276, #297). With
+  # AddressSanitizer and UBSan's signed-integer-overflow check, which aborts (not on MS Windows)
   if(_io_t_png)
+    if(WIN32)
+      set(_io_png_san "")
+    else()
+      set(_io_png_san ${_io_asan} -fsanitize=signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow)
+    endif()
     io_test_program(png_corrupt_test OFX THREADS SOURCES ${T}/png_corrupt_test.cpp ${S}/PNG/ReadPNG.cpp ${S}/PNG/WritePNG.cpp
-                    ${S}/IOSupport/GenericWriter.cpp ${_io_reader_srcs} INCLUDES ${S}/PNG SANITIZE ${_io_asan} LIBS io_png)
+                    ${S}/IOSupport/GenericWriter.cpp ${_io_reader_srcs} INCLUDES ${S}/PNG SANITIZE ${_io_png_san} LIBS io_png)
     io_test(test-png-corrupt DIR "${B}/.png_corrupt" ENV "${_io_ocio_env}" "${_io_asan_env}"
             COMMAND $<TARGET_FILE:png_corrupt_test> "${B}/.png_corrupt")
   endif()

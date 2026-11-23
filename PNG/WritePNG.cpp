@@ -732,6 +732,12 @@ WritePNGPlugin::encode(const string& filename,
     std::size_t scratchBufBytes = (bounds.y2 - bounds.y1) * pngRowBytes;
 
     RamBuffer scratchBuffer(scratchBufBytes);
+    if (!scratchBuffer.getData()) {
+        setPersistentMessage(Message::eMessageError, "", "WritePNG: cannot write " + filename + ": not enough memory");
+        throwSuiteStatusException(kOfxStatErrMemory);
+
+        return;
+    }
     int nComps = (std::min)(dstNComps, pixelDataNComps);
     const int srcRowElements = rowBytes / sizeof(float);
     const size_t numPixels = (size_t)(bounds.x2 - bounds.x1) * (size_t)(bounds.y2 - bounds.y1);

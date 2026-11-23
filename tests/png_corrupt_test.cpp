@@ -36,6 +36,14 @@
  *    must fail with a persistent error message (libpng's message for the libpng errors: "libpng error: ...");
  *  - renders an image wider than libpng's limit (1000001 pixels: png_set_IHDR fails) with WritePNG: the render must
  *    fail with libpng's message;
+ *  - an image offset (oFFs chunk) whose RoD edge (x1 + width) is INT_MAX or more (#297): the RoD and the render must
+ *    fail, without a signed overflow (built with -fsanitize=signed-integer-overflow, which aborts on one), and an
+ *    offset that fits gives the RoD;
+ *  - the Image Info of a tEXt and a zTXt chunk labels each with its own compression (#297);
+ *  - an interlaced 16-bit RGBA image of 1000000x1000000 pixels (libpng's limit), read whole: ReadPNG's buffer
+ *    (8 TB) can't be allocated (the allocator of AddressSanitizer, with allocator_may_return_null, returns NULL for
+ *    more than 1 TB, whatever the memory; MS Windows doesn't overcommit), and the render must fail with
+ *    kOfxStatErrMemory and a message (#276);
  *  - checks that no file descriptor and no memory is leaked: the corrupt files are read again 8 times, then the
  *    number of bytes allocated (__sanitizer_get_current_allocated_bytes) and the lowest free file descriptor must be
  *    the same as before.
@@ -49,6 +57,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <climits>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -70,6 +79,12 @@
 // (from <sanitizer/allocator_interface.h>, which GCC doesn't install in the default include path on Ubuntu 24.04; the
 // ASan runtimes of GCC and clang both export it)
 extern "C" size_t __sanitizer_get_current_allocated_bytes(void);
+// a failed allocation returns NULL, as malloc() does, instead of aborting (the 8 TB buffer of testHugeImage)
+extern "C" const char*
+__asan_default_options()
+{
+    return "allocator_may_return_null=1";
+}
 #endif
 
 #ifdef _WIN32
@@ -250,6 +265,48 @@ findChunk(const std::vector<Chunk>& c,
     }
 
     return found;
+}
+
+// a chunk (length, type, data, CRC)
+Bytes
+makeChunk(const char* type,
+          const Bytes& data)
+{
+    Bytes b(12 + data.size());
+    setBe32(b, 0, static_cast<uint32_t>(data.size()));
+    std::memcpy(&b[4], type, 4);
+    std::copy(data.begin(), data.end(), b.begin() + 8);
+    const Chunk k = { 0, static_cast<uint32_t>(data.size()), type };
+    fixCRC(b, k);
+
+    return b;
+}
+
+// the file png with the chunk inserted before its first IDAT chunk
+Bytes
+insertBeforeIDAT(const Bytes& png,
+                 const Bytes& chunk)
+{
+    const std::vector<Chunk> c = chunks(png);
+    const Chunk* idat = findChunk(c, "IDAT");
+    Bytes b(png.begin(), png.begin() + idat->offset);
+    b.insert(b.end(), chunk.begin(), chunk.end());
+    b.insert(b.end(), png.begin() + idat->offset, png.end());
+
+    return b;
+}
+
+// an oFFs chunk (offset in pixels)
+Bytes
+oFFsChunk(int32_t x,
+          int32_t y)
+{
+    Bytes d(9, 0);
+    setBe32(d, 0, static_cast<uint32_t>(x));
+    setBe32(d, 4, static_cast<uint32_t>(y));
+    d[8] = PNG_OFFSET_PIXEL;
+
+    return makeChunk("oFFs", d);
 }
 
 // A corrupt file: its name, its bytes, and whether getRegionOfDefinition can succeed (the header is valid: only
@@ -670,6 +727,137 @@ testWrite(OfxPlugin* p,
     }
 }
 
+// An image offset (oFFs): the RoD is (x, y, x + kW, y + kH) if x + kW and y + kH are less than INT_MAX
+// (kOfxFlagInfiniteMax, an infinite edge); else the RoD and the render fail with a persistent error message (#297)
+void
+testOffset(OfxPlugin* p,
+           const std::string& path,
+           const Bytes& one,
+           int32_t x,
+           int32_t y)
+{
+    const bool inRange = static_cast<int64_t>(x) + kW < INT_MAX && static_cast<int64_t>(y) + kH < INT_MAX;
+    std::printf("== ReadPNG, oFFs offset %d,%d (%s)\n", x, y, inRange ? "in range" : "x2 or y2 would be INT_MAX or more");
+    if (!writeBytes(path, insertBeforeIDAT(one, oFFsChunk(x, y)))) {
+        check(false, "cannot write %s", path.c_str());
+
+        return;
+    }
+    clearMessages();
+    Reader r;
+    r.create(p, path); // (guessParamsFromFilename fails for an offset out of range: GenericReader ignores it)
+    if (!r.created) {
+        check(false, "oFFs: create instance");
+
+        return;
+    }
+    clearMessages();
+    const OfxStatus rodSt = r.getRoD();
+    std::string err = persistentError();
+    if (inRange) {
+        check(ok(rodSt) && r.rod.x1 == x && r.rod.y1 == y && r.rod.x2 == x + kW && r.rod.y2 == y + kH,
+              "oFFs: getRegionOfDefinition = %d, %d,%d %d,%d", rodSt, r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
+
+        return;
+    }
+    check(!ok(rodSt) && err.find("oFFs") != std::string::npos, "oFFs: getRegionOfDefinition = %d (failure), error: %s", rodSt, err.c_str());
+    clearMessages();
+    const OfxRectI window = { 0, 0, kW, kH };
+    const OfxStatus st = r.render(window);
+    err = persistentError();
+    check(!ok(st) && err.find("oFFs") != std::string::npos, "oFFs: render = %d (failure), error: %s", st, err.c_str());
+}
+
+// The Image Info of a tEXt and a zTXt chunk: each is labelled with its own compression (#297)
+void
+testTextLabels(OfxPlugin* p,
+               const std::string& path,
+               const Bytes& one)
+{
+    std::printf("== ReadPNG, Image Info of a tEXt and a zTXt chunk\n");
+    const std::string t = std::string("KeyT") + '\0' + "plain text";
+    const Bytes text = makeChunk("tEXt", Bytes(t.begin(), t.end()));
+    const std::string value = "compressed text";
+    Bytes z(value.size() + 64);
+    uLongf zLen = static_cast<uLongf>(z.size());
+    if (compress(z.data(), &zLen, reinterpret_cast<const Bytef*>(value.data()), static_cast<uLong>(value.size())) != Z_OK) {
+        check(false, "compress");
+
+        return;
+    }
+    Bytes zd = { 'K', 'e', 'y', 'Z', 0, 0 }; // key, method 0 (deflate)
+    zd.insert(zd.end(), z.begin(), z.begin() + zLen);
+    if (!writeBytes(path, insertBeforeIDAT(insertBeforeIDAT(one, text), makeChunk("zTXt", zd)))) {
+        check(false, "cannot write %s", path.c_str());
+
+        return;
+    }
+    clearMessages();
+    Reader r;
+    if (!r.create(p, path)) {
+        check(false, "text: create instance and set the filename");
+
+        return;
+    }
+    clearMessages();
+    r.changed("showMetadata");
+    const std::string info = messages();
+    check(info.find("KeyT (tEXt uncompressed)") != std::string::npos && info.find("KeyZ (zTXt deflate compressed)") != std::string::npos,
+          "Image Info labels KeyT tEXt and KeyZ zTXt:\n%s", info.c_str());
+}
+
+// An interlaced 16-bit RGBA image of 1000000x1000000 pixels (libpng's limit), with the zlib data of the first two
+// rows of the first Adam7 pass (zeros). An interlaced image is read whole, in a buffer of 8 TB: its allocation fails
+// (see __asan_default_options), and the render of a small window must fail with kOfxStatErrMemory and a message,
+// without writing the rows to a NULL buffer (#276).
+void
+testHugeImage(OfxPlugin* p,
+              const std::string& path)
+{
+    const uint32_t n = 1000000; // PNG_USER_WIDTH_MAX, PNG_USER_HEIGHT_MAX
+    std::printf("== ReadPNG, an interlaced 16-bit RGBA image of %ux%u pixels (8 TB)\n", n, n);
+    Bytes ihdr(13, 0);
+    setBe32(ihdr, 0, n);
+    setBe32(ihdr, 4, n);
+    ihdr[8] = 16;
+    ihdr[9] = PNG_COLOR_TYPE_RGB_ALPHA;
+    ihdr[12] = PNG_INTERLACE_ADAM7;
+    const Bytes raw(2 * (1 + static_cast<size_t>(n + 7) / 8 * 8), 0); // two rows of pass 1 (filter byte 0, then zeros)
+    Bytes z(compressBound(static_cast<uLong>(raw.size())));
+    uLongf zLen = static_cast<uLongf>(z.size());
+    if (compress(z.data(), &zLen, raw.data(), static_cast<uLong>(raw.size())) != Z_OK) {
+        check(false, "compress");
+
+        return;
+    }
+    z.resize(zLen);
+    Bytes b = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
+    for (const Bytes& c : { makeChunk("IHDR", ihdr), makeChunk("IDAT", z), makeChunk("IEND", Bytes()) }) {
+        b.insert(b.end(), c.begin(), c.end());
+    }
+    if (!writeBytes(path, b)) {
+        check(false, "cannot write %s", path.c_str());
+
+        return;
+    }
+    clearMessages();
+    Reader r;
+    if (!r.create(p, path)) {
+        check(false, "huge: create instance and set the filename");
+
+        return;
+    }
+    clearMessages();
+    const OfxStatus rodSt = r.getRoD();
+    check(ok(rodSt) && r.rod.x2 == static_cast<int>(n) && r.rod.y2 == static_cast<int>(n), "huge: getRegionOfDefinition = %d, %d,%d %d,%d", rodSt, r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
+    clearMessages();
+    const OfxRectI window = { 0, 0, 16, 16 };
+    const OfxStatus st = r.render(window);
+    const std::string err = persistentError();
+    check(st == kOfxStatErrMemory && err.find("not enough memory") != std::string::npos, "huge: render = %d (expected kOfxStatErrMemory = %d), error: %s",
+          st, kOfxStatErrMemory, err.c_str());
+}
+
 // the lowest free file descriptor (a leaked FILE keeps one)
 int
 lowestFreeFd()
@@ -761,6 +949,19 @@ main(int argc,
         testCorrupt(read, paths[i], corrupt[i], true);
     }
     testWrite(write, tooWide, 1000001, 1, 0, true);
+    testOffset(read, dir + "/offset.png", one, 5, 7);
+    testOffset(read, dir + "/offset-max.png", one, INT_MAX - kW - 1, 7);
+    testOffset(read, dir + "/offset-infinite-x.png", one, INT_MAX - kW, 7); // x2 = kOfxFlagInfiniteMax
+    testOffset(read, dir + "/offset-overflow-x.png", one, INT_MAX - kW + 1, 0);
+    testOffset(read, dir + "/offset-overflow-y.png", one, 0, INT_MAX);
+    testTextLabels(read, dir + "/text.png", one);
+#if defined(PNG_CORRUPT_TEST_ASAN) || defined(_WIN32)
+    // (MS Windows doesn't overcommit: malloc() of 8 TB returns NULL)
+    testHugeImage(read, dir + "/huge.png");
+#else
+    // (without AddressSanitizer, the 8 TB allocation may succeed, e.g. with Linux's overcommit)
+    std::printf("  SKIP: the 8 TB image (not built with AddressSanitizer, not MS Windows)\n");
+#endif
 
     // leaks: everything again (the first runs allocated the caches of the plug-ins and of the host), then the same
     // runs 8 times, after which the allocated memory and the file descriptors must be the same

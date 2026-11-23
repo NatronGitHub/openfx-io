@@ -390,10 +390,12 @@ clean-oiio-layer-menu:
 
 # ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files (made from valid ones that the test writes with
 # libpng) must fail cleanly, without a crash, an AddressSanitizer report, or a leak (of memory or of a file
-# descriptor). With AddressSanitizer (not on MS Windows, as OCIO_FT_ASAN). Only if pkg-config finds libpng.
+# descriptor); also an image offset out of range and a huge image (#276, #297). With AddressSanitizer and UBSan's
+# signed-integer-overflow check, which aborts (not on MS Windows, as OCIO_FT_ASAN). Only if pkg-config finds libpng.
 ifneq ($(HAVE_PNG),)
 PNG_CORRUPT_SRCS := ../PNG/ReadPNG.cpp ../PNG/WritePNG.cpp ../IOSupport/GenericWriter.cpp $(READER_HOOKS_SRCS)
-PNG_CORRUPT_CXXFLAGS := -I../PNG -pthread $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer) \
+PNG_CORRUPT_CXXFLAGS := -I../PNG -pthread \
+    $(if $(filter Windows_NT,$(OS)),,-fsanitize=address,signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow -fno-omit-frame-pointer) \
     $(shell $(PKGCONF) --cflags libpng)
 
 png_corrupt_test: png_corrupt_test.cpp ofx_test_host.h ../PNG/PNGError.h $(PNG_CORRUPT_SRCS) $(OFX_SUPPORT)
