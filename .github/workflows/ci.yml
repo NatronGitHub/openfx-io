@@ -421,9 +421,6 @@ jobs:
       MACPORTS_VERSION: 2.12.7
       SEEXPR_HOME: /opt/local/libexec/seexpr211
       MACPORTS_PKG_SHA256: 87b2e87ed7adc4aca947b42eb7ff991614cc0edfccb486237f2bbc75f28aae63
-      # Natron 2.6 supports macOS 14 and later (also the default of Makefile.master and CMakeLists.txt). MacPorts'
-      # libraries are built for the runner's macOS: the bundle's dependencies may require a newer one.
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
       # The FFmpeg to build against (FFMPEG_PKG_CONFIG_PATH: CMake links it by full paths, plug-ins and tests): the
       # ffmpeg8 port, which MacPorts' OpenImageIO may link. FFMPEG_BIN_SUFFIX: the suffix of its tools (ffmpeg8,
       # ffprobe8), which the tests call as ffmpeg and ffprobe.
@@ -449,6 +446,12 @@ jobs:
           sudo port -N selfupdate
           sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng expat
           port installed
+      - name: Target the runner's macOS
+        # CI bundles aren't shipped: target the runner's macOS (e.g. 15.0 on macos-15), for the later steps (SeExpr,
+        # CMake, the load check). Release bundles target macOS 14.0 (the default of Makefile.master and
+        # CMakeLists.txt) and are built on macOS 14. Trade-off: CI no longer catches uses of APIs newer than macOS 14;
+        # only the release builds on macOS 14 do.
+        run: echo "MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0" >> "$GITHUB_ENV"
       - name: Prepare the SeExpr prefix
         # In MacPorts' prefix, so that osxDeploy.sh (which bundles /opt/local libraries) bundles libSeExpr
         run: sudo mkdir -p "$SEEXPR_HOME" && sudo chown "$USER" "$SEEXPR_HOME"
@@ -457,7 +460,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SEEXPR_HOME }}
-          key: seexpr-2.11-natron-patches-macos-15-arm64-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: seexpr-2.11-natron-patches-macos-15-arm64-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('.github/workflows/ci.yml') }}
       - name: Build SeExpr 2.11
         if: steps.cache-seexpr.outputs.cache-hit != 'true'
         env:
@@ -548,8 +551,8 @@ jobs:
         with:
           name: openfx-io-build-macos_15-release
           path: Bundle
-          # 90 days: the repository's default and maximum, pinned so that a lower default doesn't shorten it (Natron's
-          # testing assets are made from these bundles)
+          # 90 days: the repository's default and maximum, pinned so that a lower default doesn't shorten it (Natron
+          # doesn't use the macOS bundle, see README "Natron's testing bundles")
           retention-days: 90
 
   windows:
