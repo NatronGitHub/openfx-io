@@ -63,7 +63,6 @@ GCC_DIAG_OFF(deprecated)
 #include <SeExprFunc.h>
 #include <SeExprNode.h>
 #include <SeExpression.h>
-#include <SeMutex.h>
 GCC_DIAG_ON(deprecated)
 #define SeExpr2 SeExpr
 namespace SeExpr {
@@ -76,7 +75,6 @@ typedef SeExprFuncX ExprFuncX;
 #include <SeExpr2/ExprFunc.h>
 #include <SeExpr2/ExprNode.h>
 #include <SeExpr2/Expression.h>
-#include <SeExpr2/Mutex.h>
 #error "Migration of SeExpr.cpp to SeExpr3 is not finished"
 #endif
 
@@ -583,7 +581,7 @@ public:
 private:
     void setupAndProcess(SeExprProcessorBase& processor, const RenderArguments& args);
 
-    PixelComponentEnum getOutputComponents() const;
+    PixelComponentEnum getOutputComponents(double time) const;
 
 private:
     const bool _simple;
@@ -618,11 +616,11 @@ private:
 };
 
 PixelComponentEnum
-SeExprPlugin::getOutputComponents() const
+SeExprPlugin::getOutputComponents(double time) const
 {
     int outputComponents_i;
 
-    _outputComponents->getValue(outputComponents_i);
+    _outputComponents->getValueAtTime(time, outputComponents_i);
 
     return gOutputComponentsMap[outputComponents_i];
 }
@@ -991,126 +989,6 @@ private:
             }
         }
     } // eval
-};
-
-class DoubleParamVarRef
-    : public SeExprVarRef {
-    // Used to call getValue only once per expression evaluation and not once per pixel
-    // Using SeExpr lock is faster than calling the multi-thread suite to get a mutex
-    SeExprInternal::Mutex _lock;
-    bool _varSet;
-    double _value;
-    DoubleParam* _param;
-
-public:
-    DoubleParamVarRef(DoubleParam* param)
-        : SeExprVarRef()
-        , _lock()
-        , _varSet(false)
-        , _value(0)
-        , _param(param)
-    {
-    }
-
-    virtual ~DoubleParamVarRef() { }
-
-    //! returns true for a vector type, false for a scalar type
-    virtual bool isVec() { return false; }
-
-    //! returns this variable's value by setting result, node refers to
-    //! where in the parse tree the evaluation is occurring
-    virtual void eval(const SeExprVarNode* /*node*/,
-                      SeExpr2::Vec3d& result)
-    {
-        SeExprInternal::AutoLock<SeExprInternal::Mutex> locker(_lock);
-        if (!_varSet) {
-            _param->getValue(_value);
-            _varSet = true;
-        } else {
-            result[0] = _value;
-        }
-    }
-};
-
-class Double2DParamVarRef
-    : public SeExprVarRef {
-    // Used to call getValue only once per expression evaluation and not once per pixel
-    // Using SeExpr lock is faster than calling the multi-thread suite to get a mutex
-    SeExprInternal::Mutex _lock;
-    bool _varSet;
-    double _value[2];
-    Double2DParam* _param;
-
-public:
-    Double2DParamVarRef(Double2DParam* param)
-        : SeExprVarRef()
-        , _lock()
-        , _varSet(false)
-        , _value()
-        , _param(param)
-    {
-    }
-
-    virtual ~Double2DParamVarRef() { }
-
-    //! returns true for a vector type, false for a scalar type
-    virtual bool isVec() { return true; }
-
-    //! returns this variable's value by setting result, node refers to
-    //! where in the parse tree the evaluation is occurring
-    virtual void eval(const SeExprVarNode* /*node*/,
-                      SeExpr2::Vec3d& result)
-    {
-        SeExprInternal::AutoLock<SeExprInternal::Mutex> locker(_lock);
-        if (!_varSet) {
-            _param->getValue(_value[0], _value[1]);
-            _varSet = true;
-        } else {
-            result[0] = _value[0];
-            result[1] = _value[1];
-        }
-    }
-};
-
-class ColorParamVarRef
-    : public SeExprVarRef {
-    // Used to call getValue only once per expression evaluation and not once per pixel
-    // Using SeExpr lock is faster than calling the multi-thread suite to get a mutex
-    SeExprInternal::Mutex _lock;
-    bool _varSet;
-    double _value[3];
-    RGBParam* _param;
-
-public:
-    ColorParamVarRef(RGBParam* param)
-        : SeExprVarRef()
-        , _lock()
-        , _varSet(false)
-        , _value()
-        , _param(param)
-    {
-    }
-
-    virtual ~ColorParamVarRef() { }
-
-    //! returns true for a vector type, false for a scalar type
-    virtual bool isVec() { return true; }
-
-    //! returns this variable's value by setting result, node refers to
-    //! where in the parse tree the evaluation is occurring
-    virtual void eval(const SeExprVarNode* /*node*/,
-                      SeExpr2::Vec3d& result)
-    {
-        SeExprInternal::AutoLock<SeExprInternal::Mutex> locker(_lock);
-        if (!_varSet) {
-            _param->getValue(_value[0], _value[1], _value[2]);
-            _varSet = true;
-        } else {
-            result[0] = _value[0];
-            result[1] = _value[1];
-            result[2] = _value[2];
-        }
-    }
 };
 
 class SimpleScalar
@@ -1531,9 +1409,10 @@ class OFXSeExpression
     SimpleScalar _inputB[kSourceClipCount];
     SimpleVec _inputColors[kSourceClipCount];
     SimpleScalar _inputAlphas[kSourceClipCount];
-    DoubleParamVarRef* _doubleRef[kParamsCount];
-    Double2DParamVarRef* _double2DRef[kParamsCount];
-    ColorParamVarRef* _colorRef[kParamsCount];
+    // the values of the params at the render time, read once in the constructor
+    SimpleScalar _doubleParams[kParamsCount];
+    SimpleVec _double2DParams[kParamsCount];
+    SimpleVec _colorParams[kParamsCount];
 
 public:
     OFXSeExpression(SeExprProcessorBase* processor,
@@ -1544,8 +1423,6 @@ public:
                     const OfxPointD& renderScale,
                     double par,
                     const OfxRectI& outputRod);
-
-    virtual ~OFXSeExpression();
 
     /** override resolveVar to add external variables */
     virtual SeExprVarRef* resolveVar(const string& name) const OVERRIDE FINAL;
@@ -1632,9 +1509,9 @@ OFXSeExpression::OFXSeExpression(SeExprProcessorBase* processor,
     , _inputHeights()
     , _inputColors()
     , _inputAlphas()
-    , _doubleRef()
-    , _double2DRef()
-    , _colorRef()
+    , _doubleParams()
+    , _double2DParams()
+    , _colorParams()
 {
     _dstPixelRod = outputRod;
 
@@ -1700,23 +1577,17 @@ OFXSeExpression::OFXSeExpression(SeExprProcessorBase* processor,
     Double2DParam** double2DParams = plugin->getDouble2DParams();
     RGBParam** colorParams = plugin->getRGBParams();
 
+    // the params are read at the render time: "paramGetValue should only be called from within a
+    // kOfxActionInstanceChanged or interact action and never from the render actions (which should always use
+    // paramGetValueAtTime)" (ofxParam.h)
     for (int i = 0; i < kParamsCount; ++i) {
-        _doubleRef[i] = new DoubleParamVarRef(doubleParams[i]);
-        _double2DRef[i] = new Double2DParamVarRef(double2DParams[i]);
-        _colorRef[i] = new ColorParamVarRef(colorParams[i]);
+        doubleParams[i]->getValueAtTime(time, _doubleParams[i]._value);
+        double2DParams[i]->getValueAtTime(time, _double2DParams[i]._value[0], _double2DParams[i]._value[1]);
+        colorParams[i]->getValueAtTime(time, _colorParams[i]._value[0], _colorParams[i]._value[1], _colorParams[i]._value[2]);
         const string istr = unsignedToString(i + 1);
-        _variables[kParamDouble + istr] = _doubleRef[i];
-        _variables[kParamDouble2D + istr] = _double2DRef[i];
-        _variables[kParamColor + istr] = _colorRef[i];
-    }
-}
-
-OFXSeExpression::~OFXSeExpression()
-{
-    for (int i = 0; i < kParamsCount; ++i) {
-        delete _doubleRef[i];
-        delete _double2DRef[i];
-        delete _colorRef[i];
+        _variables[kParamDouble + istr] = &_doubleParams[i];
+        _variables[kParamDouble2D + istr] = &_double2DParams[i];
+        _variables[kParamColor + istr] = &_colorParams[i];
     }
 }
 
@@ -3432,29 +3303,29 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase& processor,
     string rgbScript, alphaScript;
     if ((dstComponents == ePixelComponentRGB) || (dstComponents == ePixelComponentRGBA)) {
         if (_simple) {
-            _rExpr->getValue(rExpr);
-            _gExpr->getValue(gExpr);
-            _bExpr->getValue(bExpr);
+            _rExpr->getValueAtTime(time, rExpr);
+            _gExpr->getValueAtTime(time, gExpr);
+            _bExpr->getValueAtTime(time, bExpr);
             unused(rgbScript);
         } else {
             unused(rExpr);
             unused(gExpr);
             unused(bExpr);
-            _rgbScript->getValue(rgbScript);
+            _rgbScript->getValueAtTime(time, rgbScript);
         }
     }
     if ((dstComponents == ePixelComponentRGBA) || (dstComponents == ePixelComponentAlpha)) {
         if (_simple) {
-            _aExpr->getValue(aExpr);
+            _aExpr->getValueAtTime(time, aExpr);
             unused(alphaScript);
         } else {
             unused(_aExpr);
-            _alphaScript->getValue(alphaScript);
+            _alphaScript->getValueAtTime(time, alphaScript);
         }
     }
 
     double mix;
-    _mix->getValue(mix);
+    _mix->getValueAtTime(time, mix);
 
     processor.setDstImg(dst.get());
 
@@ -3530,7 +3401,7 @@ SeExprPlugin::render(const RenderArguments& args)
 
     if (!gHostIsNatron) {
         bool validated;
-        _validate->getValue(validated);
+        _validate->getValueAtTime(args.time, validated);
         if (!validated) {
             setPersistentMessage(Message::eMessageError, "", "Validate the script before rendering/running.");
             throwSuiteStatusException(kOfxStatFailed);
@@ -3545,7 +3416,7 @@ SeExprPlugin::render(const RenderArguments& args)
     assert(dstComponents == ePixelComponentRGB || dstComponents == ePixelComponentRGBA || dstComponents == ePixelComponentAlpha);
 
     int outputComponents_i;
-    _outputComponents->getValue(outputComponents_i);
+    _outputComponents->getValueAtTime(args.time, outputComponents_i);
     PixelComponentEnum outputComponents = gOutputComponentsMap[outputComponents_i];
     if (dstComponents != outputComponents) {
         setPersistentMessage(Message::eMessageError, "", "SeExpr: OFX Host did not take into account output components");
@@ -3701,7 +3572,7 @@ SeExprPlugin::changedParam(const InstanceChangedArgs& args,
         _btmLeft->setIsSecretAndDisabled(!hasSize);
         _interactive->setIsSecretAndDisabled(!hasSize);
     } else if ((paramName == kParamOutputComponents) && (args.reason == eChangeUserEdit)) {
-        PixelComponentEnum outputComponents = getOutputComponents();
+        PixelComponentEnum outputComponents = getOutputComponents(args.time);
         const bool hasRGB = (outputComponents == ePixelComponentRGB || outputComponents == ePixelComponentRGBA); // RGB || RGBA
         if (_simple) {
             _rExpr->setIsSecretAndDisabled(!hasRGB);
@@ -3774,7 +3645,7 @@ SeExprPlugin::isIdentity(const IsIdentityArguments& args,
     }
 
     // check if all expressions are empty
-    PixelComponentEnum outputComponents = getOutputComponents();
+    PixelComponentEnum outputComponents = getOutputComponents(args.time);
     string script;
     if ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA)) { // RGB || RGBA
         if (_simple) {
@@ -3861,7 +3732,10 @@ SeExprPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
     clipPreferences.setOutputFrameVarying(true);
     clipPreferences.setOutputHasContinuousSamples(true);
 
-    PixelComponentEnum outputComponents = getOutputComponents();
+    // this action has no time: the current value (timeLineGetTime() would be 0 in a host without the timeline suite)
+    int outputComponents_i;
+    _outputComponents->getValue(outputComponents_i);
+    PixelComponentEnum outputComponents = gOutputComponentsMap[outputComponents_i];
     if (outputComponents == ePixelComponentRGB) {
         clipPreferences.setOutputPremultiplication(eImageOpaque);
     }
@@ -3874,7 +3748,7 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
 {
     if (!gHostIsNatron) {
         bool validated;
-        _validate->getValue(validated);
+        _validate->getValueAtTime(args.time, validated);
         if (!validated) {
             setPersistentMessage(Message::eMessageError, "", "Validate the script before rendering/running.");
             throwSuiteStatusException(kOfxStatFailed);
@@ -3891,13 +3765,13 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
     const double time = args.time;
     FramesNeeded framesNeeded;
     std::set<int> unknownFrames; // the inputs whose frames depend on unknown values (e.g. pixel values)
-    PixelComponentEnum outputComponents = getOutputComponents();
+    PixelComponentEnum outputComponents = getOutputComponents(time);
     if ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA)) { // RGB || RGBA
         for (int e = 0; e < (_simple ? 3 : 1); ++e) {
             StringParam* param = !_simple ? _rgbScript : (e == 0 ? _rExpr : (e == 1 ? _gExpr : _bExpr));
             string script;
             if (param) {
-                param->getValue(script);
+                param->getValueAtTime(time, script);
             }
 
             if (isSpaces(script)) {
@@ -3934,7 +3808,7 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
         StringParam* param = !_simple ? _alphaScript : _aExpr;
         string script;
         if (param) {
-            param->getValue(script);
+            param->getValueAtTime(time, script);
         }
 
         if (isSpaces(script)) {
@@ -4037,7 +3911,7 @@ SeExprPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
 
     if (!gHostIsNatron) {
         bool validated;
-        _validate->getValue(validated);
+        _validate->getValueAtTime(time, validated);
         if (!validated) {
             setPersistentMessage(Message::eMessageError, "", "Validate the script before rendering/running.");
             throwSuiteStatusException(kOfxStatFailed);
@@ -4071,7 +3945,7 @@ SeExprPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
 
         std::set<Clip*> processedClips;
 
-        PixelComponentEnum outputComponents = getOutputComponents();
+        PixelComponentEnum outputComponents = getOutputComponents(time);
 
         for (int e = 0; e < 6; ++e) {
             string script;
@@ -4079,38 +3953,38 @@ SeExprPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
             switch (e) {
             case 0: // rExpr
                 if (_rExpr && _simple && ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA))) {
-                    _rExpr->getValue(script);
+                    _rExpr->getValueAtTime(time, script);
                 }
                 break;
 
             case 1: // gExpr
                 if (_gExpr && _simple && ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA))) {
-                    _gExpr->getValue(script);
+                    _gExpr->getValueAtTime(time, script);
                 }
                 break;
 
             case 2: // bExpr
                 if (_bExpr && _simple && ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA))) {
-                    _bExpr->getValue(script);
+                    _bExpr->getValueAtTime(time, script);
                 }
                 break;
 
             case 3: // aExpr
                 if (_aExpr && _simple && ((outputComponents == ePixelComponentRGBA) || (outputComponents == ePixelComponentAlpha))) {
-                    _aExpr->getValue(script);
+                    _aExpr->getValueAtTime(time, script);
                 }
                 break;
 
             case 4: // rgbScript
                 if (_rgbScript && !_simple && ((outputComponents == ePixelComponentRGB) || (outputComponents == ePixelComponentRGBA))) {
-                    _rgbScript->getValue(script);
+                    _rgbScript->getValueAtTime(time, script);
                     wantVec = true;
                 }
                 break;
 
             case 5: // alphaScript
                 if (_alphaScript && !_simple && ((outputComponents == ePixelComponentRGBA) || (outputComponents == ePixelComponentAlpha))) {
-                    _alphaScript->getValue(script);
+                    _alphaScript->getValueAtTime(time, script);
                 }
                 break;
             }
@@ -4163,7 +4037,7 @@ SeExprPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
 
     bool rodSet = false;
     int boundingBox_i;
-    _boundingBox->getValue(boundingBox_i);
+    _boundingBox->getValueAtTime(time, boundingBox_i);
     RegionOfDefinitionEnum boundingBox = (RegionOfDefinitionEnum)boundingBox_i;
     switch (boundingBox) {
     case eRegionOfDefinitionOptionUnion: {
@@ -4199,8 +4073,8 @@ SeExprPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
     }
     case eRegionOfDefinitionOptionSize: {
         // custom size
-        _size->getValue(rod.x2, rod.y2);
-        _btmLeft->getValue(rod.x1, rod.y1);
+        _size->getValueAtTime(time, rod.x2, rod.y2);
+        _btmLeft->getValueAtTime(time, rod.x1, rod.y1);
         rod.x2 += rod.x1;
         rod.y2 += rod.y1;
 
@@ -4211,7 +4085,7 @@ SeExprPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& args,
         // format
 
         int format_i;
-        _format->getValue(format_i);
+        _format->getValueAtTime(time, format_i);
         double par = -1;
         int w = 0, h = 0;
         getFormatResolution((EParamFormat)format_i, &w, &h, &par);

@@ -82,7 +82,7 @@ make test-ofx14-scan-asan # the same, built with AddressSanitizer
 make test-exr-tsan # the same, built with ThreadSanitizer
 make test-exr-ubsan # the same, built with UndefinedBehaviorSanitizer
 make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
-make test-seexpr   # SeExpr's frames needed and cpixel() domain, SeNoise/SeGrain degenerate params (SEEXPR_HOME=..., SEEXPR_LIBDIR=...)
+make test-seexpr   # SeExpr's frames needed, cpixel() domain and param variables at the render time, SeNoise/SeGrain degenerate params (SEEXPR_HOME=..., SEEXPR_LIBDIR=...)
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
 
@@ -829,7 +829,11 @@ with the SeExpr of the CMake build), in the Filter context:
   is a NaN artifact and 30 are skipped).
 * **render**: `cpixel()` with coordinates of 1e9, 1e12 or -1e300 gives the edge pixel, as before (they are clamped to
   +-1e9 before their conversion to int); a finite frame (1e12) is used as is, an infinite one is clamped; a NaN
-  coordinate or frame (`sqrt(x - 100)`) gives black.
+  coordinate or frame (`sqrt(x - 100)`) gives black. The parameter variables (`x1`, `pos1`, `color1`) and `mix`,
+  animated by a param suite whose `paramGetValueAtTime(t)` gives their value at `t` and `paramGetValue()` their
+  value at another time (70), have their value at the render time (10, then 20), even when the variable is only
+  read at one pixel (`x == 3 && y == 3 ? color1 : 0`): it was not initialized on its first evaluation. The RoD
+  (Region of Definition "Size") has the animated `bottomLeft` and `size` at the requested time.
 * **SeNoise** with a noise size of 0, a denormal size (1e-310) or a render scale of 0, and **SeGrain** with a render
   scale of 0: no output value may be NaN or infinite. A positive noise size below 0.001 (0.0005) is used as is.
 
@@ -1161,7 +1165,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `ofx_actions_test.cpp`      | In-process OFX host + action-dispatch integration test (all plugins). |
 | `ofx_test_host.h`           | Minimal in-process OFX host (suites, param values, image clips) shared by the render and reader-hook tests; its property and param suite calls lock the host's data (reads shared, writes exclusive), so that render threads may read params while the main thread sets them. |
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
-| `seexpr_test.cpp`           | SeExpr's frames needed and `cpixel()` domain, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
+| `seexpr_test.cpp`           | SeExpr's frames needed, `cpixel()` domain and parameter variables at the render time, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()`, `getRenderTime()`, `refreshFrameBounds()` and `clipToFile()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, and a changed config or context (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
