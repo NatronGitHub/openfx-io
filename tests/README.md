@@ -135,6 +135,8 @@ the real render pipeline, linked directly (no host binary):
   `mdat` atom: frame 1 is decoded, and frame N, which is in the movie but can't be
   decoded, fails with a persistent message whatever the option (Black only applies
   to frames outside of the movie).
+* **AVI with B-frames** ([#339](https://github.com/NatronGitHub/openfx-io/issues/339)): WriteFFmpeg
+  writes H.264 and MPEG-2 with B-frames in AVI, which has no PTS, and ReadFFmpeg must read them back.
 * **Matroska at 24 fps**: WriteFFmpeg writes a 24 fps MKV (millisecond
   timestamps) and ReadFFmpeg must decode every frame with the right content.
 * **WriteFFmpeg views** (issue #116): render views 1 and 0 of each frame (view
@@ -796,6 +798,12 @@ that their 33-bit timestamps wrap during the clip (libavformat then gives the fr
 negative timestamps), must count all 150 frames and give exactly the images of the clean clip in
 every order, with 1 and 8 threads (issue #189: only the MOV/MP4 demuxer has edit-list pre-rolls); AVI (MPEG-4 with B-frames) has no PTS, and every frame must
 still decode at its own frame.
+Any FFmpeg decoder is used ([#339](https://github.com/NatronGitHub/openfx-io/issues/339)): DV, UtVideo in AVI,
+and H.264 (with and without B-frames), MPEG-2 with B-frames and MPEG-1 in AVI must be read frame-accurately (with
+H.264 B-pyramids the decoded frames are 2 frames behind the DTS, and the frame count must not lose the last 2; with
+MPEG-1, only the first packet buffered at open has a PTS, and the reader probes again after a seek). `ffmpeg_read_test --image-files NAME=0|1...` checks which files
+`FFmpegFile::isImageFile()` takes for single images: the extensions of FFmpeg's image2 muxer, except those that a
+demuxer declares (AVIF, animated JPEG XL).
 Forward requests ([#311](https://github.com/NatronGitHub/openfx-io/issues/311)): a request
 up to the largest keyframe interval seen (in packets, at least 1 s and at most 10 s) after the
 held frame decodes forward, without a seek, unless the index shows a keyframe between. H.264

@@ -240,8 +240,27 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]\n", argv[0]);
         return 2;
+    }
+    if (std::string(argv[1]) == "--image-files") {
+        // --image-files NAME=0|1...: FFmpegFile::isImageFile() must give 1 for the file NAME if it is an image (#339)
+        int bad = 0;
+        for (int i = 2; i < argc; ++i) {
+            const std::string a = argv[i];
+            const size_t eq = a.rfind('=');
+            if ((eq == std::string::npos) || ((a.substr(eq + 1) != "0") && (a.substr(eq + 1) != "1"))) {
+                std::fprintf(stderr, "FAIL: --image-files: bad argument %s\n", a.c_str());
+                return 2;
+            }
+            const bool expected = a.substr(eq + 1) == "1";
+            if (FFmpegFile::isImageFile(a.substr(0, eq)) != expected) {
+                std::fprintf(stderr, "FAIL: isImageFile(%s) is %d, expected %d\n", a.substr(0, eq).c_str(), !expected, expected);
+                ++bad;
+            }
+        }
+        std::printf(bad ? "FAIL\n" : "PASS\n");
+        return bad ? 1 : 0;
     }
     const std::string filename = argv[1];
     double tol = 2.0;

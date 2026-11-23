@@ -111,32 +111,27 @@ video_decoding_threads()
 
 #endif
 
-static bool
-extensionCorrespondToImageFile(const string& ext)
-{
-    return (ext == "bmp" || ext == "cin" || ext == "dpx" || ext == "exr" ||
-            /*ext == "gif" ||*/
-            ext == "jpeg" || ext == "jpg" || ext == "pix" || ext == "png" || ext == "ppm" || ext == "ptx" || ext == "rgb" || ext == "rgba" || ext == "tga" || ext == "tiff" || ext == "webp");
-}
-
+// A file with an extension of the image2 muxer (FFmpeg n9.1 libavformat/img2enc.c:398-400, n8.0 img2enc.c:294-296) holds
+// one image, unless a demuxer declares that extension: it may then hold several frames (the mov demuxer for AVIF, which
+// may be an image sequence, n9.1 libavformat/mov.c:13313; jpegxl_anim for animated JPEG XL, jpegxl_anim_dec.c:201).
+// av_match_ext() compares the extension case-insensitively (n9.1 libavformat/format.c:41-52, libavutil/avstring.c:344-365).
+// The result depends on the demuxers that FFmpeg was built with: e.g. with --enable-libopenmpt, the libopenmpt
+// demuxer declares "ppm" (a module format, n9.1 libavformat/libopenmpt.c:295), and .ppm files are not images.
 bool
 FFmpegFile::isImageFile(const string& filename)
 {
-    /// find the last index of the '.' character
-    size_t lastDot = filename.find_last_of('.');
-
-    if (lastDot == string::npos) { // we reached the start of the file, return false because we can't determine from the extension
+    static const AVOutputFormat* const image2 = av_guess_format("image2", nullptr, nullptr);
+    if (!image2 || !av_match_ext(filename.c_str(), image2->extensions)) {
         return false;
     }
-    ++lastDot; //< bypass the '.' character
-    string ext;
-    std::locale loc;
-    while (lastDot < filename.size()) {
-        ext.append(1, std::tolower(filename.at(lastDot), loc));
-        ++lastDot;
+    void* opaque = nullptr;
+    while (const AVInputFormat* iformat = av_demuxer_iterate(&opaque)) {
+        if (iformat->extensions && av_match_ext(filename.c_str(), iformat->extensions)) {
+            return false;
+        }
     }
 
-    return extensionCorrespondToImageFile(ext);
+    return true;
 }
 
 namespace {
@@ -180,6 +175,7 @@ const FilterEntry kFormatAllowlist[] = {
 #define TERRIBLE false
 //#define SHOULDWORK true
 #define SHOULDWORK false
+// The reader column is unused since #339 (see #344).
 const FilterEntry kCodecAllowlist[] = {
     // Video codecs.
     { "aic", true, false }, // Apple Intermediate Codec (no encoder)
@@ -336,14 +332,6 @@ FFmpegFile::isFormatAllowedForWriting(const char* formatName)
     const FilterEntry* allowlistEntry = getEntry(formatName, kFormatAllowlist);
 
     return (allowlistEntry && allowlistEntry->enableWriter);
-}
-
-bool
-FFmpegFile::isCodecAllowedForReading(const char* codecName)
-{
-    const FilterEntry* allowlistEntry = getEntry(codecName, kCodecAllowlist);
-
-    return (allowlistEntry && allowlistEntry->enableReader);
 }
 
 bool
@@ -859,8 +847,19 @@ FFmpegFile::getStreamStartTime(Stream& stream)
     // of the first packet: use its timestamp as the start.
     stream._startDTS = startPTS;
     if (stream._codecContext->has_b_frames > 0) {
-        int64_t firstDTS = AV_NOPTS_VALUE;
-        const int64_t firstFramePTS = probeStreamStart(stream, firstDTS);
+        StreamStartProbe probe = probeStreamStart(stream);
+        if (probe.ptsOnFirstPacketOnly) {
+            // The PTS of the first packet was filled in by libavformat before it knew the decoding delay (see
+            // probeStreamStart()). Only the packets that avformat_find_stream_info() read and buffered have it: a
+            // seek drops them and closes the parser (ff_read_frame_flush(), FFmpeg n9.1 libavformat/seek.c:713-741),
+            // and the packets read again are parsed with the delay known (demux.c:1060-1062, 1123-1155). Probe once
+            // more (probeStreamStart() now seeks, since _readAtOpen is true); only if the second probe sees the same
+            // timestamps is the stream refused (see FFmpegFile::FFmpegFile()).
+            probe = probeStreamStart(stream);
+            stream._ptsOnFirstPacketOnly = probe.ptsOnFirstPacketOnly;
+        }
+        const int64_t firstDTS = probe.firstDTS;
+        const int64_t firstFramePTS = probe.firstFramePTS;
         if (firstDTS != int64_t(AV_NOPTS_VALUE) && (firstDTS <= startPTS)) {
             stream._startDTS = firstDTS;
         }
@@ -874,20 +873,51 @@ FFmpegFile::getStreamStartTime(Stream& stream)
             std::cout << "        Packets have no PTS, start from the first decoded frame=" << firstFramePTS << " ticks" << std::endl;
 #endif
             startPTS = firstFramePTS;
+            stream._startFromDecodedFrame = true;
         }
     }
 
     return startPTS;
 } // FFmpegFile::getStreamStartTime
 
-// Read the first packet of the stream, and set firstDTS to its DTS. If it has a DTS but no PTS,
-// return the timestamp of the first decoded frame (best_effort_timestamp), else AV_NOPTS_VALUE.
-int64_t
-FFmpegFile::probeStreamStart(Stream& stream, int64_t& firstDTS)
+// Whether the packets after the first one, up to maxPackets of the stream, include one with a DTS and no PTS.
+bool
+FFmpegFile::nextPacketsLackPts(const Stream& stream, int maxPackets)
 {
-    int64_t firstFramePTS = AV_NOPTS_VALUE;
+    MyAVPacket avPacket;
+    while ((maxPackets > 0) && (av_read_frame(_context, avPacket.pkt()) >= 0)) {
+        const bool inStream = (avPacket->stream_index == stream._idx);
+        const bool lacksPts = inStream && (avPacket->pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE));
+        av_packet_unref(avPacket.pkt());
+        if (lacksPts) {
+            return true;
+        }
+        if (inStream) {
+            --maxPackets;
+        }
+    }
 
-    firstDTS = AV_NOPTS_VALUE;
+    return false;
+}
+
+// Read the first packets of the stream (from the start time, seeking if anything was read since
+// avformat_find_stream_info()), for a stream whose decoder delays frames (has_b_frames > 0):
+// - firstDTS: the DTS of the first packet;
+// - firstFramePTS: if the first packet has a DTS but no PTS (e.g. AVI), the timestamp of the first decoded
+//   frame (best_effort_timestamp), else AV_NOPTS_VALUE;
+// - ptsOnFirstPacketOnly: the first packet has PTS == DTS, and a next one a DTS but no PTS. The decoding delay
+//   is then learned from the decoder, not the parser, in a container without PTS (e.g. MPEG-1 in AVI, whose
+//   sequence header has no low_delay flag: the parser only reads it in the MPEG-2 sequence extension, FFmpeg
+//   n9.1 libavcodec/mpegvideo_parser.c:164, and the decoder sets has_b_frames, n9.1 libavcodec/mpeg12dec.c:949;
+//   or VC-1/WMV3 in AVI). libavformat filled in PTS = DTS on the first packet, as for a frame that is not delayed,
+//   before it knew the delay, and gives the next delayed frames none (n9.1 libavformat/demux.c:1123-1170): the
+//   first frame would be one frame before the next ones, which are at the DTS of the packet after which they are
+//   output, and a frame time would have no frame.
+FFmpegFile::StreamStartProbe
+FFmpegFile::probeStreamStart(Stream& stream)
+{
+    StreamStartProbe probe;
+
     avcodec_flush_buffers(stream._codecContext);
     // If nothing was read or sought since avformat_find_stream_info(), the first packets are those it kept,
     // from the start of the file: no seek is needed. Otherwise, seek to the start time (by bytes if it is
@@ -896,7 +926,7 @@ FFmpegFile::probeStreamStart(Stream& stream, int64_t& firstDTS)
     if (_readAtOpen) {
         const int res = (stream._avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? av_seek_frame(_context, stream._idx, stream._avstream->start_time, AVSEEK_FLAG_BACKWARD) : av_seek_frame(_context, -1, 0, AVSEEK_FLAG_BYTE);
         if (res < 0) {
-            return firstFramePTS;
+            return probe;
         }
     }
     _readAtOpen = true;
@@ -915,10 +945,13 @@ FFmpegFile::probeStreamStart(Stream& stream, int64_t& firstDTS)
             continue;
         } else if (firstPacket) {
             firstPacket = false;
-            firstDTS = avPacket->dts;
+            probe.firstDTS = avPacket->dts;
             if ((avPacket->pts != int64_t(AV_NOPTS_VALUE)) || (avPacket->dts == int64_t(AV_NOPTS_VALUE))) {
-                // the packets have a PTS (or no timestamp at all): nothing to decode
+                // the packets have a PTS (or no timestamp at all): nothing to decode, unless only the first one has
+                // a PTS (see above)
+                const bool ptsIsDts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) && (avPacket->pts == avPacket->dts);
                 av_packet_unref(avPacket.pkt());
+                probe.ptsOnFirstPacketOnly = ptsIsDts && nextPacketsLackPts(stream, packetsLeft);
                 break;
             }
         }
@@ -932,14 +965,14 @@ FFmpegFile::probeStreamStart(Stream& stream, int64_t& firstDTS)
             break;
         }
         if (avcodec_receive_frame(stream._codecContext, avFrame) >= 0) {
-            firstFramePTS = avFrame->best_effort_timestamp;
+            probe.firstFramePTS = avFrame->best_effort_timestamp;
             break;
         }
     }
     av_frame_free(&avFrame);
     avcodec_flush_buffers(stream._codecContext);
 
-    return firstFramePTS;
+    return probe;
 } // FFmpegFile::probeStreamStart
 
 // The number of frames of the stream that are not displayed (marked as discarded in the index, e.g. by an
@@ -1464,6 +1497,12 @@ FFmpegFile::getStreamFrames(Stream& stream)
             }
         } else {
             movieEnd = _context->start_time + _context->duration;
+            if (stream._startFromDecodedFrame) {
+                // The packets have no PTS (AVI): the duration is counted from the first DTS, and the decoded
+                // frames, counted from the first one, are delayed by the decoder (see getStreamStartTime()), by more
+                // than one frame with H.264 B-frames (has_b_frames is 2 with B-pyramids).
+                movieEnd += av_rescale_q(stream._startPTS - stream._startDTS, stream._avstream->time_base, AV_TIME_BASE_Q);
+            }
         }
         frames = framesUntil(movieEnd);
 
@@ -1750,26 +1789,6 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
             std::cout << "Decoder not found, skipping..." << std::endl;
 #endif
-            avcodec_free_context(&codecCtx);
-            continue;
-        }
-
-        // skip codecs not in the white list
-        // string reason;
-        if (!isCodecAllowedForReading(videoCodec->name)) {
-#if TRACE_FILE_OPEN
-            std::cout << "Decoder \"" << videoCodec->name << "\" disallowed, skipping..." << std::endl;
-#endif
-            unsupported_codec = true;
-            avcodec_free_context(&codecCtx);
-            continue;
-        }
-        // Some format/codec combinations, even if readable, do not have timestamps.
-        // See also codecCompatible() in WriteFFmpeg.cpp which contains a similar check.
-        if ((std::string(_context->iformat->name) == "avi") && (codecCtx->codec_id == AV_CODEC_ID_H264 || codecCtx->codec_id == AV_CODEC_ID_MPEG1VIDEO || codecCtx->codec_id == AV_CODEC_ID_MPEG2VIDEO)) {
-#if TRACE_FILE_OPEN
-            std::cout << "Decoder \"" << videoCodec->name << "\" in format \"" << _context->iformat->name << "\" disallowed because it lacks timestamps, skipping..." << std::endl;
-#endif
             unsupported_codec = true;
             avcodec_free_context(&codecCtx);
             continue;
@@ -1796,6 +1815,7 @@ FFmpegFile::FFmpegFile(const string& filename)
 #if TRACE_FILE_OPEN
             std::cout << "Decoder \"" << videoCodec->name << "\" failed to open, skipping..." << std::endl;
 #endif
+            unsupported_codec = true;
             avcodec_free_context(&codecCtx);
             continue;
         }
@@ -1892,6 +1912,14 @@ FFmpegFile::FFmpegFile(const string& filename)
 
         // set stream start time and numbers of frames
         stream->_startPTS = getStreamStartTime(*stream);
+        if (stream->_ptsOnFirstPacketOnly) {
+#if TRACE_FILE_OPEN
+            std::cout << "Decoder \"" << videoCodec->name << "\" in format \"" << _context->iformat->name << "\" disallowed because only the first packet has a PTS, skipping..." << std::endl;
+#endif
+            unsupported_codec = true;
+            delete stream;
+            continue;
+        }
         stream->_frames = getStreamFrames(*stream);
 
         // save the stream

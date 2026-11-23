@@ -1068,11 +1068,6 @@ codecCompatible(const AVOutputFormat* ofmt,
 {
     string fmt = string(ofmt->name);
 
-    // Explicitly deny format/codec combinations that don't produce timestamps.
-    // See also FFmpegFile::FFmpegFile() which contains a similar check.
-    if ((fmt == "avi" && (codec_id == AV_CODEC_ID_MPEG1VIDEO || codec_id == AV_CODEC_ID_MPEG2VIDEO || codec_id == AV_CODEC_ID_H264))) {
-        return false;
-    }
     // rawvideo is only written in the containers where a pixel format can be tagged (see rawvideoPixelFormats())
     if ((codec_id == AV_CODEC_ID_RAWVIDEO) && !rawvideoPixelFormats(ofmt)) {
         return false;
@@ -2354,7 +2349,7 @@ WriteFFmpegPlugin::~WriteFFmpegPlugin()
 bool
 WriteFFmpegPlugin::isImageFile(const string& ext) const
 {
-    return (ext == "bmp" || ext == "pix" || ext == "dpx" || ext == "exr" || ext == "jpeg" || ext == "jpg" || ext == "png" || ext == "ppm" || ext == "ptx" || ext == "tiff" || ext == "tga" || ext == "rgba" || ext == "rgb");
+    return FFmpegFile::isImageFile("." + ext);
 }
 
 bool
