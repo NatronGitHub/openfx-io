@@ -47,6 +47,7 @@ make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender 
 make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305)
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
+make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292; not on MS Windows)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
@@ -263,6 +264,14 @@ deadlock in Natron, which waits for its render threads before endSequenceRender)
 written because the file can not grow (`RLIMIT_FSIZE`, as on a full disk: the real write error path of avio, the
 muxer and `writeToFile()`, without a test hook in the plug-in). It is skipped (exit status 77) on MS Windows, which
 has no `RLIMIT_FSIZE`.
+
+`test-writeoiio-disk-full` (issue #292) runs `ofx_render_test OUT --writeoiio-disk-full`: WriteOIIO writes a
+512x512 noise image to EXR, TIFF and DPX files that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk), so
+that `ImageOutput::write_image()` or `close()` fails after `open()` succeeded. The render must fail, with an error
+that names the file; the same instance must then write the file without the limit. The partial file is kept, as by
+the other writers (#251). PNG and JPEG are not tested, because of OpenImageIO 3.1 bugs (#362): its PNG writer ignores write
+errors (`write_image()` and `close()` succeed), and its JPEG writer keeps libjpeg's default `error_exit()`, which
+calls `exit()`. It is skipped (exit status 77) on MS Windows.
 
 `test-swscale-exact` (issues #207, #220, #316) runs `ofx_render_test OUT --swscale-exact`. ReadFFmpeg reads rawvideo
 (8 bits) and FFV1 (10 and 12 bits) written with libavcodec, without swscale (4:2:0, 4:2:2 and 4:4:4, 8, 10 and 12 bits, video and full range, with alpha,
@@ -1087,7 +1096,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 

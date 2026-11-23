@@ -106,6 +106,11 @@
  *       file: the waiting renders must fail within 60 s instead of waiting forever, and the next render must work
  *     - with --encode-failure-disk-full (not on MS Windows: exit status 77), frame 1 fails to be written (RLIMIT_FSIZE)
  *
+ *   WriteOIIO, the disk is full (issue #292), with the option --writeoiio-disk-full (only this test; not on MS Windows:
+ *   exit status 77):
+ *     - EXR, TIFF and DPX files can not grow beyond 16 KB (RLIMIT_FSIZE): the render must fail with an
+ *       error that names the file, and the same instance must then write the file without the limit
+ *
  *   The conversions between Y'CbCr and RGB give exact values (issues #207, #220, #316), with the option --swscale-exact
  *   (only this test):
  *     - ReadFFmpeg, rawvideo and FFV1 written without swscale (4:2:0, 4:2:2, 4:4:4, 8, 10 and 12 bits, video and full range,
@@ -152,8 +157,10 @@ extern "C" {
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <climits> // INT_MAX
 #include <optional>
@@ -2352,9 +2359,21 @@ int testDNxHR444Noise(const std::string& outFile)
     return failures;
 }
 
-// A WriteFFmpeg instance that the tests of #288 and #289 render several times, as Natron renders a Write node:
-// beginSequenceRender, the frames (maybe on several threads), endSequenceRender. The source image is a constant
-// mid-gray, written once, so that concurrent renders only read it.
+// Gives the R/G/B/A checkboxes whose kOfxParamPropSecret the plug-in did not set the default of the spec, 0 (visible:
+// ofxParam.h, kOfxParamPropSecret, "Default - 0"). The test host fails when a plug-in reads an unset property.
+static void setDefaultCheckboxesSecret(Effect& ctx)
+{
+    for (const char* name : { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA }) {
+        auto it = ctx.params.find(name);
+        if ((it != ctx.params.end()) && !it->second.props->props.count(kOfxParamPropSecret)) {
+            pSetInt(PH(it->second.props), kOfxParamPropSecret, 0, 0);
+        }
+    }
+}
+
+// A writer instance (WriteFFmpeg by default) that the tests of #288, #289 and #292 render several times, as Natron
+// renders a Write node: beginSequenceRender, the frames (maybe on several threads), endSequenceRender. The source
+// image is a constant mid-gray, written once, so that concurrent renders only read it.
 class WriterSession {
 public:
     WriterSession() = default;
@@ -2370,13 +2389,15 @@ public:
         }
     }
 
-    // The instance (Writer context), with the params of wp (strings, ints and fps only); 0 if it was created.
-    int create(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp)
+    // The instance (Writer context) of the plug-in pluginId, with the params of wp (strings, ints and fps only); 0 if
+    // it was created.
+    int create(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp,
+               const char* pluginId = "fr.inria.openfx.WriteFFmpeg")
     {
         _W = W;
         _H = H;
-        OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
-        if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+        OfxPlugin* p = findPlugin(pluginId);
+        if (!p) { std::printf("  FAIL: %s not found\n", pluginId); return 1; }
         if (loadAndDescribe(p, _ctx, _ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
         _p = p;
         setOverrideString(&_ctx, kOfxImageEffectFileParamName, outFile);
@@ -2395,6 +2416,7 @@ public:
         setInstanceProps(_inst, W, H, nFrames, kOfxImageEffectContextWriter);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
         _created = true;
+        setDefaultCheckboxesSecret(_ctx);
         _src = _ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? _ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
         if (!_src) { std::printf("  FAIL: no Source clip\n"); return 1; }
         _src->connected = true;
@@ -2786,6 +2808,120 @@ int testWriteFFmpegEncodeFailureDiskFull(const std::string& outFile)
                                         },
                                         [&oldLimit](WriterSession&) { ::setrlimit(RLIMIT_FSIZE, &oldLimit); },
                                         [](WriterSession&) {}, true, wp);
+#endif
+}
+
+#ifndef _WIN32
+// For a test, limits the size of the files that the process writes (RLIMIT_FSIZE), as on a full disk, and ignores
+// SIGXFSZ, so that a write beyond the limit fails with EFBIG instead of killing the process. The destructor restores
+// both and removes the file, on every path (C++ Core Guidelines R.1, C.21).
+class FileSizeLimit {
+public:
+    explicit FileSizeLimit(std::string file)
+        : _file(std::move(file))
+        , _oldHandler(std::signal(SIGXFSZ, SIG_IGN))
+    {
+        _ok = (::getrlimit(RLIMIT_FSIZE, &_old) == 0);
+        if (!_ok) std::printf("  FAIL: getrlimit: %s\n", std::strerror(errno));
+    }
+    FileSizeLimit(const FileSizeLimit&) = delete;
+    FileSizeLimit& operator=(const FileSizeLimit&) = delete;
+    ~FileSizeLimit()
+    {
+        (void)restore();
+        if (_oldHandler != SIG_ERR) std::signal(SIGXFSZ, _oldHandler);
+        std::remove(_file.c_str());
+    }
+
+    // true if the files can not grow beyond maxSize bytes
+    bool limit(rlim_t maxSize)
+    {
+        std::fflush(nullptr); // write the buffered output (e.g. stdout redirected to a file) while it still can grow
+        return setCurrent(maxSize);
+    }
+    // true if the limit is the original one
+    bool restore()
+    {
+        const bool restored = setCurrent(_old.rlim_cur);
+        // clear the error state that a write beyond the limit left on stdout and stderr
+        std::clearerr(stdout);
+        std::clearerr(stderr);
+        return restored;
+    }
+
+private:
+    bool setCurrent(rlim_t cur)
+    {
+        if (!_ok) return false;
+        struct rlimit l = _old;
+        l.rlim_cur = cur;
+        if (::setrlimit(RLIMIT_FSIZE, &l) != 0) {
+            std::printf("  FAIL: setrlimit: %s\n", std::strerror(errno));
+            return false;
+        }
+        return true;
+    }
+
+    std::string _file;
+    void (*_oldHandler)(int);
+    struct rlimit _old = {};
+    bool _ok = false;
+};
+#endif
+
+// #292, POSIX only: WriteOIIO, the file can not grow beyond a few KB (RLIMIT_FSIZE, as on a full disk), so that
+// ImageOutput::write_image() or close() fails, after open() succeeded: the render must fail with the error of OIIO.
+// Each format is then written without the limit, to check that the failure came from the limit. The partial file is
+// kept, as by the other writers (#251). Exits with 77 (skipped) on MS Windows, which has no RLIMIT_FSIZE.
+int testWriteOIIODiskFull(const std::string& outFile)
+{
+#ifdef _WIN32
+    (void)outFile;
+    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
+    std::exit(77);
+#else
+    const int W = 512, H = 512;
+    const rlim_t kMaxFileSize = 16384; // more than any header, much less than any of these files
+    int failures = 0;
+    // Not JPEG and PNG, because of OpenImageIO 3.1 bugs (#362): the JPEG writer keeps libjpeg's default error_exit(),
+    // which calls exit() on a write error (jpegoutput.cpp: jpeg_std_error()), so the process would exit; the PNG
+    // writer ignores the write errors (pngoutput.cpp: PngWriteCallback() sets m_err, which nothing reads), so
+    // write_image() and close() succeed.
+    for (const char* ext : { "exr", "tif", "dpx" }) {
+        const std::string file = outFile + "." + ext;
+        std::printf("==== WriteOIIO %s, the disk is full after %d bytes (issue #292) ====\n", ext, (int)kMaxFileSize);
+        std::remove(file.c_str());
+        FileSizeLimit fileSizeLimit(file);
+        WriterSession s;
+        if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WriteOIIO")) { ++failures; continue; }
+        // noise, which no codec compresses into a few KB
+        std::mt19937 rng(292);
+        std::uniform_real_distribution<float> dist(0.f, 1.f);
+        float* pix = s.sourcePixels();
+        for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
+
+        OfxStatus st = s.begin(1);
+        if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); ++failures; continue; }
+        if (!fileSizeLimit.limit(kMaxFileSize)) { ++failures; continue; }
+        st = s.render(1);
+        if (!fileSizeLimit.restore()) { ++failures; continue; }
+        const std::string error = WriterSession::persistentError();
+        struct stat sb;
+        const long size = (::stat(file.c_str(), &sb) == 0) ? (long)sb.st_size : -1L;
+        std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, error.c_str(), size);
+        if (ok(st)) { std::printf("  FAIL: the render succeeded, the file is truncated\n"); ++failures; }
+        else if (error.find(file) == std::string::npos) { std::printf("  FAIL: the error does not name the file\n"); ++failures; }
+        s.end(1);
+
+        // without the limit, the same instance writes the file
+        if (s.renderAll(1)) { std::printf("  FAIL: the render without the limit\n"); ++failures; }
+        else if ((::stat(file.c_str(), &sb) != 0) || (sb.st_size <= (off_t)kMaxFileSize)) {
+            std::printf("  FAIL: the file without the limit is not larger than %d bytes\n", (int)kMaxFileSize);
+            ++failures;
+        }
+    }
+    if (!failures) std::printf("  PASS\n");
+    return failures;
 #endif
 }
 
@@ -3759,6 +3895,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegEncodeFailures(outFile);
         } else if (mode == "--encode-failure-disk-full") {
             failures = testWriteFFmpegEncodeFailureDiskFull(outFile);
+        } else if (mode == "--writeoiio-disk-full") {
+            failures = testWriteOIIODiskFull(outFile);
         } else if (mode == "--swscale-exact") {
             failures = testSwscaleExact(outFile);
         } else if (mode == "--param-change") {
