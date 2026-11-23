@@ -586,8 +586,7 @@ struct Reader {
         return range;
     }
 
-    // plane: the plane to render, kFnOfxImagePlaneColour or a Natron custom plane (then also the output image's components)
-    OfxStatus render(double t, const char* plane = kFnOfxImagePlaneColour)
+    OfxStatus render(double t)
     {
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, t);
@@ -600,9 +599,6 @@ struct Reader {
             return st;
         }
         PropSet r = makeRenderInArgs(t, kWidth, kHeight);
-        pSetString(PH(&r), kOfxImageEffectPropRenderPlanes, 0, plane);
-        const bool colour = !std::strcmp(plane, kFnOfxImagePlaneColour);
-        pSetString(PH(&out->image), kOfxImageEffectPropComponents, 0, colour ? kOfxImageComponentRGBA : plane);
 
         return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&r), nullptr);
     }
@@ -613,7 +609,9 @@ struct Reader {
     // Render at render scale 1/2^level, with the given render window (in pixel coordinates at that
     // scale), into an output image covering the whole RoD at that scale (the readers don't support
     // tiles), filled with `fill` beforehand. The RoD returned by getRegionOfDefinition is stored in rod.
-    OfxStatus renderAtScale(double t, unsigned int level, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds)
+    // plane: kFnOfxImagePlaneColour, or a Natron custom plane (then also the output image's components)
+    OfxStatus renderAtScale(double t, unsigned int level, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds,
+                            const char* plane = kFnOfxImagePlaneColour)
     {
         const double s = 1. / (1 << level);
         double rs[2] = { s, s };
@@ -655,6 +653,9 @@ struct Reader {
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
         int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+        pSetString(PH(&ra), kOfxImageEffectPropRenderPlanes, 0, plane);
+        const bool colour = !std::strcmp(plane, kFnOfxImagePlaneColour);
+        pSetString(ip, kOfxImageEffectPropComponents, 0, colour ? kOfxImageComponentRGBA : plane);
 
         return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
     }
@@ -1173,7 +1174,8 @@ testDecodePlane(OfxPlugin* pMultiPlanar, const std::string& still, const std::st
 }
 
 // 2e. An Opaque file (File Premult) has alpha = 1 in its color plane only: the other RGBA planes of a multi-planar
-// file keep the alpha that decodePlane() wrote, as the layers of a PSD file whose composite is RGB (Natron#1632)
+// file keep the alpha that decodePlane() wrote, as the layers of a PSD file in a project saved as Opaque (Natron#1632).
+// At scale 1 (decodePlane() writes in the output image) and 1/2 (in GenericReader's buffer).
 void
 testOpaquePlanes(OfxPlugin* pMultiPlanar, const std::string& still)
 {
@@ -1192,10 +1194,16 @@ testOpaquePlanes(OfxPlugin* pMultiPlanar, const std::string& still)
     const char* planes[] = { kFnOfxImagePlaneColour, layer.c_str() };
     for (const char* plane : planes) {
         const bool colour = (plane == planes[0]);
-        OfxStatus st = r.render(1., plane);
-        const float a = reinterpret_cast<const float*>(r.out->buffer.data())[3];
-        check(ok(st) && a == (colour ? 1.f : 0.5f), "%s plane: render = %d, alpha = %g (expected %g)",
-              colour ? "color" : "custom RGBA", st, a, colour ? 1. : 0.5);
+        for (unsigned int level = 0; level <= 1; ++level) {
+            const int s = 1 << level;
+            const OfxRectI window = { 0, 0, (kWidth + s - 1) / s, (kHeight + s - 1) / s };
+            OfxRectD rod;
+            OfxRectI bounds;
+            OfxStatus st = r.renderAtScale(1., level, window, -7.f, &rod, &bounds, plane);
+            const float a = r.outputPixel(bounds, 0, 0, 3);
+            check(ok(st) && a == (colour ? 1.f : 0.5f), "%s plane, scale 1/%d: render = %d, alpha = %g (expected %g)",
+                  colour ? "color" : "custom RGBA", s, st, a, colour ? 1. : 0.5);
+        }
     }
 }
 

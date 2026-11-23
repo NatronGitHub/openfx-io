@@ -173,7 +173,7 @@ enum FrameModeEnum {
     "The image file being read is considered to have this premultiplication state.\n"                                                                       \
     "To get UnPremultiplied (or \"unassociated alpha\") images, set the \"Output Premult\" parameter to Unpremultiplied. \n"                                \
     "By default the value should be correctly be guessed by the image file, but this parameter can be edited if the metadatas inside the file are wrong.\n" \
-    "- Opaque means that the alpha channel is considered to be 1 (one), and it is not taken into account in colorspace conversion.\n"                       \
+    "- Opaque means that the alpha channel of the color plane is considered to be 1 (one), and it is not taken into account in colorspace conversion.\n"                       \
     "- Premultiplied, red, green and blue channels are divided by the alpha channel "                                                                       \
     "before applying the colorspace conversion, and re-multiplied by alpha after colorspace conversion.\n"                                                  \
     "- UnPremultiplied, means that red, green and blue channels are not modified "                                                                          \
@@ -1953,8 +1953,8 @@ GenericReaderPlugin::render(const RenderArguments& args)
             //   - premult is unpremultiplied
             bool mustPremult = (isColor && (remappedComponents == ePixelComponentRGBA) && ((filePremult == eImageUnPreMultiplied || !isOCIOIdentity) && outputPremult == eImagePreMultiplied));
             // An Opaque file has alpha = 1 everywhere (see setOpaqueAlpha()): there is nothing to premultiply by.
-            // File Premult is the state of the color plane: the other planes of a multi-planar file keep their alpha
-            // (e.g. the RGBA layers of a PSD file, whose composite is RGB, NatronGitHub/Natron#1632).
+            // Opaque (alpha = 1) applies to the color plane only (it is forced for an RGB one): it says nothing about the
+            // alpha of the other RGBA planes of a multi-planar file, which keep the decoded alpha (NatronGitHub/Natron#1632).
             const bool opaqueAlpha = !isCustom && (filePremult == eImageOpaque) && (remappedComponents == ePixelComponentRGBA) && (it->numChans == 4);
             if (opaqueAlpha) {
                 mustPremult = false;
