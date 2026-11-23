@@ -90,9 +90,15 @@
  *       fail with "Cannot encode frame"
  *
  *   WriteFFmpeg, beginSequenceRender fails after a render (issue #289), with the option --begin-failure (only this test):
- *     - render a movie, then on the same instance with an interlaced input, DNxHD 36 in 720p at 25 fps, or DNxHD 36 in
- *       720p at 60 fps (which FFmpeg's encoder rejects): beginSequenceRender fails, endSequenceRender must not crash,
- *       and the next render must work
+ *     - render a movie, then on the same instance with an interlaced input, DNxHD 36 in 720p (1080p only), or Codec
+ *       Options that FFmpeg's encoder rejects: beginSequenceRender fails, endSequenceRender must not crash, and the
+ *       next render must work
+ *
+ *   WriteFFmpeg DNxHD/DNxHR Codec Profiles (issue #305), with the option --dnxhd-profiles (only this test):
+ *     - each DNxHD profile in 1920x1080 and 1280x720 at 23.976, 24, 25, 29.97, 30, 50, 59.94 and 60 fps (DNxHR profiles,
+ *       which do not depend on the frame rate, at 23.976 fps only): the movie is encoded
+ *       with the compression ID (CID) of the profile (read from the frame header), or beginSequenceRender fails with a
+ *       clear message where the profile does not exist (DNxHD 440x and 36 in 720p)
  *
  *   WriteFFmpeg, a frame is not encoded while other threads wait (issue #288), with the option --encode-failure (only
  *   this test):
@@ -2419,6 +2425,8 @@ public:
 
     void setInt(const char* name, int value) { setOverrideInt(&_ctx, name, value); }
 
+    void setString(const char* name, const std::string& value) { setOverrideString(&_ctx, name, value); }
+
     void setFilename(const std::string& file) { setOverrideString(&_ctx, kOfxImageEffectFileParamName, file); }
 
     // kOfxActionInstanceChanged on the param or clip name (a user edit), as the host calls it on its main thread
@@ -2543,25 +2551,134 @@ int testWriteFFmpegBeginFailures(const std::string& outFile)
     failures += testWriteFFmpegBeginFailure(outFile + ".i289-interlaced.mov", 128, 128, WriterParams(),
                                             [](WriterSession& s, bool fail) { s.setSourceFieldOrder(fail ? kOfxImageFieldLower : kOfxImageFieldNone); },
                                             "only progressive video is supported");
-    std::printf("==== WriteFFmpeg DNxHD 720p, render in 220x at 60 fps, then 36 at 25 fps: beginSequenceRender fails, endSequenceRender does not crash (issue #289) ====\n");
+    std::printf("==== WriteFFmpeg DNxHD 720p, render in 220x at 60 fps, then 36 (1080p only) at 25 fps: beginSequenceRender fails, endSequenceRender does not crash (issue #289) ====\n");
     WriterParams dnxhd;
     dnxhd.strings = { { "codecShortName", "dnxhd" } };
-    // DNxHD 220x (220 Mbit/s in 720p/60), then DNxHD 36 (no bitrate in 720p/25)
+    // DNxHD 220x (CID 1250 in 720p), then DNxHD 36 (CID 1253 is 1920x1080 only, #305)
     failures += testWriteFFmpegBeginFailure(outFile + ".i289-dnxhd.mov", 1280, 720, dnxhd,
                                             [](WriterSession& s, bool fail) {
                                                 s.setInt("DNxHDCodecProfile", fail ? 9 : 6);
                                                 s.setFps(fail ? 25. : 60.);
                                             },
-                                            "frameRate not supported for DNxHD");
+                                            "is only available in 1920x1080");
     // the failure is in avcodec_open2(), after the format context and the stream were allocated, which the cleanup of
     // beginSequenceRender frees
-    std::printf("==== WriteFFmpeg DNxHD 720p, render in 220x at 60 fps, then 36 at 60 fps (100 Mbit/s, not a 720p bitrate of FFmpeg): beginSequenceRender fails in avcodec_open2(), endSequenceRender does not crash (issue #289) ====\n");
+    std::printf("==== WriteFFmpeg DNxHD 720p, render in 220x at 60 fps, then with the Codec Options nitris_compat=2 (out of range): beginSequenceRender fails in avcodec_open2(), endSequenceRender does not crash (issue #289) ====\n");
     failures += testWriteFFmpegBeginFailure(outFile + ".i289-dnxhd.mov", 1280, 720, dnxhd,
                                             [](WriterSession& s, bool fail) {
-                                                s.setInt("DNxHDCodecProfile", fail ? 9 : 6);
+                                                s.setInt("DNxHDCodecProfile", 6);
                                                 s.setFps(60.);
+                                                s.setString("codecOptions", fail ? "nitris_compat=2" : "");
                                             },
                                             "Could not open video codec");
+    return failures;
+}
+
+// The compression ID (CID) of the first video packet of a DNxHD/DNxHR movie: the 4 bytes at offset 0x28 of its frame
+// header (SMPTE ST 2019-1:2016, Table 8 and section 7.2.4), or -1.
+int dnxhdCid(const std::string& file)
+{
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, file.c_str(), nullptr, nullptr) < 0) return -1;
+    int cid = -1;
+    const int si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    AVPacket* pkt = av_packet_alloc();
+    while ((si >= 0) && pkt && (av_read_frame(fmt, pkt) >= 0)) {
+        const bool found = (pkt->stream_index == si);
+        if (found && (pkt->size >= 0x2c)) {
+            const uint8_t* d = pkt->data + 0x28;
+            cid = (int)(((uint32_t)d[0] << 24) | ((uint32_t)d[1] << 16) | ((uint32_t)d[2] << 8) | (uint32_t)d[3]);
+        }
+        av_packet_unref(pkt);
+        if (found) break;
+    }
+    av_packet_free(&pkt);
+    avformat_close_input(&fmt);
+    return cid;
+}
+
+// #305: each DNxHD Codec Profile of WriteFFmpeg, in 1920x1080 and 1280x720 at the usual frame rates: the movie is
+// encoded with the CID of the profile (SMPTE ST 2019-1:2016, Tables C.1 and C.2), or, where the profile does not exist
+// (DNxHD 440x and 36 are 1080p only), beginSequenceRender fails with a message that says so. FFmpeg's dnxhd encoder
+// only uses the bitrate that WriteFFmpeg sets to choose the CID (ff_dnxhd_find_cid() in libavcodec/dnxhddata.c), and
+// avcodec_open2() fails if no CID of the size and bit depth has that bitrate (DNxHD 36 in 720p, before #305).
+int testDNxHDProfiles(const std::string& outFile)
+{
+    struct Case {
+        const char* name;
+        int profile; // the index of the option of DNxHDCodecProfile
+        int cid1080; // the expected CID in 1920x1080
+        int cid720;  // the expected CID in 1280x720, 0 if beginSequenceRender must fail
+    };
+    const Case cases[] = {
+        { "DNxHR 444", 0, 1270, 1270 },
+        { "DNxHR HQX", 1, 1271, 1271 },
+        { "DNxHR HQ", 2, 1272, 1272 },
+        { "DNxHR SQ", 3, 1273, 1273 },
+        { "DNxHR LB", 4, 1274, 1274 },
+        { "DNxHD 440x", 5, 1235, 0 },
+        { "DNxHD 220x", 6, 1235, 1250 },
+        { "DNxHD 220", 7, 1238, 1251 },
+        { "DNxHD 145", 8, 1237, 1252 },
+        { "DNxHD 36", 9, 1253, 0 },
+    };
+    const double fpsList[] = { 23.976, 24., 25., 29.97, 30., 50., 59.94, 60. };
+    const char* const rejected = "is only available in 1920x1080";
+    const std::string file = outFile + ".i305.mov";
+    const int N = 1;
+    int failures = 0;
+    int nCases = 0;
+    for (const Case& c : cases) {
+        for (const bool is720p : { false, true }) {
+            const int W = is720p ? 1280 : 1920;
+            const int H = is720p ? 720 : 1080;
+            const int expectedCid = is720p ? c.cid720 : c.cid1080;
+            for (const double fps : fpsList) {
+                // DNxHR (CIDs 1270 to 1274) does not depend on the frame rate
+                if ((c.cid1080 >= 1270) && (fps != fpsList[0])) continue;
+                ++nCases;
+                std::remove(file.c_str());
+                WriterParams wp;
+                wp.strings = { { "codecShortName", "dnxhd" } };
+                wp.ints = { { "DNxHDCodecProfile", c.profile } };
+                wp.fps = fps;
+                WriterSession s;
+                if (s.create(file, W, H, N, wp)) {
+                    std::printf("  FAIL: %s %dx%d at %g fps: the instance\n", c.name, W, H, fps);
+                    ++failures;
+                    continue;
+                }
+                if (expectedCid == 0) {
+                    const OfxStatus st = s.begin(N);
+                    const std::string error = WriterSession::persistentError();
+                    s.end(N);
+                    if (ok(st) || (error.find(rejected) == std::string::npos)) {
+                        std::printf("  FAIL: %s %dx%d at %g fps: beginSequenceRender = %d, expected a failure with \"%s\" (error: \"%s\")\n",
+                                    c.name, W, H, fps, st, rejected, error.c_str());
+                        ++failures;
+                    } else {
+                        std::printf("  %s %dx%d at %g fps: rejected (\"%s\")\n", c.name, W, H, fps, error.c_str());
+                    }
+                    continue;
+                }
+                if (s.renderAll(N)) {
+                    std::printf("  FAIL: %s %dx%d at %g fps: the encode failed (expected CID %d)\n", c.name, W, H, fps, expectedCid);
+                    ++failures;
+                    continue;
+                }
+                const int cid = dnxhdCid(file);
+                if (cid != expectedCid) {
+                    std::printf("  FAIL: %s %dx%d at %g fps: CID %d, expected %d\n", c.name, W, H, fps, cid, expectedCid);
+                    ++failures;
+                } else {
+                    std::printf("  %s %dx%d at %g fps: CID %d\n", c.name, W, H, fps, cid);
+                }
+            }
+        }
+    }
+    std::remove(file.c_str());
+    std::printf("  %d cases, %d failures\n", nCases, failures);
+    if (!failures) std::printf("  PASS\n");
     return failures;
 }
 
@@ -3397,6 +3514,9 @@ main(int argc, char** argv)
         int failures = 0;
         if (mode == "--begin-failure") {
             failures = testWriteFFmpegBeginFailures(outFile);
+        } else if (mode == "--dnxhd-profiles") {
+            std::printf("==== WriteFFmpeg DNxHD/DNxHR Codec Profiles, 1080p and 720p at 23.976 to 60 fps: the expected CID, or a clear error (issue #305) ====\n");
+            failures = testDNxHDProfiles(outFile);
         } else if (mode == "--encode-failure") {
             failures = testWriteFFmpegEncodeFailures(outFile);
         } else if (mode == "--encode-failure-disk-full") {

@@ -44,6 +44,7 @@ make test-ofx      # OFX entry-point + action tests (plugin code linked directly
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's encoder must not abort (#267)
 make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender after a render, then endSequenceRender (#289)
+make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305)
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
@@ -234,10 +235,20 @@ abort (`put_bits.h` assertion), which killed the host; WriteFFmpeg now limits qm
 encode, or fail with "Cannot encode frame". It is a test of its own, so that an abort only fails it.
 
 `test-writeffmpeg-begin-failure` (issue #289) runs `ofx_render_test OUT --begin-failure`: WriteFFmpeg renders a
-movie, then on the same instance a beginSequenceRender fails (an interlaced source clip; DNxHD 36 in 720p at 25 fps;
-DNxHD 36 in 720p at 60 fps, which FFmpeg's encoder rejects in `avcodec_open2()`), then the host calls
-endSequenceRender, as Natron does. It used to write the trailer of a file whose header was never written (with a
-NULL `AVIOContext`), and crash. The next render of the instance must work.
+movie, then on the same instance a beginSequenceRender fails (an interlaced source clip; DNxHD 36 in 720p, which only
+exists in 1080p; the Codec Options `nitris_compat=2`, which FFmpeg's encoder rejects in `avcodec_open2()`), then the
+host calls endSequenceRender, as Natron does. It used to write the trailer of a file whose header was never written
+(with a NULL `AVIOContext`), and crash. The next render of the instance must work.
+
+`test-writeffmpeg-dnxhd-profiles` (issue #305) runs `ofx_render_test OUT --dnxhd-profiles`: WriteFFmpeg encodes one
+frame with each DNxHD Codec Profile, in 1920x1080 and 1280x720, at 23.976, 24, 25, 29.97, 30, 50, 59.94 and 60 fps
+(the DNxHR profiles, which do not depend on the frame rate, at 23.976 fps only).
+The compression ID (CID) in the frame header (offset 0x28, [SMPTE ST 2019-1](https://pub.smpte.org/latest/st2019-1/)
+Table 8) must be the one of the profile: DNxHR 444, HQX, HQ, SQ and LB are CIDs 1270 to 1274; DNxHD 440x and 220x are
+1235 in 1080p (220x is 1250 in 720p), 220 is 1238 (1251), 145 is 1237 (1252) and 36 is 1253. DNxHD 440x and 36 do not
+exist in 720p: beginSequenceRender must fail with a message that says so. FFmpeg's encoder only uses the bitrate that
+WriteFFmpeg sets to choose the CID (`ff_dnxhd_find_cid()` in `libavcodec/dnxhddata.c`), so a wrong bitrate makes
+`avcodec_open2()` fail.
 
 `test-writeffmpeg-encode-failure` (issue #288) runs `ofx_render_test OUT --encode-failure`: frames 2 to 4 are
 rendered on other threads, which wait in `encode()` for frame 1, then frame 1 is aborted (the host's abort stays
@@ -987,7 +998,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 
