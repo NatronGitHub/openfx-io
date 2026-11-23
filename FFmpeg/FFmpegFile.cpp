@@ -1590,15 +1590,13 @@ FFmpegFile::FFmpegFile(const string& filename)
     // enabling drefs to allow reading from external tracks
     // this enables quicktime reference files demuxing
     av_dict_set(&demuxerOptions, "enable_drefs", "1", 0);
-    CHECK(avformat_open_input(&_context, _filename.c_str(), nullptr, &demuxerOptions));
-    if (demuxerOptions != nullptr) {
-        // demuxerOptions is destroyed and replaced, on avformat_open_input return,
-        // with a dict containing the options that were not found
-        // assert(false && "invalid options passed to demuxer");
-        // Actually, this is OK since enable_drefs is a valid option only for mov/mp4/3gp
-        // https://ffmpeg.org/ffmpeg-formats.html#Options-1
-        av_dict_free(&demuxerOptions);
-    }
+    const int openError = avformat_open_input(&_context, _filename.c_str(), nullptr, &demuxerOptions);
+    // On success, demuxerOptions is destroyed and replaced with a dict containing the options that were not found
+    // (this is OK: enable_drefs is a valid option only for mov/mp4/3gp, https://ffmpeg.org/ffmpeg-formats.html#Options-1).
+    // On failure, avformat_open_input leaves it as is (libavformat/demux.c, avformat_open_input(), "fail:" frees only
+    // its copy). Free it in both cases.
+    av_dict_free(&demuxerOptions);
+    CHECK(openError);
     assert(_context);
     // Bug 51016 - probesize is the maximum amount of data, in bytes, which is read to determine
     // frame information in avformat_find_stream_info. It's important that when reading
@@ -3197,13 +3195,18 @@ FFmpegFileManager::init()
 void
 FFmpegFileManager::clear(void const* plugin)
 {
-    assert(_lock);
-    FFmpegFile::AutoMutex guard(*_lock);
-    FilesMap::iterator found = _files.find(plugin);
-    if (found != _files.end()) {
-        // Erasing drops the map's references; any FFmpegFile still referenced by a
-        // concurrent caller stays alive until that caller releases its shared_ptr.
-        _files.erase(found);
+    // The files are destroyed (avformat_close_input(), decoder threads joined) after the lock is released, so that
+    // other instances don't wait for it (CP.43). Any FFmpegFile still referenced by a concurrent caller stays alive
+    // until that caller releases its shared_ptr.
+    std::list<std::shared_ptr<FFmpegFile>> files;
+    {
+        assert(_lock);
+        FFmpegFile::AutoMutex guard(*_lock);
+        FilesMap::iterator found = _files.find(plugin);
+        if (found != _files.end()) {
+            files.swap(found->second);
+            _files.erase(found);
+        }
     }
 }
 
@@ -3214,6 +3217,7 @@ FFmpegFileManager::get(void const* plugin,
     if (filename.empty() || !plugin) {
         return nullptr;
     }
+    std::shared_ptr<FFmpegFile> evicted; // destroyed after the lock is released (declared before guard)
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
@@ -3221,6 +3225,7 @@ FFmpegFileManager::get(void const* plugin,
         for (std::list<std::shared_ptr<FFmpegFile>>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
             if ((*it)->getFilename() == filename) {
                 if ((*it)->isInvalid()) {
+                    evicted = std::move(*it);
                     found->second.erase(it);
                     break;
                 } else {
@@ -3240,6 +3245,7 @@ FFmpegFileManager::getOrCreate(void const* plugin,
     if (filename.empty() || !plugin) {
         return nullptr;
     }
+    std::shared_ptr<FFmpegFile> evicted; // destroyed after the lock is released (declared before guard)
     assert(_lock);
     FFmpegFile::AutoMutex guard(*_lock);
     FilesMap::iterator found = _files.find(plugin);
@@ -3247,6 +3253,7 @@ FFmpegFileManager::getOrCreate(void const* plugin,
         for (std::list<std::shared_ptr<FFmpegFile>>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
             if ((*it)->getFilename() == filename) {
                 if ((*it)->isInvalid()) {
+                    evicted = std::move(*it);
                     found->second.erase(it);
                     break;
                 } else {

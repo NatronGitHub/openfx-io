@@ -997,7 +997,7 @@ class FFmpegFileManager {
     /// removes it from the map on another thread. This prevents use-after-free during decode.
     typedef std::map<void const*, std::list<std::shared_ptr<FFmpegFile>>> FilesMap;
     mutable FilesMap _files;
-    mutable FFmpegFile::Mutex* _lock;
+    mutable FFmpegFile::Mutex* _lock; // guards _files
 
 public:
     FFmpegFileManager();

@@ -113,6 +113,10 @@
  *       format info (Codec, Format, the Pref. params, Show Avail., DNxHD Codec Profile, Hap Format, the Source clip),
  *       and kOfxActionSyncPrivateData: each action must succeed, and every frame must be encoded
  *
+ *   ReadFFmpeg, DestroyInstance closes the movie (issue #290), with the option --destroy-closes-file (only this test):
+ *     - render a frame, destroy the instance: the movie is no longer open, before Unload; twice, with the movie
+ *       rewritten at another size in between: the second instance (maybe at the address of the first one) reads it
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -144,7 +148,18 @@ extern "C" {
 #include <string>
 #include <thread>
 #include <vector>
-#ifndef _WIN32
+#include <climits> // INT_MAX
+#include <optional>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h> // CreateFileW()
+#else
+#include <dirent.h> // opendir()
 #include <stdlib.h> // mkstemps()
 #include <sys/resource.h> // setrlimit()
 #include <sys/stat.h> // stat()
@@ -3217,6 +3232,154 @@ int testWriteFFmpegParamChangeDuringRender(const std::string& outFile)
     return failures;
 }
 
+// Whether this process has the file open, or nothing if that can't be told.
+// POSIX: an open file descriptor with the same device and inode (the descriptors are listed in /proc/self/fd on
+// Linux, /dev/fd on macOS and the BSDs). MS Windows: FFmpeg's file protocol opens files without FILE_SHARE_DELETE, so
+// opening the file with DELETE access fails with a sharing violation while it is open (the file is not changed).
+std::optional<bool> fileIsOpen(const std::string& file)
+{
+#ifdef _WIN32
+    const int n = ::MultiByteToWideChar(CP_UTF8, 0, file.c_str(), -1, nullptr, 0);
+    if (n <= 0) { std::printf("  FAIL: MultiByteToWideChar(%s)\n", file.c_str()); return std::nullopt; }
+    std::wstring wfile(static_cast<size_t>(n), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, file.c_str(), -1, &wfile[0], n);
+    const HANDLE h = ::CreateFileW(wfile.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        ::CloseHandle(h);
+        return false;
+    }
+    const DWORD error = ::GetLastError();
+    if (error == ERROR_SHARING_VIOLATION) {
+        return true;
+    }
+    std::printf("  FAIL: CreateFileW(%s) error %lu\n", file.c_str(), (unsigned long)error);
+    return std::nullopt;
+#else
+    struct stat fileStat;
+    if (::stat(file.c_str(), &fileStat) != 0) {
+        std::printf("  FAIL: stat(%s): %s\n", file.c_str(), std::strerror(errno));
+        return std::nullopt;
+    }
+#ifdef __linux__
+    const char* const fdDir = "/proc/self/fd";
+#else
+    const char* const fdDir = "/dev/fd";
+#endif
+    DIR* dir = ::opendir(fdDir);
+    if (!dir) {
+        std::printf("  FAIL: opendir(%s): %s\n", fdDir, std::strerror(errno));
+        return std::nullopt;
+    }
+    bool open = false;
+    while (const struct dirent* entry = ::readdir(dir)) {
+        char* end = nullptr;
+        const long fd = std::strtol(entry->d_name, &end, 10);
+        if ((end == entry->d_name) || (*end != '\0') || (fd < 0) || (fd > INT_MAX)) {
+            continue; // "." and ".."
+        }
+        struct stat fdStat;
+        if ((::fstat(static_cast<int>(fd), &fdStat) == 0) && (fdStat.st_dev == fileStat.st_dev) && (fdStat.st_ino == fileStat.st_ino)) {
+            open = true;
+            break;
+        }
+    }
+    ::closedir(dir);
+    return open;
+#endif
+}
+
+// Issue #290: destroying a ReadFFmpeg instance must close its movie file (and free its decoder), while the plug-in is
+// still loaded (other instances may still exist), not only at kOfxActionUnload.
+// Two instances, one after the other; between them, the movie is rewritten at another size: the second instance must
+// read the new movie, even if it gets the address of the first one (the open files of the plug-in are keyed by the
+// address of the instance).
+int testReadFFmpegDestroyClosesFile(const std::string& outFile)
+{
+    const int N = 3;
+    const int sizes[2][2] = { { 64, 64 }, { 32, 48 } };
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+    int failures = 0;
+    void* firstInstance = nullptr;
+    // one instance: returns the number of failures
+    auto runPass = [&](int pass) -> int {
+        const int W = sizes[pass][0], H = sizes[pass][1];
+        if (testWriteFFmpeg(outFile, W, H, N) != 0) {
+            return 1;
+        }
+        int fails = 0;
+        Effect inst;
+        inst.delegate = &ctx;
+        setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
+        const OfxImageEffectHandle handle = reinterpret_cast<OfxImageEffectHandle>(&inst);
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+        void* instance = nullptr;
+        pGetPointer(PH(&inst.props), kOfxPropInstanceData, 0, &instance);
+        if (pass == 0) {
+            firstInstance = instance;
+        } else {
+            std::printf("  pass %d: the instance %s the address of the first one\n", pass + 1, (instance == firstInstance) ? "has" : "does not have");
+        }
+        {
+            PropSet a; OfxPropertySetHandle ap = PH(&a);
+            pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+            pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+            pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+            pSetDouble(ap, kOfxPropTime, 0, 1.);
+            double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+            const OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, handle, PH(&a), nullptr);
+            if (!ok(st)) { std::printf("  FAIL: InstanceChanged = %d\n", st); ++fails; }
+        }
+        {
+            PropSet a; pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+            double rs[2] = { 1., 1. }; pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+            pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+            PropSet o;
+            const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, handle, PH(&a), PH(&o));
+            double rod[4] = { -1, -1, -1, -1 }; pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
+            std::printf("  pass %d: region of definition [%.0f %.0f %.0f %.0f] (the movie is %dx%d)\n", pass + 1, rod[0], rod[1], rod[2], rod[3], W, H);
+            if (!ok(st) || (rod[0] != 0) || (rod[1] != 0) || (rod[2] != W) || (rod[3] != H)) {
+                std::printf("  FAIL: getRegionOfDefinition = %d, must be the size of the movie\n", st);
+                ++fails;
+            }
+        }
+        Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+        if (!out) {
+            std::printf("  FAIL: no Output clip\n");
+            ++fails;
+        } else {
+            out->connected = true;
+            setupClipImage(out, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+            PropSet outArgs;
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionGetClipPreferences, handle, nullptr, PH(&outArgs));
+            if (!ok(st)) { std::printf("  FAIL: GetClipPreferences = %d\n", st); ++fails; }
+            PropSet a = makeRenderInArgs(1., W, H);
+            st = p->mainEntry(kOfxImageEffectActionRender, handle, PH(&a), nullptr);
+            if (!ok(st)) { std::printf("  FAIL: ReadFFmpeg render = %d\n", st); ++fails; }
+        }
+        // (also checks that fileIsOpen() sees the files that FFmpeg opens)
+        const std::optional<bool> openWhileAlive = fileIsOpen(outFile);
+        std::printf("  pass %d: the movie is %s while the instance exists\n", pass + 1, !openWhileAlive ? "?" : (*openWhileAlive ? "open" : "closed"));
+        if (openWhileAlive != true) { std::printf("  FAIL: the movie must be open while the instance exists\n"); ++fails; }
+        const OfxStatus st = p->mainEntry(kOfxActionDestroyInstance, handle, nullptr, nullptr);
+        if (!ok(st)) { std::printf("  FAIL: DestroyInstance = %d\n", st); ++fails; }
+        const std::optional<bool> openAfterDestroy = fileIsOpen(outFile);
+        std::printf("  pass %d: the movie is %s after DestroyInstance\n", pass + 1, !openAfterDestroy ? "?" : (*openAfterDestroy ? "open" : "closed"));
+        if (openAfterDestroy != false) { std::printf("  FAIL: DestroyInstance must close the movie (issue #290)\n"); ++fails; }
+        return fails;
+    };
+    for (int pass = 0; pass < 2; ++pass) {
+        failures += runPass(pass);
+    }
+    // (also after a failure)
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    if (fileIsOpen(outFile) != false) { std::printf("  FAIL: the movie must be closed after Unload\n"); ++failures; }
+    return failures;
+}
+
 int
 main(int argc, char** argv)
 {
@@ -3242,6 +3405,8 @@ main(int argc, char** argv)
             failures = testSwscaleExact(outFile);
         } else if (mode == "--param-change") {
             failures = testWriteFFmpegParamChangeDuringRender(outFile);
+        } else if (mode == "--destroy-closes-file") {
+            failures = testReadFFmpegDestroyClosesFile(outFile);
         } else {
             std::printf("unknown option %s\n", mode.c_str());
             return 2;
