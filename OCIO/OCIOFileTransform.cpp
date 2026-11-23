@@ -35,10 +35,13 @@
 #ifdef DEBUG
 #include <cstdio>
 #endif
+#include <stdexcept> // std::runtime_error
+#include <tuple> // std::tie
 
 #include "GenericOCIO.h"
 #include "IOUtility.h"
 #include "OCIOPluginBase.h"
+#include "OCIOProcessorCache.h"
 #include "ofxNatron.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
@@ -232,12 +235,19 @@ private:
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
 
-    GenericOCIO::Mutex _procMutex;
-    OCIO::ConstProcessorRcPtr _proc;
-    string _procFile;
-    string _procCCCId;
-    int _procDirection;
-    int _procInterpolation;
+    // everything that the processor depends on
+    struct ProcKey {
+        OCIOConfigContextKey configContext; // OCIO::GetCurrentConfig(), its current context (search path)
+        string file;
+        string cccid;
+        int version = -1; // the hidden "version" param, which Reload increments
+        OCIO::TransformDirection direction = OCIO::TRANSFORM_DIR_FORWARD;
+        OCIO::Interpolation interpolation = OCIO::INTERP_UNKNOWN;
+
+        auto tie() const { return std::tie(configContext, file, cccid, version, direction, interpolation); }
+        friend bool operator==(const ProcKey& a, const ProcKey& b) { return a.tie() == b.tie(); }
+    };
+    OCIOProcessorCache<ProcKey> _procCache; // (render threads)
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
@@ -257,8 +267,6 @@ OCIOFileTransformPlugin::OCIOFileTransformPlugin(OfxImageEffectHandle handle)
     , _mix(NULL)
     , _maskApply(NULL)
     , _maskInvert(NULL)
-    , _procDirection(-1)
-    , _procInterpolation(-1)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _openGLContextData(NULL)
 #endif
@@ -444,8 +452,29 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
     _file->getValueAtTime(time, file);
     string cccid;
     _cccid->getValueAtTime(time, cccid);
-    int directioni = _direction->getValueAtTime(time);
-    int interpolationi = _interpolation->getValueAtTime(time);
+    const int version = _version->getValueAtTime(time);
+    const OCIO::TransformDirection direction = (_direction->getValueAtTime(time) == 0) ? OCIO::TRANSFORM_DIR_FORWARD : OCIO::TRANSFORM_DIR_INVERSE;
+    OCIO::Interpolation interpolation;
+    switch (_interpolation->getValueAtTime(time)) {
+    case 0:
+        interpolation = OCIO::INTERP_NEAREST;
+        break;
+    case 1:
+        interpolation = OCIO::INTERP_LINEAR;
+        break;
+    case 2:
+        interpolation = OCIO::INTERP_TETRAHEDRAL;
+        break;
+    case 3:
+        interpolation = OCIO::INTERP_BEST;
+        break;
+    default:
+        // Should never happen
+        setPersistentMessage(Message::eMessageError, "", "OCIO Interpolation value out of bounds");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return OCIO::ConstProcessorRcPtr();
+    }
 
     try {
         AutoSetAndRestoreThreadLocale locale;
@@ -453,46 +482,23 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
         if (!config) {
             throw std::runtime_error("OCIO: No current config");
         }
-        GenericOCIO::AutoMutex guard(_procMutex);
-        if (!_proc || (_procFile != file) || (_procCCCId != cccid) || (_procDirection != directioni) || (_procInterpolation != interpolationi)) {
+        const ProcKey key { OCIOConfigContextKey(config), file, cccid, version, direction, interpolation };
+
+        return _procCache.get(key, [&] {
             OCIO::FileTransformRcPtr transform = OCIO::FileTransform::Create();
             transform->setSrc(file.c_str());
             transform->setCCCId(cccid.c_str());
+            transform->setDirection(direction);
+            transform->setInterpolation(interpolation);
 
-            if (directioni == 0) {
-                transform->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
-            } else {
-                transform->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
-            }
-
-            if (interpolationi == 0) {
-                transform->setInterpolation(OCIO::INTERP_NEAREST);
-            } else if (interpolationi == 1) {
-                transform->setInterpolation(OCIO::INTERP_LINEAR);
-            } else if (interpolationi == 2) {
-                transform->setInterpolation(OCIO::INTERP_TETRAHEDRAL);
-            } else if (interpolationi == 3) {
-                transform->setInterpolation(OCIO::INTERP_BEST);
-            } else {
-                // Should never happen
-                setPersistentMessage(Message::eMessageError, "", "OCIO Interpolation value out of bounds");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return _proc;
-            }
-
-            _proc = config->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD);
-            _procFile = file;
-            _procCCCId = cccid;
-            _procDirection = directioni;
-            _procInterpolation = interpolationi;
-        }
-    } catch (const std::exception& e) {
+            return config->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD);
+        });
+    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }
 
-    return _proc;
+    return OCIO::ConstProcessorRcPtr();
 } // getProcessor
 
 void

@@ -26,6 +26,8 @@
 // #include <iostream>
 #include <algorithm>
 #include <memory>
+#include <stdexcept> // std::runtime_error
+#include <tuple> // std::tie
 #ifdef DEBUG
 #include <cstdio> // printf
 #endif
@@ -33,6 +35,7 @@
 #include "GenericOCIO.h"
 #include "IOUtility.h"
 #include "OCIOPluginBase.h"
+#include "OCIOProcessorCache.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
 #include "ofxsMacros.h"
@@ -280,14 +283,20 @@ private:
 
     auto_ptr<GenericOCIO> _ocio;
 
-    GenericOCIO::Mutex _procMutex;
-    OCIO::ConstProcessorRcPtr _proc;
-    string _procInputSpace;
-    ChannelSelectorEnum _procChannel;
-    string _procDisplay;
-    string _procView;
-    double _procGain;
-    double _procGamma;
+    // everything that the processor depends on
+    struct ProcKey {
+        OCIOConfigContextKey configContext; // _ocio's config, and the local context (the context params)
+        string inputSpace;
+        ChannelSelectorEnum channel = eChannelSelectorRGB;
+        string display;
+        string view;
+        double gain = -1.;
+        double gamma = -1.;
+
+        auto tie() const { return std::tie(configContext, inputSpace, channel, display, view, gain, gamma); }
+        friend bool operator==(const ProcKey& a, const ProcKey& b) { return a.tie() == b.tie(); }
+    };
+    OCIOProcessorCache<ProcKey> _procCache; // (render threads)
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
@@ -306,9 +315,6 @@ OCIODisplayPlugin::OCIODisplayPlugin(OfxImageEffectHandle handle)
     , _gamma(NULL)
     , _channel(NULL)
     , _ocio(new GenericOCIO(this))
-    , _procChannel(eChannelSelectorRGB)
-    , _procGain(-1)
-    , _procGamma(-1)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _openGLContextData(NULL)
 #endif
@@ -574,8 +580,10 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
         if (!config) {
             throw std::runtime_error("OCIO: no current config");
         }
-        GenericOCIO::AutoMutex guard(_procMutex);
-        if (!_proc || (_procInputSpace != inputSpace) || (_procChannel != channel) || (_procDisplay != display) || (_procView != view) || (_procGain != gain) || (_procGamma != gamma)) {
+        const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
+        const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, channel, display, view, gain, gamma };
+
+        return _procCache.get(key, [&]() -> OCIO::ConstProcessorRcPtr {
 #if OCIO_VERSION_HEX >= 0x02000000
             auto displayViewTransform = OCIO::DisplayViewTransform::Create();
             displayViewTransform->setSrc(inputSpace.c_str());
@@ -659,8 +667,7 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                 transform->setChannelView(swizzle);
             }
 
-            OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
-            _proc = transform->getProcessor(config, context);
+            return transform->getProcessor(config, context);
 #else // OCIO_VERSION_HEX < 0x02000000
             OCIO::DisplayTransformRcPtr transform = OCIO::DisplayTransform::Create();
             transform->setInputColorSpaceName(inputSpace.c_str());
@@ -739,22 +746,15 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                 transform->setChannelView(swizzle);
             }
 
-            OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
-            _proc = config->getProcessor(context, transform, OCIO::TRANSFORM_DIR_FORWARD);
+            return config->getProcessor(context, transform, OCIO::TRANSFORM_DIR_FORWARD);
 #endif // OCIO_VERSION_HEX < 0x02000000
-            _procInputSpace = inputSpace;
-            _procChannel = channel;
-            _procDisplay = display;
-            _procView = view;
-            _procGain = gain;
-            _procGamma = gamma;
-        }
-    } catch (const OCIO::Exception& e) {
+        });
+    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }
 
-    return _proc;
+    return OCIO::ConstProcessorRcPtr();
 } // OCIODisplayPlugin::getProcessor
 
 void

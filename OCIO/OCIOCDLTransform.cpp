@@ -37,8 +37,10 @@
 #include <memory> // std::unique_ptr
 #include <optional>
 #include <sstream> // std::ostringstream
+#include <stdexcept> // std::runtime_error
 #include <string>
 #include <system_error> // std::error_code
+#include <tuple> // std::tie
 
 #include "IOUtility.h"
 #include "ofxsFileOpen.h"
@@ -51,6 +53,7 @@
 
 #include "GenericOCIO.h"
 #include "OCIOPluginBase.h"
+#include "OCIOProcessorCache.h"
 
 namespace OCIO = OCIO_NAMESPACE;
 
@@ -361,7 +364,7 @@ private:
     // concurrently with the main-thread actions (constructor, changedParam()).
     // - The clip and param pointers are set by the constructor and never changed: they may be read without a lock.
     // - _cdlFileMutex guards _cdlFileCache.
-    // - _procMutex guards _proc, _procGrade and _procDirection.
+    // - _procCache has its own mutex (see OCIOProcessorCache).
     // The two mutexes are never held at the same time.
 
     // do not need to delete these, the ImageEffect is managing them for us
@@ -395,10 +398,16 @@ private:
     GenericOCIO::Mutex _cdlFileMutex;
     std::optional<CDLFileCache> _cdlFileCache; // guarded by _cdlFileMutex
 
-    GenericOCIO::Mutex _procMutex;
-    OCIO::ConstProcessorRcPtr _proc; // guarded by _procMutex
-    CDLGrade _procGrade; // the grade of _proc, guarded by _procMutex
-    int _procDirection; // the direction of _proc, guarded by _procMutex
+    // everything that the processor depends on
+    struct ProcKey {
+        OCIOConfigContextKey configContext; // OCIO::GetCurrentConfig(), its current context
+        CDLGrade grade;
+        int direction = -1;
+
+        auto tie() const { return std::tie(configContext, grade, direction); }
+        friend bool operator==(const ProcKey& a, const ProcKey& b) { return a.tie() == b.tie(); }
+    };
+    OCIOProcessorCache<ProcKey> _procCache;
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
@@ -423,7 +432,6 @@ OCIOCDLTransformPlugin::OCIOCDLTransformPlugin(OfxImageEffectHandle handle)
     , _mix(NULL)
     , _maskApply(NULL)
     , _maskInvert(NULL)
-    , _procDirection(-1)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _openGLContextData(NULL)
 #endif
@@ -685,18 +693,15 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
     const int directioni = _direction->getValueAtTime(time);
 
     try {
-        GenericOCIO::AutoMutex guard(_procMutex);
-        if (!_proc || (_procGrade != grade) || (_procDirection != directioni)) {
-            AutoSetAndRestoreThreadLocale locale;
-            OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
-            assert(config);
-            _proc = config->getProcessor(createCDLTransform(grade, directioni));
-            _procGrade = grade;
-            _procDirection = directioni;
+        AutoSetAndRestoreThreadLocale locale;
+        OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
+        if (!config) {
+            throw std::runtime_error("OCIO: no current config");
         }
+        const ProcKey key { OCIOConfigContextKey(config), grade, directioni };
 
-        return _proc; // copied under the lock: another render thread may replace _proc
-    } catch (const OCIO::Exception& e) {
+        return _procCache.get(key, [&] { return config->getProcessor(createCDLTransform(grade, directioni)); });
+    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }

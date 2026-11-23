@@ -17,7 +17,8 @@
  * arguments): reading it fails, and setting it stores nothing. The host has no Natron,
  * Nuke, Vegas or other extension property, and no OpenGL render suite.
  * Param values are not animated: getValueAtTime() ignores the time, except for a string
- * param whose stringAtTime is set (e.g. a file param naming each frame of an image sequence).
+ * param whose stringAtTime is set (e.g. a file param naming each frame of an image sequence), and a one-dimensional
+ * double, integer, boolean or choice param whose numberAtTime is set.
  *
  * Everything is in an anonymous namespace: include it in a single translation unit
  * of each test program.
@@ -82,6 +83,7 @@ struct ParamRec {
     Value ov;                 // host override value (optional)
     bool hasOv = false;
     std::function<std::string(double)> stringAtTime; // string param: the value returned by getValueAtTime() (optional)
+    std::function<double(double)> numberAtTime; // 1-D double, integer, boolean or choice param: likewise (optional)
     int nSet = 0;             // number of paramSetValue/paramSetValueAtTime calls by the plug-in
 };
 
@@ -336,6 +338,10 @@ OfxStatus prmGetValueAtTime(OfxParamHandle ph, OfxTime time, ...)
         value = r->stringAtTime(time);
         const char** o = va_arg(ap, const char**);
         *o = value.c_str();
+    } else if (r->numberAtTime && r->type == kOfxParamTypeDouble) {
+        *va_arg(ap, double*) = r->numberAtTime(time);
+    } else if (r->numberAtTime && (r->type == kOfxParamTypeInteger || r->type == kOfxParamTypeBoolean || r->type == kOfxParamTypeChoice)) {
+        *va_arg(ap, int*) = static_cast<int>(r->numberAtTime(time));
     } else {
         s = prmGetV(ph, ap);
     }

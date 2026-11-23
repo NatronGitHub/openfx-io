@@ -25,12 +25,16 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdlib>
+#include <stdexcept> // std::runtime_error
+#include <tuple> // std::tie
+#include <utility> // std::swap
 #ifdef DEBUG
 #include <cstdio> // printf
 #endif
 #include "GenericOCIO.h"
 #include "IOUtility.h"
 #include "OCIOPluginBase.h"
+#include "OCIOProcessorCache.h"
 #include "ofxNatron.h"
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
@@ -107,6 +111,14 @@ private:
 #endif
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
+
+    // a copy of _config, taken under _configMutex
+    OCIO::ConstConfigRcPtr getConfig() const
+    {
+        GenericOCIO::AutoMutex guard(_configMutex);
+
+        return _config;
+    }
 
     void copyPixelData(bool unpremult,
                        bool premult,
@@ -191,11 +203,22 @@ private:
     BooleanParam* _maskApply;
     BooleanParam* _maskInvert;
 
-    OCIO::ConstConfigRcPtr _config;
+    // Thread safety: render() runs concurrently in several threads (eRenderFullySafe), and concurrently with
+    // changedParam() (main thread), which loads a new config. _ocioConfigFileName is only used by the main thread.
+    // _configMutex guards _config: getConfig() takes a copy. _procCache has its own mutex; the two are never held at
+    // the same time.
+    mutable GenericOCIO::Mutex _configMutex;
+    OCIO::ConstConfigRcPtr _config; // guarded by _configMutex
 
-    GenericOCIO::Mutex _procMutex;
-    OCIO::ConstProcessorRcPtr _proc;
-    int _procMode;
+    // everything that the processor depends on
+    struct ProcKey {
+        OCIOConfigContextKey configContext; // _config, its current context
+        int mode = -1;
+
+        auto tie() const { return std::tie(configContext, mode); }
+        friend bool operator==(const ProcKey& a, const ProcKey& b) { return a.tie() == b.tie(); }
+    };
+    OCIOProcessorCache<ProcKey> _procCache; // (render threads)
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
@@ -213,7 +236,6 @@ OCIOLogConvertPlugin::OCIOLogConvertPlugin(OfxImageEffectHandle handle)
     , _mix(NULL)
     , _maskApply(NULL)
     , _maskInvert(NULL)
-    , _procMode(-1)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _openGLContextData(NULL)
 #endif
@@ -255,19 +277,26 @@ OCIOLogConvertPlugin::loadConfig(double time)
         return;
     }
 
-    _config.reset();
+    // the new config is built without the lock, then swapped in (render threads use the old one meanwhile)
+    OCIO::ConstConfigRcPtr config;
     AutoSetAndRestoreThreadLocale locale;
     try {
         _ocioConfigFileName = filename;
-        _config = OCIO::Config::CreateFromFile(_ocioConfigFileName.c_str());
+        config = OCIO::Config::CreateFromFile(_ocioConfigFileName.c_str());
         _mode->setEnabled(true);
         clearPersistentMessage();
     } catch (OCIO::Exception& e) {
         _ocioConfigFileName.clear();
         _mode->setEnabled(false);
         setPersistentMessage(Message::eMessageError, "", string("OpenColorIO error: ") + e.what());
-        _config = OCIO::GetCurrentConfig();
+        config = OCIO::GetCurrentConfig();
     }
+    {
+        GenericOCIO::AutoMutex guard(_configMutex);
+        std::swap(_config, config);
+    }
+    // config is now the old one: it is released here, without the lock (its processors are not used again: the
+    // key of _procCache compares the config)
 }
 
 /* set up and run a copy processor */
@@ -419,11 +448,16 @@ OCIOLogConvertPlugin::copyPixelData(bool unpremult,
 OCIO::ConstProcessorRcPtr
 OCIOLogConvertPlugin::getProcessor(OfxTime time)
 {
-    int mode_i = _mode->getValueAtTime(time);
+    const int mode_i = _mode->getValueAtTime(time);
 
     try {
-        GenericOCIO::AutoMutex guard(_procMutex);
-        if (!_proc || (_procMode != mode_i)) {
+        const OCIO::ConstConfigRcPtr config = getConfig();
+        if (!config) {
+            throw std::runtime_error("OCIO: no config");
+        }
+        const ProcKey key { OCIOConfigContextKey(config), mode_i };
+
+        return _procCache.get(key, [&] {
             const char* src = 0;
             const char* dst = 0;
 
@@ -436,14 +470,15 @@ OCIOLogConvertPlugin::getProcessor(OfxTime time)
             }
 
             AutoSetAndRestoreThreadLocale locale;
-            _proc = _config->getProcessor(src, dst);
-        }
-    } catch (const OCIO::Exception& e) {
+
+            return config->getProcessor(src, dst);
+        });
+    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
     }
 
-    return _proc;
+    return OCIO::ConstProcessorRcPtr();
 } // getProcessor
 
 void
@@ -765,7 +800,7 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
     clearPersistentMessage();
     if (paramName == kOCIOParamConfigFile) {
         loadConfig(args.time); // re-load the new OCIO config
-        if (!_config && (args.reason == eChangeUserEdit)) {
+        if (!getConfig() && (args.reason == eChangeUserEdit)) {
             string filename;
             _ocioConfigFile->getValue(filename);
             sendMessage(Message::eMessageError, "", string("Cannot load OCIO config file \"") + filename + '"');
@@ -776,8 +811,8 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
                      "OpenColorIO version (compiled with / running with): " OCIO_VERSION "/";
         msg += OCIO::GetVersion();
         msg += '\n';
-        if (_config) {
-            const char* configdesc = _config->getDescription();
+        if (const OCIO::ConstConfigRcPtr config = getConfig()) {
+            const char* configdesc = config->getDescription();
             int configdesclen = std::strlen(configdesc);
             if (configdesclen > 0) {
                 msg += "\nThis OCIO configuration is ";
@@ -789,12 +824,12 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
             msg += '\n';
 
             {
-                int csidx = _config->getIndexForColorSpace(OCIO::ROLE_SCENE_LINEAR);
-                const char* csname = _config->getColorSpaceNameByIndex(csidx);
+                int csidx = config->getIndexForColorSpace(OCIO::ROLE_SCENE_LINEAR);
+                const char* csname = config->getColorSpaceNameByIndex(csidx);
                 ;
                 msg += "SCENE_LINEAR colorspace: ";
                 msg += csname;
-                OCIO::ConstColorSpaceRcPtr cs = _config->getColorSpace(csname);
+                OCIO::ConstColorSpaceRcPtr cs = config->getColorSpace(csname);
                 string csdesc = cs ? cs->getDescription() : "(no colorspace)";
                 csdesc.erase(csdesc.find_last_not_of(" \n\r\t") + 1);
                 int csdesclen = csdesc.size();
@@ -808,12 +843,12 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
             }
             msg += '\n';
             {
-                int csidx = _config->getIndexForColorSpace(OCIO::ROLE_COMPOSITING_LOG);
-                const char* csname = _config->getColorSpaceNameByIndex(csidx);
+                int csidx = config->getIndexForColorSpace(OCIO::ROLE_COMPOSITING_LOG);
+                const char* csname = config->getColorSpaceNameByIndex(csidx);
                 ;
                 msg += "COMPOSITING_LOG colorspace: ";
                 msg += csname;
-                OCIO::ConstColorSpaceRcPtr cs = _config->getColorSpace(csname);
+                OCIO::ConstColorSpaceRcPtr cs = config->getColorSpace(csname);
                 string csdesc = cs ? cs->getDescription() : "(no colorspace)";
                 csdesc.erase(csdesc.find_last_not_of(" \n\r\t") + 1);
                 int csdesclen = csdesc.size();

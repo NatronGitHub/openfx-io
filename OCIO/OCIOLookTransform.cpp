@@ -26,6 +26,8 @@
 
 // #include <iostream>
 #include <memory>
+#include <stdexcept> // std::runtime_error
+#include <tuple> // std::tie
 #ifdef DEBUG
 #include <cstdio> // printf
 #endif
@@ -40,6 +42,7 @@
 
 #include "IOUtility.h"
 #include "OCIOPluginBase.h"
+#include "OCIOProcessorCache.h"
 
 using namespace OFX;
 using namespace IO;
@@ -257,12 +260,18 @@ private:
 
     auto_ptr<GenericOCIO> _ocio;
 
-    GenericOCIO::Mutex _procMutex;
-    OCIO::ConstProcessorRcPtr _proc;
-    string _procLook;
-    string _procInputSpace;
-    string _procOutputSpace;
-    int _procDirection;
+    // everything that the processor depends on
+    struct ProcKey {
+        OCIOConfigContextKey configContext; // _ocio's config, and the local context (the context params)
+        string look;
+        string inputSpace;
+        string outputSpace;
+        int direction = -1;
+
+        auto tie() const { return std::tie(configContext, look, inputSpace, outputSpace, direction); }
+        friend bool operator==(const ProcKey& a, const ProcKey& b) { return a.tie() == b.tie(); }
+    };
+    OCIOProcessorCache<ProcKey> _procCache; // (render threads)
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     OCIOOpenGLContextData* _openGLContextData; // (OpenGL-only) - the single openGL context, in case the host does not support kNatronOfxImageEffectPropOpenGLContextData
@@ -283,7 +292,6 @@ OCIOLookTransformPlugin::OCIOLookTransformPlugin(OfxImageEffectHandle handle)
     , _maskApply(NULL)
     , _maskInvert(NULL)
     , _ocio(new GenericOCIO(this))
-    , _procDirection(-1)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _openGLContextData(NULL)
 #endif
@@ -481,7 +489,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
         setPersistentMessage(Message::eMessageError, "", "OCIO: no current config");
         throwSuiteStatusException(kOfxStatFailed);
 
-        return _proc;
+        return OCIO::ConstProcessorRcPtr();
     }
 
     string inputSpace;
@@ -497,8 +505,10 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
     string outputSpace;
     _ocio->getOutputColorspaceAtTime(time, outputSpace);
     try {
-        GenericOCIO::AutoMutex guard(_procMutex);
-        if (!_proc || (_procLook != look) || (_procInputSpace != inputSpace) || (_procOutputSpace != outputSpace) || (_procDirection != directioni)) {
+        const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
+        const ProcKey key { OCIOConfigContextKey(config, context), look, inputSpace, outputSpace, directioni };
+
+        return _procCache.get(key, [&] {
             OCIO::TransformDirection direction;
             OCIO::LookTransformRcPtr transform = OCIO::LookTransform::Create();
             transform->setLooks(look.c_str());
@@ -517,16 +527,14 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
                 transform->setDst(inputSpace.c_str());
                 direction = OCIO::TRANSFORM_DIR_INVERSE;
             }
-            _proc = config->getProcessor(transform, direction);
-        }
-
-        return _proc;
-    } catch (const OCIO::Exception& e) {
+            return config->getProcessor(context, transform, direction);
+        });
+    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
         throwSuiteStatusException(kOfxStatFailed);
-
-        return _proc;
     }
+
+    return OCIO::ConstProcessorRcPtr();
 } // getProcessor
 
 void

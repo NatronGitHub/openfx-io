@@ -13,8 +13,9 @@
 #   IO_TESTS_TIMEOUT      time limit of each test, in seconds (test-ffmpeg: twice as much); default 1800
 #   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
 #   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
-#                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug (needs a compiler
-#                         with -fsanitize=thread,undefined; not with MinGW); default OFF
+#                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug,
+#                         test-ocio-processor-cache-tsan (needs a compiler with -fsanitize=thread,undefined; not
+#                         with MinGW); default OFF
 # (tests/Makefile's bench-exr is not a test: run it with make.)
 
 option(IO_TESTS_WITH_LIBRAW "Build ReadOIIO's RAW support in the tests that link it, when the bundle has it" ON)
@@ -267,6 +268,22 @@ if(TARGET io_tests_ofx)
   io_test_program(ocio_filetransform_test OFX SOURCES ${T}/ocio_filetransform_test.cpp ${S}/OCIO/OCIOFileTransform.cpp
                   ${_io_srcs} DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} SANITIZE ${_io_asan} LIBS ${_io_gl_libs})
   io_test(test-ocio-filetransform ENV "${_io_ocio_env}" "${_io_asan_env}" COMMAND ocio_filetransform_test)
+
+  # test-ocio-processor-cache: the processor caches of the OCIO plug-ins (#282, #283, #284), and with ThreadSanitizer
+  set(_io_ocio_pc_srcs ${S}/OCIO/OCIODisplay.cpp ${S}/OCIO/OCIOFileTransform.cpp ${S}/OCIO/OCIOLogConvert.cpp
+      ${S}/OCIO/OCIOLookTransform.cpp ${_io_ocio_cdl_srcs})
+  io_test_program(ocio_processor_cache_test OFX THREADS SOURCES ${T}/ocio_processor_cache_test.cpp ${_io_ocio_pc_srcs}
+                  DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} LIBS ${_io_gl_libs})
+  # (with DIR, run_test.cmake runs the program: give its path, not the target name)
+  io_test(test-ocio-processor-cache DIR "${B}/.ocio_processor_cache"
+          COMMAND $<TARGET_FILE:ocio_processor_cache_test> "${B}/.ocio_processor_cache")
+  if(IO_TESTS_SANITIZERS)
+    io_test_program(ocio_processor_cache_test_tsan OFX THREADS SOURCES ${T}/ocio_processor_cache_test.cpp ${_io_ocio_pc_srcs}
+                    DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} SANITIZE -fsanitize=thread LIBS ${_io_gl_libs})
+    io_test(test-ocio-processor-cache-tsan DIR "${B}/.ocio_processor_cache_tsan"
+            ENV "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+            COMMAND $<TARGET_FILE:ocio_processor_cache_test_tsan> "${B}/.ocio_processor_cache_tsan")
+  endif()
 
   # test-ocio-anim: the animated colorspaces of GenericOCIO, in a host that animates strings and choices like Natron,
   # and short fuzz runs of each plug-in, with fixed seeds

@@ -54,6 +54,8 @@ make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
+make test-ocio-processor-cache # the OCIO plug-ins' processor caches: concurrent renders, changed config or context (#282-#284)
+make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
@@ -354,6 +356,25 @@ instance (whose file name is empty) and changes the file name: the CCC Id param 
 strings, which read before the start of a file name shorter than the extension, as the default, empty, one (an ASan
 stack-buffer-underflow). With libstdc++ (Linux), ASan doesn't see that read, which stays inside the
 `std::string` object (its short-string buffer): only libc++ (macOS) catches the old bug. It sets `OCIO=test.ocio`.
+
+### 1d3. `test-ocio-processor-cache` — the processor caches of the OCIO plug-ins (#282, #283, #284)
+
+`ocio_processor_cache_test.cpp` drives OCIOCDLTransform, OCIODisplay, OCIOFileTransform, OCIOLogConvert and
+OCIOLookTransform, which cache their last OCIO processor in an `OCIOProcessorCache` (`IOSupport/OCIOProcessorCache.h`).
+It writes its own OCIO configs and CDL files in its directory, and sets `$OCIO` to the first config.
+- Concurrent renders: for each plug-in, a param that changes the processor is animated (the host's `numberAtTime`:
+  one value at frame 1, another at frame 2), and 4 threads render the instance at alternating frames, each its own
+  row of the image: every row must have the value of its frame. The main thread also changes OCIOLogConvert's OCIO
+  config file param while 3 threads render, and `OCIOProcessorCache` itself is checked with a build counter (a hit
+  doesn't build, a failed build leaves the cache unchanged). Before the fix, three of the plug-ins copied the
+  cached processor after releasing its mutex while another thread replaced it: a data race, which
+  `make test-ocio-processor-cache-tsan` reports (the same test, built with
+  [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html); ctest `test-ocio-processor-cache-tsan`, with
+  `IO_TESTS_SANITIZERS`).
+- A changed context or config: OCIODisplay and OCIOLookTransform render the colorspace `ctx`, a CDL file whose name
+  has the context variable `S`; setting `S` with the context params, or OCIODisplay's OCIO config file param, must
+  change the output. Before the fix, OCIODisplay kept its old processor, and OCIOLookTransform ignored the context
+  params.
 
 ### 1e. `test-ocio-anim` — GenericOCIO's animated colorspaces (#128)
 
@@ -1016,6 +1037,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `seexpr_test.cpp`           | SeExpr's frames needed and `cpixel()` domain, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()`, `getRenderTime()`, `refreshFrameBounds()` and `clipToFile()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
+| `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, and a changed config or context (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, rewritten files, with ASan and guard pages. |
