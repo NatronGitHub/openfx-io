@@ -168,7 +168,8 @@ if(_io_t_ffmpeg)
              ${S}/openfx/Support/include
     LIBS PkgConfig::FFMPEG)
   if(IO_BASH)
-    # (about 290 s on a recent Mac; MS Windows runners are much slower)
+    # (about 290 s on a recent Mac, 2026-11-23, of which about 15 s for the forward-request clips of #311; MS Windows
+    # runners are much slower)
     math(EXPR _io_t "${IO_TESTS_TIMEOUT} * 2")
     io_test(test-ffmpeg TIMEOUT ${_io_t} ENV "FFMPEG_READ_TEST_BIN=$<TARGET_FILE:ffmpeg_read_test>"
             COMMAND "${IO_BASH}" "${T}/run_ffmpeg_read_test.sh")
