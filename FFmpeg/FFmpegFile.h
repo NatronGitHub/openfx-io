@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <list>
 #include <locale>
 #include <map>
@@ -211,6 +212,14 @@ private:
         bool _tooManyDroppedPackets; // decoding stopped after too many consecutive damaged packets in the current decode()
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
+        // For decodeForwardIsCheaper():
+        bool _indexReliable; // the format has no timestamp discontinuities (not AVFMT_TS_DISCONT), set at open
+        int64_t _maxReadTs; // the largest timestamp (PTS, or DTS without one) of the packets of this stream sent to the
+        // decoder since the last seek (AV_NOPTS_VALUE if none)
+        int64_t _lastReadTs; // the timestamp of the last packet sent with one since the last seek (AV_NOPTS_VALUE if none)
+        int _packetsSinceKey; // the packets sent since the last keyframe packet, since the last seek (-1 if none)
+        bool _intervalDiscontinuous; // a timestamp discontinuity was found since the last keyframe packet
+        int _maxKeyframeInterval; // the largest number of packets from a keyframe packet to the next one (0 if none)
         SwsContext* _convertCtx;
         bool _resetConvertCtx;
         // Source/destination parameters the cached _convertCtx was created for,
@@ -305,6 +314,12 @@ private:
             , _stoppedOnDamagedPacket(false)
             , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
+            , _indexReliable(false)
+            , _maxReadTs(AV_NOPTS_VALUE)
+            , _lastReadTs(AV_NOPTS_VALUE)
+            , _packetsSinceKey(-1)
+            , _intervalDiscontinuous(false)
+            , _maxKeyframeInterval(0)
             , _convertCtx(nullptr)
             , _resetConvertCtx(true)
             , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
@@ -523,8 +538,11 @@ private:
         }
 
         // a packet is sent to the decoder (window: the number of packets that may be decoded at once)
-        void packetSent(int64_t pts, int window, bool key)
+        void packetSent(const AVPacket& pkt, int window)
         {
+            const int64_t pts = pkt.pts;
+            const bool key = (pkt.flags & AV_PKT_FLAG_KEY) != 0;
+            trackReadPosition(pkt);
             if (pts == int64_t(AV_NOPTS_VALUE)) {
                 ++_packetsWithoutPts;
                 return;
@@ -586,10 +604,65 @@ private:
             _drainedEarly = false;
             _decodingFromStart = false;
             _nextDecodedPts = AV_NOPTS_VALUE;
+            _maxReadTs = AV_NOPTS_VALUE;
+            _lastReadTs = AV_NOPTS_VALUE;
+            _packetsSinceKey = -1;
+            _intervalDiscontinuous = false;
         }
 
+        // The position of the demuxer, and the keyframe interval, for decodeForwardIsCheaper(). The interval is counted
+        // in packets, not from the timestamps, so that a timestamp jump does not make it longer, and an interval with a
+        // timestamp discontinuity (a jump of more than kMaxReorderFrames frames and 1 s) is not counted.
+        static constexpr int kMaxReorderFrames = 16;
+        void trackReadPosition(const AVPacket& pkt)
+        {
+            const int64_t ts = (pkt.pts != int64_t(AV_NOPTS_VALUE)) ? pkt.pts : pkt.dts;
+            if (ts != int64_t(AV_NOPTS_VALUE)) {
+                if ((_maxReadTs == int64_t(AV_NOPTS_VALUE)) || (ts > _maxReadTs)) {
+                    _maxReadTs = ts;
+                }
+                if (_lastReadTs != int64_t(AV_NOPTS_VALUE)) {
+                    const int64_t jump = std::abs(int64_t(ptsToFrame(ts)) - ptsToFrame(_lastReadTs));
+                    if (jump > (std::max)(kMaxReorderFrames, oneSecondInFrames())) {
+                        _intervalDiscontinuous = true;
+                    }
+                }
+                _lastReadTs = ts;
+            }
+            if (pkt.flags & AV_PKT_FLAG_KEY) {
+                if ((_packetsSinceKey > 0) && !_intervalDiscontinuous) {
+                    _maxKeyframeInterval = (std::max)(_maxKeyframeInterval, _packetsSinceKey);
+                }
+                _packetsSinceKey = 1;
+                _intervalDiscontinuous = false;
+            } else if (_packetsSinceKey >= 0) {
+                ++_packetsSinceKey;
+            }
+        }
+
+        // The number of frames in 1 s (at least 1)
+        int oneSecondInFrames() const
+        {
+            const int64_t den = (std::max)(1, _fpsDen);
+            return static_cast<int>((std::max)(int64_t(1), (int64_t(_fpsNum) + den - 1) / den));
+        }
+
+        // The largest forward request decoded without a seek, in frames: the largest keyframe interval seen, at least
+        // 1 s and at most 10 s. The interval is counted in packets, which are frames, except with field-coded video
+        // (e.g. MPEG-2 with a packet per field), where it is doubled: the 10 s cap bounds that.
+        int forwardWindow() const
+        {
+            const int second = oneSecondInFrames();
+            return (std::min)((std::max)(_maxKeyframeInterval, second), 10 * second);
+        }
+
+        // True if a forward request, more than one frame after the held frame, is cheaper to decode from the
+        // current position of the decoder than after a seek (see FFmpegFile.cpp).
+        bool decodeForwardIsCheaper(int frame, int held) const;
+
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
-        // since the last seek, or by decoding the next frame.
+        // since the last seek, by decoding the next frame, or by decoding forward to a later frame when this is
+        // cheaper than a seek (decodeForwardIsCheaper()).
         bool isSequential(int frame) const
         {
             if (!hasFrame(_avHeldFrame)) {
@@ -612,7 +685,7 @@ private:
                 return frame == held; // the decoder gives no more frames
             }
 
-            return frame <= held + 1;
+            return (frame <= held + 1) || decodeForwardIsCheaper(frame, held);
         }
 
         // Conversions between 0-based frame indices and timestamps round to the nearest value,

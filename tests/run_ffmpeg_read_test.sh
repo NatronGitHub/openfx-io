@@ -3,9 +3,10 @@
 # Generates known synthetic clips and runs the FFmpeg reader-core harness against
 # them. Each clip is a 40-frame "gray ramp": frame N (0-based) has luma 16 + 4*N, so
 # the frame number is in the pixels. The harness decodes sequentially, then
-# re-decodes in a seek-forcing order, and checks that every decoded frame, sequential
-# or seeked, holds the content of the requested frame (--ramp 16,4), that the reader
-# reports 40 frames, and that seeked frames match the sequential ones. This validates
+# re-decodes out of order (backward and long jumps, which seek, and short forward jumps,
+# which may decode forward without a seek, #311), and checks that every decoded frame,
+# sequential or out of order, holds the content of the requested frame (--ramp 16,4), that
+# the reader reports 40 frames, and that out-of-order frames match the sequential ones. This validates
 # frame-accurate decoding and seeking, and catches wrong frames as well as missing ones.
 #
 # Containers and codecs:
@@ -69,6 +70,10 @@
 #     of the file): every frame must decode.
 #   * Clean VP9 (WebM and Matroska, 8 and 10 bits, with and without alt-ref frames) and AV1, with 1, 4 and 8
 #     decoder threads: every frame must be that of a lossless copy, in every order (issue #159).
+#   * Forward requests (#311): H.264 in MP4, Matroska and MPEG-TS with a GOP of 50 frames, decoded in an order with
+#     forward jumps in a GOP (decoded forward, without a seek), across a keyframe and backward (which seek); H.264
+#     MPEG-TS with a 20 s timestamp jump, and MPEG-4 ASF without an index, where requests far ahead seek; HEVC MP4
+#     with open GOPs, where requests close ahead decode forward, also leading pictures.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -925,6 +930,127 @@ check_swapped() {
     "$bin" "$tmp/$name" --tol 3 --frames 24 --no-seek-check 11,12 ${FFMPEG_READ_TEST_ARGS:-} 2>/dev/null || rc=1
 }
 
+# Forward requests (#311): a forward request within Stream::forwardWindow() (the largest keyframe interval seen, 1 s
+# to 10 s) decodes forward, without a seek, unless a keyframe comes between (from the index, if it can be trusted);
+# the others seek. Each check decodes ORDER (1-based frames) in a newly opened file, and checks that the requests
+# of the frames SEEK seek, that those of NO_SEEK (may be empty) do not, and that every frame is the sequential one
+# (with 1 and 8 decoder threads).
+# run_forward NAME ORDER SEEK NO_SEEK HARNESS_ARGS...
+run_forward() {
+    local name="$1" order="$2" seek="$3" noseek="$4" threads
+    shift 4
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --order "$order" --order-seek "$seek" ${noseek:+--order-no-seek "$noseek"} \
+            "$@" ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/$name.out" 2>/dev/null; then
+            grep -E '^  (ORDER|MISMATCH|CONTENT|OUT-OF-ORDER)' "$tmp/$name.out" | head -5
+            echo "FAIL (with $threads decoder threads)"
+            rc=1
+            return
+        fi
+    done
+    echo "PASS"
+}
+
+# check_forward NAME DESCRIPTION FFMPEG_OUTPUT_ARGS...
+# A 100-frame lossless gray ramp (luma 16 + 2 * N) in H.264 with B-frames and a GOP of 50 frames (keyframes at
+# the 1-based frames 1 and 51), at 25 fps, decoded in the order 10, 12, 15, 60, 55: 12 and 15 are in the GOP of
+# the decoder position and decode forward, 60 is after the keyframe 51 (MP4 and Matroska: from the index;
+# MPEG-TS, which has no index to trust: 45 frames is more than the window, 1 s here) and 55 is backward: they seek.
+# Then 30, 40, 45: 40 and 45 are in the GOP of the decoder position, and decode forward (before the keyframe
+# interval is known).
+check_forward() {
+    local name="$1" desc="$2"
+    shift 2
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=128x128:r=25,format=gray,geq=lum='16+2*N':cb=128:cr=128,format=yuv420p" \
+        -frames:v 100 -c:v libx264 -qp 0 -g 50 -keyint_min 50 -bf 2 -x264-params scenecut=0 -pix_fmt yuv420p "$@" "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    run_forward "$name" 10,12,15,60,55 60,55 12,15 --tol 1 --monotonic --frames 100
+    run_forward "$name" 30,40,45 30 40,45 --tol 1 --monotonic --frames 100
+}
+
+# check_forward_ts_jump NAME DESCRIPTION
+# H.264 in MPEG-TS (25 fps, GOP 50, 400 frames) whose timestamps jump by 20 s after the 101st frame (the 1-based
+# frames 102 to 601 are a gap): the keyframe interval is counted in packets, not made 550 frames long by the jump,
+# so the requests after 101 (650, 800 and 880, more than the window ahead) seek.
+check_forward_ts_jump() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx264; then
+        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=25 -frames:v 400 -vf "setpts=if(lte(N\,100)\,N\,N+500)/(25*TB)" \
+        -fps_mode passthrough -c:v libx264 -g 50 -bf 2 -pix_fmt yuv420p -f mpegts "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    run_forward "$name" 99,100,101,650,800,880 99,650,800,880 "" --tol 3 --frames 900
+}
+
+# check_forward_asf_noindex NAME DESCRIPTION
+# MPEG-4 Part 2 in ASF (25 fps, GOP 25, 600 frames) whose simple index object, at the end of the file, is removed:
+# the seeks are binary searches, which add the packets they find to the index (asf_read_pts(), asfdec_f.c:1486 in
+# FFmpeg 9.0.2), so that it has holes. After 550 and 1, 2 decodes forward, and 250 (far ahead) seeks.
+check_forward_asf_noindex() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder mpeg4; then
+        echo "SKIPPED: no mpeg4 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "SKIPPED: no perl"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=25 -frames:v 600 -c:v mpeg4 -g 25 -q:v 5 "$tmp/clean_$name"; then
+        echo "FAIL: could not generate clean_$name"
+        rc=1
+        return
+    fi
+    # The simple index object (ff_asf_simple_index_header, libavformat/asf_tags.c:90-92) and what follows it.
+    if ! perl -e '
+        local $/; open(my $f, "<:raw", $ARGV[0]) or die; my $d = <$f>; close($f);
+        my $i = rindex($d, pack("C*", 0x90, 0x08, 0x00, 0x33, 0xB1, 0xE5, 0xCF, 0x11, 0x89, 0xF4, 0x00, 0xA0, 0xC9, 0x03, 0x49, 0xCB));
+        die "no simple index object\n" if $i < 0;
+        open(my $o, ">:raw", $ARGV[1]) or die; print $o substr($d, 0, $i); close($o);' "$tmp/clean_$name" "$tmp/$name"; then
+        echo "FAIL: could not remove the index of clean_$name"
+        rc=1
+        return
+    fi
+    run_forward "$name" 550,1,2,250 550,1,250 2 --tol 3 --frames 600
+}
+
+# check_forward_open_gop NAME DESCRIPTION
+# HEVC in MP4 with open GOPs (x265 open-gop, 24 fps, GOP 24, 3 B-frames: the CRA at the 1-based frame 25 is
+# decoded before the leading pictures 22 to 24, which are displayed before it), and an index on the DTS: the
+# requests close after the held frame decode forward, also the leading pictures (22, 23, 24) and the frame before
+# them (21, whose PTS is after the DTS of the CRA), and every frame is the sequential one.
+check_forward_open_gop() {
+    local name="$1" desc="$2"
+    echo "== $desc =="
+    if ! have_encoder libx265; then
+        echo "SKIPPED: no libx265 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=24 -frames:v 96 -c:v libx265 \
+        -x265-params "keyint=24:min-keyint=24:scenecut=0:open-gop=1:bframes=3:log-level=error" -pix_fmt yuv420p "$tmp/$name"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    run_forward "$name" 14,21,23,18,22,24 14,18 21,23,22,24 --tol 1 --frames 96
+}
+
 echo "Generating test clips in $tmp and checking them..."
 check ramp.mp4 "MP4 (H.264, start_time 0)" libx264 25 $X264
 check ramp_offset.mp4 "MP4 (H.264, 24 fps, non-zero start time)" libx264 24 $X264 -output_ts_offset 10
@@ -996,6 +1122,12 @@ check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame be
 check_corrupt ramp_corrupt_long_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a 20-frame gap)" 24 21 1 0 2
 check_corrupt ramp_corrupt_end_gap.mkv "VFR MKV (H.264, 24 fps, corrupted last frame before a 35-frame gap at the end)" 13 0 0 2 2
 check_swapped ramp_swapped.mov "MOV (H.264, 24 fps, broken timestamps: two PTS swapped)"
+check_forward ramp_forward.mp4 "MP4 (H.264, GOP 50): forward requests in a GOP decode forward, without a seek"
+check_forward ramp_forward.mkv "Matroska (H.264, GOP 50): forward requests in a GOP decode forward, without a seek"
+check_forward ramp_forward.ts "MPEG-TS (H.264, GOP 50): forward requests within 1 s decode forward, without a seek" -f mpegts
+check_forward_ts_jump forward_jump.ts "MPEG-TS (H.264, GOP 50, a 20 s timestamp jump): requests far ahead seek"
+check_forward_asf_noindex forward_noindex.asf "ASF (MPEG-4, GOP 25, no index): requests far ahead seek"
+check_forward_open_gop forward_open_gop.mp4 "MP4 (HEVC, open GOPs): requests close ahead decode forward, also leading pictures"
 # Damaged packets (GOP 8: I0 P3 B1 B2 P6 B4 B5 P7 in decoding order, without scene cuts): the damaged
 # frame is a gap, and the frames of its GOP (and the last ones of the previous GOP, which the decoder
 # outputs after the next reference frame) show what the decoder conceals.
