@@ -173,7 +173,7 @@ enum FrameModeEnum {
     "The image file being read is considered to have this premultiplication state.\n"                                                                       \
     "To get UnPremultiplied (or \"unassociated alpha\") images, set the \"Output Premult\" parameter to Unpremultiplied. \n"                                \
     "By default the value should be correctly be guessed by the image file, but this parameter can be edited if the metadatas inside the file are wrong.\n" \
-    "- Opaque means that the alpha channel of the color plane is considered to be 1 (one), and it is not taken into account in colorspace conversion.\n"                       \
+    "- Opaque means that the alpha channel of the color plane is considered to be 1 (one), and it is not taken into account in colorspace conversion.\n"    \
     "- Premultiplied, red, green and blue channels are divided by the alpha channel "                                                                       \
     "before applying the colorspace conversion, and re-multiplied by alpha after colorspace conversion.\n"                                                  \
     "- UnPremultiplied, means that red, green and blue channels are not modified "                                                                          \
