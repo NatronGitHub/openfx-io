@@ -15,6 +15,8 @@
  *  - SeNoise with a noise size of 0 (the range of the param starts at 0) or a render scale of 0: the scale was
  *    infinite, and the noise NaN. A size of 0 or less is replaced by 0.001; a positive size (e.g. 0.0005) is used
  *    as is.
+ *  - SeNoise's Reset Center sets the center and the translation between paramEditBegin and paramEditEnd (one undo
+ *    step): the EditBlock was an unnamed temporary, which ended the block before the params were set.
  *
  * Exit status: 0 = all checks passed.
  */
@@ -36,6 +38,10 @@ namespace {
 const char* const kPluginIdentifier = "fr.inria.openfx.SeExpr";
 const char* const kPluginIdentifierSeNoise = "net.sf.openfx.SeNoise";
 const char* const kPluginIdentifierSeGrain = "net.sf.openfx.SeGrain";
+// the transform params of SeNoise (SupportExt/ofxsTransformInteract.h)
+const char* const kParamTransformResetCenter = "transformResetCenter";
+const char* const kParamTransformCenter = "transformCenter";
+const char* const kParamTransformTranslate = "transformTranslate";
 
 int gFailures = 0;
 
@@ -291,6 +297,98 @@ countNotFinite(const std::vector<float>& pixels)
     return notFinite;
 }
 
+// The param suite of testSeNoiseResetCenter(): it records which params the plug-in sets inside and outside an edit
+// block (paramEditBegin/paramEditEnd)
+int gEditDepth = 0;
+std::vector<std::string> gSetInsideEdit;
+std::vector<std::string> gSetOutsideEdit;
+
+OfxStatus
+recEditBegin(OfxParamSetHandle,
+             const char*)
+{
+    ++gEditDepth;
+
+    return kOfxStatOK;
+}
+
+OfxStatus
+recEditEnd(OfxParamSetHandle)
+{
+    --gEditDepth;
+
+    return kOfxStatOK;
+}
+
+OfxStatus
+recSetValue(OfxParamHandle ph,
+            ...)
+{
+    (gEditDepth > 0 ? gSetInsideEdit : gSetOutsideEdit).push_back(reinterpret_cast<ParamRec*>(ph)->name);
+    va_list ap;
+    va_start(ap, ph);
+    OfxStatus s = prmSetV(ph, ap);
+    va_end(ap);
+
+    return s;
+}
+
+// SeNoise's Reset Center sets the center and the translation in one edit block, so that it is one undo step
+void
+testSeNoiseResetCenter(OfxPlugin* p)
+{
+    std::printf("==== SeNoise, Reset Center: the center and translation are set in one edit block ====\n");
+    Effect ctx;
+    PropSet inArgs;
+    pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        check(false, "describe in context");
+
+        return;
+    }
+    const int W = 8, H8 = 8;
+    Clip* src = ctx.clips[kOfxImageEffectSimpleSourceClipName];
+    Clip* out = ctx.clips[kOfxImageEffectOutputClipName];
+    src->connected = true;
+    out->connected = true;
+    setupClipImage(src, W, H8, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    setupClipImage(out, W, H8, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H8, 100, kOfxImageEffectContextFilter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+        check(false, "create instance");
+
+        return;
+    }
+    const OfxParameterSuiteV1 saved = gParamSuite;
+    gParamSuite.paramEditBegin = recEditBegin;
+    gParamSuite.paramEditEnd = recEditEnd;
+    gParamSuite.paramSetValue = recSetValue;
+    gSetInsideEdit.clear();
+    gSetOutsideEdit.clear();
+    PropSet a;
+    OfxPropertySetHandle ap = PH(&a);
+    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+    pSetString(ap, kOfxPropName, 0, kParamTransformResetCenter);
+    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+    pSetDouble(ap, kOfxPropTime, 0, 1.);
+    double rs[2] = { 1., 1. };
+    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+    OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+    gParamSuite = saved;
+    const auto has = [](const std::vector<std::string>& v, const char* name) {
+        return std::find(v.begin(), v.end(), name) != v.end();
+    };
+    check(ok(st), "instance changed = %d", st);
+    check(gEditDepth == 0, "paramEditBegin and paramEditEnd are balanced (depth %d)", gEditDepth);
+    check(has(gSetInsideEdit, kParamTransformCenter) && has(gSetInsideEdit, kParamTransformTranslate),
+          "%s and %s are set inside the edit block", kParamTransformCenter, kParamTransformTranslate);
+    check(!has(gSetOutsideEdit, kParamTransformCenter) && !has(gSetOutsideEdit, kParamTransformTranslate),
+          "%s and %s are not set outside it", kParamTransformCenter, kParamTransformTranslate);
+    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+}
+
 // SeNoise: a noise size of 0 or a render scale of 0 gives finite values; any positive size is used as is
 void
 testSeNoise()
@@ -326,6 +424,7 @@ testSeNoise()
     OfxStatus st1 = renderSeNoise(p, 0.0005, 1., &small);
     OfxStatus st2 = renderSeNoise(p, 0.001, 1., &min);
     check(ok(st1) && ok(st2) && small != min, "size 0.0005 and size 0.001 give different images");
+    testSeNoiseResetCenter(p);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     std::printf("==== SeGrain, render scale 0: no NaN ====\n");
