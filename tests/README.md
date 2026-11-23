@@ -60,7 +60,7 @@ make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance
 make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
 make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
 make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
-make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions)
+make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
 make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, no leak)
@@ -489,6 +489,12 @@ test depend on the network.
 * **OIIOResize, infinite source RoD**: when the source clip changes, the Size param is the RoD size clamped to INT_MAX
   (the subtraction overflowed int).
 * **OIIOText**: a text position of +-DBL_MAX or 1e12 renders the source (it was converted to int).
+* **OIIOText, a font that doesn't exist**: the render fails (`kOfxStatFailed`) with OpenImageIO's error message
+  about the font (it succeeded, and passed the source through without the text, #295).
+
+OIIOText needs one of OpenImageIO's default fonts (DroidSans, cour, Courier New or FreeMono; on Ubuntu:
+`fonts-freefont-ttf`), or a directory with one of them in `OPENIMAGEIO_FONTS` (OpenImageIO only searches the system
+font directories one level deep, see `.github/workflows/ci.yml`).
 
 The conversions are only detected by UBSan: build it with
 `make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.

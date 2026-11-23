@@ -512,6 +512,7 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
         /// Use nearest neighboor
         if (!ImageBufAlgo::resample(dstBuf, srcBuf, /*interpolate*/ false, ROI::All(), MultiThread::getNumCPUs())) {
             setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());
+            throwSuiteStatusException(kOfxStatFailed);
         }
     } else {
         // the source image is not empty (see above)
@@ -548,6 +549,7 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
 
         if (!ImageBufAlgo::resize(dstBuf, srcBuf, filter.get(), ROI::All(), MultiThread::getNumCPUs())) {
             setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());
+            throwSuiteStatusException(kOfxStatFailed);
         }
     }
 } // OIIOResizePlugin::renderInternal

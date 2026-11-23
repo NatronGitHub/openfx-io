@@ -99,7 +99,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kParamFontName "fontName"
 #define kParamFontNameLabel "Font"
 #define kParamFontNameHint \
-    "The name of the font to be used. Defaults to some reasonable system font."
+    "The name of the font to be used, or the path to a font file. Defaults to some reasonable system font. " \
+    "Fonts are searched in the directories listed in $OPENIMAGEIO_FONTS, then in the user and system font directories; " \
+    "the default font is the first of OpenImageIO's default fonts (DroidSans, cour, Courier New, FreeMono) that is found."
 
 #define kParamTextColor "textColor"
 #define kParamTextColorLabel "Color"
@@ -445,8 +447,9 @@ OIIOTextPlugin::render(const RenderArguments& args)
     {
         bool ok = OIIO::ImageBufAlgo::render_text(tmpBuf, textCoordToInt(x * args.renderScale.x), ytext, text, textCoordToInt(fontSize * args.renderScale.y), fontName, textColor);
         if (!ok) {
-            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
-            // throwSuiteStatusException(kOfxStatFailed);
+            // e.g. a font that doesn't exist, or no default font found
+            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror());
+            throwSuiteStatusException(kOfxStatFailed);
         }
     }
     OIIO::ImageSpec dstSpec = imageSpecFromOFXImage(dstRod, dstBounds, pixelComponents, bitDepth);
@@ -457,7 +460,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
     if (flipit) {
         bool ok = OIIO::ImageBufAlgo::flip(dstBuf, tmpBuf, tmpRoi);
         if (!ok) {
-            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
+            setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());
             throwSuiteStatusException(kOfxStatFailed);
         }
     } else {
@@ -465,7 +468,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
         // dstBuf.copy_pixels(tmpBuf); // erases everything out of tmpBuf!
         bool ok = OIIO::ImageBufAlgo::paste(dstBuf, args.renderWindow.x1, srcRod.y2 - args.renderWindow.y2, 0, 0, tmpBuf, tmpRoi);
         if (!ok) {
-            setPersistentMessage(Message::eMessageError, "", tmpBuf.geterror().c_str());
+            setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());
             throwSuiteStatusException(kOfxStatFailed);
         }
     }

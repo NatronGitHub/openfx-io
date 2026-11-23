@@ -11,6 +11,12 @@
  *    size of the RoD clamped to the range of int (the subtraction overflowed int).
  *  - OIIOText with a position of +-DBL_MAX or 1e12: the text position is clamped before its conversion to int, and the
  *    text is out of the image: the output is the source.
+ *  - OIIOText with a font that doesn't exist: ImageBufAlgo::render_text() fails, and so must the render
+ *    (kOfxStatFailed, with an error message about the font); it succeeded, passing the source through without the
+ *    text (#295).
+ *
+ * OIIOText needs one of OpenImageIO's default fonts (DroidSans, cour, Courier New or FreeMono), or a directory with
+ * one of them in $OPENIMAGEIO_FONTS.
  *
  * Build it with -fsanitize=undefined,float-cast-overflow to check the conversions (see tests/README.md).
  *
@@ -273,11 +279,59 @@ testChangedClipInfiniteRoD(OfxPlugin* p)
     check(ok(st) && w == INT_MAX && h == INT_MAX, "status %d, size %d x %d (expected %d x %d)", st, w, h, INT_MAX, INT_MAX);
 }
 
-// OIIOText, text at +-DBL_MAX: the render succeeds (the text is out of the image)
-void
-testTextHugePosition()
+struct TextRender {
+    OfxStatus st;
+    int notSource; // the number of output values that are not the source (-1: not rendered)
+};
+
+// Render "Hello" with OIIOText at (x, y) with the font fontName ("": the default font), in a 16x16 RGBA float black
+// source, into an output filled with 0.5.
+TextRender
+renderText(OfxPlugin* p,
+           Effect& ctx,
+           double x,
+           double y,
+           const char* fontName)
 {
-    std::printf("==== OIIOText, position +-DBL_MAX ====\n");
+    const int w = 16, h = 16;
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, w, h, 1, kOfxImageEffectContextFilter);
+    OfxStatus st = p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr);
+    if (!ok(st)) {
+        return { st, -1 };
+    }
+    Clip* src = ctx.clips[kOfxImageEffectSimpleSourceClipName];
+    Clip* dst = ctx.clips[kOfxImageEffectOutputClipName];
+    src->connected = true;
+    dst->connected = true;
+    setupClipImage(src, w, h, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    setupClipImage(dst, w, h, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    ctx.params["position"].hasOv = true;
+    ctx.params["position"].ov.d = { x, y };
+    setOverrideString(&ctx, "text", "Hello");
+    setOverrideString(&ctx, "fontName", fontName);
+    gPersistentError.clear();
+    PropSet a = makeRenderInArgs(1., w, h);
+    float* d = reinterpret_cast<float*>(dst->buffer.data());
+    for (int i = 0; i < w * h * 4; ++i) {
+        d[i] = 0.5f; // not the source
+    }
+    st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    int notSource = 0;
+    for (int i = 0; i < w * h * 4; ++i) {
+        notSource += (d[i] != 0.f) ? 1 : 0;
+    }
+    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+
+    return { st, notSource };
+}
+
+// OIIOText, text at +-DBL_MAX: the render succeeds (the text is out of the image); a font that doesn't exist: the
+// render fails, with an error message (it succeeded, and passed the source through without the text, #295)
+void
+testText()
+{
     OfxPlugin* p = findPlugin("fr.inria.openfx.OIIOText");
     if (!p) {
         check(false, "OIIOText not found");
@@ -290,41 +344,21 @@ testTextHugePosition()
 
         return;
     }
-    const int w = 16, h = 16;
+    std::printf("==== OIIOText, position +-DBL_MAX ====\n");
     const double positions[][2] = { { DBL_MAX, -DBL_MAX }, { -DBL_MAX, DBL_MAX }, { 1e12, 1e12 } };
     for (const auto& pos : positions) {
-        Effect inst;
-        inst.delegate = &ctx;
-        setInstanceProps(inst, w, h, 1, kOfxImageEffectContextFilter);
-        if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
-            check(false, "CreateInstance");
-
-            return;
-        }
-        Clip* src = ctx.clips[kOfxImageEffectSimpleSourceClipName];
-        Clip* dst = ctx.clips[kOfxImageEffectOutputClipName];
-        src->connected = true;
-        dst->connected = true;
-        setupClipImage(src, w, h, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
-        setupClipImage(dst, w, h, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
-        ctx.params["position"].hasOv = true;
-        ctx.params["position"].ov.d = { pos[0], pos[1] };
-        setOverrideString(&ctx, "text", "Hello");
-        gPersistentError.clear();
-        PropSet a = makeRenderInArgs(1., w, h);
-        float* d = reinterpret_cast<float*>(dst->buffer.data());
-        for (int i = 0; i < w * h * 4; ++i) {
-            d[i] = 0.5f; // not the source
-        }
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+        const TextRender r = renderText(p, ctx, pos[0], pos[1], "");
         // the text is out of the image: the output is the source (black)
-        int notSource = 0;
-        for (int i = 0; i < w * h * 4; ++i) {
-            notSource += (d[i] != 0.f) ? 1 : 0;
-        }
-        check(ok(st) && notSource == 0, "position %g,%g: render = %d, the output is the source (%d values are not)%s%s",
-              pos[0], pos[1], st, notSource, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
-        p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+        check(ok(r.st) && r.notSource == 0, "position %g,%g: render = %d, the output is the source (%d values are not)%s%s",
+              pos[0], pos[1], r.st, r.notSource, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    }
+
+    std::printf("==== OIIOText, a font that doesn't exist ====\n");
+    {
+        const TextRender r = renderText(p, ctx, 4., 4., "NoSuchFont-openfx-io-295");
+        check(r.st == kOfxStatFailed && gPersistentError.find("font") != std::string::npos,
+              "render = %d (expected %d, kOfxStatFailed), error about the font: \"%s\"", r.st, kOfxStatFailed,
+              gPersistentError.c_str());
     }
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 }
@@ -353,7 +387,7 @@ main()
     testPreserveParHugeRoD(p);
     testChangedClipInfiniteRoD(p);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
-    testTextHugePosition();
+    testText();
 
     std::printf("Result: failures=%d\n", gFailures);
     std::printf(gFailures == 0 ? "PASS\n" : "FAIL\n");
