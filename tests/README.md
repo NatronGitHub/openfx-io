@@ -851,10 +851,19 @@ an error message, without making the file invalid (`FFmpegFile::isInvalid()`, wh
 plug-in refuse every frame), and the other frames must decode (`--fail`). An AV1 clip (libdav1d,
 which reports damage as AVERROR(ENOMEM) with threads; the second half of two packets is
 scrambled with `perl`, since the muxers reject AV1 packets damaged by `noise`) must decode every
-frame. Truncated ProRes and MJPEG in MOV (faststart, cut in frame 16, a packet that the demuxer
-flags as corrupt) must fail for the missing frames, with an error, sequentially and after a
-seek, as for issue #134. A run of 4 damaged ProRes and MJPEG frames must show the frame before
-them, also when each one is decoded first in a newly opened file (`--fresh`, in reverse and in
+frame. Two damaged frames of CineForm (CFHD, MOV, issue #312), whose decoder flags no frame as a
+keyframe and rejects the packets with AVERROR(EINVAL), must show the previous frame (`--gaps`), and
+every later frame must decode, also when decoded first in a newly opened file (`--fresh`): the
+reader restarts the decoder at the next keyframe packet, and while no clean keyframe was decoded
+since the file was opened, an intra frame (or one without a picture type) decoded there without an
+error ends the damage. The guard against that rule: MPEG-4 Part 2 in a MOV without a sync-sample
+table (every packet has the keyframe flag) with a damaged first keyframe, where the decoder decodes
+the next P-frame from a gray frame without an error: frames 1-12 must fail and frames 13-48 must
+be those of the clean file, sequentially (`--reference` with `--fail` and `--reference-sequential`,
+since a seek in such a file lands on a P-frame). Truncated ProRes and MJPEG in MOV (faststart, cut
+in frame 16, a packet that the demuxer flags as corrupt) must fail for the missing frames, with an
+error, sequentially and after a seek, as for issue #134. A run of 4 damaged ProRes and MJPEG
+frames must show the frame before them, also when each one is decoded first in a newly opened file (`--fresh`, in reverse and in
 another order). A truncated H.264 MP4 (faststart, with B-frames) must fail from the DTS of the
 truncated packet, found in the index at open, in any render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
 decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one

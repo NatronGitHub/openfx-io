@@ -472,8 +472,11 @@ private:
             }
         }
 
+        // whether the frame of the restart keyframe is a valid restart point (see FFmpegFile.cpp)
+        bool isCleanRestartFrame(const AVFrame* f) const;
+
         // The keyframe where the decoder restarted (after damage, or after a seek once damage was found) gave its
-        // frame: if it is a clean keyframe (IsCleanKeyframe() in FFmpegFile.cpp), the frames of the packets from
+        // frame: if it is a clean restart (isCleanRestartFrame()), the frames of the packets from
         // there on are used again (but not the frames displayed before it, e.g. the leading B-frames of an open
         // GOP, which reference the previous GOP); otherwise they stay tainted, and the decoder restarts at the next
         // packet with the keyframe flag.
