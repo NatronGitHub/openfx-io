@@ -1043,7 +1043,6 @@ public:
     static bool isImageFile(const std::string& filename);
 
     //! Check whether a named container format is allowed
-    static bool isFormatAllowedForReading(const char* name);
     static bool isFormatAllowedForWriting(const char* name);
 
     //! Check whether a certain codec name is allowed
