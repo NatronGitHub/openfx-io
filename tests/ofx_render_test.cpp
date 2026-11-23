@@ -3550,6 +3550,20 @@ main(int argc, char** argv)
         std::printf("==== ReadFFmpeg, truncated movie: a frame that fails to decode is an error with each onMissingFrame option (issue #134) ====\n");
         failures += testWriteFFmpeg(outFile + ".i134.mov", W, H, N, wp) || truncateMovie(outFile + ".i134.mov", outFile + ".i134trunc.mov") || testReadFFmpegMissingFrame(outFile + ".i134trunc.mov", W, H, N, true, true);
     }
+    // issue #339: H.264 and MPEG-2 with B-frames in AVI, which has no PTS, are written and read back
+    for (const char* codec : { "libx264", "mpeg2video" }) {
+        if (!avcodec_find_encoder_by_name(codec)) {
+            std::printf("==== WriteFFmpeg avi, %s: SKIP, no encoder (issue #339) ====\n", codec);
+            continue;
+        }
+        WriterParams wp;
+        wp.strings = { { "codecShortName", codec } };
+        wp.ints = { { "bFrames", 3 } };
+        std::printf("==== WriteFFmpeg avi, %s with B-frames, read back by ReadFFmpeg (issue #339) ====\n", codec);
+        const std::string aviFile = outFile + ".i339.avi";
+        failures += testWriteFFmpeg(aviFile, W, H, N, wp) || testReadFFmpeg(aviFile, W, H, N);
+        std::remove(aviFile.c_str());
+    }
     {
         // Matroska stores timestamps in milliseconds: at 24 fps, every frame of the movie must be decoded
         WriterParams wp;

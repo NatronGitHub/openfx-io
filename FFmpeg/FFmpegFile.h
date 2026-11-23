@@ -243,6 +243,8 @@ private:
 
         int64_t _startPTS; // PTS of the first frame in the stream
         int64_t _startDTS; // DTS of the first packet in the stream (_startPTS if unknown)
+        bool _startFromDecodedFrame; // the packets have no PTS: _startPTS is the timestamp of the first decoded frame
+        bool _ptsOnFirstPacketOnly; // the first packet has a PTS, and the next ones none, even after a seek (see probeStreamStart())
         int64_t _frames; // video duration in frames
 
         bool _ptsSeen; // True if a read AVPacket has ever contained a valid PTS during this stream's decode,
@@ -336,6 +338,8 @@ private:
             , _fpsDen(1)
             , _startPTS(0)
             , _startDTS(0)
+            , _startFromDecodedFrame(false)
+            , _ptsOnFirstPacketOnly(false)
             , _frames(0)
             , _ptsSeen(false)
             , _timestampField(&AVPacket::pts)
@@ -830,8 +834,15 @@ private:
     // get stream start time
     int64_t getStreamStartTime(Stream& stream);
 
-    // Read the first packet of the stream: its DTS, and the timestamp of the first decoded frame if it has no PTS
-    int64_t probeStreamStart(Stream& stream, int64_t& firstDTS);
+    // What probeStreamStart() reads from the first packets of a stream (see FFmpegFile.cpp)
+    struct StreamStartProbe
+    {
+        int64_t firstDTS = AV_NOPTS_VALUE; // the DTS of the first packet
+        int64_t firstFramePTS = AV_NOPTS_VALUE; // the first packet has no PTS: the timestamp of the first decoded frame
+        bool ptsOnFirstPacketOnly = false; // the first packet has PTS == DTS, and a next one a DTS but no PTS
+    };
+    StreamStartProbe probeStreamStart(Stream& stream);
+    bool nextPacketsLackPts(const Stream& stream, int maxPackets);
 
     // The number of frames of the stream that are not displayed
     int64_t getDiscardedFrames(Stream& stream);
@@ -1060,6 +1071,7 @@ public:
         return _startSeekCount;
     }
 
+    // Whether the file holds a single image, from its extension (see FFmpegFile.cpp).
     static bool isImageFile(const std::string& filename);
 
     //! Check whether a named container format is allowed
@@ -1067,7 +1079,6 @@ public:
     static bool isFormatAllowedForWriting(const char* name);
 
     //! Check whether a certain codec name is allowed
-    static bool isCodecAllowedForReading(const char* name);
     static bool isCodecAllowedForWriting(const char* name);
 
 private:

@@ -45,7 +45,8 @@
 #   * MPEG-TS and M2TS whose 33-bit timestamps wrap during the clip (#189): libavformat gives the frames
 #     before the wrap negative timestamps, and they must be counted and displayed (only MOV/MP4 edit lists
 #     have a pre-roll that is not displayed).
-#   * AVI (MPEG-4 with B-frames), which has no PTS.
+#   * AVI (MPEG-4 with B-frames), which has no PTS, and AVI with H.264 (with and without B-frames), MPEG-2 with
+#     B-frames, MPEG-1 and UtVideo, and DV (#339).
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
 #     screen recordings).
@@ -176,6 +177,14 @@ check() {
     shift 4
     check_frames "$name" "$desc" "$encoder" "$rate" "$NFRAMES" 0 "$@"
 }
+
+# The files that FFmpegFile::isImageFile() takes for single images (#339): the extensions of FFmpeg's image2 muxer, in
+# any case, but not those that a demuxer declares, which may hold several frames (AVIF in mov, animated JPEG XL), nor
+# extensions that the image2 muxer does not list (rgb is raw video for the rawvideo demuxer, webp is the animated WebP
+# muxer, ptx has no encoder, and cin: FFmpeg has no Cineon tag in image2, and no demuxer declares the extension).
+echo "== FFmpegFile::isImageFile() =="
+"$bin" --image-files a.png=1 a.PNG=1 a.tif=1 a.TIFF=1 a.jpg=1 a.dpx=1 a.exr=1 a.pix=1 a.sgi=1 a.pcx=1 b.0001.tga=1 \
+    a.avif=0 a.jxl=0 a.j2k=0 a.rgb=0 a.rgba=0 a.cin=0 a.webp=0 a.ptx=0 a.mov=0 a.avi=0 a.gif=0 png=0 a.png.mov=0 || rc=1
 
 # check_vfr NAME DESCRIPTION FRAMES AFTER JUMP SPACING AUDIO_SECONDS EXPECTED_FRAMES FFMPEG_OUTPUT_ARGS...
 # A 24 fps gray ramp of FRAMES frames with timestamp gaps: frame N (0-based) is at frame N
@@ -1257,6 +1266,18 @@ check_frames ramp_preroll2.mov "MOV (H.264, edit list, first 2 frames not displa
     $X264 -output_ts_offset -0.083333333333333333
 # AVI has no PTS: the decoder gives the frames the DTS of the packet after which they are output.
 check ramp_bframes.avi "AVI (MPEG-4 with B-frames, no PTS)" mpeg4 24 -c:v mpeg4 -bf 2 -g 8 -q:v 2
+# Any decoder is used, and H.264 and MPEG-2 in AVI are read (#339): with H.264 B-pyramids, the frames are delayed by
+# 2 frames, which the frame count must not lose.
+check ramp_h264.avi "AVI (H.264 without B-frames, no PTS)" libx264 24 -c:v libx264 -g 8 -bf 0 -pix_fmt yuv420p
+check ramp_h264_bframes.avi "AVI (H.264 with B-frames, no PTS)" libx264 24 $X264
+check ramp_mpeg2_bframes.avi "AVI (MPEG-2 with B-frames, no PTS)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
+check ramp_utvideo.avi "AVI (UtVideo)" utvideo 24 -c:v utvideo -pix_fmt yuv420p
+check ramp_dv.dv "DV (PAL)" dvvideo 25 -vf scale=720:576 -c:v dvvideo -pix_fmt yuv420p
+# MPEG-1 in AVI: in the packets that avformat_find_stream_info() buffered, libavformat gave the first one a PTS (before
+# the decoder set the delay, which the MPEG-1 sequence header does not give), and the next ones none; the reader
+# probes again after a seek (see FFmpegFile::getStreamStartTime()). With and without B-frames.
+check ramp_mpeg1_bframes.avi "AVI (MPEG-1 with B-frames, no PTS)" mpeg1video 24 -c:v mpeg1video -g 8 -bf 2 -q:v 2
+check ramp_mpeg1.avi "AVI (MPEG-1 without B-frames, no PTS)" mpeg1video 24 -c:v mpeg1video -g 8 -bf 0 -q:v 2
 check ramp_prores_24.mkv "Matroska (ProRes, 24 fps)" prores_ks 24 -c:v prores_ks
 check ramp_vp9_24.webm "WebM (VP9, 24 fps)" libvpx-vp9 24 -c:v libvpx-vp9 -g 8 -crf 10 -b:v 0
 check ramp_vp8_24.webm "WebM (VP8, 24 fps)" libvpx 24 -c:v libvpx -g 8 -crf 4 -b:v 10M
