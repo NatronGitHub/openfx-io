@@ -660,6 +660,13 @@ private:
         // current position of the decoder than after a seek (see FFmpegFile.cpp).
         bool decodeForwardIsCheaper(int frame, int held) const;
 
+        // The keyframe of the index at or before the timestamp, as a backward seek searches it, or nullptr.
+        const AVIndexEntry* indexKeyframeAtOrBefore(int64_t ts) const;
+
+        // The timestamp of the keyframe of the index before the one that a backward seek to the 0-based frame finds,
+        // or AV_NOPTS_VALUE (see FFmpegFile.cpp).
+        int64_t previousKeyframeTs(int frame) const;
+
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
         // since the last seek, by decoding the next frame, or by decoding forward to a later frame when this is
         // cheaper than a seek (decodeForwardIsCheaper()).
@@ -780,6 +787,7 @@ private:
     std::string _errorMsg; // internal decoding error string
     bool _invalidState; // true if the reader is in an invalid state
     unsigned long _seekCount; // number of seeks by decode(), for tests
+    unsigned long _startSeekCount; // number of those seeks to the start of the file, for tests
     int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
     bool _readAtOpen; // the constructor read or sought in the file, after avformat_find_stream_info()
     bool _damagedPacketWarned; // a warning was logged for a damaged packet
@@ -1038,6 +1046,12 @@ public:
     unsigned long getSeekCount() const
     {
         return _seekCount;
+    }
+
+    // Number of those seeks to the start of the file (decoding from the start of a long file is slow).
+    unsigned long getStartSeekCount() const
+    {
+        return _startSeekCount;
     }
 
     static bool isImageFile(const std::string& filename);
