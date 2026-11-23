@@ -1368,6 +1368,28 @@ CheckStreamPropertiesMatch(const AVStream* streamA,
     return (codecA->codec_id == codecB->codec_id) && (codecA->bits_per_raw_sample == codecB->bits_per_raw_sample) && (codecA->width == codecB->width) && (codecA->height == codecB->height) && (codecA->sample_aspect_ratio.num == codecB->sample_aspect_ratio.num) && (codecA->sample_aspect_ratio.den == codecB->sample_aspect_ratio.den) && (pixFmtDescA->nb_components == pixFmtDescB->nb_components) && (streamA->sample_aspect_ratio.num == streamB->sample_aspect_ratio.num) && (streamA->sample_aspect_ratio.den == streamB->sample_aspect_ratio.den) && (streamA->time_base.num == streamB->time_base.num) && (streamA->time_base.den == streamB->time_base.den) && (streamA->start_time == streamB->start_time) && (streamA->duration == streamB->duration) && (streamA->nb_frames == streamB->nb_frames) && (streamA->r_frame_rate.num == streamB->r_frame_rate.num) && (streamA->r_frame_rate.den == streamB->r_frame_rate.den);
 }
 
+// The bit depth of the samples of a decoded pixel format (issue #213): the largest depth of its components
+// (AVComponentDescriptor::depth, libavutil/pixdesc.h:55-57 at n9.0.2). Not AVCodecContext::bits_per_raw_sample, which
+// the vp9, hevc, av1 and libdav1d decoders leave at 0 (h264 sets it, libavcodec/h264_slice.c:1009), nor
+// av_get_bits_per_pixel() / nb_components, the mean bits per pixel, which chroma subsampling lowers
+// (libavutil/pixdesc.c:3408-3419): yuv420p10 gave 15 / 3 = 5, and was decoded to 8 bits.
+// A Bayer format has one sample per pixel, whose depth is split among the components (BAYER16_DESC_COMMON gives them
+// 4, 8 and 4 bits, libavutil/pixdesc.c:2159-2167): its bit depth is the bits per pixel (16 for bayer_rggb16, which
+// the ffv1 and cfhd decoders output, libavcodec/ffv1_parse.c:443 and cfhd.c:567).
+static int
+maxComponentDepth(const AVPixFmtDescriptor& desc)
+{
+    if (desc.flags & AV_PIX_FMT_FLAG_BAYER) {
+        return av_get_bits_per_pixel(&desc);
+    }
+    int depth = 0;
+    for (int c = 0; c < desc.nb_components; ++c) {
+        depth = (std::max)(depth, desc.comp[c].depth);
+    }
+
+    return depth;
+}
+
 // constructor
 FFmpegFile::FFmpegFile(const string& filename)
     : _filename(filename)
@@ -1559,21 +1581,12 @@ FFmpegFile::FFmpegFile(const string& filename)
         stream->_pendingPacket = av_packet_alloc();
 
         {
-            // In |engine| the output bit depth was hard coded to 16-bits.
-            // Now it will use the bit depth reported by the decoder so
-            // that if a decoder outputs 10-bits then |engine| will convert
-            // this correctly. This means that the following change is
-            // requireded for FFmpeg decoders. Currently |_bitDepth| is used
-            // internally so this change has no side effects.
-            // [openfx-io note] when using insternal ffmpeg 8bits->16 bits conversion,
-            // (255 = 100%) becomes (65280 =99.6%)
-            stream->_bitDepth = codecCtx->bits_per_raw_sample; // disabled in Nuke's reader
-            // stream->_bitDepth = 16; // enabled in Nuke's reader
-
             const AVPixFmtDescriptor* avPixFmtDescriptor = av_pix_fmt_desc_get(stream->_codecContext->pix_fmt);
             if (avPixFmtDescriptor == nullptr) {
                 throw std::runtime_error("av_pix_fmt_desc_get() failed");
             }
+            const int bitDepth = maxComponentDepth(*avPixFmtDescriptor);
+            stream->_bitDepth = bitDepth;
             // Sanity check the number of components.
             // Only 3 or 4 components are supported by |engine|, that is
             // Nuke/NukeStudio will only accept 3 or 4 component data.
@@ -1585,11 +1598,6 @@ FFmpegFile::FFmpegFile(const string& filename)
             stream->_numberOfComponents = avPixFmtDescriptor->nb_components;
             if (3 > stream->_numberOfComponents) {
                 stream->_numberOfComponents = 3;
-            }
-            // AVCodecContext::bits_pre_raw_sample may not be set, if
-            // it's not set, try with the following utility function.
-            if (0 == stream->_bitDepth) {
-                stream->_bitDepth = av_get_bits_per_pixel(avPixFmtDescriptor) / stream->_numberOfComponents;
             }
         }
 

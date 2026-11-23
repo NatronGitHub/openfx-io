@@ -77,6 +77,10 @@
 #     lossless H.264 (tags in the VUI) and 10-bit FFV1 in Matroska (tags in the container), tagged bt709,
 #     bt470bg, smpte170m, bt2020nc, fcc and smpte240m, in video and full range, and untagged (SD and 720p),
 #     and the --matrix and --range overrides: the decoded RGB must be the one computed from the matrix and the range.
+#   * The bit depth (see check_bitdepth, issue #213): a horizontal gray ramp with one code value per column in
+#     10-bit VP9 (4:2:0 and 4:2:2), AV1, HEVC Main 10 and H.264 High 10, 12-bit VP9, 16-bit Bayer FFV1, and an 8-bit
+#     VP9 control: the reader must report the bit depth of the decoded pixel format, and decode the ramp without
+#     8-bit steps.
 # Clips whose encoder is not available in the ffmpeg CLI are skipped.
 #
 # Environment:
@@ -798,8 +802,8 @@ check_damaged_ref() {
 check_frame_threads() {
     local name="$1" desc="$2" encoder="$3" pixfmt="$4" all threads hidden ref
     shift 4
-    # The lossless copy: FFV1, or for more than 8 bits lossless VP9 without alt-ref frames, which the reader also
-    # decodes to 8 bits (it takes the bit depth from bits_per_raw_sample, which FFV1 sets and VP9 does not).
+    # The lossless copy: FFV1, or for more than 8 bits lossless VP9 without alt-ref frames, which the reader decodes
+    # through the same VP9 decoder and pixel format.
     local refargs=(-c:v ffv1)
     ref="$tmp/ref_$name.mkv"
     if [[ "$pixfmt" == *10* ]]; then
@@ -1316,6 +1320,79 @@ check_color color_override_bt2020.mp4 "Y'CbCr matrix: SD H.264 tagged bt2020nc, 
     -colorspace bt2020nc -color_range pc -- --matrix 2 --range 1
 check_color color_override_601.mp4 "Y'CbCr matrix: 720p H.264 tagged bt709, read as Rec. 601 (param), Auto range" libx264 1280 720 8 $CY $CB $CR 601 tv \
     -colorspace bt709 -color_range tv -- --matrix 1
+
+# Bit depth (issue #213): 3 frames of a horizontal gray ramp, one code value per column (876x64, BITS-bit luma
+# (64 + X) * 2^(BITS - 10) in video range, neutral chroma; 8 bits: 16 + X / 4), in PIXFMT. The reader must report BITS
+# bits: the largest component depth of the decoded pixel format (the vp9, hevc and libdav1d decoders leave
+# bits_per_raw_sample at 0, and av_get_bits_per_pixel() / 3 gave 15 / 3 = 5 bits for yuv420p10, which was decoded to
+# 8 bits), or for a Bayer format, whose components share one sample, its bits per pixel. Above 8 bits, the ramp must
+# decode to at least 512 distinct values (8 bits give at most 256, here 219) and without the steps of 8 bits: adjacent
+# columns must differ by at most 0.9 on a 0-255 scale (8-bit output steps by 1 or 2 levels every 4 columns; 10 bits by
+# 255 / 876 = 0.29 every column, plus the noise of the lossy codecs, up to 0.6). lavfi cannot make Bayer frames: a
+# bayer_rggb16le PIXFMT reads a 16-bit gray ramp (raw gray16le, 64 * (64 + X)) as Bayer samples. A stream that the
+# libavcodec of the harness cannot decode (e.g. AV1 without libdav1d) is skipped (--skip-without-decoder).
+# check_bitdepth NAME DESCRIPTION BITS PIXFMT ENCODER [FFMPEG_OUTPUT_ARGS...]
+check_bitdepth() {
+    local name="$1" desc="$2" bits="$3" pixfmt="$4" encoder="$5" lum chroma got status
+    shift 5
+    echo "== $desc =="
+    case "$bits" in
+    8) lum="16+trunc(X/4)" ;;
+    10) lum="64+X" ;;
+    12) lum="4*(64+X)" ;;
+    16) lum="64*(64+X)" ;;
+    *) echo "FAIL: check_bitdepth: unsupported bit depth $bits"; rc=1; return ;;
+    esac
+    chroma=$((1 << (bits - 1)))
+    if ! have_encoder "$encoder"; then
+        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "SKIPPED: no ffprobe CLI"
+        return
+    fi
+    local input=(-f lavfi -i "nullsrc=s=876x64:r=24,format=$pixfmt,geq=lum='$lum':cb=$chroma:cr=$chroma")
+    if [[ "$pixfmt" == bayer_* ]]; then
+        if ! ffmpeg -y -loglevel error -f lavfi -i "nullsrc=s=876x64:r=24,format=gray16le,geq=lum='$lum'" -frames:v 3 \
+            -f rawvideo "$tmp/$name.raw" 2>"$tmp/$name.log"; then
+            echo "SKIPPED: the ffmpeg CLI could not make the gray16le ramp: $(head -1 "$tmp/$name.log")"
+            return
+        fi
+        input=(-f rawvideo -pix_fmt "$pixfmt" -s 876x64 -r 24 -i "$tmp/$name.raw")
+    fi
+    if ! ffmpeg -y -loglevel error "${input[@]}" -frames:v 3 -c:v "$encoder" "$@" -pix_fmt "$pixfmt" "$tmp/$name" \
+        2>"$tmp/$name.log"; then
+        echo "SKIPPED: the ffmpeg CLI could not encode $pixfmt with $encoder: $(head -1 "$tmp/$name.log")"
+        return
+    fi
+    got="$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "$tmp/$name")"
+    if [ "$got" != "$pixfmt" ]; then
+        echo "SKIPPED: $encoder wrote $got, not $pixfmt"
+        return
+    fi
+    local args=(--open-only --skip-without-decoder --bit-depth "$bits")
+    if [ "$bits" -gt 8 ]; then
+        args+=(--fine-ramp 0.9,512)
+    fi
+    status=0
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} || status=$?
+    if [ "$status" -ne 0 ] && [ "$status" -ne 77 ]; then
+        rc=1
+    fi
+    rm -f "$tmp/$name.raw"
+}
+check_bitdepth bitdepth_vp9_8.webm "Bit depth: VP9 profile 0, 8 bits, lossless (control)" 8 yuv420p libvpx-vp9 -lossless 1
+check_bitdepth bitdepth_vp9_10.webm "Bit depth: VP9 profile 2, 10 bits, lossless" 10 yuv420p10le libvpx-vp9 -lossless 1
+check_bitdepth bitdepth_vp9_12.mkv "Bit depth: VP9 profile 2, 12 bits, lossless" 12 yuv420p12le libvpx-vp9 -lossless 1
+check_bitdepth bitdepth_vp9_422_10.webm "Bit depth: VP9 profile 3, 4:2:2 10 bits, lossless" 10 yuv422p10le libvpx-vp9 -lossless 1
+check_bitdepth bitdepth_av1_10.mkv "Bit depth: AV1 10 bits (SVT-AV1, decoded by libdav1d)" 10 yuv420p10le libsvtav1 -crf 10 -preset 8
+check_bitdepth bitdepth_hevc_10.mp4 "Bit depth: HEVC Main 10, lossless (libx265)" 10 yuv420p10le libx265 -x265-params lossless=1:log-level=error
+check_bitdepth bitdepth_hevc_vt_10.mp4 "Bit depth: HEVC Main 10 (VideoToolbox)" 10 yuv420p10le hevc_videotoolbox -profile:v main10 -q:v 80
+check_bitdepth bitdepth_h264_10.mkv "Bit depth: H.264 High 10 (libx264, sets bits_per_raw_sample)" 10 yuv420p10le libx264 -profile:v high10 -qp 1 -preset ultrafast
+# Bayer (FFV1 sets bits_per_raw_sample to 16, and the components of bayer_rggb16 have 4, 8 and 4 bits)
+check_bitdepth bitdepth_ffv1_bayer16.mkv "Bit depth: FFV1 bayer_rggb16le" 16 bayer_rggb16le ffv1 -level 4 -strict experimental
 
 if [ "$rc" -eq 0 ]; then
     echo "ALL READ-PATH TESTS PASSED"
