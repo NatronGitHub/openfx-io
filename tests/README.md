@@ -57,6 +57,7 @@ make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync p
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
 make test-writeffmpeg-codec-edit-during-begin # WriteFFmpeg: the Codec edited during beginSequenceRender (#319)
 make test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitizer: no data race (not in make test)
+make test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218)
 make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
@@ -348,6 +349,14 @@ called on the main and render threads". Then the frames are rendered, and the fi
 [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-writeffmpeg-codec-edit-during-begin-tsan`,
 with `IO_TESTS_SANITIZERS`): the replaced codec of a project (`_codecReplaced`), which `beginSequenceRender` reads and
 the Codec edit clears, was not guarded, and ThreadSanitizer reported the data race.
+`test-writeffmpeg-pixfmt-choice` (issue [#218](https://github.com/NatronGitHub/openfx-io/issues/218)) runs
+`ofx_render_test OUT --pixfmt-choice`: WriteFFmpeg must select a pixel format that fits the Pref. Pixel Coding. 4:4:0
+(one chroma sample per 1x2 luma samples) used to count as 4:2:2, so FFV1, which lists yuv440p before yuv422p, was
+encoded in yuv440p with the default preferences. FFV1 is encoded at 720x576 and 720x480 with each Pref. Pixel Coding
+(4:2:0, 4:2:2, 4:4:4) and Bit Depth (8, 10, 12, 16; the source clip is float): the stream must have the format of that
+coding and depth, e.g. yuv422p with the defaults; with Alpha (at 720x576), a format with alpha, at least that depth, and
+the chroma subsampling of the coding, or RGB. Then, for every encoder of the Codec menu that lists a 4:2:2, 4:4:4 or RGB
+format, the Selected Pixel Coding must not be 4:4:0 with a 4:2:2 or 4:4:4 preference, with or without Alpha.
 
 `test-writeffmpeg-selected-encoder` (issue [#348](https://github.com/NatronGitHub/openfx-io/issues/348)) runs
 `ofx_render_test OUT --selected-encoder`: for each encoder of the Codec menu that is not the default encoder of its codec
@@ -1255,7 +1264,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` |
 
 ## Notes / limitations
 

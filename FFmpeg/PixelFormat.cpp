@@ -1078,10 +1078,10 @@ namespace FFmpeg {
             return ePixelCodingYUV440;
             break;
         case AV_PIX_FMT_AYUV64LE: ///< packed AYUV 4:4:4,64bpp (1 Cr & Cb sample per 1x1 Y & A samples), little-endian
-            return ePixelCodingYUV440;
+            return ePixelCodingYUV444;
             break;
         case AV_PIX_FMT_AYUV64BE: ///< packed AYUV 4:4:4,64bpp (1 Cr & Cb sample per 1x1 Y & A samples), big-endian
-            return ePixelCodingYUV440;
+            return ePixelCodingYUV444;
             break;
         case AV_PIX_FMT_UYVA: ///< packed UYVA 4:4:4:4, 32bpp (1 Cr & Cb sample per 1x1 Y & A samples), UYVAUYVA...
         case AV_PIX_FMT_VYU444: ///< packed VYU 4:4:4, 24bpp (1 Cr & Cb sample per 1x1 Y), VYUVYU...
@@ -1154,7 +1154,7 @@ namespace FFmpeg {
     int
     pixelFormatBPPFromSpec(PixelCodingEnum coding, int bitdepth, bool alpha)
     {
-        int bits;
+        int bits = 0;
         switch (coding) {
         case ePixelCodingNone:
             bits = 0;
@@ -1171,8 +1171,8 @@ namespace FFmpeg {
         case ePixelCodingYUV420: // 1 Cr & Cb sample per 2x2 Y samples
             bits = (bitdepth * (4 + 2)) / 4;
             break;
+        case ePixelCodingYUV440: // 1 Cr & Cb sample per 1x2 Y samples
         case ePixelCodingYUV422: // 1 Cr & Cb sample per 2x1 Y samples
-            // case ePixelCodingYUV440: // 1 Cr & Cb sample per 1x2 Y samples
             bits = (bitdepth * (2 + 2)) / 2;
             break;
         case ePixelCodingYUV444: // 1 Cr & Cb sample per 1x1 Y samples

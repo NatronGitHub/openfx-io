@@ -275,6 +275,8 @@ pixelCodingName(FFmpeg::PixelCodingEnum coding)
     switch (coding) {
     case FFmpeg::ePixelCodingYUV420:
         return "Y'CbCr 4:2:0";
+    case FFmpeg::ePixelCodingYUV440:
+        return "Y'CbCr 4:4:0";
     case FFmpeg::ePixelCodingYUV422:
         return "Y'CbCr 4:2:2";
     case FFmpeg::ePixelCodingYUV444:

@@ -151,6 +151,13 @@
  *       (RLIMIT_FSIZE, as on a full disk): the render must fail with an error that names the file, and the same
  *       instance must then write the file without the limit
  *     - --pfm-read-errors: ReadPFM, a header with an empty, negative or huge size: getRegionOfDefinition must fail
+ *   WriteFFmpeg selects a pixel format that fits the Pref. Pixel Coding (issue #218), with the option --pixfmt-choice
+ *   (only this test):
+ *     - FFV1 at 720x576 and 720x480, with each Pref. Pixel Coding (4:2:0, 4:2:2, 4:4:4) and Bit Depth: the
+ *       stream has the format of that coding and depth (yuv422p with the defaults, not yuv440p); with Alpha, a format
+ *       with alpha and that chroma subsampling, or RGB
+ *     - every encoder of the Codec menu that has a 4:2:2, 4:4:4 or RGB format: never 4:4:0 for a 4:2:2 or 4:4:4
+ *       preference
  *   WriteFFmpeg encodes with the encoder selected in the Codec menu (issue #348), with the option --selected-encoder
  *   (only this test):
  *     - for each encoder of the menu that is not the default encoder of its codec ID (avcodec_find_encoder()), e.g.
@@ -4289,13 +4296,11 @@ std::string videoStreamSignature(const std::string& file)
     return buf;
 }
 
-// Encode 3 frames (256x144, colorPattern() with its alpha ramp, which changes with the frame) with an encoder of the
+// Encode 3 frames (W x H, colorPattern() with its alpha ramp, which changes with the frame) with an encoder of the
 // Codec menu and extra int params. Returns 0 on success, else 1 and the persistent error in *error.
 int encodeCodecVariant(const std::string& file, const std::string& shortName, const std::vector<std::pair<std::string, int>>& ints,
-                       std::string* error)
+                       std::string* error, int W = 256, int H = 144)
 {
-    const int W = 256;
-    const int H = 144;
     const int nFrames = 3;
     std::remove(file.c_str());
     WriterParams wp;
@@ -4449,6 +4454,135 @@ int testWriteFFmpegCodecParams(const std::string& outFile)
         }
         std::remove(file.c_str());
     }
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+namespace {
+// The pixel format of the video stream of a movie, or "none".
+std::string videoStreamPixelFormat(const std::string& file)
+{
+    AvSession s;
+    if (avformat_open_input(&s.fmt, file.c_str(), nullptr, nullptr) < 0) return "none";
+    const int si = (avformat_find_stream_info(s.fmt, nullptr) >= 0) ? av_find_best_stream(s.fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) : -1;
+    const char* name = (si >= 0) ? av_get_pix_fmt_name(static_cast<AVPixelFormat>(s.fmt->streams[si]->codecpar->format)) : nullptr;
+    return name ? name : "none";
+}
+
+// Whether the encoder lists a pixel format that fits a Pref. Pixel Coding of Y'CbCr 4:2:2 or 4:4:4: a color format
+// without vertical chroma subsampling, and at most 2 to 1 horizontally (4:2:2, 4:4:4, RGB). False if it lists none.
+bool encoderHasFormatFor422(const AVCodec* c)
+{
+    const void* configs = nullptr;
+    int n = 0;
+    if ((avcodec_get_supported_config(nullptr, c, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &n) < 0) || !configs) return false;
+    const AVPixelFormat* fmts = static_cast<const AVPixelFormat*>(configs);
+    for (int i = 0; i < n; ++i) {
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(fmts[i]);
+        if (d && (d->nb_components >= 3) && !(d->flags & (AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_HWACCEL | AV_PIX_FMT_FLAG_BAYER))
+            && (d->log2_chroma_h == 0) && (d->log2_chroma_w <= 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+// #218: the pixel format that WriteFFmpeg selects must fit the Pref. Pixel Coding. 4:4:0 (one chroma sample per 1x2
+// luma samples) has as many chroma samples as 4:2:2, and was taken as 4:2:2: FFV1, which lists yuv440p before yuv422p,
+// was encoded in yuv440p with the default preferences (4:2:2, 8 bits), at every size.
+//  - FFV1 at 720x576 and 720x480, Pref. Pixel Coding 4:2:0, 4:2:2 and 4:4:4, Bit Depth 8, 10, 12 and 16 (the source
+//    clip is float, so the Bit Depth is what selects the depth): the stream must have the format of that coding and
+//    depth (FFV1 has them all); with Alpha (at 720x576), the format must have alpha, at least that depth, and the
+//    chroma subsampling of the coding (or be RGB);
+//  - every encoder of the Codec menu that lists a format for 4:2:2 (see encoderHasFormatFor422()): the selected
+//    format must not be 4:4:0 with a 4:2:2 or 4:4:4 preference, with or without alpha, at every bit depth.
+int testWriteFFmpegPixelFormatChoice(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding, not 4:4:0 for 4:2:2 (issue #218) ====\n");
+    av_log_set_level(AV_LOG_ERROR);
+    int failures = 0;
+    const char* const codings[] = { "420", "422", "444" }; // Pref. Pixel Coding 0 to 2
+    const int depths[] = { 8, 10, 12, 16 }; // Pref. Bit Depth 0 to 3
+    if (!avcodec_find_encoder_by_name("ffv1")) {
+        std::printf("  FAIL: no ffv1 encoder\n");
+        return 1;
+    }
+    const std::string file = outFile + ".mkv";
+    struct Size {
+        int w, h;
+        bool alpha; // also with Alpha
+    };
+    for (const Size& size : { Size { 720, 576, true }, Size { 720, 480, false } }) {
+        for (int alpha = 0; alpha <= (size.alpha ? 1 : 0); ++alpha) {
+            for (int coding = 0; coding < 3; ++coding) {
+                for (int depth = 0; depth < 4; ++depth) {
+                    std::string error;
+                    if (encodeCodecVariant(file, "ffv1", { { "prefPixelCoding", coding }, { "prefBitDepth", depth }, { "enableAlpha", alpha } }, &error, size.w, size.h)) {
+                        std::printf("  FAIL: ffv1 %dx%d %s/%d alpha %d: %s\n", size.w, size.h, codings[coding], depths[depth], alpha, error.c_str());
+                        ++failures;
+                        continue;
+                    }
+                    const std::string got = videoStreamPixelFormat(file);
+                    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(av_get_pix_fmt(got.c_str()));
+                    bool pass;
+                    std::string expected;
+                    if (!alpha) {
+                        // e.g. yuv422p10, the native-endian format (av_get_pix_fmt())
+                        expected = std::string("yuv") + codings[coding] + "p" + ((depths[depth] == 8) ? std::string() : std::to_string(depths[depth]));
+                        pass = (av_get_pix_fmt(expected.c_str()) == av_get_pix_fmt(got.c_str()));
+                    } else {
+                        // the log2 chroma subsampling of each coding (width, height), or RGB
+                        const int log2w[] = { 1, 1, 0 };
+                        const int log2h[] = { 1, 0, 0 };
+                        expected = std::string("with alpha, ") + codings[coding] + " or RGB, at least " + std::to_string(depths[depth]) + " bits";
+                        pass = d && (d->flags & AV_PIX_FMT_FLAG_ALPHA) && (d->comp[0].depth >= depths[depth])
+                               && ((d->flags & AV_PIX_FMT_FLAG_RGB) || ((d->log2_chroma_w == log2w[coding]) && (d->log2_chroma_h == log2h[coding])));
+                    }
+                    std::printf("  %sffv1 %dx%d %s/%d alpha %d: %s%s%s\n", pass ? "" : "FAIL: ", size.w, size.h, codings[coding], depths[depth], alpha,
+                                got.c_str(), pass ? "" : ", expected ", pass ? "" : expected.c_str());
+                    failures += pass ? 0 : 1;
+                }
+            }
+        }
+    }
+    std::remove(file.c_str());
+
+    // every encoder of the Codec menu: the Selected Pixel Coding (infoPixelFormat, e.g. YUV440 or YUVA440/10) is not
+    // 4:4:0 with a 4:2:2 or 4:4:4 preference
+    const std::vector<std::string> shortNames = codecMenuShortNames(outFile);
+    if (shortNames.empty()) { std::printf("  FAIL: no Codec menu entry (or no Codec param)\n"); return failures + 1; }
+    int nChecked = 0;
+    for (const std::string& shortName : shortNames) {
+        const std::string encoder = encoderOfShortName(shortName);
+        const AVCodec* c = avcodec_find_encoder_by_name(encoder.c_str());
+        const std::string ext = testContainerFor(encoder);
+        if (!c || ext.empty() || !encoderHasFormatFor422(c)) continue;
+        WriterParams wp;
+        wp.strings = { { "codecShortName", shortName } };
+        WriterSession s;
+        if (s.create(outFile + "." + ext, 64, 48, 1, wp)) { std::printf("  FAIL: %s: cannot create the instance\n", shortName.c_str()); ++failures; continue; }
+        ++nChecked;
+        const Effect& ctx = s.context();
+        for (int alpha = 0; alpha <= 1; ++alpha) {
+            for (int coding = 1; coding < 3; ++coding) {
+                for (int depth = 0; depth < 4; ++depth) {
+                    s.setInt("enableAlpha", alpha);
+                    s.setInt("prefPixelCoding", coding);
+                    s.setInt("prefBitDepth", depth);
+                    // a change of any of these params calls updatePixelFormat() (WriteFFmpegPlugin::changedParam()), which
+                    // reads all of them: one instanceChanged is enough
+                    s.instanceChanged(kOfxTypeParameter, "enableAlpha");
+                    const std::string label = stringParamValue(ctx, "infoPixelFormat");
+                    if (label.find("440") != std::string::npos) {
+                        std::printf("  FAIL: %s %s/%d alpha %d: %s\n", shortName.c_str(), codings[coding], depths[depth], alpha, label.c_str());
+                        ++failures;
+                    }
+                }
+            }
+        }
+    }
+    std::printf("  %d encoders of the Codec menu checked for 4:4:0 with a 4:2:2 or 4:4:4 preference\n", nChecked);
     if (!failures) std::printf("  PASS\n");
     return failures;
 }
@@ -4786,6 +4920,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegCodecEditDuringBegin(outFile);
         } else if (mode == "--codec-params") {
             failures = testWriteFFmpegCodecParams(outFile);
+        } else if (mode == "--pixfmt-choice") {
+            failures = testWriteFFmpegPixelFormatChoice(outFile);
         } else if (mode == "--selected-encoder") {
             failures = testWriteFFmpegSelectedEncoder(outFile);
         } else if (mode == "--destroy-closes-file") {

@@ -39,7 +39,8 @@ namespace FFmpeg {
     // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rr-owner)
     using AvBuffer = std::unique_ptr<uint8_t, decltype(&av_free)>;
 
-    // these are ordered
+    // These are ordered: a pixel format whose coding is not less than the Pref. Pixel Coding fits that preference
+    // (WriteFFmpegPlugin::getPixelFormatsFromList()).
     enum PixelCodingEnum {
         ePixelCodingNone = 0,
         ePixelCodingGray, // Grayscale
@@ -48,8 +49,10 @@ namespace FFmpeg {
         ePixelCodingYUV410, // 1 Cr & Cb sample per 4x4 Y samples
         ePixelCodingYUV411, // 1 Cr & Cb sample per 4x1 Y samples
         ePixelCodingYUV420, // 1 Cr & Cb sample per 2x2 Y samples
+        // 4:4:0 fits only a 4:2:0 preference. FFmpeg scores it the same as 4:2:2 from RGB (get_pix_fmt_score(),
+        // libavutil/pixdesc.c:3637-3645 in n9.0.2), so it must not be ordered with 4:2:2 (#218).
+        ePixelCodingYUV440, // 1 Cr & Cb sample per 1x2 Y samples
         ePixelCodingYUV422, // 1 Cr & Cb sample per 2x1 Y samples
-        ePixelCodingYUV440 = ePixelCodingYUV422, // 1 Cr & Cb sample per 1x2 Y samples
         ePixelCodingYUV444, // 1 Cr & Cb sample per 1x1 Y samples
         ePixelCodingRGB, // RGB
         ePixelCodingXYZ, // XYZ
