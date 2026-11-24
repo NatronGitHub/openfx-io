@@ -63,7 +63,7 @@ make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
-make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context (#275, #282-#284)
+make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context, Reload (#275, #282-#284, #361)
 make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287)
@@ -463,6 +463,9 @@ It writes its own OCIO configs and CDL files in its directory, and sets `$OCIO` 
   has the context variable `S`; setting `S` with the context params, or OCIODisplay's OCIO config file param, must
   change the output. Before the fix, OCIODisplay kept its old processor, and OCIOLookTransform ignored the context
   params.
+- Reload (#361): OCIOFileTransform renders a CDL file, the file is rewritten with another slope, and its Reload
+  button is pressed: the next render must use the new file. Before the fix, the processor cache of the OCIO config
+  (which `OCIO::ClearAllCaches()` doesn't clear) returned the processor of the old file.
 
 ### 1e. `test-ocio-anim` — GenericOCIO's animated colorspaces (#128)
 
@@ -1181,7 +1184,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `seexpr_test.cpp`           | SeExpr's frames needed, `cpixel()` domain and parameter variables at the render time, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()`, `getRenderTime()`, `refreshFrameBounds()` and `clipToFile()` hooks, on test readers. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
-| `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, and a changed config or context (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
+| `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, a changed config or context, and Reload (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, PNG offsets near the int limits at scales 1/2 and 1/4, rewritten files, with ASan, UBSan (signed-integer-overflow) and guard pages. |

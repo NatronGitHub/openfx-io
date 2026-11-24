@@ -20,6 +20,10 @@
  *    sets S to 3, and OCIODisplay is rendered again after its OCIO config file param is set to another config. Before
  *    the fix, OCIODisplay kept the processor of the old context or config, and OCIOLookTransform ignored the context
  *    params.
+ * 3. Reload re-reads a modified LUT file (#361): OCIOFileTransform renders a CDL file with a slope of 2, the file is
+ *    rewritten with a slope of 3, and the Reload button is pressed: the next render must use the new slope. Before the
+ *    fix, Reload cleared OCIO's file caches (OCIO::ClearAllCaches()) but not the processor cache of the config, which
+ *    returned the processor of the old file contents.
  *
  * The test writes its OCIO configs and CDL files in <dir> and sets $OCIO to the first config.
  * The plug-ins are linked directly and driven through the OFX actions by the in-process host of ofx_test_host.h.
@@ -598,6 +602,23 @@ main(int argc,
             in.changed("value1");
             v = in.render1();
             check(v == 1.5f, "OCIOLookTransform, context param S = 3: 0.25 * 3 * 2 = 1.5 (got " + str(v) + ")");
+        }
+    }
+
+    std::printf("==== 3. Reload re-reads a modified LUT file (#361) ====\n");
+    {
+        Instance in;
+        const std::string lut = dir + "/reload.cc";
+        check(writeFile(lut, ccText(2)), "write reload.cc with a slope of 2");
+        if (in.load("fr.inria.openfx.OCIOFileTransform")) {
+            setString(in.ctx, "file", lut);
+            check(in.create(), "OCIOFileTransform: create instance");
+            float v = in.render1();
+            check(v == 0.5f, "OCIOFileTransform, reload.cc with a slope of 2: 0.25 * 2 = 0.5 (got " + str(v) + ")");
+            check(writeFile(lut, ccText(3)), "rewrite reload.cc with a slope of 3");
+            in.changed("reload");
+            v = in.render1();
+            check(v == 0.75f, "OCIOFileTransform, after Reload: the new slope, 0.25 * 3 = 0.75 (got " + str(v) + ")");
         }
     }
 
