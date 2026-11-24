@@ -238,6 +238,9 @@ namespace IO {
         /**
          * @brief Overload to return false if the given file extension is a video file extension or
          * true if this is an image file extension.
+         * An image file holds one frame and is written by the render action: if that fails or is aborted, render()
+         * removes the file if the render created or modified it, so that a partial file is not taken for a written
+         * frame.
          **/
         virtual bool isImageFile(const std::string& fileExtension) const = 0;
         virtual void setOutputFrameRate(double /*fps*/) { }
@@ -508,6 +511,9 @@ namespace IO {
                               int dstRowBytes);
 
         void getPackingOptions(bool* allCheckboxHidden, std::vector<int>* packingMapping) const;
+
+        /// The render action, without the removal of a partial image file by render() if it fails.
+        void renderFile(const OFX::RenderArguments& args);
 
         void outputFileChanged(OFX::InstanceChangeReason reason, bool restoreExistingWriter, bool throwErrors);
     };

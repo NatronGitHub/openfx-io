@@ -106,7 +106,7 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -119,9 +119,13 @@ ofx_entrypoints_test: ofx_entrypoints_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 ofx_actions_test: ofx_actions_test.cpp $(PLUGIN_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $^ $(OFX_LIBS) -o $@
 
-# (also the PFM plug-ins, for test-pfm-write-errors and test-pfm-read-errors)
-ofx_render_test: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../PFM/ReadPFM.cpp ../PFM/WritePFM.cpp $(OFX_SUPPORT)
-	$(CXX) $(OFX_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+# (also the PFM plug-ins, for test-pfm-write-errors and test-pfm-read-errors, and WritePNG, for the disk-full part of
+# test-writer-remove-partial-file, only if pkg-config finds libpng)
+HAVE_PNG := $(shell $(PKGCONF) --exists libpng 2>/dev/null && echo 1)
+RENDER_PNG_SRCS := $(if $(HAVE_PNG),../PNG/WritePNG.cpp,)
+ofx_render_test: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../PFM/ReadPFM.cpp ../PFM/WritePFM.cpp $(RENDER_PNG_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) $(filter-out %.h,$^) $(OFX_LIBS) \
+	    $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,) -o $@
 
 # includes ../OIIO/ReadOIIO.cpp (to reach its file-static helpers), so it's left out of the sources
 oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGIN_SRCS)) $(OFX_SUPPORT)
@@ -244,7 +248,7 @@ clean-oiio-edge:
 SEEXPR_HOME ?= $(if $(and $(filter Darwin,$(shell uname -s)),$(wildcard /opt/local/include/SeExpression.h)),/opt/local,/usr)
 comma := ,
 HAVE_SEEXPR := $(if $(wildcard $(SEEXPR_HOME)/include/SeExpression.h),1,)
-HAVE_PNG := $(shell $(PKGCONF) --exists libpng 2>/dev/null && echo 1)
+# (HAVE_PNG: above, with ofx_render_test)
 OFX14_SRCS := ../EXR/ReadEXR.cpp ../EXR/WriteEXR.cpp \
     ../FFmpeg/ReadFFmpeg.cpp ../FFmpeg/WriteFFmpeg.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp \
     ../OIIO/ReadOIIO.cpp ../OIIO/WriteOIIO.cpp ../OIIO/OIIOGlobal.cpp ../OIIO/OIIOText.cpp ../OIIO/OIIOResize.cpp \
@@ -546,7 +550,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -600,6 +604,11 @@ test-writeffmpeg-encode-failure-disk-full: ofx_render_test
 test-writeoiio-disk-full: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i292 --writeoiio-disk-full; \
 	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeoiio-disk-full: SKIPPED"; else exit $$st; fi
+# #251: a failed or aborted render of an image file leaves no partial file (a test writer; WritePNG and RLIMIT_FSIZE,
+# as on a full disk, except on MS Windows and without libpng), and a render that fails before the file is written
+# keeps the previous one.
+test-writer-remove-partial-file: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out --writer-remove-partial-file
 
 # #207, #220, #316: the conversions between Y'CbCr and RGB of ReadFFmpeg and WriteFFmpeg give exact values (rawvideo
 # written and decoded without swscale)

@@ -49,6 +49,7 @@ make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292; not on MS Windows)
+make test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
@@ -273,10 +274,20 @@ has no `RLIMIT_FSIZE`.
 `test-writeoiio-disk-full` (issue #292) runs `ofx_render_test OUT --writeoiio-disk-full`: WriteOIIO writes a
 512x512 noise image to EXR, TIFF and DPX files that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk), so
 that `ImageOutput::write_image()` or `close()` fails after `open()` succeeded. The render must fail, with an error
-that names the file; the same instance must then write the file without the limit. The partial file is kept, as by
-the other writers (#251). PNG and JPEG are not tested, because of OpenImageIO 3.1 bugs (#362): its PNG writer ignores write
+that names the file; the same instance must then write the file without the limit. A failed render leaves no partial
+file (#251, `test-writer-remove-partial-file`). PNG and JPEG are not tested, because of OpenImageIO 3.1 bugs (#362): its PNG writer ignores write
 errors (`write_image()` and `close()` succeed), and its JPEG writer keeps libjpeg's default `error_exit()`, which
 calls `exit()`. It is skipped (exit status 77) on MS Windows.
+
+`test-writer-remove-partial-file` (issue #251) runs `ofx_render_test OUT --writer-remove-partial-file`. With
+"Overwrite" unchecked, a render takes an existing file for a written frame and skips it, so a failed or aborted render
+must not leave a partial file. A test writer (in `ofx_render_test`, with a non-ASCII file name) writes part of the file,
+then fails or sets the host's abort flag, with no previous file and over a previous file: no file must be left. WritePNG
+writes a 512x512 noise image to a file that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk), with no
+previous file and over a whole one: the render must fail and leave no file. A render that fails before the file is
+written (no R/G/B/A checkbox checked) must leave the previous file unchanged. After each failure, a render with
+"Overwrite" unchecked must write the whole file. The WritePNG part is skipped, with a `SKIP:` line, on MS Windows (no
+`RLIMIT_FSIZE`) and without libpng (WritePNG is linked into `ofx_render_test` only with libpng).
 
 `test-swscale-exact` (issues #207, #220, #316) runs `ofx_render_test OUT --swscale-exact`. ReadFFmpeg reads rawvideo
 (8 bits) and FFV1 (10 and 12 bits) written with libavcodec, without swscale (4:2:0, 4:2:2 and 4:4:4, 8, 10 and 12 bits, video and full range, with alpha,
@@ -1136,7 +1147,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 
