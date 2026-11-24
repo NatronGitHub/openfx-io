@@ -111,6 +111,8 @@ struct ExrSpec {
     bool uintRed = false;          // R is UINT (x * 100000 + y * 1000000)
     bool bench = false;            // benchValue() instead of pixelValue()
     std::vector<std::string> extra; // more channels, constant 7, that ReadEXR must ignore
+    std::string prefix;             // the R, G, B and A channels are named prefix + "R" + suffix... ("diffuse.R")
+    std::string suffix;
 };
 
 uint32_t
@@ -149,8 +151,8 @@ writeExr(const std::string& path, const ExrSpec& s)
         }
         Imf::FrameBuffer fb;
         for (int k = 0; k < nc; ++k) {
-            const std::string name(1, s.channels[k]);
-            if (s.uintRed && name == "R") {
+            const std::string name = s.prefix + s.channels[k] + s.suffix;
+            if (s.uintRed && s.channels[k] == 'R') {
                 header.channels().insert(name, Imf::Channel(Imf::UINT));
                 fb.insert(name, Imf::Slice(Imf::UINT, sliceBase(u.data(), (ptrdiff_t)(s.data.min.x + (ptrdiff_t)s.data.min.y * w) * (ptrdiff_t)sizeof(uint32_t)), sizeof(uint32_t), sizeof(uint32_t) * w));
                 continue;
@@ -364,7 +366,8 @@ checkRoD(const Reader& r, const OfxRectI& expectedRoD)
 
 // The number of wrong pixel values in a render of a file written with spec s, at render scale 1. In the window:
 // the file's pixels (EXR pixel (x, y) is OFX pixel (x - display.min.x, display.max.y - y)), and 0 out of the data
-// window and in the channels that are not in the file. Out of the window: NaN (not written).
+// window and in the channels that are not in the file, but A is 1 if the file has no A (GenericReader makes an RGB
+// image opaque). Out of the window: NaN (not written).
 int
 wrongPixels(const Reader& r, const ExrSpec& s, const OfxRectI& window)
 {
@@ -386,7 +389,7 @@ wrongPixels(const Reader& r, const ExrSpec& s, const OfxRectI& window)
                     }
                     continue;
                 }
-                float expected = 0.f;
+                float expected = (c == 3 && s.channels.find('A') == std::string::npos) ? 1.f : 0.f;
                 if (inData && s.channels.find("RGBA"[c]) != std::string::npos) {
                     if (c == 0 && s.uintRed) {
                         expected = (float)((float)uintValue(ex, ey) * (1. / 4294967295.));
@@ -728,19 +731,22 @@ testWindowBlocks(OfxPlugin* p, const std::string& dir)
 // of the data window (the sample at x is at column datawin.min.x + (x - datawin.min.x) / 2), and 0 elsewhere. There
 // is no alpha: the image is opaque (GenericReader sets A to 1).
 void
-testLumaChroma(OfxPlugin* p, const std::string& dir)
+testLumaChroma(OfxPlugin* p, const std::string& dir, const std::string& prefix)
 {
-    std::printf("==== luminance/chroma (Y, RY, BY) ====\n");
-    const std::string path = dir + "/lumachroma.exr";
+    std::printf("==== luminance/chroma (%sY, %sRY, %sBY) ====\n", prefix.c_str(), prefix.c_str(), prefix.c_str());
+    const std::string path = dir + "/lumachroma" + (prefix.empty() ? "" : "-layer") + ".exr";
+    const std::string yName = prefix + "Y";
+    const std::string ryName = prefix + "RY";
+    const std::string byName = prefix + "BY";
     const Imath::Box2i display = box(0, 0, 47, 31);
     const Imath::Box2i data = box(-4, 2, 41, 29); // (min.x and min.y even, as OpenEXR requires)
     const int w = data.max.x - data.min.x + 1, h = data.max.y - data.min.y + 1;
     try {
         Imf::Header header(display, data);
         header.compression() = Imf::ZIP_COMPRESSION;
-        header.channels().insert("Y", Imf::Channel(Imf::FLOAT));
-        header.channels().insert("RY", Imf::Channel(Imf::FLOAT, 2, 2));
-        header.channels().insert("BY", Imf::Channel(Imf::FLOAT, 2, 2));
+        header.channels().insert(yName, Imf::Channel(Imf::FLOAT));
+        header.channels().insert(ryName, Imf::Channel(Imf::FLOAT, 2, 2));
+        header.channels().insert(byName, Imf::Channel(Imf::FLOAT, 2, 2));
         std::vector<float> y((size_t)w * h), ry((size_t)(w / 2) * (h / 2)), by(ry.size());
         for (int j = data.min.y; j <= data.max.y; ++j) {
             for (int i = data.min.x; i <= data.max.x; ++i) {
@@ -753,10 +759,10 @@ testLumaChroma(OfxPlugin* p, const std::string& dir)
             }
         }
         Imf::FrameBuffer fb;
-        fb.insert("Y", Imf::Slice(Imf::FLOAT, sliceBase(y.data(), (ptrdiff_t)(data.min.x + (ptrdiff_t)data.min.y * w) * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * w));
+        fb.insert(yName, Imf::Slice(Imf::FLOAT, sliceBase(y.data(), (ptrdiff_t)(data.min.x + (ptrdiff_t)data.min.y * w) * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * w));
         const ptrdiff_t off = data.min.x / 2 + (ptrdiff_t)(data.min.y / 2) * (w / 2);
-        fb.insert("RY", Imf::Slice(Imf::FLOAT, sliceBase(ry.data(), off * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * (w / 2), 2, 2));
-        fb.insert("BY", Imf::Slice(Imf::FLOAT, sliceBase(by.data(), off * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * (w / 2), 2, 2));
+        fb.insert(ryName, Imf::Slice(Imf::FLOAT, sliceBase(ry.data(), off * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * (w / 2), 2, 2));
+        fb.insert(byName, Imf::Slice(Imf::FLOAT, sliceBase(by.data(), off * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * (w / 2), 2, 2));
         Imf::OutputFile out(path.c_str(), header);
         out.setFrameBuffer(fb);
         out.writePixels(h);
@@ -1159,8 +1165,43 @@ main(int argc, char** argv)
     s.uintRed = false;
     s.extra = { "1", "2.3", ".", "..", "4.", ".5", "layer.6", "\xc3\xa9" };
     testPixels(p, dir, "digit-dot-channels", s, { 0, 0, 64, 32 });
+    // R, G, B and A in a layer, with a suffix, in a view, or after digits: read from the file's channels, not as
+    // zeros (#358)
+    s.extra.clear();
+    s.prefix = "diffuse.";
+    testPixels(p, dir, "layer-channels", s, { 0, 0, 64, 32 });
+    s.uintRed = true;
+    testPixels(p, dir, "layer-uint", s, { 0, 0, 64, 32 });
+    s.uintRed = false;
+    s.prefix = "right."; // a layer prefix, as in a multi-view file (ReadEXR has no view choice: #386)
+    testPixels(p, dir, "right-layer-channels", s, { 0, 0, 64, 32 });
+    s.prefix = "1";
+    testPixels(p, dir, "digit-prefix-channels", s, { 0, 0, 64, 32 });
+    s.prefix.clear();
+    s.suffix = ".1";
+    testPixels(p, dir, "suffix-channels", s, { 0, 0, 64, 32 });
+    // plain R, G, B and A win over the others, wherever these are in the (sorted) channel list: 1G and Beauty.R
+    // sort before the plain G and R, B.1, Beauty.A and diffuse.G after the plain A and B
+    s.suffix.clear();
+    s.extra = { "1G", "Beauty.R", "Beauty.A", "B.1", "diffuse.G" };
+    testPixels(p, dir, "plain-and-layer-channels", s, { 0, 0, 64, 32 });
+    // one group per image: a plain RGB image stays opaque (matte.A is not its alpha), and albedo.G (which sorts
+    // first) is not mixed with the diffuse layer, which has more channels
+    s.channels = "RGB";
+    s.extra = { "matte.A" };
+    testPixels(p, dir, "plain-rgb-layer-alpha", s, { 0, 0, 64, 32 });
+    s.channels = "RGBA";
+    s.prefix = "diffuse.";
+    s.extra = { "albedo.G" };
+    testPixels(p, dir, "two-layers", s, { 0, 0, 64, 32 });
+    s.extra = { "specular.R", "specular.G", "specular.B", "specular.A" }; // a tie: the first layer wins
+    testPixels(p, dir, "two-layers-tie", s, { 0, 0, 64, 32 });
+    s.channels = "A";
+    s.extra.clear();
+    testPixels(p, dir, "layer-alpha-only", s, { 0, 0, 64, 32 });
 
-    testLumaChroma(p, dir);
+    testLumaChroma(p, dir, "");
+    testLumaChroma(p, dir, "diffuse."); // (#358)
     testWindow(p, dir);
     testScale(p, dir);
     testRewrite(p, dir);

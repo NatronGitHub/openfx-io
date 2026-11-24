@@ -642,7 +642,11 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   flipped, the 1-pixel border black); the channels that are not in the file are 0; UINT
   channels are normalized by 2^32-1, as in ReadOIIO; luminance/chroma files (Y, RY, BY)
   are read as before (not converted); channels whose names are empty once the digits and dots are
-  removed (`1`, `2.3`, `.`, `..`), or not ASCII, are ignored (ReadEXR read out of bounds on them, #293).
+  removed (`1`, `2.3`, `.`, `..`), or not ASCII, are ignored (ReadEXR read out of bounds on them, #293); R, G, B
+  and A named `diffuse.R`, `right.R`, `1R` or `R.1` (also UINT, and `diffuse.Y/RY/BY`) are read from those
+  channels, not as zeros (#358); the channels come from one group: plain R, G, B and A win over the others
+  (`Beauty.R`, `1G`, `B.1`), a plain RGB image stays opaque next to `matte.A`, and `diffuse.RGBA` is not mixed with
+  `albedo.G` (and wins over `specular.RGBA`, which sorts after it).
 * **render windows**: narrower than the data window (decode()'s buffer, in blocks of
   256 lines): exact inside, nothing written outside; render scale 1/2.
 * **alpha 1 for files without alpha** (#234): an RGB and a grey PFM, TIFF, and an RGB PNG, read as RGBA with each
