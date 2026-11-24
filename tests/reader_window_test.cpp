@@ -44,7 +44,8 @@
  *    gets a render window that is not the file's): only the window is written, and for an Opaque file, alpha is 1 in
  *    the new image and the rest of the window is transparent black (#232)
  *  - concurrent renders while another thread replaces the file by smaller and larger ones (#163): only the
- *    windows are written, alpha is 1 in the image and 0 in the black (Opaque files)
+ *    windows are written, alpha is 1 in the image and 0 in the black (Opaque files); ReadOIIO also while the TIFF
+ *    file is overwritten in place (#242): the renders may fail, but must not crash or write out of their windows
  *
  * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/Makefile, and swap.ocio in its directory)
  *        $READER_WINDOW_ONLY: run only the tests whose title contains it (e.g. "ReadPFM", "rewrite", "scale 0.5")
@@ -1064,15 +1065,22 @@ testRewrite(OfxPlugin* p,
 }
 
 // Concurrent renders of narrow windows by several instances, while another thread replaces the file by a smaller
-// and a larger one (rename(), atomic): no render writes out of its window (#163).
+// and a larger one (rename(), atomic): no render writes out of its window (#163). inPlace: the file is overwritten in
+// place instead (truncated, then written), so that a reader may see either file, or a part of one: renders may fail,
+// but they must not crash or write out of their window (#242). A render that a write overlapped may have read the
+// header of one file and pixels of the other, which no reader can detect without locking the file: its pixels (alpha)
+// are only checked if no write overlapped it. At least one replacement must succeed (on MS Windows,
+// a file that is open can't be replaced, nor maybe written: there, the test is reported as skipped if none did).
 void
 testConcurrentRewrite(OfxPlugin* p,
                       const std::string& dir,
                       const char* name,
                       const File& a,
-                      const File& b)
+                      const File& b,
+                      bool inPlace = false)
 {
-    const std::string title = strprintf("%s %s, concurrent renders while the file is replaced", a.plugin + 16, name);
+    const std::string title = strprintf("%s %s, concurrent renders while the file is %s", a.plugin + 16, name,
+                                        inPlace ? "overwritten in place" : "replaced");
     if (!selected(title)) {
         return;
     }
@@ -1096,30 +1104,47 @@ testConcurrentRewrite(OfxPlugin* p,
         }
     }
     std::atomic<bool> done(false);
+    std::atomic<int> rewrites(0);
+    // in place: the writes started and finished (a render that none overlapped is one that began with them equal,
+    // and ended with the same number of writes started)
+    std::atomic<int> writesBegun(0), writesEnded(0);
     std::thread rewriter([&]() {
-        // copy one of the files and rename it over the file read
+        // copy one of the files and rename it over the file read, or copy it over the file read (in place)
         for (int i = 0; !done; ++i) {
-            const std::string tmp = path + ".tmp";
+            const std::string tmp = inPlace ? path : path + ".tmp";
             std::FILE* in = std::fopen(((i % 2) ? pathA : pathB).c_str(), "rb");
+            ++writesBegun;
             std::FILE* out = std::fopen(tmp.c_str(), "wb");
-            if (in && out) {
+            bool written = in && out;
+            if (written) {
                 char buf[65536];
                 size_t n;
                 while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0) {
-                    std::fwrite(buf, 1, n, out);
+                    written = written && (std::fwrite(buf, 1, n, out) == n);
                 }
             }
             if (in) {
                 std::fclose(in);
             }
             if (out) {
-                std::fclose(out);
+                written = (std::fclose(out) == 0) && written;
             }
-            std::rename(tmp.c_str(), path.c_str());
+            if (written && !inPlace) {
+#ifdef _WIN32
+                // (std::rename() fails if the file exists on MS Windows)
+                written = MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+                written = std::rename(tmp.c_str(), path.c_str()) == 0;
+#endif
+            }
+            ++writesEnded;
+            if (written) {
+                ++rewrites;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
-    std::atomic<int> bad(0), badAlpha(0), renders(0);
+    std::atomic<int> bad(0), badAlpha(0), renders(0), failed(0), raced(0), racedBadAlpha(0);
     std::vector<std::thread> threads;
     for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&, t]() {
@@ -1129,7 +1154,15 @@ testConcurrentRewrite(OfxPlugin* p,
             for (int i = 0; i < kRenders; ++i) {
                 const OfxRectI& w = ws[(size_t)(i + t) % ws.size()];
                 r.setImage(rod, 1., (i % 2) == 0);
+                const int begunBefore = writesBegun;
+                const bool quiet = (begunBefore == writesEnded); // (no write in progress)
                 const bool rendered = ok(r.render(w, 1., (i + t) % 2)); // (the render may fail)
+                const bool overlapped = inPlace && !(quiet && (writesBegun == begunBefore));
+                if (!rendered) {
+                    ++failed;
+                } else if (overlapped) {
+                    ++raced;
+                }
                 for (int y = r.img.y1; y < r.img.y2; ++y) {
                     for (int x = r.img.x1; x < r.img.x2; ++x) {
                         if (x >= w.x1 && x < w.x2 && y >= w.y1 && y < w.y2) {
@@ -1138,7 +1171,7 @@ testConcurrentRewrite(OfxPlugin* p,
                             // getFrameBounds()) is transparent
                             const float* px = r.pixel(x, y);
                             if (rendered && (a.nchannels < 4) && (px[3] != ((px[1] != 0.f) ? 1.f : 0.f))) {
-                                ++badAlpha;
+                                ++(overlapped ? racedBadAlpha : badAlpha);
                             }
                             continue;
                         }
@@ -1158,6 +1191,22 @@ testConcurrentRewrite(OfxPlugin* p,
     }
     done = true;
     rewriter.join();
+    std::printf("  %d renders, %d failed, %d files %s\n", (int)renders, (int)failed, (int)rewrites,
+                inPlace ? "overwritten" : "replaced");
+    if (inPlace) {
+        // (e.g. the header of the small file and the first strip of the large one, if it is at the same offset,
+        // decode without an error into garbage)
+        std::printf("  %d renders succeeded with no write in between (checked), %d while the file was written (not "
+                    "checked: %d pixels with alpha != (green != 0))\n",
+                    (int)renders - (int)failed - (int)raced, (int)raced, (int)racedBadAlpha);
+    }
+#ifdef _WIN32
+    if (rewrites == 0) {
+        std::printf("  SKIPPED: the file could not be %s while it was read\n", inPlace ? "overwritten" : "replaced");
+    }
+#else
+    check(rewrites > 0, "the file was %s (%d times)", inPlace ? "overwritten" : "replaced", (int)rewrites);
+#endif
     check(bad == 0, "%d renders: %d values written out of the windows", (int)renders, (int)bad);
     if (a.nchannels < 4) {
         check(badAlpha == 0, "Opaque files: alpha = 1 in the image, 0 in the black (%d wrong pixels)", (int)badAlpha);
@@ -1368,6 +1417,7 @@ main(int argc,
 #endif
     testConcurrentRewrite(oiio, dir, "concurrent", tiffSmall, tiffLarge);
     testConcurrentRewrite(pfm, dir, "concurrent", pfmSmall, pfmLarge);
+    testConcurrentRewrite(oiio, dir, "concurrent-in-place", tiffSmall, tiffLarge, true);
 
     for (size_t i = 0; i < ids.size(); ++i) {
         findPlugin(ids[i])->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
