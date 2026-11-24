@@ -138,6 +138,13 @@
  *       (RLIMIT_FSIZE, as on a full disk): the render must fail with an error that names the file, and the same
  *       instance must then write the file without the limit
  *     - --pfm-read-errors: ReadPFM, a header with an empty, negative or huge size: getRegionOfDefinition must fail
+ *   WriteFFmpeg encodes with the encoder selected in the Codec menu (issue #348), with the option --selected-encoder
+ *   (only this test):
+ *     - for each encoder of the menu that is not the default encoder of its codec ID (avcodec_find_encoder()), e.g.
+ *       libx264rgb, libopenh264, libxvid, libopenjpeg: a short movie must be encoded, and only the codec context of
+ *       that encoder may log (the default encoder of the codec ID must not be opened); a pair is not checkable unless
+ *       the default encoder is in the menu and logs when it is selected (positive control); fails if the menu is
+ *       empty, skipped (exit status 77) if no pair is checkable
  *
  *   ReadFFmpeg, DestroyInstance closes the movie (issue #290), with the option --destroy-closes-file (only this test):
  *     - render a frame, destroy the instance: the movie is no longer open, before Unload; twice, with the movie
@@ -157,6 +164,7 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/log.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 }
@@ -174,7 +182,9 @@ extern "C" {
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <mutex>
 #include <random>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -4065,6 +4075,34 @@ std::string stringParamValue(const Effect& ctx, const char* name)
     return ((it != ctx.params.end()) && it->second.hasOv && !it->second.ov.s.empty()) ? it->second.ov.s[0] : std::string("?");
 }
 
+namespace {
+// The encoder of a Codec menu entry (its codecShortName): the ProRes entries are prores_ks with a profile suffix
+// (e.g. prores_ksapch), the others are the name of the encoder.
+std::string encoderOfShortName(const std::string& shortName)
+{
+    return (shortName.rfind("prores_ks", 0) == 0) ? std::string("prores_ks") : shortName;
+}
+
+// The codecShortName of each entry of WriteFFmpeg's Codec menu, in menu order (empty if there is none, or on error).
+std::vector<std::string> codecMenuShortNames(const std::string& outFile)
+{
+    std::vector<std::string> shortNames;
+    WriterSession s;
+    if (s.create(outFile + ".mov", 64, 48, 1, WriterParams())) return shortNames;
+    const Effect& ctx = s.context();
+    const auto codec = ctx.params.find("codec");
+    if (codec == ctx.params.end()) return shortNames;
+    const auto opt = codec->second.props->props.find(kOfxParamPropChoiceOption);
+    const size_t nCodecs = (opt == codec->second.props->props.end()) ? 0 : opt->second.s.size();
+    for (size_t i = 0; i < nCodecs; ++i) {
+        s.setInt("codec", (int)i);
+        s.instanceChanged(kOfxTypeParameter, "codec");
+        shortNames.push_back(stringParamValue(ctx, "codecShortName"));
+    }
+    return shortNames;
+}
+} // namespace
+
 // #343: for each encoder of the Codec menu, the encoder settings that WriteFFmpeg shows (- hidden, d disabled, E
 // enabled) and the pixel format it selects for each Pref. Pixel Coding, Bit Depth and Alpha, and movies encoded with
 // the default settings (in the container given by testContainerFor()), with Keyframe Interval = 1, Max B-Frames = 2
@@ -4075,26 +4113,12 @@ int testWriteFFmpegCodecParams(const std::string& outFile)
 {
     std::printf("==== WriteFFmpeg: the settings of each encoder, and its movies (issue #343) ====\n");
     av_log_set_level(AV_LOG_ERROR);
-    std::vector<std::string> shortNames;
-    {
-        WriterSession s;
-        if (s.create(outFile + ".mov", 64, 48, 1, WriterParams())) return 1;
-        const Effect& ctx = s.context();
-        const auto codec = ctx.params.find("codec");
-        if (codec == ctx.params.end()) { std::printf("  FAIL: no codec param\n"); return 1; }
-        const auto opt = codec->second.props->props.find(kOfxParamPropChoiceOption);
-        const size_t nCodecs = (opt == codec->second.props->props.end()) ? 0 : opt->second.s.size();
-        for (size_t i = 0; i < nCodecs; ++i) {
-            s.setInt("codec", (int)i);
-            s.instanceChanged(kOfxTypeParameter, "codec");
-            shortNames.push_back(stringParamValue(ctx, "codecShortName"));
-        }
-    }
-    if (shortNames.empty()) { std::printf("  FAIL: no codec\n"); return 1; }
+    const std::vector<std::string> shortNames = codecMenuShortNames(outFile);
+    if (shortNames.empty()) { std::printf("  FAIL: no Codec menu entry (or no Codec param)\n"); return 1; }
     const char* const settings[] = { "crf", "x26xSpeed", "qscale", "bitrateMbps", "bitrateToleranceMbps", "quality", "gopSize", "bFrames" };
     int failures = 0;
     for (const std::string& shortName : shortNames) {
-        const std::string encoder = (shortName.compare(0, 9, "prores_ks") == 0) ? std::string("prores_ks") : shortName;
+        const std::string encoder = encoderOfShortName(shortName);
         const AVCodec* c = avcodec_find_encoder_by_name(encoder.c_str());
         const std::string ext = testContainerFor(encoder);
         if (!c || ext.empty()) { std::printf("  FAIL: %s: no container takes the encoder %s\n", shortName.c_str(), encoder.c_str()); ++failures; continue; }
@@ -4143,11 +4167,6 @@ int testWriteFFmpegCodecParams(const std::string& outFile)
         const AVCodecDescriptor* desc = avcodec_descriptor_get(c->id);
         const bool lossless = (c->priv_class && av_opt_find(const_cast<const AVClass**>(&c->priv_class), "lossless", nullptr, 0, AV_OPT_SEARCH_FAKE_OBJ))
                               || (desc && (desc->props & AV_CODEC_PROP_LOSSLESS));
-        // #348: WriteFFmpeg opens the default encoder of the codec ID, libx264, which refuses the RGB pixel formats
-        // selected for libx264rgb
-        const std::string knownFailure = ((encoder == "libx264rgb") && (avcodec_find_encoder(c->id) != c))
-                                             ? std::string("#348: WriteFFmpeg opens ") + avcodec_find_encoder(c->id)->name + " instead"
-                                             : std::string();
         struct Variant {
             const char* label;
             std::vector<std::pair<std::string, int>> ints;
@@ -4163,10 +4182,7 @@ int testWriteFFmpegCodecParams(const std::string& outFile)
             if (!v.enabled) continue;
             std::string error;
             const int fail = encodeCodecVariant(file, shortName, v.ints, &error);
-            if (!knownFailure.empty()) {
-                std::printf("    %s: %s (%s)\n", v.label, fail ? "KNOWN FAILURE" : "UNEXPECTED PASS", knownFailure.c_str());
-                failures += fail ? 0 : 1;
-            } else if (fail && v.failureHint) {
+            if (fail && v.failureHint) {
                 const bool hinted = (error.find(v.failureHint) != std::string::npos);
                 std::printf("    %s: %s: %s\n", v.label, hinted ? "failed with the expected error" : "FAIL, the error must contain", hinted ? error.c_str() : v.failureHint);
                 failures += hinted ? 0 : 1;
@@ -4180,6 +4196,138 @@ int testWriteFFmpegCodecParams(const std::string& outFile)
         std::remove(file.c_str());
     }
     if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+namespace {
+// The names of the encoders whose codec context logged (AVCodecContext's item_name() is the name of its codec,
+// libavcodec/options.c), while logEncoderNames() is the av_log callback. The encoders may log from their threads:
+// the mutex guards names.
+struct EncoderLog {
+    std::mutex mutex;
+    std::set<std::string> names;
+};
+EncoderLog gEncoderLog;
+
+void logEncoderNames(void* avcl, int level, const char* fmt, va_list vl)
+{
+    const AVClass* cls = avcl ? *static_cast<const AVClass* const*>(avcl) : nullptr;
+    if (cls && cls->item_name && !std::strcmp(cls->class_name, "AVCodecContext")) {
+        const AVClassCategory category = cls->get_category ? cls->get_category(avcl) : cls->category;
+        if (category == AV_CLASS_CATEGORY_ENCODER) {
+            const std::lock_guard<std::mutex> lock(gEncoderLog.mutex);
+            gEncoderLog.names.insert(cls->item_name(avcl));
+        }
+    }
+    if (level <= AV_LOG_ERROR) {
+        av_log_default_callback(avcl, level, fmt, vl);
+    }
+}
+
+// While it exists, logEncoderNames() records the encoders that log at the debug level (gEncoderLog.names is cleared
+// first); the default callback and the AV_LOG_ERROR level are restored on destruction.
+class EncoderLogScope {
+public:
+    EncoderLogScope()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(gEncoderLog.mutex);
+            gEncoderLog.names.clear();
+        }
+        av_log_set_callback(logEncoderNames);
+        av_log_set_level(AV_LOG_DEBUG);
+    }
+    ~EncoderLogScope()
+    {
+        av_log_set_level(AV_LOG_ERROR);
+        av_log_set_callback(av_log_default_callback);
+    }
+    EncoderLogScope(const EncoderLogScope&) = delete;
+    EncoderLogScope& operator=(const EncoderLogScope&) = delete;
+};
+
+// Encode 3 frames with a Codec menu entry and its default settings. Returns 0 on success (else 1 and the error), and
+// the names of the encoders that logged.
+int encodeLoggingEncoders(const std::string& file, const std::string& shortName, std::string* error, std::set<std::string>* names)
+{
+    int fail;
+    {
+        const EncoderLogScope scope;
+        fail = encodeCodecVariant(file, shortName, {}, error);
+    }
+    const std::lock_guard<std::mutex> lock(gEncoderLog.mutex);
+    *names = gEncoderLog.names;
+    return fail;
+}
+
+std::string joinNames(const std::set<std::string>& names)
+{
+    std::string list;
+    for (const std::string& n : names) list += (list.empty() ? "" : ", ") + n;
+    return list;
+}
+} // namespace
+
+// #348: WriteFFmpeg must encode with the encoder selected in the Codec menu, not with the default encoder of its codec
+// ID (avcodec_find_encoder(), the first one registered in libavcodec/allcodecs.c), as "ffmpeg -c:v name" does. For
+// each encoder S of the menu that is not that default D (e.g. libx264rgb and libopenh264 for H.264, libxvid for
+// MPEG-4, libopenjpeg for JPEG 2000, if this FFmpeg build has them), encode 3 frames with the default settings, and
+// record which encoder contexts log at the debug level: only S may log. Positive control: D must be in the menu, and
+// log when it is selected; otherwise the pair is not checkable. An encoder that logs nothing itself (e.g. libxvid) is
+// not confirmed, but D must not log.
+int testWriteFFmpegSelectedEncoder(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg encodes with the encoder selected in the Codec menu (issue #348) ====\n");
+    av_log_set_level(AV_LOG_ERROR);
+    const std::vector<std::string> shortNames = codecMenuShortNames(outFile);
+    if (shortNames.empty()) { std::printf("  FAIL: no Codec menu entry (or no Codec param)\n"); return 1; }
+    int failures = 0;
+    int tested = 0;
+    int notCheckable = 0;
+    for (const std::string& shortName : shortNames) {
+        const std::string encoder = encoderOfShortName(shortName);
+        const AVCodec* c = avcodec_find_encoder_by_name(encoder.c_str());
+        const AVCodec* d = c ? avcodec_find_encoder(c->id) : nullptr;
+        if (!c || !d || (d == c)) continue;
+        const std::string label = "  " + shortName + " (default encoder of " + avcodec_get_name(c->id) + ": " + d->name + ")";
+        const std::string ext = testContainerFor(encoder);
+        if (ext.empty()) { std::printf("%s: FAIL: no container takes the encoder %s\n", label.c_str(), encoder.c_str()); ++failures; continue; }
+        const std::string file = outFile + "." + ext;
+        // positive control: the default encoder, selected in the menu, logs its name
+        std::string error;
+        std::set<std::string> names;
+        const bool dInMenu = (std::find(shortNames.begin(), shortNames.end(), std::string(d->name)) != shortNames.end());
+        if (!dInMenu || encodeLoggingEncoders(file, d->name, &error, &names) || !names.count(d->name)) {
+            std::printf("%s: not checkable: %s\n", label.c_str(), dInMenu ? (std::string(d->name) + " does not log when it is selected").c_str() : (std::string(d->name) + " is not in the Codec menu").c_str());
+            ++notCheckable;
+            std::remove(file.c_str());
+            continue;
+        }
+        ++tested;
+        error.clear();
+        const int fail = encodeLoggingEncoders(file, shortName, &error, &names);
+        const bool confirmed = (names.erase(c->name) > 0);
+        const std::string others = joinNames(names);
+        if (fail) {
+            std::printf("%s, %s: FAIL: %s%s%s\n", label.c_str(), ext.c_str(), error.c_str(), others.empty() ? "" : "; encoders opened: ", others.c_str());
+            ++failures;
+        } else if (!others.empty()) {
+            std::printf("%s, %s: FAIL: encoded by %s\n", label.c_str(), ext.c_str(), others.c_str());
+            ++failures;
+        } else {
+            std::printf("%s, %s: %s, %s\n", label.c_str(), ext.c_str(),
+                        confirmed ? "encoded by the selected encoder" : "encoded, not by the default encoder (the selected one logs nothing to confirm it)",
+                        videoStreamSignature(file).c_str());
+        }
+        std::remove(file.c_str());
+    }
+    if (!tested) {
+        std::printf("  SKIP: no checkable encoder (%d not checkable): in this FFmpeg build, the Codec menu has no encoder that is not the default encoder of its codec ID, with that default in the menu\n", notCheckable);
+        std::exit(77);
+    }
+    if (!failures) {
+        std::printf("  PASS (%d encoders, %d not checkable)\n", tested, notCheckable);
+    }
     return failures;
 }
 
@@ -4217,6 +4365,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegParamChangeDuringRender(outFile);
         } else if (mode == "--codec-params") {
             failures = testWriteFFmpegCodecParams(outFile);
+        } else if (mode == "--selected-encoder") {
+            failures = testWriteFFmpegSelectedEncoder(outFile);
         } else if (mode == "--destroy-closes-file") {
             failures = testReadFFmpegDestroyClosesFile(outFile);
         } else if (mode == "--pfm-write-errors") {
@@ -4529,7 +4679,7 @@ main(int argc, char** argv)
         };
         for (const auto& c : cases) {
             std::printf("==== WriteFFmpeg + ReadFFmpeg %s: color tags and Y'CbCr matrix ====\n", c.label);
-            const std::string encoder = (std::string(c.codec).rfind("prores_ks", 0) == 0) ? std::string("prores_ks") : std::string(c.codec);
+            const std::string encoder = encoderOfShortName(c.codec);
             if (!avcodec_find_encoder_by_name(encoder.c_str())) {
                 std::printf("  SKIP: no %s encoder\n", c.codec);
                 continue;
