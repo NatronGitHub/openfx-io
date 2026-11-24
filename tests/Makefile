@@ -232,6 +232,27 @@ test-oiio-threads-tsan: oiio_threadpool_test_tsan
 clean-oiio-threads-tsan:
 	rm -rf oiio_threadpool_test_tsan oiio_threadpool_test_tsan.dSYM
 
+# SequenceParsing (#357): its own test (../IOSupport/SequenceParsing/tests/SequenceParsingTest.cpp: patterns, views,
+# UTF-8 file names, negative frames, %d, padding, int limits, extensions), and sequence_parsing_utf8_test.cpp (UTF-8
+# cases it doesn't cover). No library. With UBSan, except on MS Windows (MinGW has no UBSan runtime), for
+# SequenceParsing's own arithmetic (INT_MIN, negation, stringToInt): UBSan can't detect #357, since the <cctype>
+# preconditions are not core-language UB and the glibc and UCRT tables accept -128..255.
+SEQUENCE_PARSING_UBSAN := $(if $(filter Windows_NT,$(OS)),,-fsanitize=undefined -fno-sanitize-recover=all)
+SEQUENCE_PARSING_DEPS := ../IOSupport/SequenceParsing/SequenceParsing.cpp ../IOSupport/SequenceParsing/SequenceParsing.h
+sequence_parsing_test: ../IOSupport/SequenceParsing/tests/SequenceParsingTest.cpp $(SEQUENCE_PARSING_DEPS)
+	$(CXX) $(CXXFLAGS) $(SEQUENCE_PARSING_UBSAN) -I../IOSupport/SequenceParsing $(filter-out %.h,$^) -o $@
+sequence_parsing_utf8_test: sequence_parsing_utf8_test.cpp $(SEQUENCE_PARSING_DEPS)
+	$(CXX) $(CXXFLAGS) $(SEQUENCE_PARSING_UBSAN) -I../IOSupport/SequenceParsing $(filter-out %.h,$^) -o $@
+
+.PHONY: test-sequence-parsing clean-sequence-parsing
+test: test-sequence-parsing
+clean: clean-sequence-parsing
+test-sequence-parsing: sequence_parsing_test sequence_parsing_utf8_test
+	./sequence_parsing_test
+	./sequence_parsing_utf8_test
+clean-sequence-parsing:
+	rm -rf sequence_parsing_test sequence_parsing_test.dSYM sequence_parsing_utf8_test sequence_parsing_utf8_test.dSYM
+
 # OIIOResize and OIIOText with degenerate inputs (an empty source, huge or infinite RoDs, huge text positions), with
 # the OIIO plug-ins (OIIOGlobal), and OpenGL (OIIOText's interact; OCIO_CDL_LIBS). (Added to test and clean here, on
 # lines of their own.)
