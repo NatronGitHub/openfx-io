@@ -2723,6 +2723,27 @@ IsCleanKeyframe(const AVFrame* f)
     return (f->flags & AV_FRAME_FLAG_KEY) && !ConcealsDamage(f);
 }
 
+// A predicted frame: its picture type is P, B, S or SP, and the decoder does not flag it as a keyframe. (The H.264
+// decoder flags a P-frame with a recovery point as a keyframe, libavcodec/h264dec.c:881-882 in FFmpeg 9.0.2: it is
+// not a predicted frame here.) Unlike Stream::isCleanRestartFrame(), which needs evidence that a frame is clean to end
+// the damage, this needs evidence that it is wrong: a frame without a picture type is not predicted.
+static bool
+IsPredictedFrame(const AVFrame* f)
+{
+    if (f->flags & AV_FRAME_FLAG_KEY) {
+        return false;
+    }
+    switch (f->pict_type) {
+    case AV_PICTURE_TYPE_P:
+    case AV_PICTURE_TYPE_B:
+    case AV_PICTURE_TYPE_S:
+    case AV_PICTURE_TYPE_SP:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // The frame of the packet where the decoder restarted after damage (a packet with AV_PKT_FLAG_KEY, sent to a decoder
 // opened again, see demuxAndDecode()) is a valid restart point if it is a clean keyframe (IsCleanKeyframe()).
 // Or, if no clean keyframe was decoded yet since the file was opened (the decoder may never flag keyframes), if it
@@ -2958,6 +2979,41 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         // (guess_correct_pts(), libavcodec/decode.c:296-320 and 694-696 in FFmpeg 9.0.2): the taint is checked at
         // both, and while tainted, a frame whose two timestamps differ is not used (e.g. a frame decoded before
         // the damage, but placed after it at the DTS of a damaged packet).
+        // The first packet sent after a seek (Stream::packetSent(), whatever its keyframe flag) is normally one that
+        // the demuxer flags as a keyframe. If its frame is a predicted frame, the flag was wrong, and the decoder
+        // decoded it without its reference frames, often without an error: e.g. in a MOV without a sync-sample table,
+        // every packet has the keyframe flag (libavformat/mov.c:4947 in FFmpeg 9.0.2), and the MPEG-4 Part 2 decoder
+        // decodes a P-frame from a gray frame (ff_mpv_frame_start() calls ff_mpv_alloc_dummy_frames(),
+        // libavcodec/mpegvideo_dec.c:310-346 and 393; the MPEG-2 decoder skips the P-frames until it has a reference,
+        // libavcodec/mpeg12dec.c:2455-2463). The frames up to the next one that is not predicted are not used, and
+        // decoding stops at the first one after the requested frame (decode() then decodes it from the start of the
+        // file), rather than at the next intra frame or the end of the file; the index of the keyframes is not
+        // trusted any more (Stream::_indexReliable). A decoder that only outputs the frames after a seek once they
+        // are recovered (e.g. H.264, libavcodec/h264_slice.c:1372-1384) never outputs that frame if it is not a
+        // keyframe: its frames are used.
+        // Two cases are not checked (MPEG-4 Part 2 with B-frames in a MOV without a sync-sample table still decodes
+        // right in every order, see tests/run_ffmpeg_read_test.sh; FFmpeg 9.0.2):
+        // - the frames output before that frame (leading B-frames) are not checked: the decoder skips a B-frame
+        //   whose timing is out of order, e.g. after a seek (libavcodec/mpeg4videodec.c:3138-3142);
+        // - if that packet is a B-frame, the decoder skips it without a reference frame (libavcodec/h263dec.c:
+        //   545-547): its frame never comes, and nothing is checked until the next seek.
+        if ((stream->_seekFrameCheck == Stream::SeekFrameCheck::eAwaitFrame) && (decodedFrame->pts == stream->_seekFramePts)) {
+            stream->_seekFrameCheck = Stream::SeekFrameCheck::eNone;
+            if (!stream->_decodingFromStart && IsPredictedFrame(decodedFrame)) {
+                stream->_seekFrameCheck = Stream::SeekFrameCheck::eAwaitIntraFrame;
+                stream->_indexReliable = false;
+            }
+        }
+        if (stream->_seekFrameCheck == Stream::SeekFrameCheck::eAwaitIntraFrame) {
+            if (IsPredictedFrame(decodedFrame)) {
+                const int64_t ts = decodedFrame->best_effort_timestamp;
+                if ((ts != int64_t(AV_NOPTS_VALUE)) && (stream->ptsToFrame(ts) > frame)) {
+                    return true; // stop without a picture
+                }
+                return false;
+            }
+            stream->_seekFrameCheck = Stream::SeekFrameCheck::eNone;
+        }
         const bool concealsDamage = ConcealsDamage(decodedFrame);
         if (!concealsDamage) {
             // (see decode(): the frames decoded without an error, keyframes or not)

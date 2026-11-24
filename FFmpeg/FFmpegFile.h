@@ -216,7 +216,22 @@ private:
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         // For decodeForwardIsCheaper():
-        bool _indexReliable; // the format has no timestamp discontinuities (not AVFMT_TS_DISCONT), set at open
+        bool _indexReliable; // the format has no timestamp discontinuities (not AVFMT_TS_DISCONT), set at open, and no
+        // seek landed on a predicted frame (see demuxAndDecode()). Cleared for the lifetime of the stream by one such
+        // seek: the frames are still right, but later backward requests that land after the requested frame (e.g. on
+        // a leading picture of an open-GOP keyframe) retry from a fixed number of frames before instead of from the
+        // keyframe before (earlierRestartTs()), and decodeForwardIsCheaper() decodes forward within its window without
+        // the index.
+        // The check of the frame of the first packet sent since the last seek (see demuxAndDecode()): a seek may land
+        // on a packet that the demuxer flags as a keyframe, but that is not one.
+        enum class SeekFrameCheck {
+            eNone, // no check (not since a seek, or that frame was checked, or its packet had no PTS)
+            eAwaitPacket, // no packet was sent since the last seek
+            eAwaitFrame, // that packet was sent (_seekFramePts), its frame was not decoded yet
+            eAwaitIntraFrame, // its frame was a predicted frame: the frames until one that is not are not used
+        };
+        SeekFrameCheck _seekFrameCheck;
+        int64_t _seekFramePts; // eAwaitFrame: the PTS of the first packet sent since the last seek
         int64_t _maxReadTs; // the largest timestamp (PTS, or DTS without one) of the packets of this stream sent to the
         // decoder since the last seek (AV_NOPTS_VALUE if none)
         int64_t _lastReadTs; // the timestamp of the last packet sent with one since the last seek (AV_NOPTS_VALUE if none)
@@ -322,6 +337,8 @@ private:
             , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
             , _indexReliable(false)
+            , _seekFrameCheck(SeekFrameCheck::eNone)
+            , _seekFramePts(AV_NOPTS_VALUE)
             , _maxReadTs(AV_NOPTS_VALUE)
             , _lastReadTs(AV_NOPTS_VALUE)
             , _packetsSinceKey(-1)
@@ -598,6 +615,11 @@ private:
             const int64_t pts = pkt.pts;
             const bool key = (pkt.flags & AV_PKT_FLAG_KEY) != 0;
             trackReadPosition(pkt);
+            if (_seekFrameCheck == SeekFrameCheck::eAwaitPacket) {
+                // the first packet since the seek, whatever its keyframe flag (see demuxAndDecode())
+                _seekFramePts = pts;
+                _seekFrameCheck = (pts == int64_t(AV_NOPTS_VALUE)) ? SeekFrameCheck::eNone : SeekFrameCheck::eAwaitFrame;
+            }
             if (pts == int64_t(AV_NOPTS_VALUE)) {
                 ++_packetsWithoutPts;
                 return;
@@ -663,6 +685,8 @@ private:
             _lastReadTs = AV_NOPTS_VALUE;
             _packetsSinceKey = -1;
             _intervalDiscontinuous = false;
+            _seekFrameCheck = SeekFrameCheck::eAwaitPacket;
+            _seekFramePts = AV_NOPTS_VALUE;
         }
 
         // The position of the demuxer, and the keyframe interval, for decodeForwardIsCheaper(). The interval is counted
