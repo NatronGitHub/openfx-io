@@ -248,6 +248,10 @@ the real render pipeline, linked directly (no host binary):
   window (all four R/G/B/A checkboxes checked, so the channels are packed):
   the written PNG and the output image must be black (run under ASan to
   catch the out-of-bounds read this used to cause).
+* **WriteOIIO, no pending OpenImageIO error** (issue #228): create an instance
+  and get its clip preferences with no file name and with an extension that
+  OpenImageIO cannot write. `OIIO::geterror()` must then be empty (otherwise
+  OpenImageIO prints the error when the process exits).
 
 `test-dnxhr444-noise` (issue #267) runs `ofx_render_test OUT --dnxhr444-noise`: WriteFFmpeg encodes two
 256x120 frames of binary RGB noise in DNxHR 444. FFmpeg's dnxhd encoder stores the qscale of each macroblock

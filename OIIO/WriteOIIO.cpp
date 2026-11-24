@@ -71,6 +71,22 @@ typedef std::unique_ptr<ImageOutput> ImageOutputPtr;
 typedef ImageOutput* ImageOutputPtr;
 #endif
 
+// The ImageOutput that OpenImageIO would use to write filename, to query what its format supports, or null if it
+// cannot write it. A failed ImageOutput::create() leaves an error, which OpenImageIO prints at exit if it is never
+// retrieved (#228): it is retrieved here. An empty name (no file yet) is not passed to create(), which would fail.
+std::unique_ptr<ImageOutput>
+createFormatOutput(const string& filename)
+{
+    if (filename.empty()) {
+        return nullptr;
+    }
+    std::unique_ptr<ImageOutput> output(ImageOutput::create(filename));
+    if (!output) {
+        (void)OIIO::geterror();
+    }
+    return output;
+}
+
 #define kPluginName "WriteOIIO"
 #define kPluginGrouping "Image/Writers"
 #define kPluginDescription "Write images using OpenImageIO."
@@ -651,20 +667,6 @@ WriteOIIOPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
     GenericWriterPlugin::getClipPreferences(clipPreferences);
 
     if (gIsMultiplanarV2) {
-        string filename;
-        _fileParam->getValue(filename);
-#if OIIO_PLUGIN_VERSION >= 22
-        ImageOutputPtr output = ImageOutput::create(filename);
-#else
-        auto_ptr<ImageOutput> output(ImageOutput::create(filename));
-#endif
-        /*
-        bool supportsNChannels = false;
-        if ( output.get() ) {
-            supportsNChannels = output->supports("nchannels");
-        }
-        */
-
         MultiPlane::ImagePlaneDesc plane;
         OFX::Clip* clip = 0;
         int channelIndex = -1;
@@ -805,12 +807,8 @@ getDefaultBitDepth(const string& filepath,
 bool
 WriteOIIOPlugin::displayWindowSupportedByFormat(const string& filename) const
 {
-#if OIIO_PLUGIN_VERSION >= 22
-    ImageOutputPtr output = ImageOutput::create(filename);
-#else
-    auto_ptr<ImageOutput> output(ImageOutput::create(filename));
-#endif
-    if (output.get()) {
+    std::unique_ptr<ImageOutput> output = createFormatOutput(filename);
+    if (output) {
         return output->supports("displaywindow");
     } else {
         return false;
@@ -929,7 +927,7 @@ WriteOIIOPlugin::onOutputFileChanged(const string& filename,
 bool
 WriteOIIOPlugin::supportsAlpha(const std::string& filename) const
 {
-    auto output = ImageOutput::create(filename);
+    std::unique_ptr<ImageOutput> output = createFormatOutput(filename);
 
     // output is NULL if OIIO cannot write this format (#80)
     return kSupportsRGBA && output && output->supports("alpha");
@@ -938,12 +936,8 @@ WriteOIIOPlugin::supportsAlpha(const std::string& filename) const
 void
 WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
 {
-#if OIIO_PLUGIN_VERSION >= 22
-    ImageOutputPtr output = ImageOutput::create(filename);
-#else
-    auto_ptr<ImageOutput> output(ImageOutput::create(filename));
-#endif
-    if (output.get()) {
+    std::unique_ptr<ImageOutput> output = createFormatOutput(filename);
+    if (output) {
         _tileSize->setIsSecretAndDisabled(!output->supports("tiles"));
         //_outputLayers->setIsSecretAndDisabled(!output->supports("nchannels"));
 
@@ -1168,8 +1162,9 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     data->output.reset(ImageOutput::create(filename));
 #endif
     if (!data->output.get()) {
-        // output is NULL
-        setPersistentMessage(Message::eMessageError, "", string("Cannot create output file ") + filename);
+        // output is NULL: retrieve OpenImageIO's error (#228)
+        const string reason = OIIO::geterror();
+        setPersistentMessage(Message::eMessageError, "", string("Cannot create output file ") + filename + (reason.empty() ? string() : ": " + reason));
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -2027,15 +2022,9 @@ WriteOIIOPluginFactory::load()
     }
     // keep only the extensions that OIIO can actually write
     for (std::list<string>::iterator it = extensionsl.begin(); it != extensionsl.end();) {
-#if OIIO_PLUGIN_VERSION >= 22
-        ImageOutputPtr output = ImageOutput::create("x." + *it);
-#else
-        auto_ptr<ImageOutput> output(ImageOutput::create("x." + *it));
-#endif
-        if (output.get()) {
+        if (createFormatOutput("x." + *it)) {
             ++it;
         } else {
-            (void)OIIO::geterror(); // clear the error message of ImageOutput::create()
             it = extensionsl.erase(it);
         }
     }
