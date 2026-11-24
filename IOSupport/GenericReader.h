@@ -29,6 +29,9 @@
 #include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 #include <ofxsImageEffect.h>
 #include <ofxsMacros.h>
 
@@ -42,6 +45,69 @@ NAMESPACE_OFX_IO_ENTER
 #ifdef OFX_IO_USING_OCIO
 class GenericOCIO;
 #endif
+
+/*
+ * The layers and views of an image file with named channels (e.g. OpenEXR), as the multi-planar readers present
+ * them, so that ReadOIIO and ReadEXR give the same planes and views for the same file. A channel is named
+ * layer.channel, layer.view.channel (OpenEXR's multi-view convention: the view is the penultimate component) or
+ * view.layer.channel (Nuke). A channel without a view belongs to the first view (the default view of the file,
+ * or "Main" if the file has no views).
+ */
+#define kReaderColorLayer "Color" // the channels without a layer named R, G, B, A, I (or Y, for luminance)
+#define kReaderXYZLayer "XYZ" // the channels X, Y, Z without a layer
+#define kReaderDepthLayer "depth" // a channel Z without a layer, without X and Y
+
+// Are a and b the same, ignoring the case of the ASCII letters? (view names, channel names)
+bool iequals(const std::string& a, const std::string& b);
+
+// The channels of a part (or subimage) of a file.
+struct ImagePartChannels {
+    std::vector<std::string> channelNames; // in the order of the channels of the part
+    std::vector<std::string> multiView; // the views of a single-part file (OpenEXR's multiView attribute)
+    std::string view; // the view of this part of a multi-part file (OpenEXR's view attribute)
+    std::string name; // the name of this part: the layer of its channels that have none (OpenEXR's name attribute)
+};
+
+struct LayerChannelIndexes {
+    // The index of the part in the file
+    int subImageIdx = 0;
+
+    // The channel indexes in the part
+    // WARNING: We do NOT allow layers with more than 4 channels
+    std::vector<int> channelIndexes;
+
+    // A vector with the same size as channelIndexes: the channel names, without layer and view (R, G, B, A and Z
+    // for red, Green, alpha, depth...)
+    std::vector<std::string> channelNames;
+};
+
+struct LayerUnionData {
+    // The data related to the layer
+    LayerChannelIndexes layer;
+
+    // the option as it appears in the choice menu (ReadOIIO)
+    std::string choiceOption;
+
+    // A list of the views that contain this layer
+    std::vector<std::string> views;
+};
+
+// This is a vector to remain the ordering imposed by the file <layer name, layer info>
+typedef std::vector<std::pair<std::string, LayerChannelIndexes>> LayersMap;
+
+// For each view name, the layer availables. Note that they are ordered because the first one is the "Main" view
+typedef std::vector<std::pair<std::string, LayersMap>> ViewsLayersMap;
+
+// <layer name, extended layer info>
+typedef std::vector<std::pair<std::string, LayerUnionData>> LayersUnionVect;
+
+// The layers of each view of the file made of these parts (at least one), and, if layersUnion is not NULL, the
+// union of the layers of all views (with the views of each).
+void getImageLayers(const std::vector<ImagePartChannels>& parts, ViewsLayersMap* layersMap, LayersUnionVect* layersUnion);
+
+// The view of layersMap (not empty) named viewName (case-insensitive), else the view of index view (for files whose
+// views are not named like the host's), else the first one.
+ViewsLayersMap::const_iterator findImageView(const ViewsLayersMap& layersMap, const std::string& viewName, int view);
 
 /**
  * @brief A generic reader plugin, derive this to create a new reader for a specific file format.
@@ -132,6 +198,17 @@ public:
         return _isMultiPlanar;
     }
 
+protected:
+#ifdef OFX_EXTENSIONS_NUKE
+    /**
+     * @brief For getClipComponents() of a multi-planar reader: no pass-through clip; the color plane of the sync
+     * clip (for its connection to work), the planes of the layers (but the kReaderColorLayer one), and the color
+     * plane, with the output components.
+     **/
+    void setClipPlanes(const OFX::ClipComponentsArguments& args, OFX::ClipComponentsSetter& clipComponents, const LayersUnionVect& layers);
+#endif
+
+public:
     enum BeforeAfterEnum {
         eBeforeAfterHold,
         eBeforeAfterLoop,
