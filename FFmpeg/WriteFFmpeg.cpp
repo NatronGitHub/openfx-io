@@ -4638,21 +4638,20 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
 
                 // Each of these packets should consist of a single frame therefore each one
                 // must have a PTS in order to correctly set the frame-rate
-                if ((int64_t)(pkt->dts) != AV_NOPTS_VALUE) {
-                    pkt->dts = av_rescale_q(pkt->dts, avCodecContext->time_base, avStream->time_base);
-                } else {
-                    pkt->dts = av_rescale_q(_pts_counter, avCodecContext->time_base, avStream->time_base);
+                if ((int64_t)(pkt->dts) == AV_NOPTS_VALUE) {
+                    pkt->dts = _pts_counter;
                 }
-
-                if ((int64_t)(pkt->pts) != AV_NOPTS_VALUE) {
-                    pkt->pts = av_rescale_q(pkt->pts, avCodecContext->time_base, avStream->time_base);
-                } else {
-                    pkt->pts = av_rescale_q(_pts_counter, avCodecContext->time_base, avStream->time_base);
+                if ((int64_t)(pkt->pts) == AV_NOPTS_VALUE) {
+                    pkt->pts = _pts_counter;
                 }
-
-                if (!pkt->duration) {
-                    pkt->duration = av_rescale_q(1, avCodecContext->time_base, avStream->time_base);
+                // The duration is in the codec time base too (#247: libaom-av1 sets 1 tick, one frame) and
+                // is rescaled with the timestamps, as fftools does (fftools/ffmpeg_mux.c:158-159 in FFmpeg n9.0.2,
+                // 163-164 in n8.0). av_packet_rescale_ts() only rescales a positive duration: else, one frame.
+                if (pkt->duration <= 0) {
+                    pkt->duration = 1;
                 }
+                av_packet_rescale_ts(pkt.pkt(), avCodecContext->time_base, avStream->time_base);
+                pkt->time_base = avStream->time_base;
 
                 pkt->stream_index = avStream->index;
 

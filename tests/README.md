@@ -159,6 +159,9 @@ the real render pipeline, linked directly (no host binary):
   writes H.264 and MPEG-2 with B-frames in AVI, which has no PTS, and ReadFFmpeg must read them back.
 * **Matroska at 24 fps**: WriteFFmpeg writes a 24 fps MKV (millisecond
   timestamps) and ReadFFmpeg must decode every frame with the right content.
+* **AV1 in Matroska and MP4** ([#247](https://github.com/NatronGitHub/openfx-io/issues/247)): the same with
+  libaom-av1 (skipped without the encoder), which gives its packets a duration in the codec time base: the
+  movie must last N frames, and the last frame must not be lost.
 * **WriteFFmpeg views** (issue #116): render views 1 and 0 of each frame (view
   1 is the negative of the ramp), view 1 first, then view 0 first. The movie
   holds a single view, view 0, whatever the order: ReadFFmpeg must decode the
