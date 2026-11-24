@@ -48,7 +48,8 @@ make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender 
 make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305)
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
-make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292; not on MS Windows)
+make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
+make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362)
 make test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
@@ -274,13 +275,22 @@ written because the file can not grow (`RLIMIT_FSIZE`, as on a full disk: the re
 muxer and `writeToFile()`, without a test hook in the plug-in). It is skipped (exit status 77) on MS Windows, which
 has no `RLIMIT_FSIZE`.
 
-`test-writeoiio-disk-full` (issue #292) runs `ofx_render_test OUT --writeoiio-disk-full`: WriteOIIO writes a
-512x512 noise image to EXR, TIFF and DPX files that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk), so
-that `ImageOutput::write_image()` or `close()` fails after `open()` succeeded. The render must fail, with an error
-that names the file; the same instance must then write the file without the limit. A failed render leaves no partial
-file (#251, `test-writer-remove-partial-file`). PNG and JPEG are not tested, because of OpenImageIO 3.1 bugs (#362): its PNG writer ignores write
-errors (`write_image()` and `close()` succeed), and its JPEG writer keeps libjpeg's default `error_exit()`, which
-calls `exit()`. It is skipped (exit status 77) on MS Windows.
+`test-writeoiio-disk-full` (issues #292, #362) runs `ofx_render_test OUT --writeoiio-disk-full`: WriteOIIO writes
+a 512x512 noise image to EXR (also a 2-view EXR with Parts "Split Views", multi-part), TIFF, DPX, PNG and JPEG files
+that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk), so that a write fails after `open()` succeeded.
+The render must fail, with an error that names the file, and the process must survive: OpenImageIO 3.1's PNG writer
+ignores write errors, and its JPEG writer exits the process on them when it writes through a "file" proxy (libjpeg's
+default `error_exit()`). An `atexit()` handler restores the limit, reports such an exit, removes the file and exits
+with status 3. The same instance must then write a file that OpenImageIO reads back, with the expected parts,
+channels and views, without the limit. A failed render leaves no partial file (#251,
+`test-writer-remove-partial-file`). It is skipped (exit status 77) on MS Windows.
+
+`test-writeoiio-files` (issue #362) runs `ofx_render_test OUT --writeoiio-files`: WriteOIIO writes files that
+OpenImageIO writes by name, although the plug-in gives it a proxy: a 2-view EXR (the test host has 2 views) with
+Parts "Split Views,Layers" and "Split Views" (multi-part; with a single layer, both write a part per view) and
+"Single Part" (8 channels), and a JPEG 2000 file with the htj2k256 compression (OpenJPH). Each file must be read back
+by OpenImageIO, with its parts, channels and views. Without OpenJPH, the JPEG 2000 case prints a `SKIP:` line, and the
+result is "PASS (1 case skipped)".
 
 `test-writer-remove-partial-file` (issue #251) runs `ofx_render_test OUT --writer-remove-partial-file`. With
 "Overwrite" unchecked, a render takes an existing file for a written frame and skips it, so a failed or aborted render
@@ -1204,7 +1214,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 

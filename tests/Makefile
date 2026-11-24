@@ -108,7 +108,7 @@ RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 # runscript_render_test: RunScript's render on POSIX only (runscript_win32_test tests abort on MS Windows)
 RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -565,7 +565,7 @@ runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -623,8 +623,8 @@ test-writeffmpeg-encode-failure-disk-full: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288-disk-full.mov --encode-failure-disk-full; \
 	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeffmpeg-encode-failure-disk-full: SKIPPED"; else exit $$st; fi
 
-# #292: WriteOIIO, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full disk): the render fails. Skipped
-# (exit status 77) on MS Windows.
+# #292, #362: WriteOIIO, EXR, TIFF, DPX, PNG and JPEG files can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
+# disk): the render fails, and the process survives. Skipped (exit status 77) on MS Windows.
 test-writeoiio-disk-full: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i292 --writeoiio-disk-full; \
 	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeoiio-disk-full: SKIPPED"; else exit $$st; fi
@@ -633,6 +633,11 @@ test-writeoiio-disk-full: ofx_render_test
 # keeps the previous one.
 test-writer-remove-partial-file: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out --writer-remove-partial-file
+
+# #362: WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which OpenImageIO writes by name, are
+# written and read back
+test-writeoiio-files: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i362 --writeoiio-files
 
 # #207, #220, #316: the conversions between Y'CbCr and RGB of ReadFFmpeg and WriteFFmpeg give exact values (rawvideo
 # written and decoded without swscale)

@@ -22,10 +22,14 @@
  * Writes an image using the OpenImageIO library.
  */
 
+#include <cerrno>
 #include <cfloat> // DBL_MAX
+#include <cstdio>
 #include <list>
+#include <memory>
 #include <set>
 #include <sstream>
+#include <system_error> // std::generic_category()
 
 #include "ofxsMacros.h"
 
@@ -320,6 +324,8 @@ enum EParamTextureformat {
 
 static bool gIsMultiplanarV2 = false;
 
+struct WriteOIIOEncodePlanesData;
+
 class WriteOIIOPlugin
     : public GenericWriterPlugin {
     // counts this instance: the first one starts OpenImageIO's thread pool, the last one stops it (OIIOGlobal.h).
@@ -420,8 +426,11 @@ private:
     void refreshCheckboxesLabels();
 
 private:
-    // Sets the error of the last failed call on output as the persistent message, and fails the render.
-    [[noreturn]] void reportOutputError(const ImageOutput& output, const string& filename);
+    // Sets the error of the last failed call on data.output (and the write error of data.file, if any) as the
+    // persistent message, and fails the render.
+    [[noreturn]] void reportOutputError(const WriteOIIOEncodePlanesData& data);
+    // Sets "Cannot write filename: error" as the persistent message, and fails the render.
+    [[noreturn]] void reportWriteError(const string& filename, const string& error);
 
     ChoiceParam* _bitDepth;
     IntParam* _quality;
@@ -943,7 +952,112 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
     }
 }
 
+// OpenImageIO 2.2 or later (ImageOutput::set_ioproxy(), IOFile(FILE*, Mode) and its protected m_file). If a writer
+// does not use the proxy after all, it writes the file by name, as without it.
+#if OIIO_VERSION >= 20200
+// The file that an ImageOutput writes through (ImageOutput::set_ioproxy()). It keeps the first write error, because
+// OpenImageIO does not report every one: its PNG writer ignores them, and its JPEG writer, when it writes to a "file"
+// proxy, exits the process on them (libjpeg's default error_exit()) (#362).
+// - proxytype() is not "file", so that the JPEG writer encodes into memory, then writes that through this proxy
+//   (OpenImageIO 3.1.17 jpegoutput.cpp:150-157).
+// - The file is created by the first write, so that a writer that ignores the proxy and writes the file by name
+//   (JPEG 2000 with OpenJPH: jpeg2000output.cpp:228-236, :818-819) is left alone.
+// Used by one ImageOutput, which is not called concurrently: no mutex.
+class CheckedFile final
+    : public Filesystem::IOFile
+{
+public:
+    explicit CheckedFile(const string& filename)
+        : IOFile(static_cast<FILE*>(nullptr), Write)
+        , _filename(filename)
+    {
+    }
+
+    CheckedFile(const CheckedFile&) = delete;
+    CheckedFile& operator=(const CheckedFile&) = delete;
+    ~CheckedFile() override { close(); }
+
+    const char* proxytype() const override { return "checkedfile"; }
+    bool seek(int64_t offset) override
+    {
+        if (!m_file) { // the file is not created yet: it will be positioned there
+            m_pos = offset;
+            return offset >= 0;
+        }
+        return IOFile::seek(offset);
+    }
+    size_t write(const void* buf, size_t size) override { return checked(size, create() ? IOFile::write(buf, size) : 0); }
+    // (on MS Windows, IOFile::pwrite() calls seek() and write(), so a short write is checked twice: harmless)
+    size_t pwrite(const void* buf, size_t size, int64_t offset) override { return checked(size, create() ? IOFile::pwrite(buf, size, offset) : 0); }
+#if OIIO_VERSION >= 30000
+    void flush() override
+#else
+    void flush() const override // const before OpenImageIO 3.0
+#endif
+    {
+        if (m_file && (std::fflush(m_file) != 0)) {
+            fail();
+        }
+    }
+    // fclose() writes what stdio buffers, so it may fail too
+    void close() override
+    {
+        if (m_file && (std::fclose(m_file) != 0)) {
+            fail();
+        }
+        m_file = nullptr;
+        m_mode = Closed;
+    }
+
+    // The first error (empty if none). Call it after close().
+    const string& failure() const { return _failure; }
+
+private:
+    // true if the file is open (created on the first call)
+    bool create()
+    {
+        if (m_file) {
+            return true;
+        }
+        if (_created || (m_mode != Write)) {
+            return false;
+        }
+        _created = true;
+        m_file = Filesystem::fopen(_filename, "w+b"); // as IOFile (UTF-8 paths on MS Windows)
+        if (!m_file || ((m_pos != 0) && (Filesystem::fseek(m_file, m_pos, SEEK_SET) != 0))) {
+            fail();
+            return false;
+        }
+        return true;
+    }
+    size_t checked(size_t size, size_t written)
+    {
+        if (written != size) {
+            fail();
+        }
+        return written;
+    }
+    // records errno, if it is the first error (const, for flush() before OpenImageIO 3.0)
+    void fail() const
+    {
+        if (_failure.empty()) {
+            const int e = errno;
+            _failure = e ? std::generic_category().message(e) : string("write error");
+        }
+    }
+
+    const string _filename;
+    bool _created = false;
+    mutable string _failure;
+};
+#endif
+
 struct WriteOIIOEncodePlanesData {
+#if OIIO_VERSION >= 20200
+    // The file of output, if the format supports ioproxy (#362). Declared before output, whose destructor may still
+    // write to it.
+    std::unique_ptr<CheckedFile> file;
+#endif
 #if OIIO_PLUGIN_VERSION >= 22
     ImageOutputPtr output;
 #else
@@ -1599,19 +1713,39 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
         return;
     }
+#if OIIO_VERSION >= 20200
+    if (data->output->supports("ioproxy")) {
+        data->file = std::make_unique<CheckedFile>(filename);
+        // set_ioproxy(), not the oiio:ioproxy attribute, which the multi-part EXR writer ignores (OpenImageIO 3.1.17
+        // exroutput.cpp:765-790); true, since the output supports ioproxy
+        (void)data->output->set_ioproxy(data->file.get());
+    }
+#endif
     // Some formats only support opening all subimages at once.
     // See https://openimageio.readthedocs.io/en/stable/imageoutput.html
     if (!data->output->open(filename, data->specs.size(), &data->specs.front())) {
-        reportOutputError(*data->output, filename);
+        reportOutputError(*data);
     }
 } // WriteOIIOPlugin::beginEncodeParts
 
 void
-WriteOIIOPlugin::reportOutputError(const ImageOutput& output,
-                                   const string& filename)
+WriteOIIOPlugin::reportOutputError(const WriteOIIOEncodePlanesData& data)
 {
-    const string err = output.geterror();
-    setPersistentMessage(Message::eMessageError, "", "Cannot write " + filename + (err.empty() ? string() : ": " + err));
+    string error = data.output->geterror();
+#if OIIO_VERSION >= 20200
+    // e.g. "File too large", which the error of OpenImageIO may not say ("Failed OpenEXR write: ... File output failed.")
+    if (data.file && !data.file->failure().empty() && (error.find(data.file->failure()) == string::npos)) {
+        error += (error.empty() ? "" : " (") + data.file->failure() + (error.empty() ? "" : ")");
+    }
+#endif
+    reportWriteError(data.filename, error);
+}
+
+void
+WriteOIIOPlugin::reportWriteError(const string& filename,
+                                  const string& error)
+{
+    setPersistentMessage(Message::eMessageError, "", "Cannot write " + filename + (error.empty() ? string() : ": " + error));
     // not throwSuiteStatusException(), which is not [[noreturn]]
     throw OFX::Exception::Suite(kOfxStatFailed);
 }
@@ -1672,7 +1806,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
     }
     if (planeIndex != 0) {
         if (!data->output->open(filename, data->specs[planeIndex], ImageOutput::AppendSubimage)) {
-            reportOutputError(*data->output, filename);
+            reportOutputError(*data);
         }
     }
 
@@ -1686,7 +1820,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
                                    xStride, // xstride
                                    -rowBytes, // ystride
                                    AutoStride)) { // zstride
-        reportOutputError(*data->output, filename);
+        reportOutputError(*data);
     }
 }
 
@@ -1702,12 +1836,20 @@ WriteOIIOPlugin::endEncodeParts(void* user_data)
     // Not ImageOutput::has_error(): OpenImageIO 3.1's TIFF writer records an error for the Exif directory of files
     // without Exif metadata ("failed TIFFWriteCustomDirectory() of the Exif data"), and close() succeeds.
     if (!data->output->close()) {
-        reportOutputError(*data->output, data->filename);
+        reportOutputError(*data);
     }
     // Clear that error: OIIO keeps the errors of each ImageOutput in a thread_local map, from which ~ImageOutput()
     // does not erase them (OIIO 3.1.17 imageoutput.cpp, ~ImageOutput(): the output_error_messages erase is commented
     // out), so it would grow by one string per frame.
     (void)data->output->geterror();
+#if OIIO_VERSION >= 20200
+    if (data->file) {
+        data->file->close();
+        if (!data->file->failure().empty()) {
+            reportWriteError(data->filename, data->file->failure());
+        }
+    }
+#endif
 }
 
 bool

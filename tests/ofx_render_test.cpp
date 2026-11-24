@@ -106,10 +106,17 @@
  *       file: the waiting renders must fail within 60 s instead of waiting forever, and the next render must work
  *     - with --encode-failure-disk-full (not on MS Windows: exit status 77), frame 1 fails to be written (RLIMIT_FSIZE)
  *
- *   WriteOIIO, the disk is full (issue #292), with the option --writeoiio-disk-full (only this test; not on MS Windows:
- *   exit status 77):
- *     - EXR, TIFF and DPX files can not grow beyond 16 KB (RLIMIT_FSIZE): the render must fail with an
- *       error that names the file, and the same instance must then write the file without the limit
+ *   WriteOIIO, the disk is full (issues #292, #362), with the option --writeoiio-disk-full (only this test; not on MS
+ *   Windows: exit status 77):
+ *     - EXR (also a 2-view multi-part EXR), TIFF, DPX, PNG and JPEG files can not grow beyond 16 KB (RLIMIT_FSIZE):
+ *       the render must fail with an error that names the file, the process must survive (OpenImageIO's JPEG writer
+ *       can exit it), and the same instance must then write a file that OpenImageIO reads back, without the limit
+ *
+ *   WriteOIIO, the files that OpenImageIO writes by name (issue #362), with the option --writeoiio-files (only this
+ *   test):
+ *     - a 2-view EXR, with Parts "Split Views" and "Split Views,Layers" (multi-part: OpenImageIO's multi-part EXR
+ *       writer ignores the oiio:ioproxy attribute) and "Single Part"; a JPEG 2000 file with the htj2k256 compression
+ *       (OpenJPH, which writes the file by name; skipped without OpenJPH): each file must be read back, with its views
  *
  *   A writer of image files removes the partial file of a failed or aborted render (issue #251), with the option
  *   --writer-remove-partial-file (only this test):
@@ -2481,6 +2488,15 @@ public:
     // the params (and clips) of the instance
     Effect& context() { return _ctx; }
 
+    // Sets the choice param name to the option whose label is label; false if there is no such option.
+    bool setChoice(const char* name, const char* label)
+    {
+        const int i = choiceIndex(_ctx, name, label);
+        if (i < 0) { std::printf("  FAIL: no option \"%s\" in param %s\n", label, name); return false; }
+        setOverrideInt(&_ctx, name, i);
+        return true;
+    }
+
     // the RGBA float pixels of the source image (W x H)
     float* sourcePixels() { return reinterpret_cast<float*>(_src->buffer.data()); }
 
@@ -2902,10 +2918,65 @@ private:
 };
 #endif
 
-// #292, POSIX only: WriteOIIO, the file can not grow beyond a few KB (RLIMIT_FSIZE, as on a full disk), so that
-// ImageOutput::write_image() or close() fails, after open() succeeded: the render must fail with the error of OIIO.
-// Each format is then written without the limit, to check that the failure came from the limit. GenericWriter
-// removes the partial file (#251). Exits with 77 (skipped) on MS Windows, which has no RLIMIT_FSIZE.
+#ifndef _WIN32
+// #362: the file that WriteOIIO writes with the file size limit, and the limit to restore, for onExitDuringRender()
+static const char* gFileWithLimit = nullptr;
+static struct rlimit gNoFileSizeLimit = {};
+
+// atexit() handler: on a write error, OpenImageIO 3.1's JPEG writer, when it writes through a "file" proxy, exits the
+// process (libjpeg's default error_exit()). exit() does not run the destructor of FileSizeLimit, so the limit is
+// restored here (or this message could not be written to a log larger than the limit), and the file is removed.
+static void onExitDuringRender()
+{
+    if (!gFileWithLimit) {
+        return;
+    }
+    (void)::setrlimit(RLIMIT_FSIZE, &gNoFileSizeLimit);
+    std::clearerr(stdout);
+    std::printf("  FAIL: the process exited while WriteOIIO wrote %s to a full disk\n", gFileWithLimit);
+    std::fflush(stdout);
+    std::remove(gFileWithLimit);
+    std::_Exit(3);
+}
+#endif
+
+// Reads file with OpenImageIO: true if it has one subimage per element of nChannels, of W x H pixels and with that
+// number of channels, which can all be read. If views is not empty, these are the views of the file: the "view" of
+// each subimage (a multi-part EXR), or the "multiView" of the only subimage (a single-part EXR).
+static bool readBackOIIO(const std::string& file, int W, int H, const std::vector<int>& nChannels,
+                         const std::vector<std::string>& views = {})
+{
+    auto in = OIIO::ImageInput::open(file);
+    if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", file.c_str(), OIIO::geterror().c_str()); return false; }
+    int n = 0;
+    bool good = true;
+    std::vector<std::string> fileViews;
+    for (; in->seek_subimage(n, 0); ++n) {
+        const OIIO::ImageSpec& spec = in->spec();
+        std::vector<unsigned char> buf((size_t)spec.image_bytes(true));
+        const bool read = in->read_image(n, 0, 0, spec.nchannels, OIIO::TypeDesc::UINT8, buf.data());
+        const std::string view = spec.get_string_attribute("view");
+        std::printf("  read back subimage %d: %dx%d, %d channels, view \"%s\", %s\n", n, spec.width, spec.height, spec.nchannels, view.c_str(), read ? "ok" : in->geterror().c_str());
+        good = good && read && (spec.width == W) && (spec.height == H) && (n < (int)nChannels.size()) && (spec.nchannels == nChannels[n]);
+        if (const OIIO::ParamValue* mv = spec.find_attribute("multiView")) {
+            for (int i = 0; i < mv->nvalues() * (int)mv->type().basevalues(); ++i) fileViews.push_back(mv->get_string_indexed(i));
+        } else if (!view.empty()) {
+            fileViews.push_back(view);
+        }
+    }
+    (void)in->geterror(); // seek_subimage() past the last one sets an error
+    if (n != (int)nChannels.size()) { std::printf("  FAIL: %d subimages instead of %d\n", n, (int)nChannels.size()); return false; }
+    if (!good) { std::printf("  FAIL: %s can not be read back, or its size or channels are wrong\n", file.c_str()); return false; }
+    if (!views.empty() && (fileViews != views)) { std::printf("  FAIL: the views of the file are not those of the project\n"); return false; }
+    return true;
+}
+
+// #292, #362, POSIX only: WriteOIIO, the file can not grow beyond a few KB (RLIMIT_FSIZE, as on a full disk), so that
+// a write fails, after open() succeeded: the render must fail with an error that names the file, and the process
+// must survive. OpenImageIO 3.1 does not report the PNG write errors, and exits the process on JPEG write errors (when
+// its JPEG writer writes through a "file" proxy). Each format is then written without the limit, and read back, to
+// check that the failure came from the limit. GenericWriter removes the partial file (#251). Exits with 77 (skipped)
+// on MS Windows, which has no RLIMIT_FSIZE.
 int testWriteOIIODiskFull(const std::string& outFile)
 {
 #ifdef _WIN32
@@ -2916,17 +2987,38 @@ int testWriteOIIODiskFull(const std::string& outFile)
     const int W = 512, H = 512;
     const rlim_t kMaxFileSize = 16384; // more than any header, much less than any of these files
     int failures = 0;
-    // Not JPEG and PNG, because of OpenImageIO 3.1 bugs (#362): the JPEG writer keeps libjpeg's default error_exit(),
-    // which calls exit() on a write error (jpegoutput.cpp: jpeg_std_error()), so the process would exit; the PNG
-    // writer ignores the write errors (pngoutput.cpp: PngWriteCallback() sets m_err, which nothing reads), so
-    // write_image() and close() succeed.
-    for (const char* ext : { "exr", "tif", "dpx" }) {
+    if (::getrlimit(RLIMIT_FSIZE, &gNoFileSizeLimit) != 0) { std::printf("  FAIL: getrlimit: %s\n", std::strerror(errno)); return 1; }
+    std::atexit(onExitDuringRender);
+    // a Natron-like host (this test runs by itself), for the Parts and Views params of WriteOIIO: dynamic choices and
+    // multi-planar
+    pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    struct Case {
+        const char* label;
+        const char* ext;
+        int nViews;                // the views of the project (all written)
+        std::vector<int> nChannels; // the channels of each subimage of the file
+    };
+    const Case cases[] = {
+        { "exr", "exr", 1, { 4 } },
+        // multi-part, through the proxy: OpenEXR writes the offset tables when the file is closed, after seeking back
+        { "2-view EXR, Parts Split Views", "exr", 2, { 4, 4 } },
+        { "tif", "tif", 1, { 4 } },
+        { "dpx", "dpx", 1, { 4 } },
+        { "png", "png", 1, { 4 } },
+        { "jpg", "jpg", 1, { 3 } }, // JPEG has no alpha
+    };
+    for (const Case& c : cases) {
+        const char* ext = c.ext;
         const std::string file = outFile + "." + ext;
-        std::printf("==== WriteOIIO %s, the disk is full after %d bytes (issue #292) ====\n", ext, (int)kMaxFileSize);
+        std::printf("==== WriteOIIO %s, the disk is full after %d bytes (issues #292, #362) ====\n", c.label, (int)kMaxFileSize);
         std::remove(file.c_str());
         FileSizeLimit fileSizeLimit(file);
+        gViewCount = c.nViews;
+        WriterParams wp;
+        if (c.nViews > 1) wp.ints.emplace_back("partSplitting", 1); // Split Views
         WriterSession s;
-        if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WriteOIIO")) { ++failures; continue; }
+        if (s.create(file, W, H, 1, wp, "fr.inria.openfx.WriteOIIO")) { ++failures; gViewCount = 1; continue; }
         // noise, which no codec compresses into a few KB
         std::mt19937 rng(292);
         std::uniform_real_distribution<float> dist(0.f, 1.f);
@@ -2936,7 +3028,9 @@ int testWriteOIIODiskFull(const std::string& outFile)
         OfxStatus st = s.begin(1);
         if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); ++failures; continue; }
         if (!fileSizeLimit.limit(kMaxFileSize)) { ++failures; continue; }
+        gFileWithLimit = file.c_str();
         st = s.render(1);
+        gFileWithLimit = nullptr;
         if (!fileSizeLimit.restore()) { ++failures; continue; }
         const std::string error = WriterSession::persistentError();
         struct stat sb;
@@ -2948,14 +3042,73 @@ int testWriteOIIODiskFull(const std::string& outFile)
 
         // without the limit, the same instance writes the file
         if (s.renderAll(1)) { std::printf("  FAIL: the render without the limit\n"); ++failures; }
-        else if ((::stat(file.c_str(), &sb) != 0) || (sb.st_size <= (off_t)kMaxFileSize)) {
-            std::printf("  FAIL: the file without the limit is not larger than %d bytes\n", (int)kMaxFileSize);
-            ++failures;
-        }
+        else if (!readBackOIIO(file, W, H, c.nChannels, (c.nViews > 1) ? std::vector<std::string> { "main", "right" } : std::vector<std::string> {})) { ++failures; }
+        gViewCount = 1;
     }
     if (!failures) std::printf("  PASS\n");
     return failures;
 #endif
+}
+
+// true if OpenImageIO was built with OpenJPH (its "build:dependencies" attribute, e.g. "..., openjph 0.33.0, ...")
+static bool hasOpenJPH()
+{
+    std::string libs = OIIO::get_string_attribute("build:dependencies");
+    std::transform(libs.begin(), libs.end(), libs.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+    return libs.find("openjph") != std::string::npos;
+}
+
+// #362: WriteOIIO, files that OpenImageIO writes by name although the plug-in gives it a proxy: a 2-view EXR in
+// several parts (OpenImageIO 3.1's multi-part EXR writer ignores the oiio:ioproxy attribute), and a JPEG 2000 file
+// with the htj2k256 compression (OpenJPH, which ignores the proxy). Each file must be written and read back, with its
+// views.
+int testWriteOIIOFiles(const std::string& outFile)
+{
+    const int W = 64, H = 48;
+    int failures = 0;
+    int skipped = 0;
+    // a Natron-like host (this test runs by itself): WriteOIIO has the Parts and Views params if the host supports
+    // dynamic choices and is multi-planar
+    pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    struct Case {
+        const char* label;
+        const char* ext;
+        const char* compression; // the label of the Compression option (nullptr: the default)
+        int parts;       // the index of the Parts option (-1: the default)
+        int nViews;      // the views of the project
+        std::vector<int> nChannels; // the channels of each subimage of the file
+    };
+    // Parts: 0 "Single Part", 1 "Split Views", 2 "Split Views,Layers" (the default); the views: "All" (the default)
+    const Case cases[] = {
+        { "EXR, 2 views, Split Views,Layers (multi-part)", "exr", nullptr, -1, 2, { 4, 4 } },
+        { "EXR, 2 views, Split Views (multi-part)", "exr", nullptr, 1, 2, { 4, 4 } },
+        { "EXR, 2 views, Single Part", "exr", nullptr, 0, 2, { 8 } }, // RGBA and right.RGBA
+        // OpenImageIO's JPEG 2000 writer uses OpenJPH for a "htj2k..." compression (jpeg2000output.cpp:224-226)
+        { "JPEG 2000, compression htj2k256 (OpenJPH)", "jp2", "htj2k256", -1, 1, { 4 } },
+    };
+    for (const Case& c : cases) {
+        const std::string file = outFile + "." + c.ext;
+        std::printf("==== WriteOIIO %s (issue #362) ====\n", c.label);
+        if (c.compression && !std::strncmp(c.compression, "htj2k", 5) && !hasOpenJPH()) {
+            std::printf("  SKIP: OpenImageIO was built without OpenJPH\n");
+            ++skipped;
+            continue;
+        }
+        std::remove(file.c_str());
+        WriterParams wp;
+        if (c.parts >= 0) wp.ints.emplace_back("partSplitting", c.parts);
+        gViewCount = c.nViews;
+        WriterSession s;
+        if (s.create(file, W, H, 1, wp, "fr.inria.openfx.WriteOIIO") || (c.compression && !s.setChoice("compression", c.compression))) { ++failures; }
+        else if (s.renderAll(1)) { std::printf("  FAIL: the render: \"%s\"\n", WriterSession::persistentError().c_str()); ++failures; }
+        else if (!readBackOIIO(file, W, H, c.nChannels, (c.nViews > 1) ? std::vector<std::string> { "main", "right" } : std::vector<std::string> {})) { ++failures; }
+        gViewCount = 1;
+        std::remove(file.c_str());
+    }
+    if (!failures && skipped) std::printf("  PASS (%d case skipped)\n", skipped);
+    else if (!failures) std::printf("  PASS\n");
+    return failures;
 }
 
 // ---- #294, #296: the PFM plug-ins fail on write errors and on invalid headers (options --pfm-write-errors, --pfm-read-errors) ----
@@ -4526,6 +4679,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegEncodeFailureDiskFull(outFile);
         } else if (mode == "--writeoiio-disk-full") {
             failures = testWriteOIIODiskFull(outFile);
+        } else if (mode == "--writeoiio-files") {
+            failures = testWriteOIIOFiles(outFile);
         } else if (mode == "--writer-remove-partial-file") {
             failures = testWriterRemovePartialFile(outFile);
         } else if (mode == "--swscale-exact") {
