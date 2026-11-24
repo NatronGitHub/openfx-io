@@ -311,17 +311,29 @@ private:
 
 typedef map<Channel, string> ChannelsMap;
 
-// The channels of the file that map to R, G, B and A: the first one of each, in the order of the channel list
-// (by their bare names: the layers are ignored).
+// The channels of the file that map to R, G, B and A, matched on their bare names, all from one group, so that an
+// image is never made of several layers (#358):
+// - the channels without a layer, if any matches: the ones named exactly R, G, B or A (or Red, Y...) first, then
+//   "1R" or "R.1";
+// - else the layer with the most of them, the first one in the channel list on a tie ("diffuse.R"...).
+// A channel that the group doesn't have stays absent, and the first match of each wins, in the order of the channel
+// list. The map holds the file's full channel name: decode() inserts a FrameBuffer slice under it, and OpenEXR fills
+// a slice whose name is not in the file with its fillValue (ImfFrameBuffer.h, Slice::fillValue), so the bare name
+// ("R" for "diffuse.R") would read zeros.
+// Layers are keyed on the sanitized layer name, so "1diffuse.R" and "diffuse.G", or "a.b.R" and "a_b.G", are one
+// layer; and within a layer, an exact name doesn't win over a "1R"-style one. Both are contrived.
 static void
 mapChannels(const Imf_::Header& header,
             const vector<string>& views,
             ChannelsMap* channels)
 {
+    channels->clear();
     const Imf_::ChannelList& imfchannels = header.channels();
+    ChannelsMap qualified; // the channels without a layer whose name is not the bare name ("1R", "R.1")
+    vector<pair<string, ChannelsMap> > layers; // in the order of their first channel
 
     for (Imf_::ChannelList::ConstIterator chan = imfchannels.begin(); chan != imfchannels.end(); ++chan) {
-        string chanName(chan.name());
+        const string chanName(chan.name());
 
         /// empty channel, discard it
         if (chanName.empty()) {
@@ -329,16 +341,40 @@ mapChannels(const Imf_::Header& header,
         }
 
         /// convert the channel to ours
-        ChannelExtractor exrExctractor(chan.name(), views);
+        ChannelExtractor exrExctractor(chanName, views);
 
-        /// if we successfully extracted the channels
-        if (exrExctractor.isValid()) {
-            /// register the extracted channel
-            channels->insert(make_pair(exrExctractor._mappedChannel, exrExctractor._chan));
-        } else {
+        if (!exrExctractor.isValid()) {
 #ifdef DEBUG
-            std::cout << "Cannot decode channel " << chan.name() << std::endl;
+            std::cout << "Cannot decode channel " << chanName << std::endl;
 #endif
+            continue;
+        }
+        const pair<Channel, string> mapped(exrExctractor._mappedChannel, chanName);
+        if (!exrExctractor._layer.empty()) {
+            vector<pair<string, ChannelsMap> >::iterator layer = layers.begin();
+            while (layer != layers.end() && layer->first != exrExctractor._layer) {
+                ++layer;
+            }
+            if (layer == layers.end()) {
+                layer = layers.insert(layers.end(), make_pair(exrExctractor._layer, ChannelsMap()));
+            }
+            layer->second.insert(mapped);
+        } else if (exrExctractor._chan == chanName) {
+            channels->insert(mapped);
+        } else {
+            qualified.insert(mapped);
+        }
+    }
+    channels->insert(qualified.begin(), qualified.end()); // (does not replace the channels already there)
+    if (channels->empty()) {
+        const ChannelsMap* best = nullptr;
+        for (size_t i = 0; i < layers.size(); ++i) {
+            if (!best || (layers[i].second.size() > best->size())) {
+                best = &layers[i].second;
+            }
+        }
+        if (best) {
+            *channels = *best;
         }
     }
 }
