@@ -1205,7 +1205,11 @@ script first checks that the ffmpeg CLI decodes every frame, with one "corrupt d
 packet (`CHECK_DAMAGED_NOISE`), and fails otherwise. A first ProRes frame with damaged slices (packet 0) has no previous
 frame to show and must fail, with an error (`--fail 1`). A truncated H.264 MP4 (faststart,
 with B-frames) must fail from the DTS of the truncated packet, found in the index at open, in any
-render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
+render order. Truncated MJPEG and H.264 (with B-frames) Matroska files, cut in the 16th packet
+([#189](https://github.com/NatronGitHub/openfx-io/issues/189)), must fail from frame 16, instead of holding frame
+15, also with an interleaved AAC track. Their frame count comes from the duration in the header, and the demuxer
+drops the partial last block. Video-only VFR Matroska and MP4 clips whose last frame lasts 6 frames (BlockDuration,
+stts) are not truncated: that frame holds until the end of the movie. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
 decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one damaged
 from its 7th packet on, decoding every frame sequentially, and in reverse order in a newly opened
 file, must read at most 12 times the file (`--max-seq-bytes`, `--max-reverse-bytes`: the reader
