@@ -36,3 +36,10 @@ colorspaces:
   - !<ColorSpace> {name: st2084, family: hdr, bitdepth: 32f, isdata: false}
   - !<ColorSpace> {name: AlexaV3LogC, family: log, bitdepth: 32f, isdata: false}
   - !<ColorSpace> {name: Rec2020, family: rec2020, bitdepth: 32f, isdata: false}
+  # linear colorspaces of the Natron, OCIO 2 and ACES configs (WriteFFmpeg tags their primaries, issue #222)
+  - !<ColorSpace> {name: "Linear sRGB / REC.709 D65", family: linear, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: lin_rec709_srgb, family: linear, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: Linear Rec.2020, family: linear, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: Linear P3-D65, family: linear, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: ACES2065-1, family: linear, bitdepth: 32f, isdata: false}
+  - !<ColorSpace> {name: ACEScg, family: linear, bitdepth: 32f, isdata: false}

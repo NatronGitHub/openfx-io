@@ -53,6 +53,9 @@
  *       the OCIO colorspace (ProRes: only the transfer functions of SMPTE RDD 36), its Y'CbCr matrix is BT.2020 with the
  *       BT.2020 primaries, else BT.709 in HD and SMPTE 170M in SD, and RGB (gbr) for RGB codecs; the Y' that FFmpeg
  *       decodes is the one of that matrix; ReadFFmpeg (Auto matrix and range) decodes the color back
+ *     - linear OCIO output colorspaces (issue #222): the transfer function is linear, and the primaries are those
+ *       that the name gives (BT.709/sRGB, BT.2020, P3-D65; BT.709 for "linear"), or unspecified (ACES), ProRes
+ *       included; an unknown colorspace still gets the default primaries and transfer function
  *     - Matroska: the OCIO output colorspace is written in the uk.co.thefoundry.Colorspace metadata, and ReadFFmpeg
  *       uses it as its File Colorspace
  *     - DNxHR HQX, HQ and 444 with Rec2020, and DNxHR HQ in SD: the Y'CbCr matrix is always BT.709 (the one of the
@@ -5490,6 +5493,20 @@ main(int argc, char** argv)
             { "ProRes 422 HQ, 720p, rec709", "prores_ksapch", ".mov", "rec709", 1280, 720, AVCOL_SPC_BT709, AVCOL_PRI_BT709, AVCOL_TRC_BT709, true, k709[0], k709[1], 10, nullptr },
             { "ProRes 422 HQ, SD, sRGB (unspecified transfer function in ProRes)", "prores_ksapch", ".mov", "sRGB", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_UNSPECIFIED, true, k601[0], k601[1], 10, nullptr },
             { "QuickTime Animation (RGB), sRGB", "qtrle", ".mov", "sRGB", 128, 96, AVCOL_SPC_RGB, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, -1., -1., 8, nullptr },
+            // #222: linear colorspaces: linear transfer function, and the primaries of the name (ACES AP0 and AP1
+            // have no ITU-T H.273 code); "linear" is the reference of nuke-default, with Rec.709 primaries
+            { "H.264, SD, Linear sRGB / REC.709 D65", "libx264", ".mp4", "Linear sRGB / REC.709 D65", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_LINEAR, false, k601[0], k601[1], 8, nullptr },
+            { "H.264, SD, lin_rec709_srgb", "libx264", ".mp4", "lin_rec709_srgb", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_LINEAR, false, k601[0], k601[1], 8, nullptr },
+            { "H.264, SD, Linear Rec.2020", "libx264", ".mp4", "Linear Rec.2020", 128, 96, AVCOL_SPC_BT2020_NCL, AVCOL_PRI_BT2020, AVCOL_TRC_LINEAR, false, k2020[0], k2020[1], 8, nullptr },
+            { "H.264, SD, Linear P3-D65", "libx264", ".mp4", "Linear P3-D65", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_SMPTE432, AVCOL_TRC_LINEAR, false, k601[0], k601[1], 8, nullptr },
+            { "H.264, SD, ACES2065-1", "libx264", ".mp4", "ACES2065-1", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_LINEAR, false, k601[0], k601[1], 8, nullptr },
+            { "H.264, SD, ACEScg", "libx264", ".mp4", "ACEScg", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_LINEAR, false, k601[0], k601[1], 8, nullptr },
+            { "H.264, SD, linear", "libx264", ".mp4", "linear", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_LINEAR, false, k601[0], k601[1], 8, nullptr },
+            // the default primaries of ProRes (setColorTags()) are only for the colorspaces that getColorInfo() does
+            // not know; the linear transfer function is unspecified in ProRes (SMPTE RDD 36)
+            { "ProRes 4444, SD, ACES2065-1", "prores_ksap4h", ".mov", "ACES2065-1", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED, true, k601[0], k601[1], 12, nullptr },
+            // a colorspace that getColorInfo() does not know still gets the default primaries and transfer function
+            { "ProRes 422 HQ, SD, AlexaV3LogC (unknown: SMPTE 170M, BT.709)", "prores_ksapch", ".mov", "AlexaV3LogC", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_SMPTE170M, AVCOL_TRC_BT709, true, k601[0], k601[1], 10, nullptr },
             { "H.264 in Matroska, SD, sRGB: colorspace metadata", "libx264", ".mkv", "sRGB", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, false, k601[0], k601[1], 8, "sRGB" },
             { "H.264 in Matroska, SD, Gamma2.2: colorspace metadata", "libx264", ".mkv", "Gamma2.2", 128, 96, AVCOL_SPC_SMPTE170M, AVCOL_PRI_BT709, AVCOL_TRC_GAMMA22, false, k601[0], k601[1], 8, "Gamma2.2" },
             // DNxHD/DNxHR: FFmpeg's decoder takes the matrix of every frame from the frame header, where FFmpeg's
