@@ -73,7 +73,7 @@ make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
 make test-oiio-layer-menu # ReadOIIO: the output-layer menu rebuilt by a file change while renders and isIdentity run on other threads (#298)
 make test-oiio-layer-menu-tsan # the same with ThreadSanitizer (not in make test)
-make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, no leak)
+make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, UBSan, no leak)
 make test-reader-window-host # the same readers and ReadFFmpeg in a host built on openfx's HostSupport (needs expat, oiiotool, ffmpeg)
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
@@ -743,21 +743,29 @@ buffer, which it then premultiplies (UnPreMultiplied files):
 of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders
 narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 
-### 1g1. `test-png-corrupt` — ReadPNG and WritePNG on libpng errors (#235)
+### 1g1. `test-png-corrupt` — ReadPNG and WritePNG on libpng errors (#235, #276, #297)
 
 libpng reports an error by `longjmp()`ing to `png_jmpbuf(png)`, which must be set with `setjmp()` in the function that
 makes the libpng call ([libpng-manual.txt](https://github.com/pnggroup/libpng/blob/libpng16/libpng-manual.txt),
 "Setup"). `png_corrupt_test.cpp` (with AddressSanitizer) writes two valid 8-bit RGB PNG files with libpng (one IDAT
 chunk, and IDAT chunks of 256 bytes) in `.png_corrupt`, and reads them with ReadPNG. It then makes corrupt files from
 them: an invalid IHDR with a valid CRC (zero width, bit depth 7), a bad IHDR CRC, files truncated in the middle of IHDR
-and just after it, garbage after the signature, a bad CRC in the only IDAT chunk and in the first of several, IDAT
-data truncated, corrupt zlib data (with a valid CRC), a bad signature and an empty file. For each one, it creates a
-ReadPNG instance, asks for the Image Info, the RoD and renders it: the RoD (corrupt header) or the render (corrupt
-image data) must fail with a persistent error message that has libpng's message (`libpng error: ...`). It also
-renders an image wider than libpng's limit (1000001 pixels) with WritePNG, which must fail with libpng's message. It
-then reads all the corrupt files 8 more times, and checks that the memory allocated
-(`__sanitizer_get_current_allocated_bytes()`) and the lowest free file descriptor are the same as before (without
-AddressSanitizer, e.g. on MS Windows, only the file descriptors are checked). It sets `OCIO=test.ocio`.
+and just after it, garbage after the signature, a bad CRC in the only IDAT chunk and in the first of several, IDAT data
+truncated, corrupt zlib data (with a valid CRC), a bad signature and an empty file. For each one, it creates a ReadPNG
+instance, asks for the Image Info, the RoD and renders it: the RoD (corrupt header) or the render (corrupt image data)
+must fail with a persistent error message that has libpng's message (`libpng error: ...`). It also renders an image
+wider than libpng's limit (1000001 pixels) with WritePNG, which must fail with libpng's message. ReadPNG must reject an
+image offset (oFFs chunk) for which `x1 + width` or `y1 + height` is `INT_MAX` (which is `kOfxFlagInfiniteMax`) or more
+(#297): the test is also built with UBSan's `-fsanitize=signed-integer-overflow -fno-sanitize-recover`, which aborts on
+a signed overflow. The Image Info of a tEXt and a zTXt chunk must label each with its own compression (#297). An
+interlaced 16-bit RGBA image of 1000000x1000000 pixels (libpng's limit), which ReadPNG reads whole in an 8 TB buffer,
+must fail with `kOfxStatErrMemory` and a message (#276): the test's `__asan_default_options()` sets
+`allocator_may_return_null=1`, so that AddressSanitizer's allocator returns NULL (it can't allocate more than 1 TB),
+whatever the memory of the machine; MS Windows, where the test has no AddressSanitizer, doesn't overcommit, so
+`malloc()` returns NULL too (skipped on other systems without AddressSanitizer). It then reads all the corrupt files 8
+more times, and checks that the memory allocated (`__sanitizer_get_current_allocated_bytes()`) and the lowest free file
+descriptor are the same as before (without AddressSanitizer, e.g. on MS Windows, only the file descriptors are checked).
+It sets `OCIO=test.ocio`.
 
 ### 1g2. `test-reader-window-host` — the readers in a host built on HostSupport (#232)
 
@@ -1144,7 +1152,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
 | `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, rewritten files, with ASan and guard pages. |
 | `oiio_layer_menu_test.cpp`  | ReadOIIO's output-layer menu, rebuilt by file changes on the main thread while 4 threads render one instance and call isIdentity, in a Natron-like host (`test-oiio-layer-menu`, `test-oiio-layer-menu-tsan`, #298). |
-| `png_corrupt_test.cpp`      | ReadPNG and WritePNG on libpng errors (`test-png-corrupt`): corrupt and truncated PNG files, an image too wide for libpng, with ASan and a leak check. |
+| `png_corrupt_test.cpp`      | ReadPNG and WritePNG on libpng errors (`test-png-corrupt`): corrupt and truncated PNG files, an image too wide for libpng, an oFFs offset out of range, text chunk labels, an 8 TB image, with ASan, UBSan (signed overflow) and a leak check. |
 | `hostdemo/reader_window.cpp`, `hostdemo/reader_window.sh` | The readers' render windows in a host built on HostSupport (`test-reader-window-host`, ctest `io-reader-window`). |
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |

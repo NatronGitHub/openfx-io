@@ -23,7 +23,9 @@
  */
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdio> // fopen, fread...
 #include <cstdlib>
 #include <iomanip>
@@ -476,8 +478,8 @@ readPNGRows(png_structp sp,
     return true;
 }
 
-/// Read information from a PNG file and fill the ImageSpec accordingly. Return false after a libpng error (in the
-/// PNGError of sp).
+/// Read information from a PNG file and fill the ImageSpec accordingly. Return false after a libpng error, or if the
+/// image offset is out of range (the message is in the PNGError of sp).
 ///
 inline bool
 getPNGInfo(png_structp sp,
@@ -521,8 +523,21 @@ getPNGInfo(png_structp sp,
 #endif
     *nChannels_p = channels;
 
-    *x1_p = png_get_x_offset_pixels(sp, ip);
-    *y1_p = png_get_y_offset_pixels(sp, ip);
+    // The offset (oFFs) is any 32-bit value: the RoD's x2 = x1 + width and y2 = y1 + height must fit in an int
+    // (ES.103), and be less than INT_MAX, which is kOfxFlagInfiniteMax (an infinite edge, ofxCore.h). (png_error()
+    // can't be used: there is no live setjmp here.)
+    const png_int_32 x1 = png_get_x_offset_pixels(sp, ip);
+    const png_int_32 y1 = png_get_y_offset_pixels(sp, ip);
+    if (static_cast<std::int64_t>(x1) + width >= INT_MAX || static_cast<std::int64_t>(y1) + height >= INT_MAX) {
+        PNGError* e = static_cast<PNGError*>(png_get_error_ptr(sp));
+        if (e) {
+            std::snprintf(e->message, sizeof(e->message), "invalid oFFs chunk: image offset out of range");
+        }
+
+        return false;
+    }
+    *x1_p = x1;
+    *y1_p = y1;
 
     float aspect = (float)png_get_pixel_aspect_ratio(sp, ip);
     *par_p = 1.;
@@ -1053,13 +1068,13 @@ ReadPNGPlugin::metadata(const string& filename)
             for (int i = 0; i < num_text; ++i) {
                 ss << "   " << text[i].key << " ";
 
-                switch (text[1].compression) {
+                switch (text[i].compression) {
                 case -1:
                     ss << "(tEXt uncompressed)";
                     break;
 
                 case 0:
-                    ss << "(xTXt deflate compressed)";
+                    ss << "(zTXt deflate compressed)";
                     break;
 
                 case 1:
@@ -1207,6 +1222,12 @@ ReadPNGPlugin::decode(const string& filename,
     const OfxRectI dataBounds = { srcBounds.x1, srcBounds.y2 - 1 - lastRow, srcBounds.x2, srcBounds.y2 - firstRow };
     RamBuffer scratchBuffer(pngRowBytes * (std::size_t)(lastRow - firstRow + 1));
     unsigned char* tmpData = scratchBuffer.getData();
+    if (!tmpData) {
+        setPersistentMessage(Message::eMessageError, "", "ReadPNG: cannot read " + filename + ": not enough memory");
+        throwSuiteStatusException(kOfxStatErrMemory);
+
+        return;
+    }
     vector<unsigned char*> row_pointers;
     if (interlaced) {
         row_pointers.resize(height);
