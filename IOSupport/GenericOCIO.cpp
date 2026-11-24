@@ -487,11 +487,13 @@ GenericOCIO::loadConfig()
     if (filename == _ocioConfigFileName) {
         return;
     }
-    _config.reset();
     AutoSetAndRestoreThreadLocale locale;
+    // the new config is built into config, then swapped in under the lock: renders keep using the copy of the old one
+    // that they took (getConfig()), and the old one is released without the lock, here or by the last render using it
+    OCIO::ConstConfigRcPtr config;
     try {
         _ocioConfigFileName = filename;
-        _config = OCIO::Config::CreateFromFile(_ocioConfigFileName.c_str());
+        config = OCIO::Config::CreateFromFile(_ocioConfigFileName.c_str());
     } catch (OCIO::Exception& e) {
         _ocioConfigFileName.clear();
         if (_inputSpace) {
@@ -508,6 +510,11 @@ GenericOCIO::loadConfig()
         }
 #endif
     }
+    {
+        AutoMutex guard(_configMutex);
+        _config.swap(config);
+    }
+    config.reset(); // (the old one)
 #ifdef OFX_OCIO_CHOICE
     if (_config) {
         if (gHostIsNatron) {
@@ -545,10 +552,12 @@ GenericOCIO::configIsDefault() const
 
 #ifdef OFX_IO_USING_OCIO
 OCIO::ConstContextRcPtr
-GenericOCIO::getLocalContext(double time) const
+GenericOCIO::getLocalContext(const OCIO::ConstConfigRcPtr& config,
+                             double time) const
 {
+    assert(config);
     AutoSetAndRestoreThreadLocale locale;
-    OCIO::ConstContextRcPtr context = _config->getCurrentContext();
+    OCIO::ConstContextRcPtr context = config->getCurrentContext();
     OCIO::ContextRcPtr mutableContext;
 
     if (_contextKey1) {
@@ -618,7 +627,8 @@ GenericOCIO::isIdentity(double time) const
 {
     assert(_created);
 #ifdef OFX_IO_USING_OCIO
-    if (!_config) {
+    const OCIO::ConstConfigRcPtr config = getConfig(); // (may be called on a render thread)
+    if (!config) {
         string filename;
         _ocioConfigFile->getValue(filename);
         _parent->setPersistentMessage(Message::eMessageError, "", "Invalid OCIO config. file \"" + filename + "\"");
@@ -634,8 +644,8 @@ GenericOCIO::isIdentity(double time) const
     }
     try {
         // maybe the names are not the same, but it's still a no-op (e.g. "scene_linear" and "linear")
-        OCIO::ConstContextRcPtr context = getLocalContext(time); //_config->getCurrentContext();
-        OCIO::ConstProcessorRcPtr proc = _config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str());
+        OCIO::ConstContextRcPtr context = getLocalContext(config, time);
+        OCIO::ConstProcessorRcPtr proc = config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str());
 
         return proc->isNoOp();
     } catch (const std::exception& e) {
@@ -1242,35 +1252,6 @@ GenericOCIO::apply(double time,
 }
 
 #ifdef OFX_IO_USING_OCIO
-OCIO_NAMESPACE::ConstProcessorRcPtr
-GenericOCIO::getProcessor() const
-{
-    AutoMutex guard(_procMutex);
-
-    return _proc;
-};
-void
-GenericOCIO::setValues(const string& inputSpace,
-                       const string& outputSpace)
-{
-    return setValues(_config->getCurrentContext(), inputSpace.c_str(), outputSpace.c_str());
-}
-
-void
-GenericOCIO::setValues(const OCIO::ConstContextRcPtr& context,
-                       const string& inputSpace,
-                       const string& outputSpace)
-{
-    AutoMutex guard(_procMutex);
-
-    if (!_proc || (context != _procContext) || (inputSpace != _procInputSpace) || (outputSpace != _procOutputSpace)) {
-        _procContext = context;
-        _procInputSpace = inputSpace;
-        _procOutputSpace = outputSpace;
-        _proc = _config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str());
-    }
-}
-
 void
 OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxPointD& renderScale)
 {
@@ -1333,16 +1314,18 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
 OCIO::ConstProcessorRcPtr
 GenericOCIO::getOrCreateProcessor(double time)
 {
-    if (!_config) {
+    // one copy of the config for the whole call: the main thread may load another one meanwhile (#275)
+    const OCIO::ConstConfigRcPtr config = getConfig();
+    if (!config) {
         return OCIO::ConstProcessorRcPtr();
     }
     string inputSpace;
     string outputSpace;
     getProcessingColorspacesAtTime(time, inputSpace, outputSpace);
-    OCIO::ConstContextRcPtr context = getLocalContext(time); //_config->getCurrentContext();
-    setValues(context, inputSpace, outputSpace);
+    const OCIO::ConstContextRcPtr context = getLocalContext(config, time);
+    const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, outputSpace };
 
-    return getProcessor();
+    return _procCache.get(key, [&] { return config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str()); });
 }
 
 #endif // OFX_IO_USING_OCIO
@@ -1832,7 +1815,9 @@ GenericOCIO::hasColorspace(const char* name) const
 {
 #ifdef OFX_IO_USING_OCIO
 
-    return _config && (bool)_config->getColorSpace(name);
+    const OCIO::ConstConfigRcPtr config = getConfig(); // (may be called on a render thread)
+
+    return config && (bool)config->getColorSpace(name);
 #else
 
     return false;

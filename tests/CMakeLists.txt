@@ -293,9 +293,10 @@ if(TARGET io_tests_ofx)
                   ${_io_srcs} DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} SANITIZE ${_io_asan} LIBS ${_io_gl_libs})
   io_test(test-ocio-filetransform ENV "${_io_ocio_env}" "${_io_asan_env}" COMMAND ocio_filetransform_test)
 
-  # test-ocio-processor-cache: the processor caches of the OCIO plug-ins (#282, #283, #284), and with ThreadSanitizer
-  set(_io_ocio_pc_srcs ${S}/OCIO/OCIODisplay.cpp ${S}/OCIO/OCIOFileTransform.cpp ${S}/OCIO/OCIOLogConvert.cpp
-      ${S}/OCIO/OCIOLookTransform.cpp ${_io_ocio_cdl_srcs})
+  # test-ocio-processor-cache: the processor caches of the OCIO plug-ins (#282, #283, #284) and GenericOCIO's config
+  # (#275), and with ThreadSanitizer
+  set(_io_ocio_pc_srcs ${S}/OCIO/OCIOColorSpace.cpp ${S}/OCIO/OCIODisplay.cpp ${S}/OCIO/OCIOFileTransform.cpp
+      ${S}/OCIO/OCIOLogConvert.cpp ${S}/OCIO/OCIOLookTransform.cpp ${_io_ocio_cdl_srcs})
   io_test_program(ocio_processor_cache_test OFX THREADS SOURCES ${T}/ocio_processor_cache_test.cpp ${_io_ocio_pc_srcs}
                   DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} LIBS ${_io_gl_libs})
   # (with DIR, run_test.cmake runs the program: give its path, not the target name)

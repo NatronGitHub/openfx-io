@@ -34,16 +34,12 @@
 #endif
 
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "ofxsImageEffect.h"
 #include "ofxsMultiThread.h"
 #include "ofxsPixelProcessor.h"
-#ifndef OFX_USE_MULTITHREAD_MUTEX
-// some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
-// prefer using the fast mutex by Marcus Geelnard http://tinythreadpp.bitsnbites.eu/
-#include "fast_mutex.h"
-#endif
 
 // define OFX_OCIO_CHOICE to enable the colorspace choice popup menu
 #define OFX_OCIO_CHOICE
@@ -59,7 +55,11 @@ typedef OCIO_SHARED_PTR<OpenGLBuilder> OpenGLBuilderRcPtr;
 #endif
 #endif
 
+#include "IOMutex.h"
 #include "IOUtility.h"
+#ifdef OFX_IO_USING_OCIO
+#include "OCIOProcessorCache.h"
+#endif
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
@@ -165,9 +165,15 @@ public:
     void swapColorspaces(double time);
     static void describeInContextInverseAndSwap(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page);
 #ifdef OFX_IO_USING_OCIO
-    OCIO_NAMESPACE::ConstContextRcPtr getLocalContext(double time) const;
-    OCIO_NAMESPACE::ConstConfigRcPtr getConfig() const { return _config; };
-    OCIO_NAMESPACE::ConstProcessorRcPtr getProcessor() const;
+    // the context of config (the one returned by getConfig()) with the OCIO Context params at time
+    OCIO_NAMESPACE::ConstContextRcPtr getLocalContext(const OCIO_NAMESPACE::ConstConfigRcPtr& config, double time) const;
+    // a copy of _config, taken under _configMutex: a render uses its copy, which the main thread can't replace (#275)
+    OCIO_NAMESPACE::ConstConfigRcPtr getConfig() const
+    {
+        AutoMutex guard(_configMutex);
+
+        return _config;
+    }
     OCIO_NAMESPACE::ConstProcessorRcPtr getOrCreateProcessor(double time);
 
 #endif
@@ -177,11 +183,6 @@ public:
     static void describeInContextInput(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page, const char* inputSpaceNameDefault, const char* inputSpaceLabel = kOCIOParamInputSpaceLabel);
     static void describeInContextOutput(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page, const char* outputSpaceNameDefault, const char* outputSpaceLabel = kOCIOParamOutputSpaceLabel);
     static void describeInContextContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context, OFX::PageParamDescriptor* page);
-
-#ifdef OFX_IO_USING_OCIO
-    void setValues(const std::string& inputSpace, const std::string& outputSpace);
-    void setValues(const OCIO_NAMESPACE::ConstContextRcPtr& context, const std::string& inputSpace, const std::string& outputSpace);
-#endif
 
     // update the choice menus (and their state) from the string params, at time
     void refreshInputAndOutputState(double time);
@@ -222,13 +223,8 @@ public:
     }
 
 public:
-#ifdef OFX_USE_MULTITHREAD_MUTEX
-    typedef OFX::MultiThread::Mutex Mutex;
-    typedef OFX::MultiThread::AutoMutex AutoMutex;
-#else
-    typedef tthread::fast_mutex Mutex;
-    typedef OFX::MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
-#endif
+    typedef IOMutex Mutex;
+    typedef IOAutoMutex AutoMutex;
 
 private:
     void loadConfig();
@@ -313,14 +309,29 @@ private:
     OFX::StringParam* _contextKey4;
     OFX::StringParam* _contextValue4;
 
-    OCIO_NAMESPACE::ConstConfigRcPtr _config;
+    // Thread safety: the render actions (and isIdentity) run on render threads, concurrently with each other and with
+    // the main thread (OFX ofxThreadSafety.rst: "An instance must be able to handle simultaneous actions called on the
+    // main and render threads"), whose instance changed action loads a new config (loadConfig()).
+    // - _configMutex guards _config. Only loadConfig(), on the main thread, assigns it, under the lock; the main thread
+    //   may thus read it without the lock. Other threads take a copy with getConfig(), and use only that copy in an
+    //   action: the config it points to is const and stays alive while they hold it.
+    // - _procCache has its own mutex (see OCIOProcessorCache).
+    // - Neither lock is held while taking the other one, or while calling out (lock order: none).
+    mutable Mutex _configMutex;
+    OCIO_NAMESPACE::ConstConfigRcPtr _config; // guarded by _configMutex
 
-    mutable Mutex _procMutex;
-    OCIO_NAMESPACE::ConstProcessorRcPtr _proc;
-    OCIO_NAMESPACE::ConstContextRcPtr _procContext;
-    std::string _procInputSpace;
-    std::string _procOutputSpace;
-    // OCIO_NAMESPACE::ConstTransformRcPtr _procTransform;
+    // everything that the processor of getOrCreateProcessor() depends on
+    struct ProcKey {
+        OCIOConfigContextKey configContext;
+        std::string inputSpace;
+        std::string outputSpace;
+
+        friend bool operator==(const ProcKey& a, const ProcKey& b)
+        {
+            return std::tie(a.configContext, a.inputSpace, a.outputSpace) == std::tie(b.configContext, b.inputSpace, b.outputSpace);
+        }
+    };
+    OCIOProcessorCache<ProcKey> _procCache;
 #endif
 };
 

@@ -505,7 +505,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
     string outputSpace;
     _ocio->getOutputColorspaceAtTime(time, outputSpace);
     try {
-        const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
+        const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(config, time);
         const ProcKey key { OCIOConfigContextKey(config, context), look, inputSpace, outputSpace, directioni };
 
         return _procCache.get(key, [&] {

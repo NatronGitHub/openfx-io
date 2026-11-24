@@ -1,7 +1,7 @@
 /*
  * ocio_processor_cache_test — the processor caches of the OCIO plug-ins (IOSupport/OCIOProcessorCache.h, used by
  * OCIO/OCIOCDLTransform.cpp, OCIODisplay.cpp, OCIOFileTransform.cpp, OCIOLogConvert.cpp, OCIOLookTransform.cpp; issues
- * #282, #283, #284).
+ * #282, #283, #284), and the config of GenericOCIO (OCIOColorSpace, #275).
  *
  * 1. Concurrent renders (#282): the plug-ins are eRenderFullySafe, so a host may render an instance from several
  *    threads at once. For each plug-in, a param that changes the processor is animated (it has one value at odd
@@ -10,8 +10,9 @@
  *    OCIOLogConvert copied the cached processor after releasing its mutex, while another thread replaced it: a data
  *    race (reported by ThreadSanitizer: make test-ocio-processor-cache-tsan) that can also apply the processor of the
  *    other frame. (OCIOLogConvert replaced it at every render: its key was never set.) Also, the main thread changes
- *    OCIOLogConvert's OCIO config file param while 3 threads render (its config was reset and reloaded without a
- *    lock).
+ *    the OCIO config file param of OCIOLogConvert, OCIOColorSpace and OCIODisplay (GenericOCIO, #275) while 3 threads
+ *    render: their config was reset and reloaded without a lock. OCIOColorSpace is also rendered with its Inverse
+ *    param animated.
  *    And OCIOProcessorCache itself: a hit doesn't build (a build counter), a miss replaces the processor, a failed
  *    build leaves the cache unchanged, concurrent gets of one key build it at most once per thread.
  * 2. A changed config or context gives a new processor (#283, #284): OCIODisplay and OCIOLookTransform render with
@@ -302,13 +303,17 @@ testConcurrentRenders(const char* what,
                         + " renders at alternating frames: every row has the value of its frame (" + std::to_string(bad.load()) + " wrong)");
 }
 
-// OCIOLogConvert's OCIO config file param is set to the other config (kToggles times) by the main thread while
-// kThreads - 1 threads render (log2lin: x2 of a.ocio, 2, or of b.ocio, 3): no data race (loadConfig() swaps the config
-// in under a lock), every row is one of the two, and the last config is used once the toggles are done.
+// The OCIO config file param of in (what) is set to the other config (kToggles times) by the main thread while
+// kThreads - 1 threads render, with a factor of fA with configA (a.ocio, the first one) and fB with configB: no data race (the config is swapped
+// in under a lock, and each render uses one config), every row is one of the two, and the last config is used once the
+// toggles are done.
 void
-testConfigChangeDuringRenders(Instance& in,
+testConfigChangeDuringRenders(const std::string& what,
+                              Instance& in,
                               const std::string& configA,
-                              const std::string& configB)
+                              const std::string& configB,
+                              double fA,
+                              double fB)
 {
     const int kToggles = 40;
     std::atomic<bool> stop { false };
@@ -316,9 +321,9 @@ testConfigChangeDuringRenders(Instance& in,
     std::atomic<int> renders { 0 };
     std::vector<std::thread> threads;
     for (int k = 1; k < kThreads; ++k) {
-        threads.emplace_back([&in, &stop, &bad, &renders, k] {
+        threads.emplace_back([&in, &stop, &bad, &renders, k, fA, fB] {
             while (!stop) {
-                if (!in.renderRowAnyOf(1., k, { 2., 3. })) {
+                if (!in.renderRowAnyOf(1., k, { fA, fB })) {
                     ++bad;
                 }
                 ++renders;
@@ -327,7 +332,10 @@ testConfigChangeDuringRenders(Instance& in,
     }
     int failedChanges = 0;
     for (int i = 0; i < kToggles; ++i) {
-        setString(in.ctx, "ocioConfigFile", (i % 2) == 0 ? configB : configA);
+        {
+            HostWrite lock; // (the renders read the params meanwhile)
+            setString(in.ctx, "ocioConfigFile", (i % 2) == 0 ? configB : configA);
+        }
         if (!ok(in.changed("ocioConfigFile"))) {
             ++failedChanges;
         }
@@ -337,11 +345,11 @@ testConfigChangeDuringRenders(Instance& in,
     for (std::thread& t : threads) {
         t.join();
     }
-    check(failedChanges == 0, "OCIOLogConvert: " + std::to_string(kToggles) + " changes of the OCIO config file param during renders succeed");
-    check(renders > 0, "OCIOLogConvert: renders ran during the changes (" + std::to_string(renders.load()) + ")");
-    check(bad == 0, "OCIOLogConvert: " + std::to_string(renders.load()) + " renders during the changes: every row is log2lin of a.ocio or b.ocio (" + std::to_string(bad.load()) + " wrong)");
+    check(failedChanges == 0, what + ": " + std::to_string(kToggles) + " changes of the OCIO config file param during renders succeed");
+    check(renders > 0, what + ": renders ran during the changes (" + std::to_string(renders.load()) + ")");
+    check(bad == 0, what + ": " + std::to_string(renders.load()) + " renders during the changes: every row is the transform of a.ocio or b.ocio (" + std::to_string(bad.load()) + " wrong)");
     // (kToggles is even: the last config is a.ocio)
-    check(in.renderRow(1., 0, 2.), "OCIOLogConvert: after the changes, the render uses the last config, a.ocio");
+    check(in.renderRow(1., 0, fA), what + ": after the changes, the render uses the last config, a.ocio");
 }
 
 // OCIOProcessorCache itself: a hit doesn't build, a miss builds and replaces the cached processor, a build that throws
@@ -498,13 +506,46 @@ main(int argc,
             testConcurrentRenders("OCIOLookTransform (direction)", in, 2., 0.5);
         }
     }
+    {
+        Instance in;
+        if (in.load("fr.inria.openfx.OCIOColorSpace")) {
+            // (GenericOCIO's processor: getOrCreateProcessor() returns the one it got, not the last one cached)
+            setString(in.ctx, "ocioInputSpace", "x2");
+            setString(in.ctx, "ocioOutputSpace", "x1");
+            param(in.ctx, "ocioInverse").numberAtTime = alternate(0, 1);
+            check(in.create(), "OCIOColorSpace: create instance");
+            testConcurrentRenders("OCIOColorSpace (inverse)", in, 2., 0.5);
+        }
+    }
 
     {
         Instance in;
         if (in.load("fr.inria.openfx.OCIOLogConvert")) {
             param(in.ctx, "operation").numberAtTime = [](double) { return 0.; }; // log2lin
             check(in.create(), "OCIOLogConvert: create instance");
-            testConfigChangeDuringRenders(in, configA, configB);
+            // (log2lin: x2 of a.ocio, 2, or of b.ocio, 3)
+            testConfigChangeDuringRenders("OCIOLogConvert", in, configA, configB, 2., 3.);
+        }
+    }
+    {
+        Instance in;
+        if (in.load("fr.inria.openfx.OCIOColorSpace")) {
+            setString(in.ctx, "ocioInputSpace", "x2");
+            setString(in.ctx, "ocioOutputSpace", "x1");
+            check(in.create(), "OCIOColorSpace: create instance");
+            // (x2 to x1: 2 with a.ocio, 3 with b.ocio)
+            testConfigChangeDuringRenders("OCIOColorSpace", in, configA, configB, 2., 3.);
+        }
+    }
+    {
+        Instance in;
+        if (in.load("fr.inria.openfx.OCIODisplay")) {
+            setString(in.ctx, "display", "none");
+            setString(in.ctx, "view", "Raw");
+            setString(in.ctx, "ocioInputSpace", "x2");
+            check(in.create(), "OCIODisplay: create instance");
+            // (x2 to the view Raw, x1: 2 with a.ocio, 3 with b.ocio)
+            testConfigChangeDuringRenders("OCIODisplay", in, configA, configB, 2., 3.);
         }
     }
     std::printf("==== OCIOProcessorCache: hits, misses, a failed build ====\n");

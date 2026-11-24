@@ -175,11 +175,11 @@ test-ocio-filetransform: ocio_filetransform_test
 clean-ocio-filetransform:
 	rm -rf ocio_filetransform_test ocio_filetransform_test.dSYM
 
-# the processor caches of the OCIO plug-ins (#282, #283, #284): concurrent renders, and a changed config or context, with
-# the OpenGL sources of ocio_cdl_test; and the same with ThreadSanitizer, not in `make test` (as test-oiio-threads-tsan;
-# no TSan with MinGW). (Added to test and clean here.)
-OCIO_PC_SRCS := ../OCIO/OCIODisplay.cpp ../OCIO/OCIOFileTransform.cpp ../OCIO/OCIOLogConvert.cpp \
-    ../OCIO/OCIOLookTransform.cpp $(OCIO_CDL_SRCS)
+# the processor caches of the OCIO plug-ins (#282, #283, #284) and GenericOCIO's config (#275): concurrent renders, and a
+# changed config or context, with the OpenGL sources of ocio_cdl_test; and the same with ThreadSanitizer, not in
+# `make test` (as test-oiio-threads-tsan; no TSan with MinGW). (Added to test and clean here.)
+OCIO_PC_SRCS := ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIODisplay.cpp ../OCIO/OCIOFileTransform.cpp \
+    ../OCIO/OCIOLogConvert.cpp ../OCIO/OCIOLookTransform.cpp $(OCIO_CDL_SRCS)
 ocio_processor_cache_test: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_PC_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 ocio_processor_cache_test_tsan: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_PC_SRCS) $(OFX_SUPPORT)

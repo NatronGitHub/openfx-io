@@ -60,7 +60,7 @@ make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
-make test-ocio-processor-cache # the OCIO plug-ins' processor caches: concurrent renders, changed config or context (#282-#284)
+make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context (#275, #282-#284)
 make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
 make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
@@ -408,20 +408,25 @@ strings, which read before the start of a file name shorter than the extension, 
 stack-buffer-underflow). With libstdc++ (Linux), ASan doesn't see that read, which stays inside the
 `std::string` object (its short-string buffer): only libc++ (macOS) catches the old bug. It sets `OCIO=test.ocio`.
 
-### 1d3. `test-ocio-processor-cache` — the processor caches of the OCIO plug-ins (#282, #283, #284)
+### 1d3. `test-ocio-processor-cache` — the processor caches of the OCIO plug-ins (#282, #283, #284) and GenericOCIO's config (#275)
 
 `ocio_processor_cache_test.cpp` drives OCIOCDLTransform, OCIODisplay, OCIOFileTransform, OCIOLogConvert and
-OCIOLookTransform, which cache their last OCIO processor in an `OCIOProcessorCache` (`IOSupport/OCIOProcessorCache.h`).
+OCIOLookTransform and OCIOColorSpace (GenericOCIO), which cache their last OCIO processor in an `OCIOProcessorCache`
+(`IOSupport/OCIOProcessorCache.h`).
 It writes its own OCIO configs and CDL files in its directory, and sets `$OCIO` to the first config.
 - Concurrent renders: for each plug-in, a param that changes the processor is animated (the host's `numberAtTime`:
   one value at frame 1, another at frame 2), and 4 threads render the instance at alternating frames, each its own
-  row of the image: every row must have the value of its frame. The main thread also changes OCIOLogConvert's OCIO
-  config file param while 3 threads render, and `OCIOProcessorCache` itself is checked with a build counter (a hit
-  doesn't build, a failed build leaves the cache unchanged). Before the fix, three of the plug-ins copied the
-  cached processor after releasing its mutex while another thread replaced it: a data race, which
-  `make test-ocio-processor-cache-tsan` reports (the same test, built with
-  [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html); ctest `test-ocio-processor-cache-tsan`, with
-  `IO_TESTS_SANITIZERS`).
+  row of the image: every row must have the value of its frame (OCIOColorSpace: its Inverse param).
+- A changed config during renders (#275): the main thread switches the OCIO config file param of OCIOLogConvert,
+  OCIOColorSpace and OCIODisplay between two configs while 3 threads render. Every row must have the value of one
+  of the two configs.
+- `OCIOProcessorCache` itself is checked with a build counter: a hit doesn't build, and a failed build leaves the
+  cache unchanged.
+- Before the fixes, three of the plug-ins copied the cached processor after releasing its mutex while another
+  thread replaced it, and GenericOCIO reset and reloaded its config without a lock (a crash on a null config).
+  `make test-ocio-processor-cache-tsan` reports these data races: it is the same test, built with
+  [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-ocio-processor-cache-tsan`, with
+  `IO_TESTS_SANITIZERS`; no CI job runs it).
 - A changed context or config: OCIODisplay and OCIOLookTransform render the colorspace `ctx`, a CDL file whose name
   has the context variable `S`; setting `S` with the context params, or OCIODisplay's OCIO config file param, must
   change the output. Before the fix, OCIODisplay kept its old processor, and OCIOLookTransform ignored the context
