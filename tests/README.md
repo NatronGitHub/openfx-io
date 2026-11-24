@@ -683,7 +683,7 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
-### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #232, #234)
+### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #232, #234, #242)
 
 `reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
@@ -711,7 +711,11 @@ buffer, which it then premultiplies (UnPreMultiplied files):
   and the rest of the window is transparent black.
 * **concurrent renders** of narrow windows by 4 instances while another thread replaces the file by smaller and
   larger ones: only the windows are written, and alpha is 1 in the image, 0 in the black (the green of these files is
-  never 0).
+  never 0). For ReadOIIO, also while the TIFF file is overwritten in place (truncated, then written): renders may fail
+  ("File changed while it was read"), but must not write out of their windows or out of ReadOIIO's buffers (#242).
+  A render that a write overlapped may have read the header of one file and pixels of the other (which can decode
+  without an error), so its alpha is only checked if no write overlapped it. At least one replacement must succeed;
+  on MS Windows, where an open file may not be replaced or written, the test prints SKIPPED if none did. `READER_WINDOW_ONLY=in-place` runs only the in-place test.
 
 * **a 2-part EXR** (`READER_WINDOW_MULTIPLANE=1`, a second run in a Natron-like host: dynamic choices and the plane
   suite): part 1, smaller than part 0, read into the color plane as Opaque: alpha is 1 in the whole RoD (the union of

@@ -1342,6 +1342,9 @@ ReadOIIOPlugin::getSpecsFromImageInput(const ImageInputPtr& img,
         break;
 #endif
     }
+    // clear the error of the failed seek past the last subimage, which is expected: else it would be the message of
+    // the next read error (#242)
+    (void)img->geterror();
 }
 
 void
@@ -2034,7 +2037,9 @@ ReadOIIOPlugin::openFile(const string& filename,
 
     *img = ImageInput::open(filename, &config);
     if (!(*img)) {
-        setPersistentMessage(Message::eMessageError, "", string("Cannot open file ") + filename);
+        // (OIIO::geterror() also clears OpenImageIO's pending error)
+        const string error = OIIO::geterror();
+        setPersistentMessage(Message::eMessageError, "", string("Cannot open file ") + filename + (error.empty() ? "" : ": " + error));
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -2194,6 +2199,21 @@ ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName(const string& filename,
         break;
     } // switch
 } // ReadOIIOPlugin::getOIIOChannelIndexesFromLayerName
+
+// Whether a and b have the same windows, tiles and channels: decodePlane() computes the windows to read, the sizes of
+// its buffers and the channel indexes from one spec of a subimage, and OpenImageIO's read_scanlines() and read_tiles()
+// write whole lines and tiles of the other, the ImageInput's current spec (#242). The pixel formats (format,
+// channelformats) are not compared: decodePlane() reads all channels as FLOAT, which OpenImageIO converts to.
+static bool
+sameLayout(const ImageSpec& a,
+           const ImageSpec& b)
+{
+    return a.x == b.x && a.y == b.y && a.z == b.z && a.width == b.width && a.height == b.height && a.depth == b.depth
+        && a.full_x == b.full_x && a.full_y == b.full_y && a.full_z == b.full_z && a.full_width == b.full_width
+        && a.full_height == b.full_height && a.full_depth == b.full_depth && a.tile_width == b.tile_width
+        && a.tile_height == b.tile_height && a.tile_depth == b.tile_depth && a.nchannels == b.nchannels
+        && a.alpha_channel == b.alpha_channel && a.channelnames == b.channelnames && a.deep == b.deep;
+}
 
 // The frame bounds and the format of an image whose subimages are specs (see ReadOIIOPlugin::getFrameBounds()): the
 // union of the data windows (with the black border of edgePixelsMode), and the intersection of the display windows.
@@ -2501,6 +2521,16 @@ ReadOIIOPlugin::decodePlane(const string& filename,
         stringstream ss;
         ss << "Cannot seek subimage " << subImageIndex << " in " << filename;
         setPersistentMessage(Message::eMessageError, "", ss.str());
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
+    // seek_subimage() may have read the subimage's header again (e.g. the TIFF reader does, after the failed seek past
+    // the last subimage in getSpecsFromImageInput()): if the file was rewritten in place since openFile(), the header
+    // is not the one that subimages, and thus the windows, buffers and channels below, come from, and reading would
+    // write out of them (#242).
+    if (img.get() && !sameLayout(seekSpec, subimages[subImageIndex])) {
+        setPersistentMessage(Message::eMessageError, "", string("File changed while it was read: ") + filename);
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
