@@ -28,8 +28,7 @@
 #include "ofxsMultiThread.h"
 #ifndef OFX_USE_MULTITHREAD_MUTEX
 // some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
-// prefer using the fast mutex by Marcus Geelnard http://tinythreadpp.bitsnbites.eu/
-#include "fast_mutex.h"
+#include <mutex>
 #endif
 
 #include "IOUtility.h" // NAMESPACE_OFX_IO_ENTER
@@ -41,8 +40,8 @@ NAMESPACE_OFX_IO_ENTER
 typedef OFX::MultiThread::Mutex IOMutex;
 typedef OFX::MultiThread::AutoMutex IOAutoMutex;
 #else
-typedef tthread::fast_mutex IOMutex;
-typedef OFX::MultiThread::AutoMutexT<tthread::fast_mutex> IOAutoMutex;
+typedef std::mutex IOMutex;
+typedef std::lock_guard<std::mutex> IOAutoMutex;
 #endif
 
 NAMESPACE_OFX_IO_EXIT

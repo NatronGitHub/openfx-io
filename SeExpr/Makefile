@@ -1,4 +1,4 @@
-PLUGINOBJECTS = ofxsThreadSuite.o tinythread.o \
+PLUGINOBJECTS = ofxsThreadSuite.o \
 ofxsGenerator.o ofxsRectangleInteract.o ofxsRamp.o ofxsTransformInteract.o \
 ofxsOGLTextRenderer.o ofxsOGLFontData.o \
 SeExpr.o SeNoise.o SeGrain.o \

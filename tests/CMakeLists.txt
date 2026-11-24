@@ -195,13 +195,13 @@ if(TARGET io_tests_ofx)
     ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/WriteOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp
     ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
     ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
-    ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
+    ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp
     ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp)
   # GenericReader and its in-repo dependencies only (READER_HOOKS_SRCS)
   set(_io_reader_srcs
     ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericOCIO.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
-    ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
+    ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp)
   # OpenGL render support, as in ../Makefile.master (OCIOPluginBase.cpp needs it): OCIO_CDL_CXXFLAGS and the
   # OpenGL sources of OCIO_CDL_SRCS; OCIO_CDL_LIBS: OpenGL, and libdl (glad's loaders use dlopen(), in libdl before
@@ -298,7 +298,7 @@ if(TARGET io_tests_ofx)
 
   # test-ocio-cdl: OCIOCDLTransform's Export param writes a .cc file that OCIO reads back
   set(_io_ocio_cdl_srcs ${S}/OCIO/OCIOCDLTransform.cpp ${S}/OCIO/OCIOPluginBase.cpp ${S}/IOSupport/GenericOCIO.cpp
-      ${_io_gl_srcs} ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp ${S}/SupportExt/ofxsFileOpen.cpp)
+      ${_io_gl_srcs} ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/ofxsFileOpen.cpp)
   io_test_program(ocio_cdl_test OFX SOURCES ${T}/ocio_cdl_test.cpp ${_io_ocio_cdl_srcs}
                   DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} LIBS ${_io_gl_libs})
   io_test(test-ocio-cdl ENV "${_io_ocio_env}" COMMAND ocio_cdl_test)
@@ -516,7 +516,7 @@ if(TARGET io_tests_ofx)
       ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericWriter.cpp ${S}/IOSupport/GenericOCIO.cpp
       ${S}/IOSupport/GenericOCIOOpenGL.cpp ${S}/IOSupport/glsl.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
       ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp
-      ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
+      ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp
       ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp ${S}/SupportExt/ofxsOGLTextRenderer.cpp
       ${S}/SupportExt/ofxsOGLFontData.cpp ${S}/SupportExt/ofxsRamp.cpp ${S}/SupportExt/ofxsGenerator.cpp
       ${S}/SupportExt/ofxsTransformInteract.cpp ${S}/SupportExt/ofxsRectangleInteract.cpp ${S}/SupportExt/ofxsOGLUtilities.cpp
@@ -585,7 +585,7 @@ if(TARGET io_tests_ofx)
       ${S}/SeExpr/SeExpr.cpp ${S}/SeExpr/SeNoise.cpp ${S}/SeExpr/SeGrain.cpp
       ${S}/SupportExt/ofxsRectangleInteract.cpp ${S}/SupportExt/ofxsTransformInteract.cpp ${S}/SupportExt/ofxsRamp.cpp
       ${S}/SupportExt/ofxsOGLTextRenderer.cpp ${S}/SupportExt/ofxsOGLFontData.cpp
-      ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp
+      ${S}/SupportExt/ofxsThreadSuite.cpp
       INCLUDES ${S}/openfx/Support/Plugins/include LIBS SeExpr::SeExpr OpenGL::GL)
     io_test(test-seexpr COMMAND seexpr_test)
   endif()
@@ -610,7 +610,7 @@ if(_io_t_runscript)
     # test-runscript-render (POSIX): an aborted render kills the script (#287); only the OFX Support library
     io_test_program(runscript_render_test THREADS
                     SOURCES ${T}/runscript_render_test.cpp ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp
-                            ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp ${_io_ofx_support}
+                            ${S}/SupportExt/ofxsThreadSuite.cpp ${_io_ofx_support}
                     DEFINITIONS OFX_EXTENSIONS_VEGAS OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_TUTTLE OFX_EXTENSIONS_NATRON
                     INCLUDES ${S}/RunScript ${S}/SupportExt ${S}/openfx/include ${S}/openfx/Support/include)
     io_test(test-runscript-render TIMEOUT 300 COMMAND runscript_render_test)

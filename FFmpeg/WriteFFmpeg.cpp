@@ -42,11 +42,13 @@
 #include <cfloat> // DBL_MAX
 #include <chrono> // std::chrono::milliseconds
 #include <climits> // INT_MAX
+#include <condition_variable>
 #include <cmath> // std::ceil, std::fabs
 #include <cstdio>
 #include <cstring> // strncpy
 #include <filesystem> // std::filesystem::weakly_canonical
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility> // std::move
@@ -109,14 +111,11 @@ typedef OFX::MultiThread::AutoMutex AutoMutex;
 }
 #else
 // some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
-// prefer using the fast mutex by Marcus Geelnard http://tinythreadpp.bitsnbites.eu/
-#include "fast_mutex.h"
 namespace {
-typedef tthread::fast_mutex Mutex;
-typedef OFX::MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
+typedef std::mutex Mutex;
+typedef std::lock_guard<std::mutex> AutoMutex;
 }
 #endif
-#include "tinythread.h" // for tthread::condition_variable
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -1995,8 +1994,8 @@ private:
     // order; _nextFrameToEncodeCond is notified when _nextFrameToEncode changes. beginEncode() and endEncode()
     // (beginSequenceRender and endSequenceRender) are not concurrent with the renders (C++ Core Guidelines CP.50
     // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-mutex).
-    tthread::mutex _nextFrameToEncodeMutex;
-    tthread::condition_variable _nextFrameToEncodeCond;
+    std::mutex _nextFrameToEncodeMutex;
+    std::condition_variable _nextFrameToEncodeCond;
     int _nextFrameToEncode; //< the frame index we need to encode next, INT_MIN means uninitialized
     int _firstFrameToEncode;
     int _lastFrameToEncode;
@@ -5278,7 +5277,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     // Flag that we didn't encode any frame yet
     {
-        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+        std::lock_guard<std::mutex> guard(_nextFrameToEncodeMutex);
         _nextFrameToEncode = (int)args.frameRange.min;
         _firstFrameToEncode = (int)args.frameRange.min;
         _lastFrameToEncode = (int)args.frameRange.max;
@@ -5402,7 +5401,7 @@ WriteFFmpegPlugin::encode(const string& filename,
 
     /// Check that we're really encoding in sequential order
     {
-        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+        std::unique_lock<std::mutex> guard(_nextFrameToEncodeMutex); // a unique_lock: _nextFrameToEncodeCond waits on it
         // However encode() ends, wake up the threads that wait for their turn below: they check _nextFrameToEncode
         // again, which is INT_MIN if this frame failed (#288).
         ScopeExit notifyWaitingThreads([this] { _nextFrameToEncodeCond.notify_all(); });
@@ -5542,7 +5541,7 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
     // checks, which do not change _error), its error is the persistent message, and must stay.
     bool allEncoded;
     {
-        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+        std::lock_guard<std::mutex> guard(_nextFrameToEncodeMutex);
         allEncoded = (_nextFrameToEncode != INT_MIN) && (_nextFrameToEncode > _lastFrameToEncode);
     }
 
@@ -6237,7 +6236,7 @@ WriteFFmpegPlugin::freeFormat()
     }
     _rgb16White = FFmpeg::kWhite16;
     {
-        tthread::lock_guard<tthread::mutex> guard(_nextFrameToEncodeMutex);
+        std::lock_guard<std::mutex> guard(_nextFrameToEncodeMutex);
         _nextFrameToEncode = INT_MIN;
         _firstFrameToEncode = 1;
         _lastFrameToEncode = 1;
