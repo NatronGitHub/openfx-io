@@ -17,6 +17,8 @@
  *    as is.
  *  - SeNoise's Reset Center sets the center and the translation between paramEditBegin and paramEditEnd (one undo
  *    step): the EditBlock was an unnamed temporary, which ended the block before the params were set.
+ *  - SeNoise's Reset Center, then undo, with a host that behaves as Natron (#351): the "center changed" flag that
+ *    the user's move of the center set is true again after undo.
  *
  * Exit status: 0 = all checks passed.
  */
@@ -28,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <chrono>
 #include <string>
 #include <utility>
@@ -42,6 +45,7 @@ const char* const kPluginIdentifierSeGrain = "net.sf.openfx.SeGrain";
 const char* const kParamTransformResetCenter = "transformResetCenter";
 const char* const kParamTransformCenter = "transformCenter";
 const char* const kParamTransformTranslate = "transformTranslate";
+const char* const kParamTransformCenterChanged = "transformCenterChanged";
 
 int gFailures = 0;
 
@@ -389,6 +393,199 @@ testSeNoiseResetCenter(OfxPlugin* p)
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
 }
 
+// A param suite that behaves as Natron's for testSeNoiseResetCenterUndo() (#351):
+//  - a paramSetValue that changes the value sends a nested kOfxActionInstanceChanged (kOfxChangePluginEdited) for
+//    that param (Natron: KnobImpl.h Knob<T>::setValue() -> evaluateValueChange(); each change is dispatched at once,
+//    even inside an edit block: Knob.cpp KnobHelper::evaluateValueChangeInternal() and KnobHolder::endChanges());
+//  - inside paramEditBegin/paramEditEnd, the first value of each param set by the plug-in is recorded, as one undo
+//    step (KnobImpl.h, the s_appendParamEditChange() calls); outside, a plug-in change is not undoable;
+//  - undo sets back each recorded param whose value differs, each with an instanceChanged (kOfxChangePluginEdited),
+//    in any order (KnobUndoCommand.cpp MultipleKnobEditsUndoCommand::undo(): a map, with the reason of the edit).
+struct ParamValue {
+    std::vector<double> d; // the effective value: a double param
+    std::vector<int> i; // or an integer, boolean or choice param
+
+    bool operator==(const ParamValue& o) const { return d == o.d && i == o.i; }
+    bool operator!=(const ParamValue& o) const { return !(*this == o); }
+};
+
+ParamValue
+paramValue(ParamRec* r)
+{
+    ParamValue v;
+    const std::string& t = r->type;
+    const int nd = (t == kOfxParamTypeDouble) ? 1 : (t == kOfxParamTypeDouble2D) ? 2 : (t == kOfxParamTypeDouble3D) ? 3 : 0;
+    for (int k = 0; k < nd; ++k) {
+        v.d.push_back(paramDouble(r, k));
+    }
+    if (nd == 0) {
+        v.i.push_back(paramInt(r, 0));
+    }
+
+    return v;
+}
+
+OfxPlugin* gNatronPlugin = nullptr;
+Effect* gNatronInst = nullptr;
+std::set<std::string> gNatronNotifying; // the params whose instanceChanged is running (no recursion)
+std::vector<std::pair<ParamRec*, ParamValue>> gNatronUndo; // the undo step: each param and its old value
+
+OfxStatus sendChanged(OfxPlugin* p, Effect& inst, const char* paramName, const char* reason);
+
+// set a param and send instanceChanged (kOfxChangePluginEdited) if it changed, as Natron does
+void
+natronSetAndNotify(ParamRec* r,
+                   const ParamValue& v)
+{
+    const ParamValue before = paramValue(r);
+    r->hasOv = true;
+    r->ov.d = v.d;
+    r->ov.i = v.i;
+    if ((paramValue(r) != before) && (gNatronNotifying.count(r->name) == 0)) {
+        gNatronNotifying.insert(r->name);
+        sendChanged(gNatronPlugin, *gNatronInst, r->name.c_str(), kOfxChangePluginEdited);
+        gNatronNotifying.erase(r->name);
+    }
+}
+
+OfxStatus
+natronSetValue(OfxParamHandle ph,
+               ...)
+{
+    ParamRec* r = reinterpret_cast<ParamRec*>(ph);
+    const ParamValue before = paramValue(r);
+    if ((gEditDepth > 0) && std::none_of(gNatronUndo.begin(), gNatronUndo.end(), [r](const std::pair<ParamRec*, ParamValue>& u) { return u.first == r; })) {
+        gNatronUndo.emplace_back(r, before);
+    }
+    va_list ap;
+    va_start(ap, ph);
+    OfxStatus s = prmSetV(ph, ap);
+    va_end(ap);
+    ParamValue after = paramValue(r);
+    // set back the old value, then set the new one and notify as Natron does
+    r->ov.d = before.d;
+    r->ov.i = before.i;
+    natronSetAndNotify(r, after);
+
+    return s;
+}
+
+// undo the recorded step, in the recorded order or in the reverse order
+void
+natronUndo(bool reverse)
+{
+    std::vector<std::pair<ParamRec*, ParamValue>> step;
+    step.swap(gNatronUndo);
+    if (reverse) {
+        std::reverse(step.begin(), step.end());
+    }
+    for (const auto& u : step) {
+        natronSetAndNotify(u.first, u.second);
+    }
+}
+
+// Send kOfxActionInstanceChanged for a param
+OfxStatus
+sendChanged(OfxPlugin* p,
+            Effect& inst,
+            const char* paramName,
+            const char* reason)
+{
+    PropSet a;
+    OfxPropertySetHandle ap = PH(&a);
+    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+    pSetString(ap, kOfxPropName, 0, paramName);
+    pSetString(ap, kOfxPropChangeReason, 0, reason);
+    pSetDouble(ap, kOfxPropTime, 0, 1.);
+    double rs[2] = { 1., 1. };
+    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+
+    return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+}
+
+// SeNoise, with a host that behaves as Natron (#351): the user moves the center (the "center changed" flag becomes
+// true), presses Reset Center, then undoes it: the center and the flag must be back. Also with the center already
+// at the center of the source (Reset Center then does not change it).
+void
+testSeNoiseResetCenterUndo(OfxPlugin* p)
+{
+    std::printf("==== SeNoise, Reset Center then undo, with a host that behaves as Natron (#351) ====\n");
+    Effect ctx;
+    PropSet inArgs;
+    pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        check(false, "describe in context");
+
+        return;
+    }
+    const int W = 8, H8 = 8;
+    Clip* src = ctx.clips[kOfxImageEffectSimpleSourceClipName];
+    Clip* out = ctx.clips[kOfxImageEffectOutputClipName];
+    src->connected = true;
+    out->connected = true;
+    setupClipImage(src, W, H8, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    setupClipImage(out, W, H8, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, W, H8, 100, kOfxImageEffectContextFilter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+        check(false, "create instance");
+
+        return;
+    }
+    ParamRec* center = &ctx.params[kParamTransformCenter];
+    ParamRec* centerChanged = &ctx.params[kParamTransformCenterChanged];
+    const OfxParameterSuiteV1 saved = gParamSuite;
+    gParamSuite.paramEditBegin = recEditBegin;
+    gParamSuite.paramEditEnd = recEditEnd;
+    gParamSuite.paramSetValue = natronSetValue;
+    gNatronPlugin = p;
+    gNatronInst = &inst;
+    gEditDepth = 0;
+    double sourceCenter[2] = { 0., 0. }; // the center after the first Reset Center
+    struct Case {
+        const char* what;
+        bool atSourceCenter; // the user's center is the center of the source
+        bool reverse; // undo in the reverse order
+    };
+    const Case cases[] = {
+        { "center (1, 2), undo in the recorded order", false, false },
+        { "center (1, 2), undo in the reverse order", false, true },
+        { "center at the center of the source, undo in the recorded order", true, false },
+        { "center at the center of the source, undo in the reverse order", true, true },
+    };
+    for (const Case& c : cases) {
+        // the user moves the center: the host sets it, then sends instanceChanged (user edit)
+        const double cx = c.atSourceCenter ? sourceCenter[0] : 1.;
+        const double cy = c.atSourceCenter ? sourceCenter[1] : 2.;
+        centerChanged->hasOv = true;
+        centerChanged->ov.i = { 0 };
+        center->hasOv = true;
+        center->ov.d = { cx, cy };
+        gNatronUndo.clear();
+        sendChanged(p, inst, kParamTransformCenter, kOfxChangeUserEdited);
+        const bool movedSets = paramInt(centerChanged, 0) == 1;
+        gNatronUndo.clear();
+        OfxStatus st = sendChanged(p, inst, kParamTransformResetCenter, kOfxChangeUserEdited);
+        const bool resetClears = paramInt(centerChanged, 0) == 0;
+        if (!c.atSourceCenter) {
+            sourceCenter[0] = paramDouble(center, 0);
+            sourceCenter[1] = paramDouble(center, 1);
+        }
+        std::printf("  %s: Reset Center gave center (%g, %g); the undo step has %zu params\n", c.what, paramDouble(center, 0), paramDouble(center, 1), gNatronUndo.size());
+        natronUndo(c.reverse);
+        const int flagAfterUndo = paramInt(centerChanged, 0);
+        check(ok(st) && movedSets && resetClears, "%s: moving the center sets %s, Reset Center clears it", c.what, kParamTransformCenterChanged);
+        check((paramDouble(center, 0) == cx) && (paramDouble(center, 1) == cy), "%s: undo restores the center (%g, %g)", c.what, paramDouble(center, 0), paramDouble(center, 1));
+        check(flagAfterUndo == 1, "%s: undo restores %s (%d)", c.what, kParamTransformCenterChanged, flagAfterUndo);
+    }
+    check(gEditDepth == 0, "paramEditBegin and paramEditEnd are balanced (depth %d)", gEditDepth);
+    gParamSuite = saved;
+    gNatronPlugin = nullptr;
+    gNatronInst = nullptr;
+    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+}
+
 // SeNoise: a noise size of 0 or a render scale of 0 gives finite values; any positive size is used as is
 void
 testSeNoise()
@@ -425,6 +622,7 @@ testSeNoise()
     OfxStatus st2 = renderSeNoise(p, 0.001, 1., &min);
     check(ok(st1) && ok(st2) && small != min, "size 0.0005 and size 0.001 give different images");
     testSeNoiseResetCenter(p);
+    testSeNoiseResetCenterUndo(p);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     std::printf("==== SeGrain, render scale 0: no NaN ====\n");
