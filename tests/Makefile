@@ -699,11 +699,11 @@ clean:
 	       ofx_actions_test ofx_actions_test.dSYM \
 	       ofx_render_test ofx_render_test.dSYM .render_out.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxTestLog.txt \
 	       oiio_layers_test oiio_layers_test.dSYM \
-	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst \
+	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst .reader_hooks.big.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       ocio_colorspace_anim_test ocio_colorspace_anim_test.dSYM ocio_anim_fuzz ocio_anim_fuzz.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \
 	       exr_read_test exr_read_test.dSYM exr_read_test_tsan exr_read_test_tsan.dSYM exr_read_bench exr_read_bench.dSYM .exr_read .exr_read_tsan .exr_bench \
 	       exr_read_test_tsan_debug exr_read_test_tsan_debug.dSYM reader_hooks_test_tsan_debug reader_hooks_test_tsan_debug.dSYM \
-	       .exr_read_tsan_debug .reader_hooks_tsan_debug.still.tst .reader_hooks_tsan_debug.video.tst \
+	       .exr_read_tsan_debug .reader_hooks_tsan_debug.still.tst .reader_hooks_tsan_debug.video.tst .reader_hooks_tsan_debug.big.tst \
 	       runscript_win32_test runscript_win32_test.dSYM runscript_output_test runscript_output_test.dSYM

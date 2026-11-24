@@ -363,6 +363,12 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   a render nested in another one's `decode()` on the same thread.
 * Two threads rendering different times concurrently (synchronized inside
   `decode()`) each see their own render time.
+* **A file param switched during renders** (#373): four threads render (one instance each) while the main thread
+  switches the file param between two files of different sizes and contents, as the OFX spec allows
+  (`ofxThreadSafety.rst`). Each output must be one of the two files. Before the fix, `render()` read the file param
+  a second time to look up the proxy file, and a debug build aborted on `assert(proxyFile == filename)`.
+* **A proxy file** (#373): a 16x8 file with an 8x4 proxy: setting the proxy param sets `proxyThreshold` to 1/2, a
+  render at scale 1/2 reads the proxy, and a render at scale 1 the full-resolution file.
 * The same through `decodePlane()`, with a multi-planar test reader (the host
   then declares `kFnOfxImageEffectPropMultiPlanar`).
 * **`clipToFile()`** (#232), called directly: float RGBA and 8-bit RGB images, with padded and negative row bytes,
