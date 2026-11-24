@@ -207,6 +207,21 @@ seekForward(std::FILE* file,
 #endif
 }
 
+// The dimensions that decode() accepts (at most 65535 x 65535: the offset of its seek and the size of the image fit in
+// 64 bits). getFrameBounds() checks the same ones, so that the host never gets an empty, negative or huge RoD (#296).
+static bool
+validDimensions(int W,
+                int H)
+{
+    return (0 < W) && (W <= 0xffff) && (0 < H) && (H <= 0xffff);
+}
+
+static string
+invalidDimensionsMessage(const string& filename)
+{
+    return string("invalid WIDTH or HEIGHT fields in file \"") + filename + "\".";
+}
+
 void
 ReadPFMPlugin::decode(const string& filename,
                       OfxTime /*time*/,
@@ -265,9 +280,9 @@ ReadPFMPlugin::decode(const string& filename,
 
         return;
     }
-    if ((W <= 0) || (H <= 0) || (0xffff < W) || (0xffff < H)) {
+    if (!validDimensions(W, H)) {
         std::fclose(nfile);
-        setPersistentMessage(Message::eMessageError, "", string("invalid WIDTH or HEIGHT fields in file \"") + filename + "\".");
+        setPersistentMessage(Message::eMessageError, "", invalidDimensionsMessage(filename));
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -420,6 +435,14 @@ ReadPFMPlugin::getFrameBounds(const string& filename,
         std::fclose(nfile);
         if (error) {
             *error = string("WIDTH and HEIGHT fields are undefined in file \"") + filename + "\".";
+        }
+
+        return false;
+    }
+    if (!validDimensions(W, H)) {
+        std::fclose(nfile);
+        if (error) {
+            *error = invalidDimensionsMessage(filename);
         }
 
         return false;

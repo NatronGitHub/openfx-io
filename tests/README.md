@@ -53,6 +53,8 @@ make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
+make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
+make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -316,6 +318,15 @@ to stay open until Unload). Twice, with the movie rewritten at another size in b
 may get the address of the first one (the test prints whether it does), must have the region of definition of the new
 movie. "Open" is a file descriptor of the process on the same device and inode (`/proc/self/fd` on Linux, `/dev/fd`
 on macOS), or, on MS Windows, a sharing violation when the test opens the file with `DELETE` access.
+
+`test-pfm-write-errors` (issue #294) runs `ofx_render_test OUT --pfm-write-errors`: WritePFM writes a 512x512 file
+that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk): the render must fail with an error that names the
+file (`fwrite()` or `fclose()` fails), and the same instance must then write the whole file without the limit. It is
+skipped (exit status 77) on MS Windows, which has no `RLIMIT_FSIZE`.
+
+`test-pfm-read-errors` (issue #296) runs `ofx_render_test OUT --pfm-read-errors`: ReadPFM reads headers with an empty,
+negative or huge size (more than 65535, as in `decode()`): `getRegionOfDefinition` must fail with an error that names
+the file, instead of giving the host that RoD; a valid 3x2 header gives the RoD `[0 0 3 2]`.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
@@ -1125,7 +1136,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 

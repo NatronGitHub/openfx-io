@@ -219,7 +219,7 @@ if(TARGET io_tests_ofx)
   io_test(test-ofx-actions COMMAND ofx_actions_test)
 
   # test-render: WriteFFmpeg encodes, ReadFFmpeg decodes (round trips)
-  io_test_program(ofx_render_test OFX SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs})
+  io_test_program(ofx_render_test OFX SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs} ${S}/PFM/ReadPFM.cpp ${S}/PFM/WritePFM.cpp)
   io_test(test-render ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov")
   # test-dnxhr444-noise (#267): DNxHR 444 on binary RGB noise, FFmpeg's dnxhd encoder must not abort
   io_test(test-dnxhr444-noise ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i267.dnxhr444.mov" --dnxhr444-noise)
@@ -251,6 +251,12 @@ if(TARGET io_tests_ofx)
   # test-writeffmpeg-codec-params (#343): the settings that WriteFFmpeg shows and the pixel format it selects for each
   # encoder of its Codec menu, and each encoder encodes with them
   io_test(test-writeffmpeg-codec-params ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i343" --codec-params)
+  # test-pfm-write-errors (#294): WritePFM fails the render when the file can not grow (RLIMIT_FSIZE); skipped (exit
+  # status 77) on MS Windows
+  io_test(test-pfm-write-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-write-errors)
+  set_tests_properties(test-pfm-write-errors PROPERTIES SKIP_RETURN_CODE 77)
+  # test-pfm-read-errors (#296): ReadPFM's getRegionOfDefinition fails on a header with an empty, negative or huge size
+  io_test(test-pfm-read-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-read-errors)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})
