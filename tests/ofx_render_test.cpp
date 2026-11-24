@@ -99,6 +99,8 @@
  *       which do not depend on the frame rate, at 23.976 fps only): the movie is encoded
  *       with the compression ID (CID) of the profile (read from the frame header), or beginSequenceRender fails with a
  *       clear message where the profile does not exist (DNxHD 440x and 36 in 720p)
+ *     - each DNxHR profile below 256x120 (FFmpeg's encoder limit, issue #248): beginSequenceRender fails with a message
+ *       that gives the limit and the image size; at 256x120 and 257x121, the movie is encoded with the CID of the profile
  *
  *   WriteFFmpeg, a frame is not encoded while other threads wait (issue #288), with the option --encode-failure (only
  *   this test):
@@ -2689,40 +2691,46 @@ int dnxhdCid(const std::string& file)
 // (DNxHD 440x and 36 are 1080p only), beginSequenceRender fails with a message that says so. FFmpeg's dnxhd encoder
 // only uses the bitrate that WriteFFmpeg sets to choose the CID (ff_dnxhd_find_cid() in libavcodec/dnxhddata.c), and
 // avcodec_open2() fails if no CID of the size and bit depth has that bitrate (DNxHD 36 in 720p, before #305).
+struct DNxHDProfileCase {
+    const char* name;
+    int profile; // the index of the option of DNxHDCodecProfile
+    int cid1080; // the expected CID in 1920x1080
+    int cid720;  // the expected CID in 1280x720, 0 if beginSequenceRender must fail
+};
+const DNxHDProfileCase kDNxHDProfileCases[] = {
+    { "DNxHR 444", 0, 1270, 1270 },
+    { "DNxHR HQX", 1, 1271, 1271 },
+    { "DNxHR HQ", 2, 1272, 1272 },
+    { "DNxHR SQ", 3, 1273, 1273 },
+    { "DNxHR LB", 4, 1274, 1274 },
+    { "DNxHD 440x", 5, 1235, 0 },
+    { "DNxHD 220x", 6, 1235, 1250 },
+    { "DNxHD 220", 7, 1238, 1251 },
+    { "DNxHD 145", 8, 1237, 1252 },
+    { "DNxHD 36", 9, 1253, 0 },
+};
+
+// DNxHR (CIDs 1270 to 1274) is resolution-independent and does not depend on the frame rate
+bool isDNxHR(const DNxHDProfileCase& c)
+{
+    return c.cid1080 >= 1270;
+}
+
 int testDNxHDProfiles(const std::string& outFile)
 {
-    struct Case {
-        const char* name;
-        int profile; // the index of the option of DNxHDCodecProfile
-        int cid1080; // the expected CID in 1920x1080
-        int cid720;  // the expected CID in 1280x720, 0 if beginSequenceRender must fail
-    };
-    const Case cases[] = {
-        { "DNxHR 444", 0, 1270, 1270 },
-        { "DNxHR HQX", 1, 1271, 1271 },
-        { "DNxHR HQ", 2, 1272, 1272 },
-        { "DNxHR SQ", 3, 1273, 1273 },
-        { "DNxHR LB", 4, 1274, 1274 },
-        { "DNxHD 440x", 5, 1235, 0 },
-        { "DNxHD 220x", 6, 1235, 1250 },
-        { "DNxHD 220", 7, 1238, 1251 },
-        { "DNxHD 145", 8, 1237, 1252 },
-        { "DNxHD 36", 9, 1253, 0 },
-    };
     const double fpsList[] = { 23.976, 24., 25., 29.97, 30., 50., 59.94, 60. };
     const char* const rejected = "is only available in 1920x1080";
     const std::string file = outFile + ".i305.mov";
     const int N = 1;
     int failures = 0;
     int nCases = 0;
-    for (const Case& c : cases) {
+    for (const DNxHDProfileCase& c : kDNxHDProfileCases) {
         for (const bool is720p : { false, true }) {
             const int W = is720p ? 1280 : 1920;
             const int H = is720p ? 720 : 1080;
             const int expectedCid = is720p ? c.cid720 : c.cid1080;
             for (const double fps : fpsList) {
-                // DNxHR (CIDs 1270 to 1274) does not depend on the frame rate
-                if ((c.cid1080 >= 1270) && (fps != fpsList[0])) continue;
+                if (isDNxHR(c) && (fps != fpsList[0])) continue;
                 ++nCases;
                 std::remove(file.c_str());
                 WriterParams wp;
@@ -2765,6 +2773,63 @@ int testDNxHDProfiles(const std::string& outFile)
     }
     std::remove(file.c_str());
     std::printf("  %d cases, %d failures\n", nCases, failures);
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #248: FFmpeg's dnxhd encoder refuses images smaller than 256x120 (libavcodec/dnxhdenc.c:406-410 at n9.1), which
+// WriteFFmpeg sends unchanged with the DNxHR profiles: beginSequenceRender must fail with a message that gives the
+// limit and the image size (it was "Could not open video codec: Invalid argument"), and 256x120 and 257x121 (there is
+// no alignment constraint) must encode with the CID of the profile.
+int testDNxHRMinSize(const std::string& outFile)
+{
+    struct Size {
+        int W;
+        int H;
+        bool encodes;
+    };
+    const Size sizes[] = { { 128, 96, false }, { 255, 120, false }, { 256, 119, false }, { 256, 120, true }, { 257, 121, true } };
+    const char* const rejected = "at least 256x120";
+    const std::string file = outFile + ".i248.mov";
+    const int N = 1;
+    int failures = 0;
+    for (const DNxHDProfileCase& c : kDNxHDProfileCases) {
+        if (!isDNxHR(c)) continue;
+        for (const Size& sz : sizes) {
+            std::remove(file.c_str());
+            WriterParams wp;
+            wp.strings = { { "codecShortName", "dnxhd" } };
+            wp.ints = { { "DNxHDCodecProfile", c.profile } };
+            WriterSession s;
+            if (s.create(file, sz.W, sz.H, N, wp)) {
+                std::printf("  FAIL: %s %dx%d: the instance\n", c.name, sz.W, sz.H);
+                ++failures;
+                continue;
+            }
+            if (!sz.encodes) {
+                const OfxStatus st = s.begin(N);
+                const std::string error = WriterSession::persistentError();
+                s.end(N);
+                const std::string size = std::to_string(sz.W) + "x" + std::to_string(sz.H);
+                if (ok(st) || (error.find(rejected) == std::string::npos) || (error.find(size) == std::string::npos)) {
+                    std::printf("  FAIL: %s %s: beginSequenceRender = %d, expected a failure with \"%s\" and \"%s\" (error: \"%s\")\n",
+                                c.name, size.c_str(), st, rejected, size.c_str(), error.c_str());
+                    ++failures;
+                } else {
+                    std::printf("  %s %s: rejected (\"%s\")\n", c.name, size.c_str(), error.c_str());
+                }
+                continue;
+            }
+            const int cid = s.renderAll(N) ? -1 : dnxhdCid(file);
+            if (cid != c.cid1080) {
+                std::printf("  FAIL: %s %dx%d: CID %d, expected %d\n", c.name, sz.W, sz.H, cid, c.cid1080);
+                ++failures;
+            } else {
+                std::printf("  %s %dx%d: CID %d\n", c.name, sz.W, sz.H, cid);
+            }
+        }
+    }
+    std::remove(file.c_str());
     if (!failures) std::printf("  PASS\n");
     return failures;
 }
@@ -4968,6 +5033,8 @@ main(int argc, char** argv)
         } else if (mode == "--dnxhd-profiles") {
             std::printf("==== WriteFFmpeg DNxHD/DNxHR Codec Profiles, 1080p and 720p at 23.976 to 60 fps: the expected CID, or a clear error (issue #305) ====\n");
             failures = testDNxHDProfiles(outFile);
+            std::printf("==== WriteFFmpeg DNxHR below 256x120 (FFmpeg's limit): a clear error; 256x120 encodes (issue #248) ====\n");
+            failures += testDNxHRMinSize(outFile);
         } else if (mode == "--encode-failure") {
             failures = testWriteFFmpegEncodeFailures(outFile);
         } else if (mode == "--encode-failure-disk-full") {

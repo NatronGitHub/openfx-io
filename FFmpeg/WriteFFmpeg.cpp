@@ -725,7 +725,10 @@ enum X26xSpeedEnum {
 
 #define kParamDNxHDCodecProfile "DNxHDCodecProfile"
 #define kParamDNxHDCodecProfileLabel "DNxHD Codec Profile"
-#define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. DNxHD only encodes 1920x1080 and 1280x720 (DNxHD 440x and 36: 1920x1080 only), and the stream is resized to 1920x1080 if its size is neither; its bitrate depends on the frame rate. DNxHR is resolution-independent. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it.\nA frame that does not fit in the bit rate (e.g. noise in DNxHR 444) fails to encode. Do not set qmax above 256 in Codec Options: FFmpeg's encoder may crash."
+#define kParamDNxHDCodecProfileHint "Only for the Avid DNxHD codec, select the target bit rate for the encoded movie. DNxHD only encodes 1920x1080 and 1280x720 (DNxHD 440x and 36: 1920x1080 only), and the stream is resized to 1920x1080 if its size is neither; its bitrate depends on the frame rate. DNxHR is resolution-independent, but FFmpeg's encoder needs at least 256x120 pixels. Writing in thin-raster HDV format (1440x1080) is not supported by this plug-in, although FFmpeg supports it.\nA frame that does not fit in the bit rate (e.g. noise in DNxHR 444) fails to encode. Do not set qmax above 256 in Codec Options: FFmpeg's encoder may crash."
+// The smallest image FFmpeg's dnxhd encoder accepts (libavcodec/dnxhdenc.c:406-410 at n9.1, :407-411 at n8.0)
+constexpr int kDNxHRMinWidth = 256;
+constexpr int kDNxHRMinHeight = 120;
 #define kParamDNxHDCodecProfileOptionHR444 "DNxHR 444", "DNxHR 4:4:4 (10 bit, RGB, 4.5:1 compression)", "dnxhr444"
 #define kParamDNxHDCodecProfileOptionHRHQX "DNxHR HQX", "DNxHR High Quality (10 bit, 4:2:2 chroma sub-sampling, 5.5:1 compression)", "dnxhrhqx"
 #define kParamDNxHDCodecProfileOptionHRHQ "DNxHR HQ", "DNxHR High Quality (8 bit, 4:2:2 chroma sub-sampling, 4.5:1 compression)", "dnxhrhq"
@@ -3791,10 +3794,19 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
         case eDNxHDCodecProfileHRHQX:
         case eDNxHDCodecProfileHRHQ:
         case eDNxHDCodecProfileHRSQ:
-        case eDNxHDCodecProfileHRLB:
-            // DNxHR is resolution-independent
-            // No conversion necessary.
+        case eDNxHDCodecProfileHRLB: {
+            // DNxHR is resolution-independent: no conversion necessary. FFmpeg's encoder needs at least
+            // kDNxHRMinWidth x kDNxHRMinHeight, and only reports it through av_log(), like v210's even width (see
+            // beginEncode()): the user would just see "Could not open video codec: Invalid argument" (#248).
+            if ((srcWidth < kDNxHRMinWidth) || (srcHeight < kDNxHRMinHeight)) {
+                setPersistentMessage(Message::eMessageError, "",
+                                     "DNxHR needs at least " + std::to_string(kDNxHRMinWidth) + "x" + std::to_string(kDNxHRMinHeight)
+                                         + " pixels (the limit of FFmpeg's encoder), and the image is " + std::to_string(srcWidth) + "x"
+                                         + std::to_string(srcHeight) + ": pad or reformat the image, or choose another codec.");
+                throwSuiteStatusException(kOfxStatFailed);
+            }
             break;
+        }
         case eDNxHDCodecProfile440x:
         case eDNxHDCodecProfile220x:
         case eDNxHDCodecProfile220:

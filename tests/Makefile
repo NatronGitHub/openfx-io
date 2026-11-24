@@ -629,6 +629,7 @@ test-writeffmpeg-begin-failure: ofx_render_test
 
 # #305: WriteFFmpeg, each DNxHD/DNxHR Codec Profile in 1080p and 720p at 23.976 to 60 fps: FFmpeg's encoder uses the
 # expected compression ID, or beginSequenceRender fails with a clear message where the profile does not exist.
+# #248: each DNxHR profile below 256x120 (FFmpeg's encoder limit) fails with a clear message; 256x120 encodes.
 test-writeffmpeg-dnxhd-profiles: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --dnxhd-profiles
 
