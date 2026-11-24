@@ -178,4 +178,4 @@ $RECYCLE.BIN/
 
 *.pro.user.*
 *.filters
-ofxTestLog.txt
+ofxPluginLog.txt
