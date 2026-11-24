@@ -31,6 +31,8 @@
 #include <cstring> // memset
 #include <locale>
 #include <sstream>
+#include <sys/types.h>
+#include <sys/stat.h> // stat, _wstat64
 
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
@@ -802,8 +804,102 @@ GenericWriterPlugin::getPackingOptions(bool* allCheckboxHidden,
     }
 }
 
+namespace {
+// What render() compares to know whether a render changed a file: whether it exists, and its device, inode, size,
+// modification time and status change time (nanoseconds where POSIX gives them). The image writers remove the
+// previous file and create a new one, so a partial file differs, even within the same second (MS Windows has no
+// inodes, _wstat64() gives 0, and its times are in seconds).
+struct FileStamp {
+    bool exists = false;
+    uint64_t device = 0;
+    uint64_t inode = 0;
+    int64_t size = 0;
+    int64_t mtime = 0;
+    int64_t mtimeNsec = 0;
+    int64_t ctime = 0;
+
+    friend bool operator==(const FileStamp& a, const FileStamp& b) noexcept
+    {
+        return (a.exists == b.exists) && (a.device == b.device) && (a.inode == b.inode) && (a.size == b.size)
+            && (a.mtime == b.mtime) && (a.mtimeNsec == b.mtimeNsec) && (a.ctime == b.ctime);
+    }
+    friend bool operator!=(const FileStamp& a, const FileStamp& b) noexcept { return !(a == b); }
+};
+
+FileStamp
+fileStamp(const string& filename)
+{
+#ifdef _WIN32
+    struct _stat64 sb;
+    if (::_wstat64(utf8_to_utf16(filename).c_str(), &sb) != 0) {
+        return FileStamp();
+    }
+#else
+    struct stat sb;
+    if (::stat(filename.c_str(), &sb) != 0) {
+        return FileStamp();
+    }
+#endif
+    FileStamp stamp;
+    stamp.exists = true;
+    stamp.device = static_cast<uint64_t>(sb.st_dev);
+    stamp.inode = static_cast<uint64_t>(sb.st_ino);
+    stamp.size = static_cast<int64_t>(sb.st_size);
+    stamp.mtime = static_cast<int64_t>(sb.st_mtime);
+#if defined(__APPLE__)
+    stamp.mtimeNsec = static_cast<int64_t>(sb.st_mtimespec.tv_nsec);
+#elif !defined(_WIN32)
+    stamp.mtimeNsec = static_cast<int64_t>(sb.st_mtim.tv_nsec); // POSIX.1-2008
+#endif
+    stamp.ctime = static_cast<int64_t>(sb.st_ctime);
+
+    return stamp;
+}
+} // namespace
+
 void
 GenericWriterPlugin::render(const RenderArguments& args)
+{
+    // An image file is written by this render: if the render fails (e.g. the disk is full) or is aborted, remove the
+    // file that the plug-in left, because with "Overwrite" unchecked the next render would take it for a written frame
+    // and skip it (renderFile(), getRegionsOfInterest()) (#251). An aborted render may return without an error after
+    // writing part of the file (e.g. the first view of a multi-part file, in renderFile()): its file is never known to
+    // be complete. Only remove a file that this render created or modified: a render that fails before the plug-in
+    // writes the file, e.g. on a parameter error, leaves the previous file as it is. An exception has destroyed the
+    // locals of renderFile() first, so the plug-in has closed the file (MS Windows can't remove an open file).
+    // A movie (!isImageFile()) is opened by beginEncode() and holds all the frames: it is kept, since the frames
+    // written before the error may still be played.
+    // Thread safety: the stamps are locals, and nothing is shared with the renders of other frames on other threads
+    // but the file system. Two concurrent renders of the same file (a file name without a frame number) already race
+    // in the writers, which remove and create it; if one fails, it may then remove the file of the other one.
+    string filename;
+    _fileParam->getValueAtTime(args.time, filename);
+    if (!isImageFile(extension(filename))) {
+        renderFile(args);
+
+        return;
+    }
+    const FileStamp before = fileStamp(filename);
+    // remove the file if this render changed it (nothing better to do if that fails: the render failed anyway)
+    auto removeIfChanged = [&filename, &before]() {
+        const FileStamp after = fileStamp(filename);
+        if (after.exists && (after != before)) {
+            (void)remove_utf8(filename.c_str());
+        }
+    };
+    try {
+        renderFile(args);
+    } catch (...) {
+        removeIfChanged();
+        throw;
+    }
+    if (abort()) {
+        removeIfChanged();
+    }
+}
+
+void
+GenericWriterPlugin::renderFile(const RenderArguments& args)
 {
     const double time = args.time;
 
@@ -1378,7 +1474,7 @@ GenericWriterPlugin::render(const RenderArguments& args)
     }
 
     clearPersistentMessage();
-} // GenericWriterPlugin::render
+} // GenericWriterPlugin::renderFile
 
 class PackPixelsProcessorBase
     : public PixelProcessorFilterBase {

@@ -219,7 +219,14 @@ if(TARGET io_tests_ofx)
   io_test(test-ofx-actions COMMAND ofx_actions_test)
 
   # test-render: WriteFFmpeg encodes, ReadFFmpeg decodes (round trips)
-  io_test_program(ofx_render_test OFX SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs} ${S}/PFM/ReadPFM.cpp ${S}/PFM/WritePFM.cpp)
+  # (also WritePNG with libpng, for the disk-full part of test-writer-remove-partial-file)
+  set(_io_render_srcs ${T}/ofx_render_test.cpp ${_io_plugin_srcs} ${S}/PFM/ReadPFM.cpp ${S}/PFM/WritePFM.cpp)
+  set(_io_render_libs)
+  if(_io_t_png)
+    list(APPEND _io_render_srcs ${S}/PNG/WritePNG.cpp)
+    set(_io_render_libs io_png)
+  endif()
+  io_test_program(ofx_render_test OFX SOURCES ${_io_render_srcs} LIBS ${_io_render_libs})
   io_test(test-render ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov")
   # test-dnxhr444-noise (#267): DNxHR 444 on binary RGB noise, FFmpeg's dnxhd encoder must not abort
   io_test(test-dnxhr444-noise ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i267.dnxhr444.mov" --dnxhr444-noise)
@@ -242,6 +249,10 @@ if(TARGET io_tests_ofx)
   # the render fails; skipped (exit status 77) on MS Windows
   io_test(test-writeoiio-disk-full ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i292" --writeoiio-disk-full)
   set_tests_properties(test-writeoiio-disk-full PROPERTIES SKIP_RETURN_CODE 77)
+  # test-writer-remove-partial-file (#251): a failed or aborted render of an image file leaves no partial file (a test
+  # writer; WritePNG and RLIMIT_FSIZE, except on MS Windows and without libpng), and a render that fails before the
+  # file is written keeps the previous one
+  io_test(test-writer-remove-partial-file ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out" --writer-remove-partial-file)
   # test-swscale-exact (#207, #220, #316): the conversions between Y'CbCr and RGB of ReadFFmpeg and WriteFFmpeg give
   # exact values (rawvideo written and decoded without swscale)
   io_test(test-swscale-exact ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --swscale-exact)

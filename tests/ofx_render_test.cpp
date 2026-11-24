@@ -111,6 +111,15 @@
  *     - EXR, TIFF and DPX files can not grow beyond 16 KB (RLIMIT_FSIZE): the render must fail with an
  *       error that names the file, and the same instance must then write the file without the limit
  *
+ *   A writer of image files removes the partial file of a failed or aborted render (issue #251), with the option
+ *   --writer-remove-partial-file (only this test):
+ *     - a test writer (a non-ASCII file name) writes part of the file, then fails or the render is aborted: no file
+ *       must be left, with no previous file and over a previous file
+ *     - WritePNG (not on MS Windows, nor without libpng), the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a
+ *       full disk), with no previous file and over a previous file: the render must fail and leave no file
+ *     - a render that fails before the file is written (no R/G/B/A checkbox checked) leaves the previous file as it is
+ *     - after each failure, a render with "Overwrite" unchecked must write the whole file
+ *
  *   The conversions between Y'CbCr and RGB give exact values (issues #207, #220, #316), with the option --swscale-exact
  *   (only this test):
  *     - ReadFFmpeg, rawvideo and FFV1 written without swscale (4:2:0, 4:2:2, 4:4:4, 8, 10 and 12 bits, video and full range,
@@ -137,6 +146,8 @@
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
+#include "GenericWriter.h" // the test writer of #251
+#include "ofxsFileOpen.h" // fopen_utf8()
 
 #include <OpenImageIO/imageio.h>
 
@@ -2377,7 +2388,7 @@ static void setDefaultCheckboxesSecret(Effect& ctx)
     }
 }
 
-// A writer instance (WriteFFmpeg by default) that the tests of #288, #289, #292 and #294 render several times, as
+// A writer instance (WriteFFmpeg by default) that the tests of #288, #289, #292, #294 and #251 render several times, as
 // Natron renders a Write node: beginSequenceRender, the frames (maybe on several threads), endSequenceRender. The
 // source image is a constant mid-gray, written once, so that concurrent renders only read it.
 class WriterSession {
@@ -2877,8 +2888,8 @@ private:
 
 // #292, POSIX only: WriteOIIO, the file can not grow beyond a few KB (RLIMIT_FSIZE, as on a full disk), so that
 // ImageOutput::write_image() or close() fails, after open() succeeded: the render must fail with the error of OIIO.
-// Each format is then written without the limit, to check that the failure came from the limit. The partial file is
-// kept, as by the other writers (#251). Exits with 77 (skipped) on MS Windows, which has no RLIMIT_FSIZE.
+// Each format is then written without the limit, to check that the failure came from the limit. GenericWriter
+// removes the partial file (#251). Exits with 77 (skipped) on MS Windows, which has no RLIMIT_FSIZE.
 int testWriteOIIODiskFull(const std::string& outFile)
 {
 #ifdef _WIN32
@@ -3044,6 +3055,184 @@ int testReadPFMHeaderSize(const std::string& outFile)
     }
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::remove(file.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #251: a test writer of image files (".partial"), whose encode() writes kTestWriterFileSize bytes, or writes part of
+// the file and then fails or sets the host's abort flag (as a writer that stops when the render is aborted), as
+// gTestWriterMode says.
+namespace TestWriter251 {
+using namespace OFX;
+enum class Mode { eWrite, eFail, eAbort };
+std::atomic<Mode> gTestWriterMode { Mode::eWrite };
+constexpr long kTestWriterFileSize = 1000;
+
+class TestWriterPlugin : public IO::GenericWriterPlugin {
+public:
+    TestWriterPlugin(OfxImageEffectHandle handle, const std::vector<std::string>& extensions)
+        : IO::GenericWriterPlugin(handle, extensions, true, true, false, true) {}
+
+private:
+    void encode(const std::string& filename, OfxTime, const std::string&, const float*, const OfxRectI&, float, int, int, int, int) override
+    {
+        const Mode mode = gTestWriterMode;
+        const std::vector<char> data((mode == Mode::eWrite) ? kTestWriterFileSize : 10, 'x');
+        std::FILE* f = fopen_utf8(filename.c_str(), "wb");
+        const bool written = f && (std::fwrite(data.data(), 1, data.size(), f) == data.size());
+        if (!f || (std::fclose(f) != 0) || !written) { setPersistentMessage(Message::eMessageError, "", "cannot write " + filename); throwSuiteStatusException(kOfxStatFailed); }
+        if (mode == Mode::eFail) { setPersistentMessage(Message::eMessageError, "", "test failure"); throwSuiteStatusException(kOfxStatFailed); }
+        if (mode == Mode::eAbort) gAbort = 1; // the host aborts the render: encode() returns without an error
+    }
+    bool isImageFile(const std::string&) const override { return true; }
+    PreMultiplicationEnum getExpectedInputPremultiplication() const override { return eImageUnPreMultiplied; }
+    void onOutputFileChanged(const std::string&, bool) override {}
+    bool supportsAlpha(const std::string&) const override { return true; }
+};
+
+mDeclareWriterPluginFactory(TestWriterPluginFactory, {}, false);
+void TestWriterPluginFactory::load() { _extensions = { "partial" }; }
+void TestWriterPluginFactory::describe(ImageEffectDescriptor& desc)
+{
+    IO::GenericWriterDescribe(desc, eRenderFullySafe, _extensions, -1, false, false);
+    desc.setLabel("TestWriter251");
+}
+void TestWriterPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context)
+{
+    PageParamDescriptor* page = IO::GenericWriterDescribeInContextBegin(desc, context, true, true, false, true, "scene_linear", "scene_linear", false);
+    IO::GenericWriterDescribeInContextEnd(desc, context, page);
+}
+ImageEffect* TestWriterPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum)
+{
+    TestWriterPlugin* ret = new TestWriterPlugin(handle, _extensions);
+    ret->restoreStateFromParams();
+    return ret;
+}
+TestWriterPluginFactory gTestWriterFactory("fr.inria.openfx.tests.TestWriter251", 1, 0);
+mRegisterPluginFactoryInstance(gTestWriterFactory)
+} // namespace TestWriter251
+
+// #251: a failed or aborted render of an image file must not leave a partial file, which a render with "Overwrite"
+// unchecked would take for a written frame (the test then does that render, which must write the whole file):
+// - the test writer (on every system, with a non-ASCII file name) writes part of the file, then fails or the render is
+//   aborted, with no previous file and over a previous file: no file must be left;
+// - POSIX only, with WritePNG (built with libpng): the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
+//   disk), with no previous file and over a previous file: the render must fail and leave no file. A render that fails
+//   before the file is written (no R/G/B/A checkbox checked) must leave the previous file as it is.
+int testWriterRemovePartialFile(const std::string& outFile)
+{
+    using TestWriter251::Mode;
+    int failures = 0;
+    // the contents of a file, or nothing if there is none
+    auto contents = [](const std::string& file) -> std::optional<std::vector<char>> {
+        std::FILE* f = OFX::fopen_utf8(file.c_str(), "rb");
+        if (!f) return std::nullopt;
+        std::vector<char> data;
+        char buf[65536];
+        for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0;) data.insert(data.end(), buf, buf + n);
+        std::fclose(f);
+        return data;
+    };
+    // a render of frame 1 that must fail (or be aborted) and leave no file
+    auto expectNoFile = [&](WriterSession& s, const std::string& file, const std::function<OfxStatus()>& render, bool aborted) {
+        OfxStatus st = s.begin(1);
+        if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); ++failures; return; }
+        st = render();
+        s.end(1);
+        const auto data = contents(file);
+        std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, WriterSession::persistentError().c_str(), data ? (long)data->size() : -1L);
+        if (!aborted && ok(st)) { std::printf("  FAIL: the render succeeded\n"); ++failures; }
+        else if (data) { std::printf("  FAIL: the render left a partial file\n"); ++failures; }
+    };
+    // with "Overwrite" unchecked, a render must write the whole file (minSize bytes or more), as after a failure
+    auto expectWholeFile = [&](WriterSession& s, const std::string& file, size_t minSize) -> std::optional<std::vector<char>> {
+        s.setInt("overwrite", 0);
+        const int renderFailed = s.renderAll(1);
+        s.setInt("overwrite", 1);
+        const auto data = contents(file);
+        if (renderFailed || !data || (data->size() < minSize)) {
+            std::printf("  FAIL: with \"Overwrite\" unchecked, the file is not written (size %ld)\n", data ? (long)data->size() : -1L);
+            ++failures;
+            return std::nullopt;
+        }
+        return data;
+    };
+
+    {
+        const std::string file = outFile + ".i251-\xc3\xa9t\xc3\xa9.partial"; // "-été": UTF-8 (MS Windows: _wstat64())
+        OFX::remove_utf8(file.c_str());
+        WriterSession s;
+        if (s.create(file, 16, 16, 1, WriterParams(), "fr.inria.openfx.tests.TestWriter251")) return failures + 1;
+        for (const Mode mode : { Mode::eFail, Mode::eAbort }) {
+            const char* what = (mode == Mode::eFail) ? "fails" : "is aborted";
+            for (const bool previous : { false, true }) {
+                std::printf("==== test writer, the render %s after writing part of the file, %s (issue #251) ====\n", what, previous ? "over a previous file" : "no previous file");
+                TestWriter251::gTestWriterMode = Mode::eWrite;
+                OFX::remove_utf8(file.c_str());
+                if (previous && s.renderAll(1)) ++failures;
+                TestWriter251::gTestWriterMode = mode;
+                expectNoFile(s, file, [&s]() { return s.render(1); }, mode == Mode::eAbort);
+                gAbort = 0;
+                TestWriter251::gTestWriterMode = Mode::eWrite;
+                (void)expectWholeFile(s, file, TestWriter251::kTestWriterFileSize);
+            }
+        }
+        OFX::remove_utf8(file.c_str());
+    }
+
+#ifdef _WIN32
+    std::printf("SKIP: WritePNG on a full disk: no RLIMIT_FSIZE on MS Windows\n");
+#else
+    if (!findPlugin("fr.inria.openfx.WritePNG")) {
+        std::printf("SKIP: WritePNG on a full disk: no WritePNG (libpng)\n");
+    } else {
+        const int W = 512, H = 512;
+        const rlim_t kMaxFileSize = 16384; // more than the header, much less than the file (about 1 MB)
+        const std::string file = outFile + ".i251.png";
+        std::remove(file.c_str());
+        FileSizeLimit fileSizeLimit(file);
+        WriterSession s;
+        if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WritePNG")) return failures + 1;
+        // noise, which zlib does not compress into a few KB
+        std::mt19937 rng(251);
+        std::uniform_real_distribution<float> dist(0.f, 1.f);
+        float* pix = s.sourcePixels();
+        for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
+        // frame 1 can not be written
+        auto renderDiskFull = [&]() -> OfxStatus {
+            if (!fileSizeLimit.limit(kMaxFileSize)) return kOfxStatErrFatal;
+            const OfxStatus st = s.render(1);
+            if (!fileSizeLimit.restore()) return kOfxStatErrFatal;
+            return st;
+        };
+
+        std::printf("==== WritePNG, the disk is full after %d bytes, no previous file (issue #251) ====\n", (int)kMaxFileSize);
+        expectNoFile(s, file, renderDiskFull, false);
+        const auto written = expectWholeFile(s, file, (size_t)kMaxFileSize + 1);
+        if (!written) return failures;
+        std::printf("  then with \"Overwrite\" unchecked: file size %ld\n", (long)written->size());
+
+        std::printf("==== WritePNG, a render that fails before the file is written keeps the previous file (issue #251) ====\n");
+        const char* const checkboxes[] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+        for (const char* name : checkboxes) s.setInt(name, 0);
+        {
+            const OfxStatus st = s.begin(1);
+            const OfxStatus rst = s.render(1);
+            if (ok(st)) s.end(1);
+            const auto data = contents(file);
+            std::printf("  render = %d (error: \"%s\"), file size %ld\n", rst, WriterSession::persistentError().c_str(), data ? (long)data->size() : -1L);
+            if (ok(rst)) { std::printf("  FAIL: the render succeeded\n"); ++failures; }
+            else if (data != written) { std::printf("  FAIL: the previous file was changed\n"); ++failures; }
+        }
+        for (const char* name : checkboxes) s.setInt(name, 1);
+
+        std::printf("==== WritePNG, the disk is full after %d bytes, over a previous file (issue #251) ====\n", (int)kMaxFileSize);
+        expectNoFile(s, file, renderDiskFull, false);
+        if (const auto again = expectWholeFile(s, file, (size_t)kMaxFileSize + 1)) {
+            std::printf("  then with \"Overwrite\" unchecked: file size %ld\n", (long)again->size());
+        }
+    }
+#endif
     if (!failures) std::printf("  PASS\n");
     return failures;
 }
@@ -4020,6 +4209,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegEncodeFailureDiskFull(outFile);
         } else if (mode == "--writeoiio-disk-full") {
             failures = testWriteOIIODiskFull(outFile);
+        } else if (mode == "--writer-remove-partial-file") {
+            failures = testWriterRemovePartialFile(outFile);
         } else if (mode == "--swscale-exact") {
             failures = testSwscaleExact(outFile);
         } else if (mode == "--param-change") {
