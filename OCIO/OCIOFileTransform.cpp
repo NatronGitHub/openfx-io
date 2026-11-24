@@ -491,7 +491,19 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
             transform->setDirection(direction);
             transform->setInterpolation(interpolation);
 
-            return config->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD);
+#if OCIO_VERSION_HEX >= 0x02000000
+            // Bypass the processor cache of the config: its key is the transform's arguments, not the contents of
+            // the file, and OCIO::ClearAllCaches() (Reload) "does not apply to instance-specific caches such as the
+            // Processor cache in a Config instance" (OpenColorIO.h). The shared current config is const, and its
+            // clearProcessorCache() isn't, so build in an editable copy: the copy's processor cache starts empty
+            // (Config::Impl::operator=), so it always builds; the default flags keep the processor's CPU/GPU caches.
+            // (_procCache keeps the processor; the LUT itself is in OCIO's file cache, which Reload clears.)
+            OCIO::ConfigRcPtr copy = config->createEditableCopy();
+
+            return copy->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD);
+#else
+            return config->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD); // (OCIO 1 has no processor cache)
+#endif
         });
     } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
@@ -839,8 +851,10 @@ OCIOFileTransformPlugin::changedParam(const InstanceChangedArgs& args,
     if (paramName == kParamFile) {
         updateCCCId();
     } else if ((paramName == kParamReload) && (args.reason == eChangeUserEdit)) {
-        _version->setValue(_version->getValue() + 1); // invalidate the node cache
+        // clear OCIO's file caches before the version change, which invalidates the host's and _procCache: a render
+        // in between would cache the old file contents under the new version
         OCIO::ClearAllCaches();
+        _version->setValue(_version->getValue() + 1); // invalidate the node cache
 #ifdef OFX_SUPPORTS_OPENGLRENDER
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);

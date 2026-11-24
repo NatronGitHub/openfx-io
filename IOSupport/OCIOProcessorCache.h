@@ -77,8 +77,8 @@ public:
     // The processor for key: the cached one if it was built for key, else build(), which is then cached.
     // build() runs without the lock (CP.22: no unknown code under a lock): it may take any lock and take long (OCIO:
     // "Constructing a Processor object is likely a blocking operation"), and two threads that miss at the same time
-    // both build (OCIO's own processor cache makes the second one cheap). If build() throws, the cache is unchanged and
-    // the exception propagates.
+    // both build (OCIO's own caches make the second one cheaper: the config's processor cache, or for OCIOFileTransform,
+    // which bypasses it, only the file cache). If build() throws, the cache is unchanged and the exception propagates.
     template <class Build>
     OCIO_NAMESPACE::ConstProcessorRcPtr get(const Key& key,
                                             Build&& build)
