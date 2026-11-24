@@ -1952,7 +1952,7 @@ private:
 
     void configureAudioStream(const AVCodec* avCodec, AVStream* avStream);
     void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
-    void addStream(AVFormatContext* avFormatContext, enum AVCodecID avCodecId, const AVCodec** pavCodec, MyAVStream* myStreamOut);
+    void addStream(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myStreamOut);
     int openCodec(AVFormatContext* avFormatContext, const AVCodec* avCodec, MyAVStream* myAVStream, AVDictionary** options = nullptr);
     int writeAudio(AVFormatContext* avFormatContext, AVStream* avStream, bool flush);
     int writeVideo(AVFormatContext* avFormatContext, MyAVStream* myAVStream, bool flush, double time, const float* pixelData = nullptr, const OfxRectI* bounds = nullptr, int pixelDataNComps = 0, int dstNComps = 0, int rowBytes = 0);
@@ -2692,8 +2692,6 @@ struct EncoderRateControl {
 // libxavs (libxavs.c:320) read bit_rate_tolerance; libopenh264 reads bit_rate, qmax and qmin (libopenh264enc.c:142-148).
 // svq1, jpeg2000, cinepak and libxvid read Global Quality from the quality of each frame (AVFrame.quality), which
 // encode() copies from global_quality, as fftools does (fftools/ffmpeg_enc.c:887).
-// For libxvid, libopenjpeg, libopenh264 and libx264rgb, the settings only change the UI until #348: WriteFFmpeg
-// encodes with the default encoder of their codec (mpeg4, jpeg2000, libx264).
 const EncoderRateControl kEncoderRateControl[] = {
     { "svq1", RateControl::eQScale }, // svq1enc.c:641 (svq1 has its own AVClass, without mpv_flags, svq1enc.c:700)
     { "jpeg2000", RateControl::eQScale }, // j2kenc.c:1487
@@ -3340,9 +3338,9 @@ WriteFFmpegPlugin::GetCodecSupportedParams(const AVCodec* codec)
     // (AV_CODEC_CAP_DELAY), which is what the mpegvideo encoders check (FFmpeg n9.1 libavcodec/mpegvideo_enc.c:605:
     // "B-frames not supported by codec"). This is necessary, not sufficient: libkvazaar and libvvenc have both and
     // ignore max_b_frames, and the AV1 hardware encoders write B-frames without AV_CODEC_PROP_REORDER (none of them
-    // is in the Codec menu). libxvid has no AV_CODEC_CAP_DELAY, but writes B-frames (libxvid.c:675, in packed
-    // bitstream mode outside of QuickTime and MP4, :678-679).
-    p.interB = (codecDesc->props & AV_CODEC_PROP_REORDER) && ((codec->capabilities & AV_CODEC_CAP_DELAY) || (codecShortName == "libxvid"));
+    // is in the Codec menu). libxvid writes B-frames (libxvid.c:675) without AV_CODEC_CAP_DELAY (:912), so the frames
+    // that it holds back are never flushed, and lost at the end of the movie: it gets no B-frames.
+    p.interB = (codecDesc->props & AV_CODEC_PROP_REORDER) && (codec->capabilities & AV_CODEC_CAP_DELAY);
 
     if (!lossy) {
         return p;
@@ -3902,36 +3900,25 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
 
 ////////////////////////////////////////////////////////////////////////////////
 // addStream
-// Add a new stream to the AVFormatContext of the file. This will search for
-// the codec and if found, validate it against the codec allowlist. If the codec
-// can be used, a new stream is created and configured.
+// Add a new stream to the AVFormatContext of the file, with a codec context
+// for the encoder avCodec, and configure it.
 //
 // @param avFormatContext A reference to an AVFormatContext of the file.
-// @param avCodecId An AVCodecID enumeration of the codec to attempt to open.
-// @param pavCodec A pointer reference to an AVCodec to receive the AVCodec if
-//                 the codec can be located and is on the codec white list.
-//                 This can be NULL for non-codec streams, e.g. timecode.
-//
-// @return A reference to an AVStream if successful.
-//         NULL otherwise.
+// @param avCodec The encoder, e.g. the one selected in the Codec menu
+//                (initCodec()). It is not replaced by the default encoder of its
+//                codec ID (avcodec_find_encoder()), which may be another one
+//                (e.g. libx264 for libx264rgb or libopenh264, mpeg4 for libxvid).
+// @param myStreamOut Receives the stream and its codec context if successful;
+//                    unchanged otherwise.
 //
 void
 WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
-                             enum AVCodecID avCodecId,
-                             const AVCodec** pavCodec,
+                             const AVCodec* avCodec,
                              MyAVStream* myStreamOut)
 {
     AVCodecContext* avCodecContext = nullptr;
     AVStream* avStream = nullptr;
-    const AVCodec* avCodec = nullptr;
 
-    // Find the encoder.
-    if (avCodecId == AV_CODEC_ID_PRORES) {
-        // use prores_ks instead of prores
-        avCodec = avcodec_find_encoder_by_name(kProresCodec);
-    } else {
-        avCodec = avcodec_find_encoder(avCodecId);
-    }
     if (!avCodec) {
         setPersistentMessage(Message::eMessageError, "", "could not find codec");
 
@@ -3946,6 +3933,7 @@ WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
 
     avStream = avformat_new_stream(avFormatContext, avCodecContext->codec);
     if (!avStream) {
+        avcodec_free_context(&avCodecContext);
         setPersistentMessage(Message::eMessageError, "", "could not allocate stream");
 
         return;
@@ -3970,9 +3958,6 @@ WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
     default:
         break;
     }
-
-    // Update the caller provided pointer with the codec.
-    *pavCodec = avCodec;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -4859,9 +4844,9 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             // audioReader_->setSampleFormat(_avSampleFormat);
 
             if (!audioReader_->open(_audioFile)) {
-                const AVCodec* audioCodec = nullptr;
-                addStream(_formatContext, audioReader_->getCodecID(), &audioCodec, &_streamAudio);
-                if (!_streamAudio.stream || !audioCodec) {
+                const AVCodec* audioCodec = avcodec_find_encoder(audioReader_->getCodecID());
+                addStream(_formatContext, audioCodec, &_streamAudio);
+                if (!_streamAudio.stream) {
                     return false;
                 }
 
@@ -4955,8 +4940,10 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     targetPixelFormat = rawvideoPixelFormatForWidth(avOutputFormat, videoCodec, targetPixelFormat, width);
     assert(!_streamVideo.stream);
     if (!_streamVideo.stream) {
-        addStream(_formatContext, codecId, &videoCodec, &_streamVideo);
-        if (!_streamVideo.stream || !videoCodec) {
+        // the encoder selected in the Codec menu, as "ffmpeg -c:v name" (FFmpeg n9.1 fftools/ffmpeg_mux_init.c:105,
+        // fftools/ffmpeg_opt.c:791), not the default encoder of its codec ID (libavcodec/allcodecs.c:993)
+        addStream(_formatContext, videoCodec, &_streamVideo);
+        if (!_streamVideo.stream) {
             throwSuiteStatusException(kOfxStatFailed);
 
             return;

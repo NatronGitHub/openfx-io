@@ -53,6 +53,7 @@ make test-writer-remove-partial-file # a failed or aborted render of an image fi
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
+make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
@@ -317,10 +318,19 @@ changes with the frame, in the first of mov, mkv, nut and avi whose muxer takes 
 Lossless if they are shown, and with Alpha checked. Every movie must be encoded: a setting that is shown must work (e.g.
 Max B-Frames, which the mpegvideo encoders without `AV_CODEC_CAP_DELAY` refuse), except Output Quality = Lossless with an
 encoder that has no lossless mode (libvpx), which may fail with an error that says it. The test prints the codec, pixel
-format, color tags, number of packets and of key packets, and a hash of the packets of each movie. libx264rgb is a known
-failure ([#348](https://github.com/NatronGitHub/openfx-io/issues/348): WriteFFmpeg opens libx264, which refuses the RGB
-pixel formats of libx264rgb), reported with its reason, and an unexpected pass if it encodes. To check that a change of
-WriteFFmpeg keeps the settings and the movies of every encoder, diff the output of two builds.
+format, color tags, number of packets and of key packets, and a hash of the packets of each movie. To check that a change
+of WriteFFmpeg keeps the settings and the movies of every encoder, diff the output of two builds.
+
+`test-writeffmpeg-selected-encoder` (issue [#348](https://github.com/NatronGitHub/openfx-io/issues/348)) runs
+`ofx_render_test OUT --selected-encoder`: for each encoder of the Codec menu that is not the default encoder of its codec
+ID (`avcodec_find_encoder()`), e.g. libx264rgb and libopenh264 (H.264), libxvid (MPEG-4) and libopenjpeg (JPEG 2000) when
+the FFmpeg build has them, it encodes 3 frames with the default settings, with an `av_log` callback that records the
+encoders whose codec context logs at the debug level. Only the selected encoder may log: WriteFFmpeg used to open the
+default encoder of the codec ID instead (libx264, mpeg4, jpeg2000), and libx264rgb failed in every container. Positive
+control: the default encoder must be in the menu and log when it is selected, else the pair is reported as not checkable
+(e.g. ProRes: prores_ks is in the menu, its default encoder prores is not). An encoder that logs nothing (libxvid) is
+reported as not confirmed, but the default encoder must still not log. The test fails if the Codec menu is empty, and is
+skipped (exit status 77) if no pair is checkable.
 
 `test-readffmpeg-destroy-closes-file` (issue #290) runs `ofx_render_test OUT --destroy-closes-file`: a ReadFFmpeg
 instance renders a frame of a movie, which must then be open, and is destroyed: the movie must be closed before
@@ -1174,7 +1184,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 
