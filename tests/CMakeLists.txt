@@ -186,6 +186,25 @@ if(NOT IO_BASH AND (_io_t_ffmpeg OR _io_t_oiio))
   message(STATUS "bash not found: no test-ffmpeg and test-oiio tests")
 endif()
 
+# ---- test-sequence-parsing: SequenceParsing's own test (patterns, views, UTF-8 file names, negative frames, %d,
+# padding, int limits, extensions), and test-sequence-parsing-utf8 (UTF-8 cases it doesn't cover) (#357). No library.
+# With UBSan, except on MS Windows (MinGW has no UBSan runtime), for SequenceParsing's own arithmetic (INT_MIN,
+# negation, stringToInt): UBSan can't detect #357, since the <cctype> preconditions are not core-language UB and the
+# glibc and UCRT tables accept -128..255.
+if(WIN32)
+  set(_io_sp_ubsan "")
+else()
+  set(_io_sp_ubsan -fsanitize=undefined -fno-sanitize-recover=all)
+endif()
+io_test_program(sequence_parsing_test SOURCES ${S}/IOSupport/SequenceParsing/tests/SequenceParsingTest.cpp
+                ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp INCLUDES ${S}/IOSupport/SequenceParsing
+                SANITIZE ${_io_sp_ubsan})
+io_test(test-sequence-parsing COMMAND $<TARGET_FILE:sequence_parsing_test>)
+io_test_program(sequence_parsing_utf8_test SOURCES ${T}/sequence_parsing_utf8_test.cpp
+                ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp INCLUDES ${S}/IOSupport/SequenceParsing
+                SANITIZE ${_io_sp_ubsan})
+io_test(test-sequence-parsing-utf8 COMMAND $<TARGET_FILE:sequence_parsing_utf8_test>)
+
 # ---- the tests that link the plug-ins (tests/Makefile's OFX_PKGS: OpenColorIO, OpenImageIO, FFmpeg)
 if(TARGET io_tests_ofx)
   # the reader/writer plug-ins and their in-repo dependencies (tests/Makefile's PLUGIN_SRCS)

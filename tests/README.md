@@ -69,6 +69,7 @@ make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance
 make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
 make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
 make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
+make test-sequence-parsing # SequenceParsing: its own test (patterns, views, UTF-8, negative frames, %d, padding, int limits) and UTF-8 cases (UBSan)
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales 1/2 and 1/4, rewritten files (ASan, UBSan, guard pages)
@@ -760,6 +761,20 @@ buffer, which it then premultiplies (UnPreMultiplied files):
 of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders
 narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 
+### 1f4. `test-sequence-parsing` — SequenceParsing, the file sequence parser (#357)
+
+`sequence_parsing_test` is SequenceParsing's own test (`IOSupport/SequenceParsing/tests/SequenceParsingTest.cpp`):
+`####`, `%0Nd`, `%d`, `%v` and `%V` patterns, file name generation, sequence detection (`FileNameContent`,
+`SequenceFromFiles`), UTF-8 file names, negative frames, int limits and overflow, paddings, and numbers in extensions;
+its directory listing and size estimation of real files (in a `mkdtemp()` directory in `/tmp`) are not run on MS Windows.
+`sequence_parsing_utf8_test.cpp` (ctest: `test-sequence-parsing-utf8`) adds the UTF-8 cases it doesn't cover: 3-byte
+characters ("日本") in `####` and `%04d` patterns, a frame number right after a non-ASCII byte, `%v` of "日本" (the whole
+first character) and of an empty view name (nothing, not a NUL byte), and `%V`. Both link only `SequenceParsing.cpp`,
+and are built with UBSan (`-fsanitize=undefined -fno-sanitize-recover=all`), except on MS Windows (MinGW has no UBSan
+runtime), for SequenceParsing's own arithmetic (INT_MIN, negation, `stringToInt`). UBSan can't detect #357 (non-ASCII
+bytes, negative `char`s, passed to the `<cctype>` functions): those preconditions are not core-language undefined
+behaviour, and the glibc and UCRT tables accept -128..255; the tests check the results instead.
+
 ### 1g1. `test-png-corrupt` — ReadPNG and WritePNG on libpng errors (#235, #276, #297)
 
 libpng reports an error by `longjmp()`ing to `png_jmpbuf(png)`, which must be set with `setjmp()` in the function that
@@ -1163,6 +1178,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `ofx_render_test.cpp`       | Full WriteFFmpeg encode -> ReadFFmpeg decode round-trip through the plugins. |
 | `seexpr_test.cpp`           | SeExpr's frames needed and `cpixel()` domain, SeNoise and SeGrain with degenerate params (`test-seexpr`); `seexpr_test_master.inc`: the frames needed on master for the review corpus. |
 | `reader_hooks_test.cpp`     | GenericReader's `isOutputFrameVarying()`, `getRenderTime()`, `refreshFrameBounds()` and `clipToFile()` hooks, on test readers. |
+| `sequence_parsing_utf8_test.cpp` | SequenceParsing on UTF-8 file names, the cases that SequenceParsing's own test (built as `sequence_parsing_test`) doesn't cover: 3-byte characters, `%v` of an empty view name, `%V` (`test-sequence-parsing`). With UBSan except on MS Windows, for SequenceParsing's arithmetic: UBSan can't detect #357. |
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, and a changed config or context (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
