@@ -14,9 +14,11 @@ PKGCONF  ?= pkg-config
 
 FFMPEG_PKGS := libavcodec libavformat libavutil libswscale
 
-# C++17 by default (OpenImageIO 3.x), unless CXX already has a -std option; e.g. `make test CXXSTD=-std=c++20`
-# or `make test CXX="clang++ -std=c++20"` to test C++20
-CXXSTD   ?= $(if $(findstring -std=,$(CXX)),,-std=c++17)
+# C++17 by default (OpenImageIO 3.x, the Support library), unless CXX already has a -std option. CXXSTD is a bare
+# standard name or the whole flag, as in openfx's Support/Plugins/Makefile.master: e.g. `make test CXXSTD=c++20`,
+# `make test CXXSTD=-std=c++20` or `make test CXX="clang++ -std=c++20"` to test C++20
+CXXSTD   ?= $(if $(findstring -std=,$(CXX)),,c++17)
+override CXXSTD := $(if $(filter -std=% /std:%,$(CXXSTD)),$(strip $(CXXSTD)),$(if $(strip $(CXXSTD)),-std=$(strip $(CXXSTD))))
 
 CXXFLAGS += $(CXXSTD) -O2 -g -Wall
 
@@ -728,7 +730,7 @@ clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxTestLog.txt \
+	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxPluginLog.txt \
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst .reader_hooks.big.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \

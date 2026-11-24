@@ -196,7 +196,7 @@ C++17 by default (`-std=c++17`, so plain `make CONFIG=release` works even
 with compilers that default to an older standard, such as Apple clang),
 unless `CXX`, `CXXFLAGS_ADD` or `CXXFLAGS_EXTRA` already contains a `-std=`
 option (or set `CXXSTD`). To compile as
-C++20, use e.g. `make CONFIG=release CXXSTD=-std=c++20` or
+C++20, use e.g. `make CONFIG=release CXXSTD=c++20` (or `CXXSTD=-std=c++20`) or
 `make CONFIG=release CXX="clang++ -std=c++20"`.
 See the file [`Makefile.master`](Makefile.master) in the toplevel directory for other useful
 flags/variables.
