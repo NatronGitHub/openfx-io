@@ -358,6 +358,31 @@ test-reader-window: reader_window_test
 clean-reader-window:
 	rm -rf reader_window_test reader_window_test.dSYM .reader_window
 
+# ReadOIIO's output-layer menu rebuilt on the main thread while render threads render the same instance and call
+# isIdentity (#298), in a Natron-like host: with assert() (the menu's size in decodePlane), and with ThreadSanitizer
+# (test-oiio-layer-menu-tsan, not in make test; without assert(), which would stop it before the data race report).
+# -pthread: the test uses std::thread. (Added to test and clean here, on lines of their own.)
+OIIO_LAYER_MENU_SRCS := ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp $(READER_HOOKS_SRCS)
+
+oiio_layer_menu_test: oiio_layer_menu_test.cpp ofx_test_host.h $(OIIO_LAYER_MENU_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+oiio_layer_menu_test_tsan: oiio_layer_menu_test.cpp ofx_test_host.h $(OIIO_LAYER_MENU_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) -pthread -fsanitize=thread -DNDEBUG $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+.PHONY: test-oiio-layer-menu test-oiio-layer-menu-tsan clean-oiio-layer-menu
+test: test-oiio-layer-menu
+clean: clean-oiio-layer-menu
+test-oiio-layer-menu: oiio_layer_menu_test
+	rm -rf .oiio_layer_menu && mkdir -p .oiio_layer_menu
+	OCIO=$(CURDIR)/test.ocio ./oiio_layer_menu_test $(CURDIR)/.oiio_layer_menu
+test-oiio-layer-menu-tsan: oiio_layer_menu_test_tsan
+	rm -rf .oiio_layer_menu_tsan && mkdir -p .oiio_layer_menu_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./oiio_layer_menu_test_tsan $(CURDIR)/.oiio_layer_menu_tsan
+clean-oiio-layer-menu:
+	rm -rf oiio_layer_menu_test oiio_layer_menu_test.dSYM oiio_layer_menu_test_tsan oiio_layer_menu_test_tsan.dSYM \
+	       .oiio_layer_menu .oiio_layer_menu_tsan
+
 # ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files (made from valid ones that the test writes with
 # libpng) must fail cleanly, without a crash, an AddressSanitizer report, or a leak (of memory or of a file
 # descriptor). With AddressSanitizer (not on MS Windows, as OCIO_FT_ASAN). Only if pkg-config finds libpng.

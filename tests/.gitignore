@@ -62,6 +62,12 @@
 /.exr_read_tsan_debug/
 /.reader_hooks_tsan_debug.still.tst
 /.reader_hooks_tsan_debug.video.tst
+/oiio_layer_menu_test
+/oiio_layer_menu_test.dSYM/
+/oiio_layer_menu_test_tsan
+/oiio_layer_menu_test_tsan.dSYM/
+/.oiio_layer_menu/
+/.oiio_layer_menu_tsan/
 /reader_window_test
 /reader_window_test.dSYM/
 /.reader_window/
