@@ -55,6 +55,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <thread>
@@ -146,6 +147,8 @@ public:
     std::function<void()> onDecode;
     // decode() throws (after recording and onDecode)
     bool throwInDecode = false;
+    // the alpha that decode() writes
+    float alpha = 1.f;
 
     // getRenderTime() is protected
     static double renderTime() { return getRenderTime(); }
@@ -229,7 +232,7 @@ private:
             float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes) + (ptrdiff_t)(renderWindow.x1 - bounds.x1) * pixelComponentCount;
             for (int x = renderWindow.x1; x < renderWindow.x2; ++x, pix += pixelComponentCount) {
                 for (int c = 0; c < pixelComponentCount; ++c) {
-                    pix[c] = (c == 3) ? 1.f : v;
+                    pix[c] = (c == 3) ? alpha : v;
                 }
             }
         }
@@ -606,7 +609,9 @@ struct Reader {
     // Render at render scale 1/2^level, with the given render window (in pixel coordinates at that
     // scale), into an output image covering the whole RoD at that scale (the readers don't support
     // tiles), filled with `fill` beforehand. The RoD returned by getRegionOfDefinition is stored in rod.
-    OfxStatus renderAtScale(double t, unsigned int level, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds)
+    // plane: kFnOfxImagePlaneColour, or a Natron custom plane (then also the output image's components)
+    OfxStatus renderAtScale(double t, unsigned int level, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds,
+                            const char* plane = kFnOfxImagePlaneColour)
     {
         const double s = 1. / (1 << level);
         double rs[2] = { s, s };
@@ -648,6 +653,9 @@ struct Reader {
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
         int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+        pSetString(PH(&ra), kOfxImageEffectPropRenderPlanes, 0, plane);
+        const bool colour = !std::strcmp(plane, kFnOfxImagePlaneColour);
+        pSetString(ip, kOfxImageEffectPropComponents, 0, colour ? kOfxImageComponentRGBA : plane);
 
         return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
     }
@@ -1162,6 +1170,40 @@ testDecodePlane(OfxPlugin* pMultiPlanar, const std::string& still, const std::st
         check(r.plugin->records.size() == 1 && r.plugin->records[0].plane && r.plugin->records[0].renderTime == 9.5 && r.plugin->records[0].time == 4.5,
               "video, time offset 5: decodePlane() saw getRenderTime() = %g, time = %g (expected 9.5, 4.5)",
               r.plugin->records.empty() ? -1. : r.plugin->records[0].renderTime, r.plugin->records.empty() ? -1. : r.plugin->records[0].time);
+    }
+}
+
+// 2e. An Opaque file (File Premult) has alpha = 1 in its color plane only: the other RGBA planes of a multi-planar
+// file keep the alpha that decodePlane() wrote, as the layers of a PSD file in a project saved as Opaque (Natron#1632).
+// At scale 1 (decodePlane() writes in the output image) and 1/2 (in GenericReader's buffer).
+void
+testOpaquePlanes(OfxPlugin* pMultiPlanar, const std::string& still)
+{
+    std::printf("==== Opaque file: alpha = 1 in the color plane only (multi-planar reader, Natron#1632) ====\n");
+    Reader r;
+    if (!r.create(pMultiPlanar, still)) {
+        ++gFailures;
+
+        return;
+    }
+    setParamInt(r.ctx, "filePremult", 0); // Opaque
+    r.plugin->alpha = 0.5f;
+    const std::string layer = std::string(kNatronOfxImageComponentsPlaneName) + "Layer" +
+                              kNatronOfxImageComponentsPlaneChannel + "R" + kNatronOfxImageComponentsPlaneChannel + "G" +
+                              kNatronOfxImageComponentsPlaneChannel + "B" + kNatronOfxImageComponentsPlaneChannel + "A";
+    const char* planes[] = { kFnOfxImagePlaneColour, layer.c_str() };
+    for (const char* plane : planes) {
+        const bool colour = (plane == planes[0]);
+        for (unsigned int level = 0; level <= 1; ++level) {
+            const int s = 1 << level;
+            const OfxRectI window = { 0, 0, (kWidth + s - 1) / s, (kHeight + s - 1) / s };
+            OfxRectD rod;
+            OfxRectI bounds;
+            OfxStatus st = r.renderAtScale(1., level, window, -7.f, &rod, &bounds, plane);
+            const float a = r.outputPixel(bounds, 0, 0, 3);
+            check(ok(st) && a == (colour ? 1.f : 0.5f), "%s plane, scale 1/%d: render = %d, alpha = %g (expected %g)",
+                  colour ? "color" : "custom RGBA", s, st, a, colour ? 1. : 0.5);
+        }
     }
 }
 
@@ -1708,6 +1750,7 @@ main(int argc, char** argv)
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testDecodePlane(pMultiPlanar, still, video);
+    testOpaquePlanes(pMultiPlanar, still);
     testMipmap(pMipmap, still);
     testRefreshFrameBounds(pTiles, still);
     testRefreshFrameBoundsPar(pTiles, prefix);
