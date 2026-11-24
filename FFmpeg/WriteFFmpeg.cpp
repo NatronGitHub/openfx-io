@@ -4062,49 +4062,6 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
             break;
         }
     }
-#if 0
-    // the following was inspired by blender/source/blender/blenkernel/intern/writeffmpeg.c
-    // but it is disabled by default (we suppose ffmpeg correctly sets the x264 defaults)
-    if (AV_CODEC_ID_H264 == avCodecContext->codec_id) {
-        /*
-         * All options here are for x264, but must be set via ffmpeg.
-         * The names are therefore different - Search for "x264 to FFmpeg option mapping"
-         * to get a list.
-         */
-
-        /*
-         * Use CABAC coder. Using "coder:1", which should be equivalent,
-         * crashes Blender for some reason. Either way - this is no big deal.
-         */
-        av_opt_set(avCodecContext->priv_data, "coder", "cabac", 0);
-
-        /*
-         * The other options were taken from the libx264-default.ffpreset
-         * included in the ffmpeg distribution.
-         */
-        //av_opt_set(avCodecContext->priv_data, "flags:loop"); // this breaks compatibility for QT
-        av_opt_set(avCodecContext->priv_data, "cmp", "chroma", 0);
-        av_opt_set(avCodecContext->priv_data, "partitions", "i4x4,p8x8,b8x8", 0);
-        av_opt_set(avCodecContext->priv_data, "me_method", "hex", 0);
-        av_opt_set_int(avCodecContext->priv_data, "subq", 6, 0);
-        av_opt_set_int(avCodecContext->priv_data, "me_range", 16, 0);
-        // missing: g=250
-        av_opt_set_int(avCodecContext->priv_data, "qdiff", 4, 0);
-        av_opt_set_int(avCodecContext->priv_data, "keyint_min", 25, 0);
-        av_opt_set_int(avCodecContext->priv_data, "sc_threshold", 40, 0);
-        av_opt_set_double(avCodecContext->priv_data, "i_qfactor", 0.71, 0);
-        av_opt_set_int(avCodecContext->priv_data, "b_strategy", 1, 0);
-        av_opt_set_int(avCodecContext->priv_data, "bf", 3, 0);
-        av_opt_set_int(avCodecContext->priv_data, "refs", 2, 0);
-        av_opt_set_double(avCodecContext->priv_data, "qcomp", 0.6, 0);
-        // missing: qmin=10, qmax=51
-        av_opt_set_int(avCodecContext->priv_data, "trellis", 0, 0);
-        av_opt_set_int(avCodecContext->priv_data, "weightb", 1, 0);
-        av_opt_set_int(avCodecContext->priv_data, "8x8dct", 1, 0);
-        av_opt_set_int(avCodecContext->priv_data, "fast-pskip", 1, 0);
-        av_opt_set(avCodecContext->priv_data, "wpredp", "2", 0);
-    }
-#endif
 
     // Currently not set - the main problem being that the mov32 reader will use it to set its defaults.
     // TODO: investigate using the writer key in mov32 to ignore this value when set to mov64.
@@ -5086,12 +5043,9 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 // Descriptor which is required for QuickTime to decode the
                 // stream.)
                 AVCodecContext* avCodecContext = _streamAudio.codecContext;
-                if (!strcmp(_formatContext->oformat->name, "mp4") || !strcmp(_formatContext->oformat->name, "mov") || !strcmp(_formatContext->oformat->name, "3gp")) {
-                    avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-                }
                 // Some formats want stream headers to be separate.
                 if (_formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
-                    // see ffmpeg_opt.c:1403 in ffmpeg 3.2.2
+                    // see fftools/ffmpeg_mux_init.c:1593 (n9.1), :1521 (n8.0)
                     avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
                 }
                 // Activate multithreaded decoding. This must be done before opening the codec; see
@@ -5136,9 +5090,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     // Test if the container recognises the codec type.
     bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    // mov seems to be able to cope with anything, which the above function doesn't seem to think is the case (even with FF_COMPLIANCE_EXPERIMENTAL)
-    // and it doesn't return -1 for in this case, so we'll special-case this situation to allow this
-    // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
     if (!isCodecSupportedInContainer) {
         setPersistentMessage(Message::eMessageError, "", string("The codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name);
         throwSuiteStatusException(kOfxStatFailed);
@@ -5234,8 +5185,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         // Descriptor which is required for QuickTime to decode the
         // stream.)
         // Some formats want stream headers to be separate.
-        // see ffmpeg_opt.c:1408 in ffmpeg 3.3.3
-        if ((_formatContext->oformat->flags & AVFMT_GLOBALHEADER) || !strcmp(_formatContext->oformat->name, "mp4") || !strcmp(_formatContext->oformat->name, "mov") || !strcmp(_formatContext->oformat->name, "3gp")) {
+        // see fftools/ffmpeg_mux_init.c:1593 (n9.1), :1521 (n8.0)
+        if (_formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
             avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         }
         if (codecId == AV_CODEC_ID_PRORES) {
@@ -5249,13 +5200,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             // ref: https://ffmpeg.org/ffmpeg-all.html#toc-Private-Options-for-prores_002dks
             av_opt_set(avCodecContext->priv_data, "vendor", "apl0", 0);
         }
-        // The default vendor ID is "FFMP" (FFmpeg), and it is hardcoded (see mov_write_video_tag in libavformat/movenc.c)
-        // Some tools may check that QuickTime movies were made by Apple ("appl", as seen in exiftool source).
-        // Maybe one day a future version of movenc.c will use it rather than the hardcoded FFMP.
-        // if ( !strcmp(_formatContext->oformat->name, "mov") ) {
-        //    av_opt_set(_formatContext->metadata, "vendor", "appl", 0);
-        //}
-
         // Activate multithreaded decoding. This must be done before opening the codec; see
         // http://lists.gnu.org/archive/html/bino-list/2011-08/msg00019.html
         avCodecContext->thread_count = (std::min)((int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS);
@@ -6136,9 +6080,6 @@ WriteFFmpegPlugin::updatePixelFormat()
 
     // Test if the container recognises the codec type.
     bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    // mov seems to be able to cope with anything, which the above function doesn't seem to think is the case (even with FF_COMPLIANCE_EXPERIMENTAL)
-    // and it doesn't return -1 for in this case, so we'll special-case this situation to allow this
-    // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
     if (!isCodecSupportedInContainer) {
         _infoPixelFormat->setValue("none");
         _infoBitDepth->setValue(0);
@@ -6198,9 +6139,6 @@ WriteFFmpegPlugin::availPixelFormats()
 
     // Test if the container recognises the codec type.
     bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    // mov seems to be able to cope with anything, which the above function doesn't seem to think is the case (even with FF_COMPLIANCE_EXPERIMENTAL)
-    // and it doesn't return -1 for in this case, so we'll special-case this situation to allow this
-    // isCodecSupportedInContainer |= (strcmp(_formatContext->oformat->name, "mov") == 0); // commented out [FD]: recent ffmpeg gives correct answer
     if (!isCodecSupportedInContainer) {
         string ret = string("Supported pixel codings:\nnone (codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name + ")";
         sendMessage(Message::eMessageError, "", ret);
@@ -6506,13 +6444,6 @@ void
 WriteFFmpegPluginFactory::load()
 {
     _extensions.clear();
-#if 0
-    // hard-coded extensions list
-    const char* extensionsl[] = { "avi", "flv", "mov", "mp4", "mkv", "webm", "bmp", "pix", "dpx", "jpeg", "jpg", "png", "pgm", "ppm", "rgba", "rgb", "tiff", "tga", "gif", nullptr };
-    for (const char** ext = extensionsl; *ext != nullptr; ++ext) {
-        _extensions.push_back(*ext);
-    }
-#else
     {
         std::list<string> extensionsl;
         void* opaqueMuxerIter = nullptr;
@@ -6805,7 +6736,6 @@ WriteFFmpegPluginFactory::load()
         std::sort(_extensions.begin(), _extensions.end());
         _extensions.erase(std::unique(_extensions.begin(), _extensions.end()), _extensions.end());
     }
-#endif // if 0
 } // WriteFFmpegPluginFactory::load
 
 /** @brief The basic describe function, passed a plugin descriptor */

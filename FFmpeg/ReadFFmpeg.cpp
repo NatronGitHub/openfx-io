@@ -682,13 +682,6 @@ ReadFFmpegPluginFactory::load()
     _manager->init();
 
     _extensions.clear();
-#if 0
-    // hard-coded extensions list
-    const char* extensionsl[] = { "avi", "flv", "mkv", "webm", "mov", "mp4", "mpg", "m2ts", "mts", "ts", "mxf", "ogv", "r3d", "bmp", "pix", "dpx", "exr", "jpeg", "jpg", "png", "pgm", "ppm", "ptx", "rgba", "rgb", "tiff", "tga", "gif", NULL };
-    for (const char** ext = extensionsl; *ext != NULL; ++ext) {
-        _extensions.push_back(*ext);
-    }
-#else
     std::list<string> extensionsl;
     const AVInputFormat* iFormat;
     void* i = 0;
@@ -996,7 +989,6 @@ ReadFFmpegPluginFactory::load()
     // sort / unique
     std::sort(_extensions.begin(), _extensions.end());
     _extensions.erase(std::unique(_extensions.begin(), _extensions.end()), _extensions.end());
-#endif // if 0
 } // ReadFFmpegPluginFactory::load
 
 /** @brief The basic describe function, passed a plugin descriptor */

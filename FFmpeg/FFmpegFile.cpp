@@ -143,29 +143,31 @@ struct FilterEntry {
 
 // Bug 11027 - Nuke write: ffmpeg codec fails has details on individual codecs
 
-// For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
+// Container formats the writer offers (only isFormatAllowedForWriting() uses this table).
+// For a full list of formats, define OFX_FFMPEG_PRINT_CODECS in WriteFFmpeg.cpp.
+// Not offered for writing:
+// - dv: DV (Digital Video), no HD support
+// - gif: GIF Animation - write not supported as 8-bit only.
+// - h264: raw H.264 video. prefer a proper container (mp4, mov, avi)
+// - hevc: raw HEVC video. hevc codec cannot be read in official qt
+// - m4v: raw MPEG-4 video. prefer a proper container (mp4, mov, avi)
+// - mxf: not readable in Qt but may be used with other software, however MXF has too many constraints to be easyly writable (for H264 it requires avctx.profile = FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10 or FF_PROFILE_H264_HIGH_422). it is better to transcode with an external tool
+// - ogg: Ogg, for theora codec (use ogv for writing)
 const FilterEntry kFormatAllowlist[] = {
     { "3gp", true, true },
     { "3g2", true, true },
     { "avi", true, true },
-    { "dv", true, false }, // DV (Digital Video), no HD support
     { "flv", true, true }, // FLV (Flash Video), only used with flv codec. cannot be read in official Qt
-    { "gif", true, false }, // GIF Animation - write not supported as 8-bit only.
-    { "h264", true, false }, // raw H.264 video. prefer a proper container (mp4, mov, avi)
-    { "hevc", true, false }, // raw HEVC video. hevc codec cannot be read in official qt
-    { "m4v", true, false }, // raw MPEG-4 video. prefer a proper container (mp4, mov, avi)
     { "matroska", true, true }, // not readable in Qt but may be used with other software
     { "mov", true, true },
     { "mp4", true, true },
     { "mpeg", true, true },
     { "mpegts", true, true },
-    { "mxf", true, false }, // not readable in Qt but may be used with other software, however MXF has too many constraints to be easyly writable (for H264 it requires avctx.profile = FF_PROFILE_H264_BASELINE, FF_PROFILE_H264_HIGH_10 or FF_PROFILE_H264_HIGH_422). it is better to transcode with an external tool
-    { "ogg", true, false }, // Ogg, for theora codec (use ogv for writing)
     { "ogv", true, true }, // Ogg Video, for theora codec
     { nullptr, false, false }
 };
 
-// For a full list of formats, define FN_FFMPEGWRITER_PRINT_CODECS in ffmpegWriter.cpp
+// For a full list of codecs, define OFX_FFMPEG_PRINT_CODECS in WriteFFmpeg.cpp.
 // A range of codecs are omitted for licensing reasons, or because they support obsolete/unnecessary
 // formats that confuse the interface.
 
@@ -317,14 +319,6 @@ getEntry(const char* name,
     return nullptr;
 }
 } // namespace {
-
-bool
-FFmpegFile::isFormatAllowedForReading(const char* formatName)
-{
-    const FilterEntry* allowlistEntry = getEntry(formatName, kFormatAllowlist);
-
-    return (allowlistEntry && allowlistEntry->enableReader);
-}
 
 bool
 FFmpegFile::isFormatAllowedForWriting(const char* formatName)
