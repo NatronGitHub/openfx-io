@@ -42,6 +42,9 @@
  *    an OCIO conversion (x2 to x1 of swap.ocio, next to $OCIO): the file's colours (times 2) and alpha 1 (#234)
  *  - ReadPNG files with an offset (oFFs) near the limits of an int, at scales 1/2 and 1/4: the render of the file
  *    without an offset, translated (#371)
+ *  - render scales that are not a power of two (0.75, 1/3), not the same in x and y (0.5 x 0.75, 1 x 0.5), or above 1
+ *    (2): the file's image, scaled (the mean of the pixels that each pixel covers, premultiplied after the mean for an
+ *    UnPreMultiplied file), and the windows as above (#194); and the PNG offsets above at scale 0.75
  *  - a file rewritten with a smaller or larger image, rendered with the RoD that the host got before (decode() then
  *    gets a render window that is not the file's): only the window is written, and for an Opaque file, alpha is 1 in
  *    the new image and the rest of the window is transparent black (#232)
@@ -318,11 +321,12 @@ struct Reader {
     }
 
     // getRegionOfDefinition at the given render scale (rod, in pixels at that scale)
-    OfxStatus getRoD(double scale)
+    OfxStatus getRoD(double scale) { return getRoD(OfxPointD { scale, scale }); }
+    OfxStatus getRoD(const OfxPointD& scale)
     {
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
-        double rs[2] = { scale, scale };
+        double rs[2] = { scale.x, scale.y };
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
@@ -332,17 +336,18 @@ struct Reader {
         }
         double r[4] = { 0., 0., 0., 0. };
         pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, r);
-        rod = { (int)std::floor(r[0] * scale), (int)std::floor(r[1] * scale), (int)std::ceil(r[2] * scale), (int)std::ceil(r[3] * scale) };
+        rod = { (int)std::floor(r[0] * scale.x), (int)std::floor(r[1] * scale.y), (int)std::ceil(r[2] * scale.x), (int)std::ceil(r[3] * scale.y) };
 
         return kOfxStatOK;
     }
 
     // an output image with the given bounds (in pixels at the render scale), between guard pages, every value
     // unwritten; the RoD of the image is rod
-    void setImage(const OfxRectI& bounds, double scale, bool atEnd)
+    void setImage(const OfxRectI& bounds, double scale, bool atEnd) { setImage(bounds, OfxPointD { scale, scale }, atEnd); }
+    void setImage(const OfxRectI& bounds, const OfxPointD& scale, bool atEnd)
     {
         img = bounds;
-        double rs[2] = { scale, scale };
+        double rs[2] = { scale.x, scale.y };
         const int w = img.x2 - img.x1;
         const int h = img.y2 - img.y1;
         rowBytes = w * 4 * (int)sizeof(float);
@@ -357,17 +362,18 @@ struct Reader {
         pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, r);
         pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
         pSetDoubleN(ip, kOfxImageEffectPropRenderScale, 2, rs);
-        double rd[4] = { rod.x1 / scale, rod.y1 / scale, rod.x2 / scale, rod.y2 / scale };
+        double rd[4] = { rod.x1 / scale.x, rod.y1 / scale.y, rod.x2 / scale.x, rod.y2 / scale.y };
         pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, rd);
     }
 
     // render a window (in pixels at the render scale)
-    OfxStatus render(const OfxRectI& window, double scale, bool sequential)
+    OfxStatus render(const OfxRectI& window, double scale, bool sequential) { return render(window, OfxPointD { scale, scale }, sequential); }
+    OfxStatus render(const OfxRectI& window, const OfxPointD& scale, bool sequential)
     {
         PropSet ra = makeRenderInArgs(1., 0, 0);
         int win[4] = { window.x1, window.y1, window.x2, window.y2 };
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
-        double rs[2] = { scale, scale };
+        double rs[2] = { scale.x, scale.y };
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&ra), kOfxImageEffectPropSequentialRenderStatus, 0, sequential ? 1 : 0);
 
@@ -760,6 +766,13 @@ compareWindow(const Reader& r,
     return bad;
 }
 
+// "0.5" for a render scale of 0.5 in x and y, "1x0.5" for 1 in x and 0.5 in y
+std::string
+scaleName(const OfxPointD& scale)
+{
+    return (scale.x == scale.y) ? strprintf("%g", scale.x) : strprintf("%gx%g", scale.x, scale.y);
+}
+
 // $READER_WINDOW_DUMP: a directory where the whole renders are written (raw RGBA float, one file per test), to
 // compare the images of two builds bit by bit (e.g. "cmp -s").
 void
@@ -781,25 +794,26 @@ dumpImage(const std::string& title,
     }
 }
 
-void
+// Returns the render of the whole RoD (empty if the instance or the RoD failed).
+Image
 testFileRenders(OfxPlugin* p,
                 const std::string& path,
                 const File& f,
                 bool isOIIO,
                 int filePremult,
-                double scale)
+                const OfxPointD& scale)
 {
     Reader r;
     if (!r.create(p, path, filePremult)) {
         check(false, "create");
 
-        return;
+        return Image();
     }
     OfxStatus st = r.getRoD(scale);
     if (!ok(st)) {
         check(false, "getRegionOfDefinition = %d", st);
 
-        return;
+        return Image();
     }
     // the whole image
     r.setImage(r.rod, scale, true);
@@ -810,7 +824,7 @@ testFileRenders(OfxPlugin* p,
     Image ref;
     ref.bounds = r.rod;
     ref.pixels.assign(r.data, r.data + (size_t)(r.rod.x2 - r.rod.x1) * (r.rod.y2 - r.rod.y1) * 4);
-    dumpImage(strprintf("%s %s filePremult %d scale %g", f.plugin + 16, path.substr(path.find_last_of("/\\") + 1).c_str(), filePremult, scale), ref);
+    dumpImage(strprintf("%s %s filePremult %d scale %s", f.plugin + 16, path.substr(path.find_last_of("/\\") + 1).c_str(), filePremult, scaleName(scale).c_str()), ref);
     // the readers don't depend on kOfxImageEffectPropSequentialRenderStatus ("whether the effect is currently being
     // rendered in frame order on a single effect instance", not playback): the same image with 1
     {
@@ -822,7 +836,7 @@ testFileRenders(OfxPlugin* p,
         }
         check(ok(st) && differ == 0, "the same render with a sequential render status of 1 (%d values differ)", differ);
     }
-    if (scale == 1.) {
+    if ((scale.x == 1.) && (scale.y == 1.)) {
         int bad = 0;
         for (int y = r.rod.y1; y < r.rod.y2; ++y) {
             for (int x = r.rod.x1; x < r.rod.x2; ++x) {
@@ -886,6 +900,8 @@ testFileRenders(OfxPlugin* p,
         }
     }
     check(failed == 0 && bad == 0, "%d renders of windows out of the RoD: %d failed, %d wrong values", n, failed, bad);
+
+    return ref;
 }
 
 void
@@ -912,7 +928,110 @@ testFile(OfxPlugin* p,
                 continue;
             }
             std::printf("==== %s ====\n", title.c_str());
-            testFileRenders(p, path, f, isOIIO, filePremult, scale);
+            testFileRenders(p, path, f, isOIIO, filePremult, OfxPointD { scale, scale });
+        }
+    }
+}
+
+// The mean of value(i, j), for the pixels (i, j) at scale 1 in bounds that pixel (x, y) at the render scale covers
+// ([x / scale.x, (x + 1) / scale.x) x [y / scale.y, (y + 1) / scale.y), "Mapping Between The Spatial Coordinate
+// Systems", ofxCoordSystem.rst), weighted by the covered area; 0 if it covers none of bounds.
+template <typename Value>
+double
+areaMean(const OfxRectI& bounds,
+         const OfxPointD& scale,
+         int x,
+         int y,
+         Value value)
+{
+    const double x1 = (std::max)(x / scale.x, (double)bounds.x1);
+    const double x2 = (std::min)((x + 1.) / scale.x, (double)bounds.x2);
+    const double y1 = (std::max)(y / scale.y, (double)bounds.y1);
+    const double y2 = (std::min)((y + 1.) / scale.y, (double)bounds.y2);
+    double sum = 0.;
+    double weight = 0.;
+    for (long long j = (long long)std::floor(y1); j < y2; ++j) {
+        const double wy = (std::min)(j + 1., y2) - (std::max)((double)j, y1);
+        for (long long i = (long long)std::floor(x1); i < x2; ++i) {
+            const double w = wy * ((std::min)(i + 1., x2) - (std::max)((double)i, x1));
+            if (w > 0.) {
+                sum += w * value((int)i, (int)j);
+                weight += w;
+            }
+        }
+    }
+
+    return (weight > 0.) ? sum / weight : 0.;
+}
+
+// Render scales that are not a power of two, or not the same in x and y, or above 1 (#194). kOfxImageEffectPropRenderScale
+// is "The proxy render scale currently being applied" (ofxImageEffect.h), and nothing in OFX restricts it to powers of
+// two. GenericReader decoded the image at the nearest power of two and wrote it as is: at 0.75 or 2, a crop of the
+// image; at 1/3, the image at 1/4; at 0.5 x 0.75 or 1 x 0.5, the image at 1/2 in x and y. Each pixel at render scale
+// s must be the mean of the file's pixels that it covers (areaMean(), on the frame bounds), computed from the file's
+// values (File::expected()):
+//  - Opaque (RGB) or PreMultiplied (RGBA) files: the mean of the output values at scale 1 (GenericReader resamples
+//    the decoded image into the output image);
+//  - UnPreMultiplied RGBA files: GenericReader resamples the unpremultiplied image, then premultiplies it: the mean
+//    colour times the mean alpha.
+// Scale 1/2 is the power-of-two path (GenericReader halves the image), which already gives that mean: it checks the
+// reference. Scale 2 covers part of one pixel: the file's pixel. The tolerance, 1e-6 relative (plus 1e-6 absolute),
+// is a few float ulps of the values (up to 7): the reader computes in float (the conversion of 8-bit values, the
+// halving, the premultiplication), the reference in double.
+void
+testScales(OfxPlugin* p,
+           const std::string& dir,
+           const char* name,
+           const File& f)
+{
+    const std::string path = dir + "/scales-" + name + extension(f.kind);
+    if (!writeFile(path, f)) {
+        check(false, "%s: write the file", name);
+
+        return;
+    }
+    const bool isOIIO = !std::strcmp(f.plugin, "fr.inria.openfx.ReadOIIO");
+    const OfxRectI bounds = f.frameBounds();
+    const OfxPointD scales[] = { { 0.5, 0.5 }, { 0.75, 0.75 }, { 1. / 3, 1. / 3 }, { 0.5, 0.75 }, { 1., 0.5 }, { 2., 2. } };
+    std::vector<int> filePremults = { (f.nchannels == 4) ? 1 : 0 };
+    if (f.nchannels == 4) {
+        filePremults.push_back(2);
+    }
+    for (int filePremult : filePremults) {
+        for (const OfxPointD& scale : scales) {
+            const std::string title = strprintf("%s %s, filePremult %d, scale %s", f.plugin + 16, (std::string("scales-") + name).c_str(), filePremult,
+                                                scaleName(scale).c_str());
+            if (!selected(title)) {
+                continue;
+            }
+            std::printf("==== %s ====\n", title.c_str());
+            // the renders at this scale: the whole RoD, narrow windows and windows out of the RoD
+            const Image scaled = testFileRenders(p, path, f, isOIIO, filePremult, scale);
+            if (scaled.pixels.empty()) {
+                continue;
+            }
+            // UnPreMultiplied: the mean of the file's (unpremultiplied) values, premultiplied
+            const int meanPremult = (filePremult == 2) ? 1 : filePremult;
+            int bad = 0;
+            for (int y = scaled.bounds.y1; y < scaled.bounds.y2; ++y) {
+                for (int x = scaled.bounds.x1; x < scaled.bounds.x2; ++x) {
+                    double mean[4];
+                    for (int c = 0; c < 4; ++c) {
+                        mean[c] = areaMean(bounds, scale, x, y, [&](int i, int j) { return (double)f.expected(i, j, c, meanPremult); });
+                    }
+                    for (int c = 0; c < 4; ++c) {
+                        const double v = ((filePremult == 2) && (c < 3)) ? mean[c] * mean[3] : mean[c];
+                        const float got = scaled.pixel(x, y)[c];
+                        if (!(std::fabs(got - v) <= 1e-6 * (1. + std::fabs(v)))) {
+                            if (bad < 3) {
+                                std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, got, v);
+                            }
+                            ++bad;
+                        }
+                    }
+                }
+            }
+            check(bad == 0, "the render at scale %s is the file's image, scaled (%d wrong values)", scaleName(scale).c_str(), bad);
         }
     }
 }
@@ -957,7 +1076,11 @@ testLargeOffsets(OfxPlugin* p,
 
             continue;
         }
-        for (double scale : { 0.5, 0.25 }) {
+        // and 0.75 (#194): the offsets times 0.75 are integers, but the footprints of the pixels at scale 1 (x / 0.75)
+        // are computed in double near 2^31, where an ulp is 5e-7 pixel: the weights, and the means, may differ by
+        // about 1e-6 (the values are 0 to 1). The tolerance, 1e-5 relative, is a 10x margin over that.
+        for (double scale : { 0.5, 0.25, 0.75 }) {
+            const bool sameBitsExpected = (scale != 0.75);
             const std::string title = strprintf("%s %s, scale %g", f.plugin + 16, o.name, scale);
             if (!selected(title)) {
                 continue;
@@ -994,7 +1117,9 @@ testLargeOffsets(OfxPlugin* p,
             for (int y = r0.rod.y1; y < r0.rod.y2; ++y) {
                 for (int x = r0.rod.x1; x < r0.rod.x2; ++x) {
                     for (int c = 0; c < 4; ++c) {
-                        if (!sameBits(&r.pixel(x + dx, y + dy)[c], &r0.pixel(x, y)[c])) {
+                        const float got = r.pixel(x + dx, y + dy)[c];
+                        const float v = r0.pixel(x, y)[c];
+                        if (sameBitsExpected ? !sameBits(&got, &v) : !(std::fabs(got - v) <= 1e-5f * (1.f + std::fabs(v)))) {
                             if (bad < 3) {
                                 std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, r.pixel(x + dx, y + dy)[c], r0.pixel(x, y)[c]);
                             }
@@ -1491,6 +1616,15 @@ main(int argc,
     testFile(png, dir, "interlaced16", pngInterlaced16);
     // offsets near the limits of an int, at scales 1/2 and 1/4 (#371)
     testLargeOffsets(png, dir, pngRGBA);
+#endif
+
+    // render scales that are not a power of two, or not the same in x and y (#194)
+    testScales(oiio, dir, "rgb", tiffRGB);
+    testScales(oiio, dir, "datawindow", exr);
+    testScales(oiio, dir, "datawindow-tiled", exrTiled);
+    testScales(pfm, dir, "rgb", pfmRGB);
+#ifdef HAVE_PNG
+    testScales(png, dir, "rgba", pngRGBA);
 #endif
 
     // files rewritten: smaller, then larger
