@@ -238,6 +238,10 @@ if(TARGET io_tests_ofx)
   # (exit status 77) on MS Windows
   io_test(test-writeffmpeg-encode-failure-disk-full TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288-disk-full.mov" --encode-failure-disk-full)
   set_tests_properties(test-writeffmpeg-encode-failure-disk-full PROPERTIES SKIP_RETURN_CODE 77)
+  # test-writeoiio-disk-full (#292): WriteOIIO, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full disk):
+  # the render fails; skipped (exit status 77) on MS Windows
+  io_test(test-writeoiio-disk-full ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i292" --writeoiio-disk-full)
+  set_tests_properties(test-writeoiio-disk-full PROPERTIES SKIP_RETURN_CODE 77)
   # test-swscale-exact (#207, #220, #316): the conversions between Y'CbCr and RGB of ReadFFmpeg and WriteFFmpeg give
   # exact values (rawvideo written and decoded without swscale)
   io_test(test-swscale-exact ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --swscale-exact)

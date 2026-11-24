@@ -420,6 +420,9 @@ private:
     void refreshCheckboxesLabels();
 
 private:
+    // Sets the error of the last failed call on output as the persistent message, and fails the render.
+    [[noreturn]] void reportOutputError(const ImageOutput& output, const string& filename);
+
     ChoiceParam* _bitDepth;
     IntParam* _quality;
     DoubleParam* _dwaCompressionLevel;
@@ -947,6 +950,7 @@ struct WriteOIIOEncodePlanesData {
     auto_ptr<ImageOutput> output;
 #endif
     vector<ImageSpec> specs;
+    string filename; // the file that output writes (for the error messages of endEncodeParts())
     bool makeTexture = false;
     ImageBufAlgo::MakeTextureMode textureMode = ImageBufAlgo::MakeTxTexture;
 };
@@ -984,6 +988,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     assert(!viewsToRender.empty());
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
+    data->filename = filename;
 #if OIIO_PLUGIN_VERSION >= 22
     data->output = ImageOutput::create(filename);
 #else
@@ -1597,12 +1602,19 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     // Some formats only support opening all subimages at once.
     // See https://openimageio.readthedocs.io/en/stable/imageoutput.html
     if (!data->output->open(filename, data->specs.size(), &data->specs.front())) {
-        setPersistentMessage(Message::eMessageError, "", data->output->geterror());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        reportOutputError(*data->output, filename);
     }
 } // WriteOIIOPlugin::beginEncodeParts
+
+void
+WriteOIIOPlugin::reportOutputError(const ImageOutput& output,
+                                   const string& filename)
+{
+    const string err = output.geterror();
+    setPersistentMessage(Message::eMessageError, "", "Cannot write " + filename + (err.empty() ? string() : ": " + err));
+    // not throwSuiteStatusException(), which is not [[noreturn]]
+    throw OFX::Exception::Suite(kOfxStatFailed);
+}
 
 void
 WriteOIIOPlugin::encodePart(void* user_data,
@@ -1660,10 +1672,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
     }
     if (planeIndex != 0) {
         if (!data->output->open(filename, data->specs[planeIndex], ImageOutput::AppendSubimage)) {
-            setPersistentMessage(Message::eMessageError, "", data->output->geterror());
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            reportOutputError(*data->output, filename);
         }
     }
 
@@ -1671,12 +1680,14 @@ WriteOIIOPlugin::encodePart(void* user_data,
 
     // do not use auto-stride as the buffer may have more components that what we want to write
     std::size_t xStride = format.size() * pixelDataNComps;
-    data->output->write_image(format,
-                              (char*)pixelData + (ptrdiff_t)(data->specs[planeIndex].height - 1) * (ptrdiff_t)rowBytes, // invert y
-                              xStride, // xstride
-                              -rowBytes, // ystride
-                              AutoStride // zstride
-    );
+    // A failed write (e.g. a full disk) must fail the render, or the host reports a truncated file as written (#292).
+    if (!data->output->write_image(format,
+                                   (char*)pixelData + (ptrdiff_t)(data->specs[planeIndex].height - 1) * (ptrdiff_t)rowBytes, // invert y
+                                   xStride, // xstride
+                                   -rowBytes, // ystride
+                                   AutoStride)) { // zstride
+        reportOutputError(*data->output, filename);
+    }
 }
 
 void
@@ -1684,9 +1695,19 @@ WriteOIIOPlugin::endEncodeParts(void* user_data)
 {
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
-    if (!data->makeTexture) {
-        data->output->close();
+    if (data->makeTexture) {
+        return;
     }
+    // Many formats only write (or flush) the file when it is closed (#292).
+    // Not ImageOutput::has_error(): OpenImageIO 3.1's TIFF writer records an error for the Exif directory of files
+    // without Exif metadata ("failed TIFFWriteCustomDirectory() of the Exif data"), and close() succeeds.
+    if (!data->output->close()) {
+        reportOutputError(*data->output, data->filename);
+    }
+    // Clear that error: OIIO keeps the errors of each ImageOutput in a thread_local map, from which ~ImageOutput()
+    // does not erase them (OIIO 3.1.17 imageoutput.cpp, ~ImageOutput(): the output_error_messages erase is commented
+    // out), so it would grow by one string per frame.
+    (void)data->output->geterror();
 }
 
 bool
