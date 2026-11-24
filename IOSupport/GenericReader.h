@@ -461,12 +461,17 @@ private:
     /**
      * @brief Returns the filename of the image at the sequence time t.
      * time is the host time, at which animated params (kParamOnMissingFrame) are evaluated.
+     * *filename is the full-resolution file. If proxyFilename is not NULL and that frame has a proxy file,
+     * *proxyFilename is the proxy file, and the return value is eGetFileNameReturnedProxy. Otherwise *proxyFilename
+     * is left unchanged.
+     * The file param is read once: both names come from the same value, even if the host changes the param on
+     * the main thread during a render (#373).
      **/
     GetFilenameRetCodeEnum getFilenameAtSequenceTime(double time,
                                                      double t,
-                                                     bool proxyFiles,
                                                      bool checkForExistingFile,
-                                                     std::string* filename) const WARN_UNUSED_RETURN;
+                                                     std::string* filename,
+                                                     std::string* proxyFilename) const WARN_UNUSED_RETURN;
 
     void copyPixelData(const OfxRectI& renderWindow,
                        const OfxPointD& renderScale,

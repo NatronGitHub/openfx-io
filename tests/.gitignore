@@ -19,6 +19,7 @@
 /reader_hooks_test.dSYM/
 /.reader_hooks.still.tst
 /.reader_hooks.video.tst
+/.reader_hooks.big.tst
 /.render_out.mov.i71.mp4
 /.render_out.mov.i71.mp4.avi
 /.render_out.mov.i78.mov
@@ -62,6 +63,7 @@
 /.exr_read_tsan_debug/
 /.reader_hooks_tsan_debug.still.tst
 /.reader_hooks_tsan_debug.video.tst
+/.reader_hooks_tsan_debug.big.tst
 /oiio_layer_menu_test
 /oiio_layer_menu_test.dSYM/
 /oiio_layer_menu_test_tsan

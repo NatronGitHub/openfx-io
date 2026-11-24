@@ -361,7 +361,7 @@ GenericReaderPlugin::refreshSubLabel(OfxTime time)
     GetSequenceTimeRetEnum getTimeRet = getSequenceTime(time, &sequenceTime);
     if ((getTimeRet == eGetSequenceTimeWithinSequence) || (getTimeRet == eGetSequenceTimeBeforeSequence) || (getTimeRet == eGetSequenceTimeAfterSequence)) {
         string filename;
-        GetFilenameRetCodeEnum getFileNameRet = getFilenameAtSequenceTime(time, sequenceTime, false, false, &filename);
+        GetFilenameRetCodeEnum getFileNameRet = getFilenameAtSequenceTime(time, sequenceTime, false, &filename, NULL);
         if (getFileNameRet == eGetFileNameReturnedFullRes) {
             _sublabel->setValue(basename(filename));
         } else {
@@ -759,9 +759,9 @@ checkIfFileExists(const string& path)
 GenericReaderPlugin::GetFilenameRetCodeEnum
 GenericReaderPlugin::getFilenameAtSequenceTime(double time,
                                                double sequenceTime,
-                                               bool proxyFiles,
                                                bool checkForExistingFile,
-                                               string* filename) const
+                                               string* filename,
+                                               string* proxyFilename) const
 {
     GetFilenameRetCodeEnum ret;
     // kParamOnMissingFrame animates: evaluate it at the host time, not at the sequence time
@@ -789,7 +789,7 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double time,
         if (filenameGood) {
             ret = eGetFileNameReturnedFullRes;
             // now, try the proxy file
-            if (proxyFiles) {
+            if (proxyFilename) {
                 string proxyFileName;
                 bool proxyGood = true;
                 _proxyFileParam->getValueAtTime(sequenceTime + offset, proxyFileName);
@@ -801,8 +801,8 @@ GenericReaderPlugin::getFilenameAtSequenceTime(double time,
                     }
                 }
                 if (proxyGood) {
-                    // proxy file exists, replace the filename with the proxy name
-                    *filename = proxyFileName;
+                    // proxy file exists
+                    *proxyFilename = proxyFileName;
                     ret = eGetFileNameReturnedProxy;
                 }
             }
@@ -871,7 +871,7 @@ GenericReaderPlugin::getFilenameAtTime(double t,
     case eGetSequenceTimeAfterSequence:
         break;
     }
-    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(t, sequenceTime, false, true, filename);
+    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(t, sequenceTime, true, filename, NULL);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
 
@@ -1327,7 +1327,7 @@ GenericReaderPlugin::getRegionOfDefinition(const RegionOfDefinitionArguments& ar
 
     /*We don't want to use the proxy image for the region of definition*/
     string filename;
-    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &filename);
+    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, true, &filename, NULL);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
         if (_syncClip && _syncClip->isConnected()) {
@@ -1733,8 +1733,10 @@ GenericReaderPlugin::render(const RenderArguments& args)
         useProxy = true;
     }
 
-    string filename;
-    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &filename);
+    // Read the file param once (#373): the host may change it on the main thread during the render, and the
+    // full-resolution and proxy file names must come from the same value.
+    string filename, proxyFile;
+    GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, true, &filename, useProxy ? &proxyFile : NULL);
     switch (getFilenameAtSequenceTimeRet) {
     case eGetFileNameFailed:
         setPersistentMessage(Message::eMessageError, "", filename + ": Cannot load frame");
@@ -1752,47 +1754,15 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
     case eGetFileNameReturnedFullRes:
         clearPersistentMessage();
+        useProxy = false;
         break;
 
     case eGetFileNameReturnedProxy:
-        // we didn't ask for proxy!
-        assert(false);
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
-    string proxyFile;
-    if (useProxy) {
-        /// Use the proxy only if getFilenameAtSequenceTime returned a valid proxy filename different from the original file
-        GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(args.time, sequenceTime, true, true, &proxyFile);
-        switch (getFilenameAtSequenceTimeRetPx) {
-        case eGetFileNameFailed:
-            // should never happen: it should return at least the full res frame
-            assert(false);
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-
-        case eGetFileNameBlack:
-            // should never happen: it should return at least the full res frame
-            assert(false);
-            for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
-                fillWithBlack(args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, firstDepth, it->rowBytes);
-            }
-
-            return;
-
-        case eGetFileNameReturnedFullRes:
-            assert(proxyFile == filename);
-            useProxy = false;
-            break;
-
-        case eGetFileNameReturnedProxy:
-            assert(!proxyFile.empty());
-            useProxy = (proxyFile != filename);
-            break;
-        }
+        clearPersistentMessage();
+        assert(useProxy && !proxyFile.empty());
+        /// Use the proxy only if it is different from the original file
+        useProxy = (proxyFile != filename);
+        break;
     }
 
     // The args.renderWindow is already in pixels coordinate (render scale is already taken into account).
@@ -2388,10 +2358,9 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
         case eGetSequenceTimeBeforeSequence:
         case eGetSequenceTimeWithinSequence:
         case eGetSequenceTimeAfterSequence: {
-            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, false, true, &originalFileName);
-            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRetPx = getFilenameAtSequenceTime(args.time, sequenceTime, true, true, &proxyFile);
+            GetFilenameRetCodeEnum getFilenameAtSequenceTimeRet = getFilenameAtSequenceTime(args.time, sequenceTime, true, &originalFileName, &proxyFile);
 
-            if ((getFilenameAtSequenceTimeRet == eGetFileNameReturnedFullRes) && (getFilenameAtSequenceTimeRetPx == eGetFileNameReturnedProxy) && (proxyFile != originalFileName)) {
+            if ((getFilenameAtSequenceTimeRet == eGetFileNameReturnedProxy) && (proxyFile != originalFileName)) {
                 assert(!proxyFile.empty());
                 /// show the scale param
                 _proxyThreshold->setIsSecretAndDisabled(false);
@@ -2645,7 +2614,7 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
         // the first argument is the host time (at which animated params are evaluated),
         // the second one is the sequence (file) time
         string filename;
-        GetFilenameRetCodeEnum e = getFilenameAtSequenceTime(timeDomain.min, sequenceTimeDomain.min, false, true, &filename);
+        GetFilenameRetCodeEnum e = getFilenameAtSequenceTime(timeDomain.min, sequenceTimeDomain.min, true, &filename, NULL);
         if (e == eGetFileNameReturnedFullRes) {
             OfxRectI bounds, format;
             double par = 1.;
