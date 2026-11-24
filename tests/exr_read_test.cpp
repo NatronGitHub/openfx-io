@@ -110,6 +110,7 @@ struct ExrSpec {
     std::string channels = "RGBA"; // among R, G, B, A
     bool uintRed = false;          // R is UINT (x * 100000 + y * 1000000)
     bool bench = false;            // benchValue() instead of pixelValue()
+    std::vector<std::string> extra; // more channels, constant 7, that ReadEXR must ignore
 };
 
 uint32_t
@@ -166,6 +167,11 @@ writeExr(const std::string& path, const ExrSpec& s)
             }
             base = sliceBase(base, (ptrdiff_t)(s.data.min.x + (ptrdiff_t)s.data.min.y * w) * (ptrdiff_t)(nc * ps));
             fb.insert(name, Imf::Slice(s.type, base, nc * ps, (size_t)w * nc * ps));
+        }
+        const std::vector<float> seven(s.extra.empty() ? 0 : (size_t)w * h, 7.f);
+        for (const std::string& name : s.extra) {
+            header.channels().insert(name, Imf::Channel(Imf::FLOAT));
+            fb.insert(name, Imf::Slice(Imf::FLOAT, sliceBase(seven.data(), (ptrdiff_t)(s.data.min.x + (ptrdiff_t)s.data.min.y * w) * (ptrdiff_t)sizeof(float)), sizeof(float), sizeof(float) * w));
         }
         Imf::OutputFile out(path.c_str(), header);
         out.setFrameBuffer(fb);
@@ -1149,6 +1155,10 @@ main(int argc, char** argv)
     s.channels = "RGBA";
     s.uintRed = true;
     testPixels(p, dir, "uint", s, { 0, 0, 64, 32 });
+    // channel names that are empty once the digits and dots are removed, and non-ASCII bytes (#293): ignored
+    s.uintRed = false;
+    s.extra = { "1", "2.3", ".", "..", "4.", ".5", "layer.6", "\xc3\xa9" };
+    testPixels(p, dir, "digit-dot-channels", s, { 0, 0, 64, 32 });
 
     testLumaChroma(p, dir);
     testWindow(p, dir);
