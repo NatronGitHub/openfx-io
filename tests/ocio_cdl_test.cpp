@@ -6,7 +6,8 @@
  * XML file (.cc) that OCIO reads back with the same slope, offset, power and saturation,
  * must not overwrite an existing file, must refuse an inverse grade (which a .cc file can't
  * express), must report errors without a persistent message (which would stop rendering),
- * and must reset the param to its default in every case.
+ * and must reset the param to its default in every case. Export with the param's default (empty)
+ * file name must write no file and report an error (issue #302).
  * (With OCIO >= 2, Export used to fail: GroupTransform::write() was called with a
  * nonexistent "CDL" format on an empty group, leaving an empty file, and the error path
  * called fclose(NULL).)
@@ -41,6 +42,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace OCIO = OCIO_NAMESPACE;
 
@@ -49,7 +51,8 @@ namespace {
 // from OCIO/OCIOCDLTransform.cpp
 const char* const kPluginIdentifier = "fr.inria.openfx.OCIOCDLTransform";
 const char* const kParamExport = "export";
-const char* const kParamExportDefault = "Set filename to export this grade as .cc";
+// the Export param has no setDefault(): its default is the OFX default of a string param
+const char* const kParamExportDefault = "";
 
 const double kSlope[3] = { 1.25, 0.875, 1.5 };
 const double kOffset[3] = { 0.0625, -0.03125, 0.1 };
@@ -249,6 +252,85 @@ testUnwritable(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
     check(exportValue(ctx) == kParamExportDefault, "Export param reset to its default (\"%s\")", exportValue(ctx).c_str());
 }
 
+// the names of the entries of dir, or false if dir can't be read
+bool
+dirEntries(const std::filesystem::path& dir, std::vector<std::string>* names)
+{
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        names->push_back(it->path().filename().string());
+    }
+
+    return !ec;
+}
+
+// sets the current directory, and restores the previous one when destroyed
+class ScopedCurrentPath
+{
+public:
+    explicit ScopedCurrentPath(const std::filesystem::path& dir)
+        : _previous(std::filesystem::current_path(_ec))
+    {
+        if (!_ec) {
+            std::filesystem::current_path(dir, _ec);
+        }
+    }
+    ~ScopedCurrentPath()
+    {
+        if (!_ec) {
+            std::error_code ec;
+            std::filesystem::current_path(_previous, ec);
+        }
+    }
+    ScopedCurrentPath(const ScopedCurrentPath&) = delete;
+    ScopedCurrentPath& operator=(const ScopedCurrentPath&) = delete;
+
+    bool ok() const { return !_ec; }
+
+private:
+    std::error_code _ec; // declared before _previous, which is initialized with it
+    const std::filesystem::path _previous;
+};
+
+void
+testDefaultFilename(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
+{
+    std::printf("==== Export with the default file name (issue #302) ====\n");
+    // a relative file name is created in the current directory: use an empty scratch directory
+    std::error_code ec;
+    const std::filesystem::path sub = std::filesystem::absolute(std::filesystem::path(dir) / "default", ec);
+    if (ec || !std::filesystem::create_directory(sub, ec) || ec) {
+        check(false, "create directory %s", sub.string().c_str());
+
+        return;
+    }
+    std::vector<std::string> names;
+    {
+        const ScopedCurrentPath cd(sub);
+        if (!cd.ok()) {
+            check(false, "change the current directory to %s", sub.string().c_str());
+
+            return;
+        }
+        ParamRec& param = ctx.params[kParamExport];
+        param.hasOv = false;
+        const std::string defaultName = paramString(&param); // the descriptor's default
+        gMessages.clear();
+        gPersistentError.clear();
+        // a host or script sends a user edit while the param holds its default (e.g. sets the same value)
+        OfxStatus st = exportTo(p, ctx, inst, defaultName);
+        check(ok(st), "instanceChanged(export) returns OK (status %d)", st);
+        const bool listed = dirEntries(sub, &names);
+        check(listed && names.empty(), "no file is written (%s)",
+              !listed ? "can't list the directory" : names.empty() ? "none" : names[0].c_str());
+        check(gMessages.find("file name is empty") != std::string::npos, "error message: empty file name (got \"%s\")", gMessages.c_str());
+        check(gPersistentError.empty(), "no persistent error, which would stop rendering (got \"%s\")", gPersistentError.c_str());
+        check(exportValue(ctx) == defaultName, "Export param keeps its default (\"%s\")", exportValue(ctx).c_str());
+    }
+    for (const std::string& n : names) {
+        std::filesystem::remove(sub / n, ec);
+    }
+}
 
 // the number of occurrences of what in s
 int
@@ -709,6 +791,7 @@ main(int, char**)
     }
     const std::string dir = dirPath.generic_string();
 
+    testDefaultFilename(p, ctx, inst, dir);
     testExport(p, ctx, inst, dir);
     testExistingFile(p, ctx, inst, dir);
     testInverse(p, ctx, inst, dir);

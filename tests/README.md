@@ -412,6 +412,9 @@ of `ofx_test_host.h`, in the Filter context:
   write no file;
 * exporting to a file that can't be created must report an error, without a persistent
   message (which would stop rendering), and reset the param.
+* exporting with the param's default file name (empty) must report an error, without a
+  persistent message, and write no file, in an empty current directory: the default used
+  to be a placeholder text, written as a file of that name (#302).
 
 The test itself needs OCIO >= 2 (it reads the file back with `Processor::createGroupTransform()`).
 

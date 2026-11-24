@@ -141,8 +141,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kParamExport "export"
 #define kParamExportLabel "Export"
-#define kParamExportHint "Export this grade as a ColorCorrection XML file (.cc), which can be loaded with the OCIOFileTransform, or using a FileTransform in an OCIO config. The file must not already exist."
-#define kParamExportDefault "Set filename to export this grade as .cc"
+#define kParamExportHint "Enter the name of a new file to export this grade as a ColorCorrection XML file (.cc), which can be loaded with the OCIOFileTransform, or using a FileTransform in an OCIO config. The file must not already exist."
 
 static bool gHostIsNatron = false; // TODO: generate a CCCId choice param kParamCCCIDChoice from available IDs
 
@@ -1212,10 +1211,9 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
         string exportName;
         _export->getValueAtTime(args.time, exportName);
         // Export is a side effect: errors are reported with sendMessage() (not a persistent message, which would
-        // stop rendering), and the param is always reset to its default
+        // stop rendering), and the param is always reset to its default (empty: exportCDL() refuses to export, see #302)
         exportCDL(args.time, exportName);
-        // reset back to default
-        _export->setValue(kParamExportDefault);
+        _export->setValue(string());
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
@@ -1403,7 +1401,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setEvaluateOnChange(false);
         param->setIsPersistent(false);
         param->setAnimates(false);
-        param->setDefault(kParamExportDefault);
+        // the default is empty (a placeholder default would be a valid file name, #302)
         if (page) {
             page->addChild(*param);
         }

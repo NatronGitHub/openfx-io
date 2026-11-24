@@ -35,6 +35,7 @@
 /.render_out.mov.i135.prores.mov
 /.render_out.mov.i135.dnxhd.mov
 /.render_out.mov.i136.mp4
+/.render_out.mov.color.*
 /ocio_cdl_test
 /ocio_cdl_test.dSYM/
 /ocio_colorspace_anim_test
