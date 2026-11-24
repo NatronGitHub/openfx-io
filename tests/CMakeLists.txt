@@ -265,7 +265,7 @@ if(TARGET io_tests_ofx)
             COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i291.tsan.mov" --views-concurrent)
   endif()
   # test-writeffmpeg-dnxhd-profiles (#305): each DNxHD/DNxHR Codec Profile in 1080p and 720p at 23.976 to 60 fps: the
-  # expected compression ID, or a clear error where the profile does not exist
+  # expected compression ID, or a clear error where the profile does not exist; DNxHR below 256x120 (#248): a clear error
   io_test(test-writeffmpeg-dnxhd-profiles TIMEOUT 600 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --dnxhd-profiles)
   # test-writeffmpeg-encode-failure (#288): frame 1 is aborted or fails a check of encode() while other threads wait
   # for their turn: they fail instead of waiting forever (the test exits after 60 s; the ctest time limit is a backstop)

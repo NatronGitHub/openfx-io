@@ -46,7 +46,7 @@ make test-ofx      # OFX entry-point + action tests (plugin code linked directly
 make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
 make test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's encoder must not abort (#267)
 make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender after a render, then endSequenceRender (#289)
-make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305)
+make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305); DNxHR below 256x120 fails clearly (#248)
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
@@ -268,6 +268,10 @@ Table 8) must be the one of the profile: DNxHR 444, HQX, HQ, SQ and LB are CIDs 
 exist in 720p: beginSequenceRender must fail with a message that says so. FFmpeg's encoder only uses the bitrate that
 WriteFFmpeg sets to choose the CID (`ff_dnxhd_find_cid()` in `libavcodec/dnxhddata.c`), so a wrong bitrate makes
 `avcodec_open2()` fail.
+The same test then checks each DNxHR profile at 128x96, 255x120 and 256x119 (issue #248): FFmpeg's encoder refuses
+images smaller than 256x120 ([`libavcodec/dnxhdenc.c:406-410`](https://github.com/FFmpeg/FFmpeg/blob/n9.1/libavcodec/dnxhdenc.c#L406-L410)),
+so beginSequenceRender must fail with a message that gives this limit and the image size, and 256x120 and 257x121
+(there is no alignment constraint) must encode with the CID of the profile.
 
 `test-writeffmpeg-encode-failure` (issue #288) runs `ofx_render_test OUT --encode-failure`: frames 2 to 4 are
 rendered on other threads, which wait in `encode()` for frame 1, then frame 1 is aborted (the host's abort stays
