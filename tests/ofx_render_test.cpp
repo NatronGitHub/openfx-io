@@ -152,7 +152,8 @@
  *   WritePFM and ReadPFM fail on errors (issues #294, #296), each with its option (only this test):
  *     - --pfm-write-errors (not on MS Windows: exit status 77): WritePFM, the file can not grow beyond 16 KB
  *       (RLIMIT_FSIZE, as on a full disk): the render must fail with an error that names the file, and the same
- *       instance must then write the file without the limit
+ *       instance must then write the file without the limit; then, with "Overwrite" unchecked, a file that exists but
+ *       can not be read (mode 000) must be left as it is (skipped as root)
  *     - --pfm-read-errors: ReadPFM, a header with an empty, negative or huge size: getRegionOfDefinition must fail
  *   WriteFFmpeg selects a pixel format that fits the Pref. Pixel Coding (issue #218), with the option --pixfmt-choice
  *   (only this test):
@@ -3231,6 +3232,36 @@ int testWritePFMDiskFull(const std::string& outFile)
         std::printf("  FAIL: the file without the limit is not larger than %d bytes\n", W * H * 3 * 4);
         ++failures;
     }
+
+    // With "Overwrite" unchecked, an existing file that the user can not read (mode 000, in a writable directory)
+    // exists: the render must leave it as it is. GenericWriter took a file that fopen(..., "rb") can not open for
+    // absent, and WritePFM, as the other writers, removes an existing file (OFX::exists_utf8()) before writing it.
+    std::printf("==== WritePFM, \"Overwrite\" unchecked, the file exists but can not be read ====\n");
+    if (::geteuid() == 0) {
+        std::printf("  SKIP: running as root, which can read a file with mode 000\n");
+    } else if (::chmod(file.c_str(), 0) != 0) {
+        std::printf("  FAIL: chmod: %s\n", std::strerror(errno));
+        ++failures;
+    } else {
+        struct stat before;
+        const bool statted = (::stat(file.c_str(), &before) == 0);
+        s.setInt("overwrite", 0);
+        const int renderFailed = s.renderAll(1);
+        s.setInt("overwrite", 1);
+        struct stat after;
+        const bool exists = (::stat(file.c_str(), &after) == 0);
+        std::printf("  render %s, file %s\n", renderFailed ? "failed" : "succeeded", exists ? "exists" : "removed");
+        if (!statted || !exists) {
+            std::printf("  FAIL: the file was removed\n");
+            ++failures;
+        } else if ((after.st_ino != before.st_ino) || (after.st_size != before.st_size) ||
+                   ((after.st_mode & 07777) != 0) || (after.st_mtime != before.st_mtime)) {
+            std::printf("  FAIL: the file was replaced or changed\n");
+            ++failures;
+        }
+        (void)::chmod(file.c_str(), 0644);
+    }
+    std::remove(file.c_str());
     if (!failures) std::printf("  PASS\n");
     return failures;
 #endif

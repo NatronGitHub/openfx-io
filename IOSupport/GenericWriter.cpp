@@ -932,9 +932,8 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
         string filename;
         _fileParam->getValueAtTime(time, filename);
         // filename = filenameFromPattern(filename, time);
-        std::FILE* image = fopen_utf8(filename.c_str(), "rb");
-        if (image) {
-            fclose(image);
+        // exists_utf8(), not fopen(): a file that can not be read exists too, and the writers remove an existing file
+        if ( OFX::exists_utf8( filename.c_str() ) ) {
             // file exists
             if (_outputClip && _outputClip->isConnected()) {
                 auto_ptr<Image> dstImg(_outputClip->fetchImage(time));
@@ -2078,17 +2077,13 @@ GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments&
         string filename;
         _fileParam->getValueAtTime(time, filename);
         // filename = filenameFromPattern(filename, time);
-        {
-            std::FILE* image = fopen_utf8(filename.c_str(), "rb");
-            if (!image) {
-                // set the RoI, since the default is the full input RoD
-                rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
-            } else {
-                fclose(image);
-                // file exists, do not ask for anything on input
-                const OfxRectD emptyRoI = { 0., 0., 0., 0. };
-                rois.setRegionOfInterest(*_inputClip, emptyRoI);
-            }
+        if ( !OFX::exists_utf8( filename.c_str() ) ) { // as in render()
+            // set the RoI, since the default is the full input RoD
+            rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
+        } else {
+            // file exists, do not ask for anything on input
+            const OfxRectD emptyRoI = { 0., 0., 0., 0. };
+            rois.setRegionOfInterest(*_inputClip, emptyRoI);
         }
     }
 }

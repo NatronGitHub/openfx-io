@@ -383,8 +383,9 @@ on macOS), or, on MS Windows, a sharing violation when the test opens the file w
 
 `test-pfm-write-errors` (issue #294) runs `ofx_render_test OUT --pfm-write-errors`: WritePFM writes a 512x512 file
 that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk): the render must fail with an error that names the
-file (`fwrite()` or `fclose()` fails), and the same instance must then write the whole file without the limit. It is
-skipped (exit status 77) on MS Windows, which has no `RLIMIT_FSIZE`.
+file (`fwrite()` or `fclose()` fails), and the same instance must then write the whole file without the limit. Then,
+with "Overwrite" unchecked, the file exists but can not be read (mode 000): the render must leave it as it is (this
+part is skipped when running as root). It is skipped (exit status 77) on MS Windows, which has no `RLIMIT_FSIZE`.
 
 `test-pfm-read-errors` (issue #296) runs `ofx_render_test OUT --pfm-read-errors`: ReadPFM reads headers with an empty,
 negative or huge size (more than 65535, as in `decode()`): `getRegionOfDefinition` must fail with an error that names

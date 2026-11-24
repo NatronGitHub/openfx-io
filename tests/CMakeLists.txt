@@ -306,8 +306,8 @@ if(TARGET io_tests_ofx)
   # test-writeffmpeg-pixfmt-choice (#218): the pixel format that WriteFFmpeg selects fits the Pref. Pixel Coding
   # (FFV1: yuv422p, not yuv440p, for 4:2:2)
   io_test(test-writeffmpeg-pixfmt-choice ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i218" --pixfmt-choice)
-  # test-pfm-write-errors (#294): WritePFM fails the render when the file can not grow (RLIMIT_FSIZE); skipped (exit
-  # status 77) on MS Windows
+  # test-pfm-write-errors (#294): WritePFM fails the render when the file can not grow (RLIMIT_FSIZE), and keeps an
+  # unreadable file when "Overwrite" is unchecked; skipped (exit status 77) on MS Windows
   io_test(test-pfm-write-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-write-errors)
   set_tests_properties(test-pfm-write-errors PROPERTIES SKIP_RETURN_CODE 77)
   # test-pfm-read-errors (#296): ReadPFM's getRegionOfDefinition fails on a header with an empty, negative or huge size
