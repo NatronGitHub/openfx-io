@@ -242,14 +242,28 @@ the real render pipeline, linked directly (no host binary):
   8-bit RGB with a warning (b48r is not written: QuickTime reads it
   byte-swapped), Y'CbCr with 12 or 16 bits v410; RGB with an odd width in
   QuickTime must write ARGB (FFmpeg and QuickTime do not read the padded RGB24
-  rows); v210 with an odd width must fail with an error before opening the
-  encoder. A project saved with the v308 or v410 encoder must write rawvideo
-  with the same tag when FFmpeg (9) does not have them, with a warning that is
-  still shown after the render (and UYVY with a warning in Matroska). When a
-  frame fails after a good one (another file in encode(), or an Output image
-  that can not be fetched in render()) while a warning is set, the error must
-  stay the persistent message after endSequenceRender. Every frame of the NUT
-  files is checked, including the last one (#215).
+  rows); v210 with an odd width must fail with an error that contains "the
+  v210 encoder may need a width that is a multiple of 2 with the yuv422p10le
+  pixel format" (#208). A project saved with the v308 or v410 encoder must
+  write rawvideo with the same tag when FFmpeg (9) does not have them, with a
+  warning that is still shown after the render (and UYVY with a warning in
+  Matroska). When a frame fails after a good one (another file in encode(),
+  or an Output image that can not be fetched in render()) while a warning is
+  set, the error must stay the persistent message after endSequenceRender.
+  Every frame of the NUT files is checked, including the last one (#215).
+* **WriteFFmpeg, odd sizes with chroma subsampling** ([#208](https://github.com/NatronGitHub/openfx-io/issues/208)):
+  a 257x121 movie of two gray frames is written with MPEG-4 (4:2:0), DNxHR
+  HQ (4:2:2) and libx264 4:4:4, and a 259x121 one with ProRes 422 HQ. Not
+  257: FFmpeg's prores_ks rounds the chroma width down
+  (`libavcodec/proresenc_kostya.c:363,593` in n9.0.2), and at a width of 16n+1
+  it codes the last chroma column as 0 (green). The stream must have that size
+  and pixel format (not padded, nor 4:4:4), and ReadFFmpeg must decode the
+  gray in every pixel, the last column and row included. libx264 refuses
+  257x121 and 258x121 in 4:2:0, and 257x121 in 4:2:2: beginSequenceRender
+  must fail without writing a file, with an error that contains "the libx264
+  encoder may need a width and a height that are multiples of 2", "... may
+  need a height that is a multiple of 2" or "... may need a width that is a
+  multiple of 2". Encoders that are not available are skipped.
 * **WriteOIIO** (regression test for issue #79): render a JPEG while the
   host's `clipGetImage` fails with `kOfxStatFailed` (input RoD outside of the
   render window), with the R/G/B/A checkboxes visible (as in Natron) and hidden.

@@ -4008,6 +4008,43 @@ WriteFFmpegPlugin::addStream(AVFormatContext* avFormatContext,
     }
 }
 
+// The explanation added to the error of avcodec_open2() when the image size is not a multiple of the chroma subsampling
+// of the pixel format, or "". Some encoders refuse that size (e.g. libx264 and libx265 in 4:2:0 or 4:2:2: H.264
+// §7.4.2.1.1 and H.265 §7.4.3.2.1 crop in chroma samples, so the stream can not have an odd width; v210, FFmpeg n9.0.2
+// libavcodec/v210enc.c:56-59), but most accept it. Their reason only goes to av_log(), and reporting it would need
+// av_log_set_callback(), which is process-wide (it would replace the host's callback, and get the messages of every
+// thread).
+static string
+oddSizeHint(const AVCodecContext* avCodecContext,
+            const AVCodec* avCodec)
+{
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(avCodecContext->pix_fmt);
+    if (!desc) {
+        return string();
+    }
+    const int cw = 1 << desc->log2_chroma_w;
+    const int ch = 1 << desc->log2_chroma_h;
+    const bool badWidth = (avCodecContext->width % cw) != 0;
+    const bool badHeight = (avCodecContext->height % ch) != 0;
+    string need;
+    if (badWidth && badHeight && (cw == ch)) {
+        need = "a width and a height that are multiples of " + std::to_string(cw);
+    } else if (badWidth && badHeight) {
+        need = "a width that is a multiple of " + std::to_string(cw) + " and a height that is a multiple of " + std::to_string(ch);
+    } else if (badWidth) {
+        need = "a width that is a multiple of " + std::to_string(cw);
+    } else if (badHeight) {
+        need = "a height that is a multiple of " + std::to_string(ch);
+    } else {
+        return string();
+    }
+
+    return "\nThe image is " + std::to_string(avCodecContext->width) + "x" + std::to_string(avCodecContext->height) + ", and the "
+           + avCodec->name + " encoder may need " + need + " with the " + desc->name
+           + " pixel format (chroma subsampling): crop or pad the image, or choose a Pref. Pixel Coding without chroma subsampling"
+             " (YUV444 or RGB) if the encoder has one, or choose another codec.";
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // openCodec
 // Open a codec.
@@ -4062,6 +4099,7 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
                 msg += string("\nThe ") + kParamCRFLabel + " Lossless (CRF 0) may not be available with the " + avCodec->name
                        + " encoder: it has no lossless mode. Choose another " + kParamCRFLabel + ".";
             }
+            msg += oddSizeHint(avCodecContext, avCodec);
             if (hasOptions) {
                 msg += string("\nCheck the values in ") + kParamCodecOptionsLabel + ".";
             }
@@ -4958,18 +4996,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         return;
     }
 
-    // The v210 encoder needs an even width (FFmpeg n9.1 libavcodec/v210enc.c:56-59), and fails in avcodec_open2() with
-    // "Invalid argument" otherwise. Its own message ("v210 needs even width") only goes to av_log(): reporting it
-    // would need av_log_set_callback(), which is process-wide (it would replace the host's callback, and get the
-    // messages of every thread), so this special case stays.
     const int width = rodPixel.x2 - rodPixel.x1;
-    if ((codecId == AV_CODEC_ID_V210) && (width % 2 != 0)) {
-        setPersistentMessage(Message::eMessageError, "", string("The v210 codec needs an even width, and the image is ") + std::to_string(width)
-                             + " pixels wide: crop or pad the image to an even width, or choose another codec.");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
 
     clearPersistentMessage();
     _encodeWarnings.clear();
