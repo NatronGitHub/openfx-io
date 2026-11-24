@@ -22,6 +22,7 @@
  * Writes an image using the OpenImageIO library.
  */
 
+#include <atomic>
 #include <cerrno>
 #include <cfloat> // DBL_MAX
 #include <cstdio>
@@ -416,6 +417,8 @@ private:
 
     virtual void* allocateEncodePlanesUserData() OVERRIDE FINAL;
     virtual void destroyEncodePlanesUserData(void* data) OVERRIDE FINAL;
+    virtual void beginEncode(const string& filename, const OfxRectI& rodPixel, float pixelAspectRatio, const BeginSequenceRenderArguments& args) OVERRIDE FINAL;
+    virtual void endEncode(const EndSequenceRenderArguments& args) OVERRIDE FINAL;
     virtual bool isImageFile(const string& fileExtension) const OVERRIDE FINAL;
     virtual PreMultiplicationEnum getExpectedInputPremultiplication() const OVERRIDE FINAL { return eImagePreMultiplied; }
 
@@ -447,6 +450,10 @@ private:
     ChoiceParam* _views;
     std::list<string> _currentInputComponents;
     std::list<string> _availableViews;
+    // a file of this sequence render was written as zip instead of zstd (#171): set by endEncodeParts() (on render
+    // threads), reset by beginEncode() and read by endEncode() (beginSequenceRender and endSequenceRender, while no
+    // frame of the sequence renders)
+    std::atomic<bool> _zstdWrittenAsZip { false };
 };
 
 WriteOIIOPlugin::WriteOIIOPlugin(OfxImageEffectHandle handle,
@@ -521,13 +528,64 @@ hasListChanged(const std::list<string>& oldList,
 }
 }
 
+// "major.minor.patch" of an OpenImageIO version number (openimageio_version(): 10000 * major + 100 * minor + patch)
+static string
+oiioVersionString(int ver)
+{
+    std::ostringstream oss;
+    oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100);
+
+    return oss.str();
+}
+
+// The version of the OpenEXR library of OpenImageIO, e.g. "3.5.4" from "openexr:OpenEXR 3.5.4" in its "library_list"
+// attribute (OIIO v3.2.1.0 exroutput.cpp:295-298, openexr_imageio_library_version()); empty if it is not there.
+static string
+oiioOpenEXRVersion()
+{
+    const string libs = OIIO::get_string_attribute("library_list");
+    const string key = "openexr:OpenEXR ";
+    const size_t pos = libs.find(key);
+    if (pos == string::npos) {
+        return string();
+    }
+    const size_t begin = pos + key.size();
+
+    return libs.substr(begin, libs.find(';', begin) - begin);
+}
+
+// #171: true if OpenImageIO writes EXR files with the zstd compression. For a compression that it or its OpenEXR does
+// not support, OpenImageIO's EXR writer keeps the default zip compression without an error (OpenEXROutput::
+// put_parameter(): `header.compression() = Imf::ZIP_COMPRESSION;  // Default`, exroutput.cpp:1155 in OIIO v3.1.7.0,
+// :1317 in v3.2.1.0), and no OpenImageIO API lists the compressions of a format, so this is a version check, specific
+// to zstd: it needs OpenImageIO 3.2.1 at runtime (v3.2.1.0 exroutput.cpp:1352, `#ifdef IMF_ZSTD_COMPRESSION`), built
+// with OpenEXR 3.5 or later (IMF_ZSTD_COMPRESSION is defined in OpenEXR v3.5.0 ImfCRgbaFile.h:91, not in v3.4.0).
+static bool
+oiioWritesEXRZstd()
+{
+    static const bool writesZstd = []() {
+        constexpr int kOIIOVersionZstd = 30201; // OpenImageIO 3.2.1
+        if (openimageio_version() < kOIIOVersionZstd) {
+            return false;
+        }
+        int major = 0;
+        int minor = 0;
+        if (std::sscanf(oiioOpenEXRVersion().c_str(), "%d.%d", &major, &minor) != 2) {
+            return false;
+        }
+
+        return (major > 3) || ((major == 3) && (minor >= 5));
+    }();
+
+    return writesZstd;
+}
+
 static string
 oiio_versions()
 {
     std::ostringstream oss;
-    int ver = openimageio_version();
     oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
-    oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100) << std::endl;
+    oss << oiioVersionString(openimageio_version()) << std::endl;
 #if OIIO_VERSION >= 10705
     string libs = OIIO::get_string_attribute("library_list");
     if (libs.size()) {
@@ -1065,6 +1123,7 @@ struct WriteOIIOEncodePlanesData {
 #endif
     vector<ImageSpec> specs;
     string filename; // the file that output writes (for the error messages of endEncodeParts())
+    bool zstdWrittenAsZip = false; // an EXR file with the zstd compression, which OpenImageIO writes as zip (#171)
     bool makeTexture = false;
     ImageBufAlgo::MakeTextureMode textureMode = ImageBufAlgo::MakeTxTexture;
 };
@@ -1284,6 +1343,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         compression = "packbits";
         break;
     }
+    data->zstdWrittenAsZip = isEXR && (compression == "zstd") && !oiioWritesEXRZstd();
 
     switch ((EParamLineOrder)lineOrder_i) {
     case eParamLineOrderIncreasingY:
@@ -1829,27 +1889,52 @@ WriteOIIOPlugin::endEncodeParts(void* user_data)
 {
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
-    if (data->makeTexture) {
-        return;
-    }
-    // Many formats only write (or flush) the file when it is closed (#292).
-    // Not ImageOutput::has_error(): OpenImageIO 3.1's TIFF writer records an error for the Exif directory of files
-    // without Exif metadata ("failed TIFFWriteCustomDirectory() of the Exif data"), and close() succeeds.
-    if (!data->output->close()) {
-        reportOutputError(*data);
-    }
-    // Clear that error: OIIO keeps the errors of each ImageOutput in a thread_local map, from which ~ImageOutput()
-    // does not erase them (OIIO 3.1.17 imageoutput.cpp, ~ImageOutput(): the output_error_messages erase is commented
-    // out), so it would grow by one string per frame.
-    (void)data->output->geterror();
-#if OIIO_VERSION >= 20200
-    if (data->file) {
-        data->file->close();
-        if (!data->file->failure().empty()) {
-            reportWriteError(data->filename, data->file->failure());
+    if (!data->makeTexture) { // (a texture is written by encodePart())
+        // Many formats only write (or flush) the file when it is closed (#292).
+        // Not ImageOutput::has_error(): OpenImageIO 3.1's TIFF writer records an error for the Exif directory of files
+        // without Exif metadata ("failed TIFFWriteCustomDirectory() of the Exif data"), and close() succeeds.
+        if (!data->output->close()) {
+            reportOutputError(*data);
         }
-    }
+        // Clear that error: OIIO keeps the errors of each ImageOutput in a thread_local map, from which ~ImageOutput()
+        // does not erase them (OIIO 3.1.17 imageoutput.cpp, ~ImageOutput(): the output_error_messages erase is
+        // commented out), so it would grow by one string per frame.
+        (void)data->output->geterror();
+#if OIIO_VERSION >= 20200
+        if (data->file) {
+            data->file->close();
+            if (!data->file->failure().empty()) {
+                reportWriteError(data->filename, data->file->failure());
+            }
+        }
 #endif
+    }
+    if (data->zstdWrittenAsZip) {
+        _zstdWrittenAsZip = true;
+    }
+}
+
+void
+WriteOIIOPlugin::beginEncode(const string& /*filename*/,
+                             const OfxRectI& /*rodPixel*/,
+                             float /*pixelAspectRatio*/,
+                             const BeginSequenceRenderArguments& /*args*/)
+{
+    _zstdWrittenAsZip = false;
+}
+
+void
+WriteOIIOPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
+{
+    // #171: shown after the sequence render, since GenericWriterPlugin::renderFile() clears the persistent message
+    // after each frame. A warning, not an error, so that the projects that use zstd still render.
+    if (_zstdWrittenAsZip) {
+        const string exrVersion = oiioOpenEXRVersion();
+        setPersistentMessage(Message::eMessageWarning, "",
+                             "The zstd compression needs OpenImageIO 3.2.1 or later, built with OpenEXR 3.5 or later (running with OpenImageIO "
+                                 + oiioVersionString(openimageio_version()) + ", OpenEXR " + (exrVersion.empty() ? string("unknown") : exrVersion)
+                                 + "): the EXR files were written with the zip compression.");
+    }
 }
 
 bool

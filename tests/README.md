@@ -50,7 +50,7 @@ make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
-make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362)
+make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171)
 make test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
@@ -295,6 +295,10 @@ Parts "Split Views,Layers" and "Split Views" (multi-part; with a single layer, b
 "Single Part" (8 channels), and a JPEG 2000 file with the htj2k256 compression (OpenJPH). Each file must be read back
 by OpenImageIO, with its parts, channels and views. Without OpenJPH, the JPEG 2000 case prints a `SKIP:` line, and the
 result is "PASS (1 case skipped)".
+It then writes an EXR file with the zstd compression (issue #171). OpenImageIO < 3.2.1, or one built with OpenEXR
+< 3.5, writes zip instead without an error: if the file read back is not zstd, the render must end with a persistent
+warning that names zstd, and otherwise with no warning. The next render of the same instance, with the zip
+compression, must end with no warning.
 
 `test-writer-remove-partial-file` (issue #251) runs `ofx_render_test OUT --writer-remove-partial-file`. With
 "Overwrite" unchecked, a render takes an existing file for a written frame and skips it, so a failed or aborted render
