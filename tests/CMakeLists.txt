@@ -14,8 +14,9 @@
 #   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
 #   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
 #                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug,
-#                         test-ocio-processor-cache-tsan, test-oiio-layer-menu-tsan (needs a compiler with
-#                         -fsanitize=thread,undefined; not with MinGW); default OFF
+#                         test-ocio-processor-cache-tsan, test-oiio-layer-menu-tsan,
+#                         test-readffmpeg-views-concurrent-tsan (needs a compiler with -fsanitize=thread,undefined; not
+#                         with MinGW); default OFF
 # (tests/Makefile's bench-exr is not a test: run it with make.)
 
 option(IO_TESTS_WITH_LIBRAW "Build ReadOIIO's RAW support in the tests that link it, when the bundle has it" ON)
@@ -235,6 +236,15 @@ if(TARGET io_tests_ofx)
   io_test(test-writeffmpeg-begin-failure ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --begin-failure)
   # test-readffmpeg-destroy-closes-file (#290): DestroyInstance closes the movie file, before Unload
   io_test(test-readffmpeg-destroy-closes-file ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i290.mov" --destroy-closes-file)
+  # test-readffmpeg-views-concurrent (#291): concurrent renders of the views of a movie with one video stream per view
+  # (written by the ffmpeg CLI): each render gets its own view
+  io_test(test-readffmpeg-views-concurrent ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i291.mov" --views-concurrent)
+  if(IO_TESTS_SANITIZERS)
+    # test-readffmpeg-views-concurrent-tsan: the same with ThreadSanitizer
+    io_test_program(ofx_render_test_tsan OFX THREADS SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs} SANITIZE -fsanitize=thread)
+    io_test(test-readffmpeg-views-concurrent-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+            COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i291.tsan.mov" --views-concurrent)
+  endif()
   # test-writeffmpeg-dnxhd-profiles (#305): each DNxHD/DNxHR Codec Profile in 1080p and 720p at 23.976 to 60 fps: the
   # expected compression ID, or a clear error where the profile does not exist
   io_test(test-writeffmpeg-dnxhd-profiles TIMEOUT 600 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --dnxhd-profiles)

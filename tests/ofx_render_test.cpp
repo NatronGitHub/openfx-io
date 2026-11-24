@@ -150,6 +150,12 @@
  *     - render a frame, destroy the instance: the movie is no longer open, before Unload; twice, with the movie
  *       rewritten at another size in between: the second instance (maybe at the address of the first one) reads it
  *
+ *   ReadFFmpeg, concurrent renders of the views of a movie with one video stream per view (issue #291), with the
+ *   option --views-concurrent (only this test; the ffmpeg CLI writes the movie):
+ *     - every frame of view 0, then of view 1, rendered on one thread (view 1 must be the negative of view 0), then
+ *       both views of each frame and a random order on one thread, then a random order on 8 threads at once: each
+ *       render must give the image of its view and frame
+ *
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -4331,6 +4337,169 @@ int testWriteFFmpegSelectedEncoder(const std::string& outFile)
     return failures;
 }
 
+// Issue #291: the renders of the views of a stereo movie (one video stream per view) share the FFmpegFile of the
+// instance, and ReadFFmpeg is kOfxImageEffectRenderFullySafe. ReadFFmpeg selected the stream of the view, then decoded
+// it in a separate call: a concurrent render of the other view could select its own stream in between, and the render
+// got the other view (or a mix of both streams). Also, the streams share the demuxer, which drops the packets of the
+// other streams: a decode of a view after the other one, without a seek, missed packets (even on one thread). The
+// ffmpeg CLI writes a movie with two matching video streams (MPEG-4, with B-frames), the second one the negative of the
+// first; one instance renders every frame of each view on one thread (the references), then both views of each frame
+// and a random order of frames and views on one thread, then on kThreads threads at once, in a random order of frames
+// and views (with seeks): each render must give the reference of its view and frame, exactly. ThreadSanitizer
+// (ofx_render_test_tsan) also reports the race.
+int testReadFFmpegViewsConcurrent(const std::string& outFile)
+{
+    const int W = 64, H = 48, N = 20, kViews = 2, kThreads = 8, kRenders = 40;
+    std::printf("==== ReadFFmpeg, a movie with one video stream per view: concurrent renders of both views get their own view (issue #291) ====\n");
+    // (double quotes: also for cmd.exe, which std::system() uses on MS Windows)
+    const std::string src = "testsrc2=s=" + std::to_string(W) + "x" + std::to_string(H) + ":r=25";
+    const std::string cmd = "ffmpeg -y -loglevel error -f lavfi -i \"" + src + "\" -f lavfi -i \"" + src + ",negate\" -map 0:v -map 1:v -frames:v "
+        + std::to_string(N) + " -c:v mpeg4 -q:v 2 -g 8 -bf 2 -pix_fmt yuv420p \"" + outFile + "\"";
+    if (std::system(cmd.c_str()) != 0) { std::printf("  FAIL: %s\n", cmd.c_str()); return 1; }
+
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+    // a stereo project (restored on return)
+    struct ViewCount {
+        ViewCount() { gViewCount = 2; }
+        ~ViewCount() { gViewCount = 1; }
+    } viewCount;
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+    int failures = 0;
+    {
+        Effect inst;
+        inst.delegate = &ctx;
+        setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
+        const OfxImageEffectHandle handle = reinterpret_cast<OfxImageEffectHandle>(&inst);
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+        {
+            PropSet a; OfxPropertySetHandle ap = PH(&a);
+            pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+            pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+            pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+            pSetDouble(ap, kOfxPropTime, 0, 1.);
+            double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+            p->mainEntry(kOfxActionInstanceChanged, handle, PH(&a), nullptr);
+        }
+        Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+        if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
+        out->connected = true;
+        setupClipImage(out, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+        { PropSet outArgs; if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, handle, nullptr, PH(&outArgs)))) { std::printf("  FAIL: getClipPreferences\n"); return 1; } }
+        const size_t nValues = (size_t)W * H * 3;
+        // renders view v of frame t into img (an image of its own, see tThreadImage); kOfxStatOK if it succeeded
+        auto render = [&](Clip& img, int t, int v) -> OfxStatus {
+            float* fp = reinterpret_cast<float*>(img.buffer.data());
+            fillUnwritten(fp, nValues);
+            const ThreadImageGuard imageGuard(&img.image);
+            PropSet a = makeRenderInArgs((double)t, W, H);
+            pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, v);
+            return p->mainEntry(kOfxImageEffectActionRender, handle, PH(&a), nullptr);
+        };
+        // the references, rendered on this thread: every frame of view 0, then of view 1
+        std::vector<std::vector<uint8_t>> refs((size_t)kViews * N);
+        Clip img;
+        setupClipImage(&img, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+        for (int v = 0; v < kViews; ++v) {
+            for (int t = 1; t <= N; ++t) {
+                const OfxStatus st = render(img, t, v);
+                if (!ok(st)) { std::printf("  FAIL: render of view %d, frame %d = %d\n", v, t, st); ++failures; }
+                refs[(size_t)(t - 1) * kViews + v] = img.buffer;
+            }
+        }
+        // view 1 is the negative of view 0 (within the Y'CbCr rounding): the views are their own streams
+        int notNegative = 0, unwritten = 0;
+        for (int t = 1; (t <= N) && !failures; ++t) {
+            const float* v0 = reinterpret_cast<const float*>(refs[(size_t)(t - 1) * kViews].data());
+            const float* v1 = reinterpret_cast<const float*>(refs[(size_t)(t - 1) * kViews + 1].data());
+            double sum = 0., diff = 0.;
+            for (size_t i = 0; i < nValues; ++i) {
+                if (isUnwritten(v0 + i) || isUnwritten(v1 + i)) { ++unwritten; continue; }
+                sum += std::fabs(v0[i] + v1[i] - 1.);
+                diff += std::fabs(v0[i] - v1[i]);
+            }
+            if ((sum / nValues > 0.05) || (diff / nValues < 0.2)) {
+                std::printf("  FAIL: frame %d: view 1 must be the negative of view 0 (mean |v0 + v1 - 1| = %.3f, mean |v0 - v1| = %.3f)\n", t, sum / nValues, diff / nValues);
+                ++notNegative;
+            }
+        }
+        if (unwritten) { std::printf("  FAIL: %d values not written by the references\n", unwritten); ++failures; }
+        failures += notNegative;
+        const bool refsOk = !failures; // (the other passes compare with the references)
+        if (refsOk) {
+            std::printf("  PASS: views 0 and 1 of %d frames, rendered on one thread: view 1 is the negative of view 0\n", N);
+            // on one thread, both views of each frame, as a host renders a stereo movie, then a random order of frames
+            // and views: the demuxer is shared by the streams, so a decode of a view after the other one (without a
+            // seek) used to miss the packets that the other one read
+            std::vector<std::pair<int, int>> order; // (frame, view)
+            for (int t = 1; t <= N; ++t) {
+                for (int v = 0; v < kViews; ++v) {
+                    order.emplace_back(t, v);
+                }
+            }
+            uint32_t seed = 4321u;
+            auto next = [&seed]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; }; // (a fixed sequence)
+            for (int n = 0; n < 4 * kRenders; ++n) {
+                order.emplace_back(1 + (int)(next() % N), (int)(next() % kViews));
+            }
+            int wrong = 0;
+            for (size_t n = 0; n < order.size(); ++n) {
+                const int t = order[n].first, v = order[n].second;
+                if (!ok(render(img, t, v)) || (img.buffer != refs[(size_t)(t - 1) * kViews + v])) {
+                    std::printf("  FAIL: one thread, render %zu: view %d of frame %d is wrong\n", n + 1, v, t);
+                    ++wrong;
+                }
+            }
+            if (wrong) {
+                ++failures;
+            } else {
+                std::printf("  PASS: one thread, both views of each frame, then %d renders in a random order\n", 4 * kRenders);
+            }
+        }
+        // the concurrent renders
+        std::atomic<int> renderFailures(0), wrongView(0), wrongImage(0), started(0);
+        std::vector<std::thread> threads;
+        for (int k = 0; (k < kThreads) && refsOk; ++k) {
+            threads.emplace_back([&, k]() {
+                Clip img;
+                setupClipImage(&img, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+                uint32_t seed = 12345u + 977u * (uint32_t)k;
+                auto next = [&seed]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; }; // (a fixed sequence)
+                ++started;
+                while (started < kThreads) {
+                    std::this_thread::yield();
+                }
+                for (int n = 0; n < kRenders; ++n) {
+                    const int t = 1 + (int)(next() % N), v = (int)(next() % kViews);
+                    if (!ok(render(img, t, v))) {
+                        ++renderFailures;
+                    } else if (img.buffer != refs[(size_t)(t - 1) * kViews + v]) {
+                        ++(img.buffer == refs[(size_t)(t - 1) * kViews + (1 - v)] ? wrongView : wrongImage);
+                    }
+                }
+            });
+        }
+        for (std::thread& th : threads) {
+            th.join();
+        }
+        if (!threads.empty()) {
+            std::printf("  %d threads x %d renders: %d failed, %d got the other view, %d another image\n", kThreads, kRenders, (int)renderFailures,
+                        (int)wrongView, (int)wrongImage);
+            if (renderFailures || wrongView || wrongImage) {
+                std::printf("  FAIL: each concurrent render must give the image of its view and frame (issue #291)\n");
+                ++failures;
+            } else {
+                std::printf("  PASS: each concurrent render gave the image of its view and frame\n");
+            }
+        }
+        p->mainEntry(kOfxActionDestroyInstance, handle, nullptr, nullptr);
+    }
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    return failures;
+}
+
 int
 main(int argc, char** argv)
 {
@@ -4373,6 +4542,8 @@ main(int argc, char** argv)
             failures = testWritePFMDiskFull(outFile);
         } else if (mode == "--pfm-read-errors") {
             failures = testReadPFMHeaderSize(outFile);
+        } else if (mode == "--views-concurrent") {
+            failures = testReadFFmpegViewsConcurrent(outFile);
         } else {
             std::printf("unknown option %s\n", mode.c_str());
             return 2;

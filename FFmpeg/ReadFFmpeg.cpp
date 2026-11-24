@@ -429,16 +429,14 @@ ReadFFmpegPlugin::decode(const string& filename,
 
     // kParamFirstTrackOnly does not animate (and time is the sequence time, not the host time)
     bool firstTrackOnly = _firstTrackOnly->getValue();
-    if (firstTrackOnly) {
-        view = 0;
-    }
-    file->setSelectedStream(view);
+    // the stream of the view, passed to each call: the file is shared by the renders of all the views (#291)
+    const int streamIndex = firstTrackOnly ? 0 : view;
     // the params do not animate
     file->setColorOverrides((FFmpegFile::ColorMatrixEnum)_colorMatrix->getValue(), (FFmpegFile::ColorRangeEnum)_colorRange->getValue());
 
     int width, height, frames;
     double ap;
-    file->getInfo(width, height, ap, frames);
+    file->getInfo(streamIndex, width, height, ap, frames);
 
     // wrong assert:
     // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
@@ -489,7 +487,7 @@ ReadFFmpegPlugin::decode(const string& filename,
     bool decoded = false;
     try {
         // the error message of this frame (another render may decode another frame meanwhile)
-        decoded = file->decode(this, (int)time, loadNearestFrame(missingFrame), buffer, &error);
+        decoded = file->decode(this, streamIndex, (int)time, loadNearestFrame(missingFrame), buffer, &error);
         if (!decoded) {
             if (abort()) {
                 // decode() probably exited because plugin was aborted
@@ -539,7 +537,8 @@ ReadFFmpegPlugin::getSequenceTimeDomain(const string& filename,
 
         return false;
     }
-    file->getInfo(width, height, ap, frames);
+    // the time domain has no view: the first stream (the others match it, see CheckStreamPropertiesMatch())
+    file->getInfo(/*streamIndex=*/0, width, height, ap, frames);
 
     range.min = 1;
     range.max = frames;
@@ -586,13 +585,10 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
 
     // kParamFirstTrackOnly does not animate (and time is the sequence time, not the host time)
     bool firstTrackOnly = _firstTrackOnly->getValue();
-    if (firstTrackOnly) {
-        view = 0;
-    }
-    file->setSelectedStream(view);
+    const int streamIndex = firstTrackOnly ? 0 : view;
     int width, height, frames;
     double ap;
-    if (!file->getInfo(width, height, ap, frames)) {
+    if (!file->getInfo(streamIndex, width, height, ap, frames)) {
         width = 0;
         height = 0;
         ap = 1.;

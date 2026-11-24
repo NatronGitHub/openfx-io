@@ -317,7 +317,17 @@ OfxStatus ieClipDefine(OfxImageEffectHandle e, const char* name, OfxPropertySetH
 OfxStatus ieClipGetHandle(OfxImageEffectHandle e, const char* name, OfxImageClipHandle* clip, OfxPropertySetHandle* props)
 { Effect* eff = EF(e)->src(); auto it = eff->clips.find(name); if (it == eff->clips.end()) return kOfxStatErrBadIndex; if (clip) *clip = reinterpret_cast<OfxImageClipHandle>(it->second); if (props) *props = PH(&it->second->props); return kOfxStatOK; }
 OfxStatus ieClipGetPropertySet(OfxImageClipHandle c, OfxPropertySetHandle* out) { *out = PH(&reinterpret_cast<Clip*>(c)->props); return kOfxStatOK; }
-OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxPropertySetHandle* out) { if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(&reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
+// If set, the image that clipGetImage returns on this thread, whatever the clip: concurrent renders of an instance
+// (each thread renders into its own image)
+thread_local PropSet* tThreadImage = nullptr;
+// Sets tThreadImage for its lifetime (on this thread)
+struct ThreadImageGuard {
+    explicit ThreadImageGuard(PropSet* image) { tThreadImage = image; }
+    ~ThreadImageGuard() { tThreadImage = nullptr; }
+    ThreadImageGuard(const ThreadImageGuard&) = delete;
+    ThreadImageGuard& operator=(const ThreadImageGuard&) = delete;
+};
+OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxPropertySetHandle* out) { if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(tThreadImage ? tThreadImage : &reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus ieClipReleaseImage(OfxPropertySetHandle) { return kOfxStatOK; }
 OfxStatus ieClipGetRoD(OfxImageClipHandle c, OfxTime, OfxRectD* rod)
 { Clip* clip = reinterpret_cast<Clip*>(c); double v; if (pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &v) == kOfxStatOK) { pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &rod->x1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 1, &rod->y1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 2, &rod->x2); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 3, &rod->y2); return kOfxStatOK; } return kOfxStatFailed; }
@@ -487,10 +497,11 @@ OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 
 // ------------------------------------------------------------------ FnOfx multi-plane suite v2
 OfxStatus fnClipGetImagePlaneV2(OfxImageClipHandle c, OfxTime, int, const char*, const OfxRectD*, OfxPropertySetHandle* out)
-{ if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(&reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
+{ if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(tThreadImage ? tThreadImage : &reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus fnClipGetRoDV2(OfxImageClipHandle c, OfxTime t, int, OfxRectD* b) { return ieClipGetRoD(c, t, b); }
 OfxStatus fnGetViewName(OfxImageEffectHandle, int, const char** n) { if (n) *n = "main"; return kOfxStatOK; }
-OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = 1; return kOfxStatOK; }
+int gViewCount = 1; // what getViewCount returns (the number of views of the project)
+OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = gViewCount; return kOfxStatOK; }
 FnOfxImageEffectPlaneSuiteV2 gPlaneSuiteV2 = { fnClipGetImagePlaneV2, fnClipGetRoDV2, fnGetViewName, fnGetViewCount };
 
 // OFX14_GL: an OpenGL render suite, for a host that has it but renders on the CPU: the render actions never have

@@ -29,8 +29,8 @@ files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 * `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
 * `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
 * `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
-  `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug` and `test-reader-hooks-tsan-debug`, which `make test` doesn't run
-  either.
+  `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`, `test-reader-hooks-tsan-debug` and
+  `test-readffmpeg-views-concurrent-tsan`, which `make test` doesn't run either.
 
 `make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
 with `pkg-config`:
@@ -57,6 +57,8 @@ make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder se
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
+make test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
+make test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
 make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
@@ -348,6 +350,17 @@ skipped (exit status 77) on MS Windows, which has no `RLIMIT_FSIZE`.
 `test-pfm-read-errors` (issue #296) runs `ofx_render_test OUT --pfm-read-errors`: ReadPFM reads headers with an empty,
 negative or huge size (more than 65535, as in `decode()`): `getRegionOfDefinition` must fail with an error that names
 the file, instead of giving the host that RoD; a valid 3x2 header gives the RoD `[0 0 3 2]`.
+
+`test-readffmpeg-views-concurrent` (issue #291) runs `ofx_render_test OUT --views-concurrent`: the ffmpeg CLI writes a
+movie with two matching video streams (MPEG-4 with B-frames, 64x48, 20 frames), the second one the negative of the
+first, which ReadFFmpeg reads as views 0 and 1. One instance renders every frame of view 0, then of view 1, on one
+thread (view 1 must be the negative of view 0), then both views of each frame, as a host renders a stereo movie, and a
+random order of frames and views on one thread, then a random order on 8 threads at once: each render must give the
+image of its view and frame, bit for bit. The renders of the views share the open file of the instance, and ReadFFmpeg
+selected the stream of the view, then decoded it in a separate call, so a concurrent render of the other view could get
+its stream. The streams also share the demuxer, which drops the packets of the other streams: a view decoded after the
+other one without a seek missed packets, even on one thread. `test-readffmpeg-views-concurrent-tsan` runs it built with
+ThreadSanitizer (`ofx_render_test_tsan`), which also reports that race.
 
 `test-render` sets `OCIO=test.ocio` (a minimal committed OpenColorIO config)
 because the plugins' GenericOCIO layer requires a loadable config. The test
