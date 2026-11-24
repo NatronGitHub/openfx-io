@@ -32,7 +32,7 @@
 
 #include <OpenColorIO/OpenColorIO.h>
 
-#include "GenericOCIO.h" // GenericOCIO::Mutex, GenericOCIO::AutoMutex
+#include "IOMutex.h"
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
@@ -91,7 +91,7 @@ public:
         static_assert(std::is_convertible<decltype(build()), OCIO_NAMESPACE::ConstProcessorRcPtr>::value,
                       "build() must return an OCIO processor");
         {
-            GenericOCIO::AutoMutex guard(_mutex);
+            IOAutoMutex guard(_mutex);
             if (_proc && (_key == key)) {
                 return _proc;
             }
@@ -99,7 +99,7 @@ public:
         OCIO_NAMESPACE::ConstProcessorRcPtr proc = build();
         if (proc) {
             Key k(key); // (copied before the lock: the moves under it don't throw, so _proc and _key stay a pair)
-            GenericOCIO::AutoMutex guard(_mutex);
+            IOAutoMutex guard(_mutex);
             _proc = proc;
             _key = std::move(k);
         }
@@ -108,7 +108,7 @@ public:
     }
 
 private:
-    GenericOCIO::Mutex _mutex; // guards _proc and _key; never held while calling out (no lock order)
+    IOMutex _mutex; // guards _proc and _key; never held while calling out (no lock order)
     OCIO_NAMESPACE::ConstProcessorRcPtr _proc; // the processor for _key (null: none yet)
     Key _key;
 };

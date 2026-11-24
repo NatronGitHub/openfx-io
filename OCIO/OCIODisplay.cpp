@@ -580,7 +580,7 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
         if (!config) {
             throw std::runtime_error("OCIO: no current config");
         }
-        const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
+        const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(config, time);
         const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, channel, display, view, gain, gamma };
 
         return _procCache.get(key, [&]() -> OCIO::ConstProcessorRcPtr {
