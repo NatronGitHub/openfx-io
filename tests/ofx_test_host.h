@@ -499,8 +499,8 @@ OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 OfxStatus fnClipGetImagePlaneV2(OfxImageClipHandle c, OfxTime, int, const char*, const OfxRectD*, OfxPropertySetHandle* out)
 { if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(tThreadImage ? tThreadImage : &reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus fnClipGetRoDV2(OfxImageClipHandle c, OfxTime t, int, OfxRectD* b) { return ieClipGetRoD(c, t, b); }
-OfxStatus fnGetViewName(OfxImageEffectHandle, int, const char** n) { if (n) *n = "main"; return kOfxStatOK; }
-int gViewCount = 1; // what getViewCount returns (the number of views of the project)
+int gViewCount = 1; // the views of the project (1 or 2: "main", "right"); all render the same image
+OfxStatus fnGetViewName(OfxImageEffectHandle, int v, const char** n) { if (n) *n = (v == 1) ? "right" : "main"; return kOfxStatOK; }
 OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = gViewCount; return kOfxStatOK; }
 FnOfxImageEffectPlaneSuiteV2 gPlaneSuiteV2 = { fnClipGetImagePlaneV2, fnClipGetRoDV2, fnGetViewName, fnGetViewCount };
 

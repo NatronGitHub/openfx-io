@@ -255,10 +255,13 @@ if(TARGET io_tests_ofx)
   # (exit status 77) on MS Windows
   io_test(test-writeffmpeg-encode-failure-disk-full TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288-disk-full.mov" --encode-failure-disk-full)
   set_tests_properties(test-writeffmpeg-encode-failure-disk-full PROPERTIES SKIP_RETURN_CODE 77)
-  # test-writeoiio-disk-full (#292): WriteOIIO, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full disk):
-  # the render fails; skipped (exit status 77) on MS Windows
+  # test-writeoiio-disk-full (#292, #362): WriteOIIO, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
+  # disk): the render fails, and the process survives; skipped (exit status 77) on MS Windows
   io_test(test-writeoiio-disk-full ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i292" --writeoiio-disk-full)
   set_tests_properties(test-writeoiio-disk-full PROPERTIES SKIP_RETURN_CODE 77)
+  # test-writeoiio-files (#362): WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which OpenImageIO
+  # writes by name, are written and read back
+  io_test(test-writeoiio-files ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i362" --writeoiio-files)
   # test-writer-remove-partial-file (#251): a failed or aborted render of an image file leaves no partial file (a test
   # writer; WritePNG and RLIMIT_FSIZE, except on MS Windows and without libpng), and a render that fails before the
   # file is written keeps the previous one
