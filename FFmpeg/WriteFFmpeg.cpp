@@ -5000,7 +5000,16 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
         // Matroska and NUT readers get it. The matrix is the one setColorTags() set above, as for every Y'CbCr
         // stream (colourSpaceConvert() converts with it), which the mov muxer writes in the 'colr' atom (FFmpeg
         // n9.0 libavformat/movenc.c:2648-2650).
-        if (((AV_CODEC_ID_V210 == avCodecContext->codec_id) || (AV_CODEC_ID_RAWVIDEO == avCodecContext->codec_id))
+        // FFmpeg 8 also has the v308, v408 and v410 encoders (n8.0 libavcodec/allcodecs.c:354-359), whose IDs FFmpeg 9
+        // removed (FF_API_V408_CODECID, n8.0 libavcodec/version_major.h:42). These are codec IDs because FFmpeg has no
+        // generic property for an uncompressed codec: AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSLESS (n8.0
+        // libavcodec/codec_desc.c:1149-1157, 1482-1497) also covers compressed codecs such as huffyuv (:218-221).
+        if (((AV_CODEC_ID_V210 == avCodecContext->codec_id) || (AV_CODEC_ID_RAWVIDEO == avCodecContext->codec_id)
+#if defined(FF_API_V408_CODECID) && FF_API_V408_CODECID
+             || (AV_CODEC_ID_V308 == avCodecContext->codec_id) || (AV_CODEC_ID_V408 == avCodecContext->codec_id)
+             || (AV_CODEC_ID_V410 == avCodecContext->codec_id)
+#endif
+                 )
             && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
             avCodecContext->color_range = AVColorRange::AVCOL_RANGE_MPEG;
         }

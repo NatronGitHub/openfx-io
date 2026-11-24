@@ -84,6 +84,7 @@
  *     - same, with values on no grid (float, 10-bit and 16-bit), and with an odd width (63x47): RGB in QuickTime is
  *       written as ARGB, and v210 fails with an error
  *     - a project saved with the v308 or v410 encoder, which FFmpeg 9 removed, writes rawvideo with the same tag
+ *     - with FFmpeg 8, the v308, v408 and v410 encoders in Matroska are tagged video range (issue #226)
  *
  *   WriteFFmpeg DNxHR 444 on binary RGB noise (issue #267), with the option --dnxhr444-noise (only this test):
  *     - FFmpeg's dnxhd encoder must not abort (qscale above 255 in its 8-bit mb_qscale): the frames encode, or
@@ -5173,6 +5174,12 @@ main(int argc, char** argv)
             // in n8.0)
             cases.push_back({ "v308 encoder in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
             cases.push_back({ "v410 encoder in QuickTime", "mov", "v410", 1, 0, false, "rawvideo", "v410", "v30xle", yuv10Tol });
+            // #226: in Matroska, which stores the range, they are tagged video range as rawvideo is (the matroska
+            // muxer writes them with the VfW tags, which the demuxer gives to rawvideo: libavformat/riff.c:303-315
+            // in n8.0)
+            cases.push_back({ "v308 encoder in Matroska", "mkv", "v308", 2, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol });
+            cases.push_back({ "v408 encoder in Matroska", "mkv", "v408", 2, 0, true, "rawvideo", "v408", "uyva", yuv8Tol });
+            cases.push_back({ "v410 encoder in Matroska", "mkv", "v410", 2, 1, false, "rawvideo", "v410", "v30xle", yuv10Tol });
         } else {
             // the warning stays after the render (GenericWriterPlugin::render() clears the persistent message)
             cases.push_back({ "saved v308 project, rawvideo in QuickTime", "mov", "v308", 1, 0, false, "rawvideo", "v308", "vyu444", yuv8Tol,
