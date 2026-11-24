@@ -31,7 +31,9 @@
 #include <cstddef> // std::ptrdiff_t
 #include <cstring> // memset
 #include <fstream>
+#include <iterator> // std::advance
 #include <memory>
+#include <sstream>
 #if defined(DEBUG) && defined(DEBUG_READER)
 #include <cstdio>
 #define DBG(x) x
@@ -64,8 +66,11 @@
 namespace OCIO = OCIO_NAMESPACE;
 #endif
 
+using std::make_pair;
 using std::size_t;
 using std::string;
+using std::stringstream;
+using std::vector;
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
@@ -2159,6 +2164,55 @@ GenericReaderPlugin::decodePlane(const string& /*filename*/,
     // does nothing
 }
 
+#ifdef OFX_EXTENSIONS_NUKE
+void
+GenericReaderPlugin::setClipPlanes(const ClipComponentsArguments& args,
+                                   ClipComponentsSetter& clipComponents,
+                                   const LayersUnionVect& layers)
+{
+    // Should only be called if multi-planar
+    assert(isMultiPlanar());
+
+    // no pass-through
+    clipComponents.setPassThroughClip(NULL, args.time, args.view);
+
+    // ask for the color components from the input (needed for the Sync connection to work)
+    clipComponents.addClipPlane(*_syncClip, kFnOfxImagePlaneColour);
+
+    for (LayersUnionVect::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->first != kReaderColorLayer) {
+            MultiPlane::ImagePlaneDesc plane(it->first, "", "", it->second.layer.channelNames);
+            clipComponents.addClipPlane(*_outputClip, MultiPlane::ImagePlaneDesc::mapPlaneToOFXPlaneString(plane));
+        }
+    }
+
+    // Also add the color plane
+    int nOutputComps = 0;
+    switch (getOutputComponents()) {
+    case ePixelComponentAlpha:
+        nOutputComps = 1;
+        break;
+    case ePixelComponentRGB:
+        nOutputComps = 3;
+        break;
+    case ePixelComponentRGBA:
+        nOutputComps = 4;
+        break;
+#ifdef OFX_EXTENSIONS_NATRON
+    case ePixelComponentXY:
+        nOutputComps = 2;
+        break;
+#endif
+    default:
+        nOutputComps = 0;
+        break;
+    }
+
+    MultiPlane::ImagePlaneDesc colorPlane = MultiPlane::ImagePlaneDesc::mapNCompsToColorPlane(nOutputComps);
+    clipComponents.addClipPlane(*_outputClip, MultiPlane::ImagePlaneDesc::mapPlaneToOFXPlaneString(colorPlane));
+}
+#endif // OFX_EXTENSIONS_NUKE
+
 bool
 GenericReaderPlugin::checkExtension(const string& ext)
 {
@@ -3621,6 +3675,420 @@ GenericReaderDescribeInContextEnd(ImageEffectDescriptor& desc,
         }
     }
 #endif
+}
+
+bool
+iequals(const string& a,
+        const string& b)
+{
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+        const char ca = ((a[i] >= 'A') && (a[i] <= 'Z')) ? (char)(a[i] - 'A' + 'a') : a[i];
+        const char cb = ((b[i] >= 'A') && (b[i] <= 'Z')) ? (char)(b[i] - 'A' + 'a') : b[i];
+        if (ca != cb) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+namespace {
+/*
+ * @brief Remap channel, to a known channel name, that is a single upper case letter
+ */
+static string
+remapToKnownChannelName(const string& channel)
+{
+    if ((channel == "r") || (channel == "red") || (channel == "RED") || (channel == "Red")) {
+        return "R";
+    }
+
+    if ((channel == "g") || (channel == "green") || (channel == "GREEN") || (channel == "Green")) {
+        return "G";
+    }
+
+    if ((channel == "b") || (channel == "blue") || (channel == "BLUE") || (channel == "Blue")) {
+        return "B";
+    }
+
+    if ((channel == "a") || (channel == "alpha") || (channel == "ALPHA") || (channel == "Alpha")) {
+        return "A";
+    }
+
+    if ((channel == "z") || (channel == "depth") || (channel == "DEPTH") || (channel == "Depth")) {
+        return "Z";
+    }
+
+    return channel;
+}
+
+/// Returns true if one is found
+static bool
+hasDuplicate(const LayersMap& layers,
+             const string& layer,
+             const string& channel)
+{
+    // Try to find an existing layer, or a duplicate
+    for (std::size_t c = 0; c < layers.size(); ++c) {
+        if (layers[c].first == layer) {
+            for (std::size_t i = 0; i < layers[c].second.channelNames.size(); ++i) {
+                if (layers[c].second.channelNames[i] == channel) {
+                    return true;
+                }
+            }
+            break;
+        }
+    }
+
+    return false;
+}
+
+/// encodedLayerName is in the format view.layer.channel
+static void
+extractLayerName(const string& encodedLayerName,
+                 const vector<string>& viewsList,
+                 string* viewName,
+                 string* layerName,
+                 string* channelName)
+{
+    /// if there is a layer/view prefix, this will be non empty
+    string layerDotPrefix;
+    size_t lastdot = encodedLayerName.find_last_of(".");
+
+    if (lastdot != string::npos) {
+        layerDotPrefix = encodedLayerName.substr(0, lastdot);
+        *channelName = encodedLayerName.substr(lastdot + 1);
+        *channelName = remapToKnownChannelName(*channelName);
+    } else {
+        *channelName = encodedLayerName;
+        *channelName = remapToKnownChannelName(*channelName);
+
+        return;
+    }
+
+    if (viewsList.empty()) {
+        // The view meta-data is not set, assume that everything prefixing the last '.' is a layer name
+        *layerName = layerDotPrefix;
+    } else {
+        /*According to OpenEXR spec :
+
+        http://www.openexr.com/MultiViewOpenEXR.pdf
+
+        The view name must be the ultimate layer name, that is, the penultimate
+        period-delimited component in each channel name. In other words, the
+        view name is followed by a period and a final channel name in the
+        format layer.view.channel or view.channel.*/
+
+        size_t firstDot = layerDotPrefix.find_last_of(".", lastdot - 1);
+        if (firstDot != string::npos) {
+
+            *viewName = layerDotPrefix.substr(firstDot + 1, lastdot - (firstDot + 1));
+
+            // Check if the view name matches an existing view
+            bool foundView = false;
+            for (std::size_t i = 0; i < viewsList.size(); ++i) {
+                if (iequals(viewsList[i], *viewName)) {
+                    foundView = true;
+                    *viewName = viewsList[i]; // the declared view name: getImageLayers() compares view names exactly
+                    break;
+                }
+            }
+            if (foundView) {
+                *layerName = layerDotPrefix.substr(0, firstDot);
+            } else {
+                viewName->clear();
+                *layerName = layerDotPrefix;
+                // Nuke writes view.layer.channel instead (e.g. "right.depth.Z", with the hero view's channels
+                // unprefixed): if the first component is a view, that's the view and the rest is the layer.
+                size_t viewDot = layerDotPrefix.find('.');
+                assert(viewDot != string::npos); // firstDot != npos
+                const string firstComponent = layerDotPrefix.substr(0, viewDot);
+                for (std::size_t i = 0; i < viewsList.size(); ++i) {
+                    if (iequals(viewsList[i], firstComponent)) {
+                        *viewName = viewsList[i];
+                        *layerName = layerDotPrefix.substr(viewDot + 1);
+                        break;
+                    }
+                }
+                // otherwise: no matching view, assume that this is the layer name and add the layer to the
+                // "default" view
+            }
+        } else {
+            *layerName = layerDotPrefix;
+        }
+    }
+}
+
+// e.g: find "X" in view.layer.z
+static bool
+hasChannelName(const vector<string>& viewsList,
+               const string& viewName,
+               const string& layerName,
+               const string& mappedChannelName,
+               const vector<string>& originalUnMappedNames)
+{
+    for (std::size_t i = 0; i < originalUnMappedNames.size(); ++i) {
+        string view, layer, channel;
+        extractLayerName(originalUnMappedNames[i], viewsList, &view, &layer, &channel);
+        if ((viewName != view) || (layerName != layer)) {
+            continue;
+        }
+        if (channel == mappedChannelName) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // anon namespace
+
+/// layersUnion:
+/// Union all layers across views to build the layers choice.
+/// This is because we cannot provide a choice with different entries across views, so if there are some disparities,
+/// let the render action just return a black image if the layer requested cannot be found for the given view.
+void
+getImageLayers(const vector<ImagePartChannels>& parts,
+               ViewsLayersMap* layersMap,
+               LayersUnionVect* layersUnion)
+{
+    assert(!parts.empty());
+
+    vector<string> views;
+
+    /*
+       First off, detect views.
+     */
+    vector<string> partsViewAttribute;
+    if (parts.size() == 1) {
+        // the "multiView" attribute
+        for (std::size_t i = 0; i < parts[0].multiView.size(); ++i) {
+            const string& view = parts[0].multiView[i];
+            if (!view.empty()) {
+                if (std::find(views.begin(), views.end(), view) == views.end()) {
+                    views.push_back(view);
+                }
+            }
+        }
+    } else {
+        // Check for each part the "view" attribute
+        partsViewAttribute.resize(parts.size());
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            const string& view = parts[i].view;
+            if (!view.empty()) {
+                if (std::find(views.begin(), views.end(), view) == views.end()) {
+                    views.push_back(view);
+                }
+                partsViewAttribute[i] = view;
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        layersMap->push_back(make_pair(views[i], LayersMap()));
+    }
+
+    if (views.empty()) {
+        layersMap->push_back(make_pair("Main", LayersMap()));
+    }
+
+    /// Layers are considered to be named as view.layer.channels. If no view prefix then it is considered to be part of the "main" view
+    /// that is, the first view declared.
+
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        for (int j = 0; j < (int)parts[i].channelNames.size(); ++j) {
+            const string& layerChanName = parts[i].channelNames[j];
+
+            // Extract the view layer and channel to our format so we can compare strings
+            string originalView, originalLayer, channel;
+            extractLayerName(layerChanName, views, &originalView, &originalLayer, &channel);
+            if (channel.empty()) {
+                // a name that ends with '.' ("", ".", "layer."): not a channel of a layer
+                continue;
+            }
+            string view = originalView;
+            string layer = originalLayer;
+
+            if (view.empty() && !partsViewAttribute.empty() && (i < partsViewAttribute.size()) && !partsViewAttribute[i].empty()) {
+                view = partsViewAttribute[i];
+            }
+            if (view.empty() && !layer.empty()) {
+                /// Check if the layer we parsed is in fact not a view name
+                // Note: This code was removed in commit https://github.com/NatronGitHub/openfx-io/commit/79ac6546e0a1aed7f14fd15fbc3dfd634b91d4c5
+                // but it is necessary to read all views of multiview EXRs such
+                // as https://github.com/openexr/openexr-images/raw/master/MultiView/Balls.exr
+                // see issue https://github.com/NatronGitHub/Natron/issues/429
+                for (std::size_t v = 0; v < views.size(); ++v) {
+                    if (iequals(views[v], layer)) {
+                        view = views[v]; // the declared view name (layersMap is looked up exactly)
+                        layer.clear();
+                        break;
+                    }
+                }
+            }
+
+            ViewsLayersMap::iterator foundView = layersMap->end();
+            if (view.empty()) {
+                /// Set to main view (view 0)
+                foundView = layersMap->begin();
+            } else {
+                for (ViewsLayersMap::iterator it = layersMap->begin(); it != layersMap->end(); ++it) {
+                    if (it->first == view) {
+                        foundView = it;
+                        break;
+                    }
+                }
+            }
+            if (foundView == layersMap->end()) {
+                // The view does not exist in the metadata, this is probably a channel named aaa.bbb.c, just concatenate aaa.bbb as a single layer name
+                // and put it in the "Main" view
+                layer = view + "." + layer;
+                view.clear();
+                foundView = layersMap->begin();
+            }
+
+            if (layer.empty()) {
+                // The layer name is empty, for OpenEXR 2 files, check for the "name" attribute (converted to oiio:subimagename by OIIO) which may contain the layer name.
+                layer = parts[i].name;
+            }
+
+            assert(foundView != layersMap->end());
+
+            // If the layer name is empty, try to map it to something known
+            if (layer.empty()) {
+                // channel  has already been remapped to our formatting of channels, i.e: 1 upper-case letter
+                if ((channel == "R") || (channel == "G") || (channel == "B") || (channel == "A") || (channel == "I")) {
+                    layer = kReaderColorLayer;
+                } else if (channel == "X") {
+                    // try to put XYZ together, unless Z is alone
+                    bool hasY = hasChannelName(views, originalView, originalLayer, "Y", parts[i].channelNames);
+                    bool hasZ = hasChannelName(views, originalView, originalLayer, "Z", parts[i].channelNames);
+                    if (hasY && hasZ) {
+                        layer = kReaderXYZLayer;
+                    }
+                } else if (channel == "Y") {
+                    // try to put XYZ together, unless Z is alone
+                    bool hasX = hasChannelName(views, originalView, originalLayer, "X", parts[i].channelNames);
+                    bool hasZ = hasChannelName(views, originalView, originalLayer, "Z", parts[i].channelNames);
+                    if (hasX && hasZ) {
+                        layer = kReaderXYZLayer;
+                    } else {
+                        bool hasR = hasChannelName(views, originalView, originalLayer, "R", parts[i].channelNames);
+                        bool hasG = hasChannelName(views, originalView, originalLayer, "G", parts[i].channelNames);
+                        bool hasB = hasChannelName(views, originalView, originalLayer, "B", parts[i].channelNames);
+                        bool hasI = hasChannelName(views, originalView, originalLayer, "I", parts[i].channelNames);
+                        if (!hasR && !hasG && !hasB && !hasI) {
+                            // Y is for luminance in this case
+                            layer = kReaderColorLayer;
+                        }
+                    }
+                } else if (channel == "Z") {
+                    // try to put XYZ together, unless Z is alone
+                    bool hasX = hasChannelName(views, originalView, originalLayer, "X", parts[i].channelNames);
+                    bool hasY = hasChannelName(views, originalView, originalLayer, "Y", parts[i].channelNames);
+                    if (hasX && hasY) {
+                        layer = kReaderXYZLayer;
+                    } else {
+                        layer = kReaderDepthLayer;
+                    }
+                }
+            }
+
+            // The layer is still empty, put the channel alone in a new layer
+            if (layer.empty()) {
+                layer = channel;
+            }
+
+            // There may be duplicates, e.g: 2 parts of a EXR file with same RGBA layer, we have no choice but to prepend the part index
+            {
+                int attempts = 1;
+                string baseLayerName = layer;
+                while (hasDuplicate(foundView->second, layer, channel)) {
+                    stringstream ss;
+
+                    ss << "Part" << attempts;
+
+                    ss << '.' << baseLayerName;
+                    layer = ss.str();
+                    ++attempts;
+                }
+            }
+
+            assert(!layer.empty());
+
+            int layerIndex = -1;
+            for (std::size_t c = 0; c < foundView->second.size(); ++c) {
+                if (foundView->second[c].first == layer) {
+                    layerIndex = (int)c;
+                    break;
+                }
+            }
+            if (layerIndex == -1) {
+                foundView->second.push_back(make_pair(layer, LayerChannelIndexes()));
+                layerIndex = (int)foundView->second.size() - 1;
+            }
+            // Now we are sure there are no duplicates
+            foundView->second[layerIndex].second.subImageIdx = i;
+            foundView->second[layerIndex].second.channelIndexes.push_back(j);
+            foundView->second[layerIndex].second.channelNames.push_back(channel);
+        } // for (int j = 0; j < (int)parts[i].channelNames.size(); ++j) {
+    } // for (std::size_t i = 0; i < parts.size(); ++i) {
+
+    /// Union all layers across views
+    if (layersUnion) {
+        for (ViewsLayersMap::iterator it = layersMap->begin(); it != layersMap->end(); ++it) {
+            for (LayersMap::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
+                LayersUnionVect::iterator found = layersUnion->end();
+                for (LayersUnionVect::iterator it3 = layersUnion->begin(); it3 != layersUnion->end(); ++it3) {
+                    if (it3->first == it2->first) {
+                        found = it3;
+                        break;
+                    }
+                }
+
+                if (found == layersUnion->end()) {
+                    // We did not find a view in the layersUnion with this name
+                    LayerUnionData d;
+                    d.layer = it2->second;
+                    d.views.push_back(it->first);
+                    layersUnion->push_back(make_pair(it2->first, d));
+                } else {
+                    // We already found a view in the layersUnion with this name
+                    if (views.size() > 1) {
+                        // register views that have this layer
+                        found->second.views.push_back(it->first);
+                    }
+                }
+            }
+        }
+    }
+} // getImageLayers
+
+ViewsLayersMap::const_iterator
+findImageView(const ViewsLayersMap& layersMap,
+              const string& viewName,
+              int view)
+{
+    assert(!layersMap.empty());
+    for (ViewsLayersMap::const_iterator it = layersMap.begin(); it != layersMap.end(); ++it) {
+        if (iequals(it->first, viewName)) {
+            return it;
+        }
+    }
+    /*
+       We did not find the view by name. To offer some sort of compatibility and not fail, just load the view corresponding to the given
+       index, even though the names do not match.
+       If the index is out of range, just load the main view (index 0)
+     */
+    ViewsLayersMap::const_iterator foundView = layersMap.begin();
+    if ((view >= 0) && (view < (int)layersMap.size())) {
+        std::advance(foundView, view);
+    }
+
+    return foundView;
 }
 
 NAMESPACE_OFX_IO_EXIT

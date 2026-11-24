@@ -26,6 +26,7 @@
 #include <cctype> // std::isdigit, std::isalnum
 #include <mutex>
 #include <new>
+#include <set>
 #ifdef DEBUG
 #include <iostream>
 #endif
@@ -49,8 +50,10 @@ GCC_DIAG_OFF(deprecated)
 #include <ImfHeader.h>
 #include <ImfInputFile.h>
 #include <ImfPixelType.h>
+#include <ImfStandardAttributes.h> // Imf::hasMultiView(), Imf::multiView()
 GCC_DIAG_ON(deprecated)
 
+#include "ofxsMultiPlane.h"
 
 #include "GenericOCIO.h"
 #include "GenericReader.h"
@@ -75,8 +78,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginGrouping "Image/Readers"
 #define kPluginDescription "Read images using OpenEXR."
 #define kPluginIdentifier "fr.inria.openfx.ReadEXR"
-#define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+// 2: multi-planar (the layers of the file), and view-aware (the views of a multi-view file)
+#define kPluginVersionMajor 2 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
+#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 10
 
 #ifndef OPENEXR_IMF_NAMESPACE
@@ -103,13 +107,28 @@ public:
 
     virtual void changedParam(const InstanceChangedArgs& args, const string& paramName) OVERRIDE FINAL;
 
+    // the planes of the layers of the file (multi-planar hosts only)
+    virtual OfxStatus getClipComponents(const ClipComponentsArguments& args, ClipComponentsSetter& clipComponents) OVERRIDE FINAL;
+
+    // reads the layers of the first frame's file, for getClipComponents()
+    virtual void restoreStateFromParams() OVERRIDE FINAL;
+
 private:
     virtual bool isVideoStream(const string& /*filename*/) OVERRIDE FINAL { return false; }
 
     // the purge caches action: forget the headers of the files read
     virtual void clearAnyCache() OVERRIDE FINAL;
 
-    virtual void decode(const string& filename, OfxTime time, int /*view*/, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+    // the color plane of the view
+    virtual void decode(const string& filename, OfxTime time, int view, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes) OVERRIDE FINAL;
+
+    // a plane of the view: the color plane, or a layer of the file
+    virtual void decodePlane(const string& filename, OfxTime time, int view, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds,
+                             PixelComponentEnum pixelComponents, PixelComponentEnum remappedComponents, int pixelComponentCount, const string& rawComponents, int rowBytes) OVERRIDE FINAL;
+
+    // decode() and decodePlane(): the color plane if plane is NULL, else the layer plane->getPlaneID()
+    void decodeView(const string& filename, int view, const MultiPlane::ImagePlaneDesc* plane, const OfxRectI& renderWindow, float* pixelData, const OfxRectI& bounds, int pixelComponentCount, int rowBytes);
+
     virtual bool getFrameBounds(const string& /*filename*/, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     // the render window is in the host's RoD but out of the cached frame bounds: read the header again (the file may
@@ -136,6 +155,15 @@ private:
      * When reading an image sequence, this is called only for the first image when the user actually selects the new sequence.
      **/
     virtual bool guessParamsFromFilename(const string& newFile, string* colorspace, PreMultiplicationEnum* filePremult, PixelComponentEnum* components, int* componentCount) OVERRIDE FINAL;
+
+    // _layersMutex guards _layers, the layers of the file of the first frame (of all its views), whose planes
+    // getClipComponents() returns. restoreStateFromParams() writes it, on the main thread (createInstance,
+    // instanceChanged), and getClipComponents(), which may run on a render thread, copies it; both hold the lock.
+    // Nothing else is done while it is held: no file is read, no host function is called, and no other mutex is
+    // taken. Renders don't use it: decode() and
+    // decodePlane() get the layers from the header of the file that they read.
+    std::mutex _layersMutex;
+    LayersUnionVect _layers;
 };
 
 namespace Exr {
@@ -168,50 +196,33 @@ fromExrChannel(const string& from)
     return Channel_alpha;
 }
 
+// The layer and the channel of a channel name: the components of the name, separated by '.', without the view
+// (as in getImageLayers(): the second-to-last component if it is one of the views of the file, layer.view.channel,
+// else the first one if it is, view.layer.channel), with their leading digits
+// removed and their other non-alphanumeric characters replaced by '_'; the layer is all of them but the last one,
+// joined by '_', and the channel is the last one, mapped to R, G, B or A.
 class ChannelExtractor {
 public:
     ChannelExtractor(const string& name,
                      const vector<string>& views)
         : _mappedChannel(Channel_none)
         , _valid(false)
+        , _exact(false)
     {
         _valid = extractExrChannelName(name, views);
     }
 
-    ~ChannelExtractor() { }
-
     Channel _mappedChannel;
     bool _valid;
+    bool _exact; // the name without the view is the bare channel name: "R" or "right.R", not "1R" or "R.1"
     string _chan;
     string _layer;
-    string _view;
-
-    string exrName() const
-    {
-        if (!_layer.empty()) {
-            return _layer + '.' + _chan;
-        }
-
-        return _chan;
-    }
 
     bool isValid() const { return _valid; }
 
 private:
-    static bool IsView(const string& name,
-                       const vector<string>& views)
-    {
-        for (size_t i = 0; i < views.size(); ++i) {
-            if (views[i] == name) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    vector<string> split(const string& str,
-                         char splitChar)
+    static vector<string> split(const string& str,
+                                char splitChar)
     {
         vector<string> out;
         size_t i = str.find(splitChar);
@@ -226,7 +237,7 @@ private:
         return out;
     }
 
-    string removePrependingDigits(const string& str)
+    static string removePrependingDigits(const string& str)
     {
         string ret;
         unsigned int i = 0;
@@ -241,7 +252,7 @@ private:
         return ret;
     }
 
-    string removeNonAlphaCharacters(const string& str)
+    static string removeNonAlphaCharacters(const string& str)
     {
         string ret;
 
@@ -256,14 +267,33 @@ private:
         return ret;
     }
 
+    static bool isView(const string& name,
+                       const vector<string>& views)
+    {
+        for (size_t i = 0; i < views.size(); ++i) {
+            if (iequals(views[i], name)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     bool extractExrChannelName(const string& channelname,
                                const vector<string>& views)
     {
         _chan.clear();
         _layer.clear();
-        _view.clear();
 
         vector<string> splits = split(channelname, '.');
+        // the view, if any (as in getImageLayers()): layer.view.channel (or view.channel), else view.layer.channel
+        if (splits.size() >= 2) {
+            if (isView(splits[splits.size() - 2], views)) {
+                splits.erase(splits.end() - 2);
+            } else if (isView(splits[0], views)) {
+                splits.erase(splits.begin());
+            }
+        }
         vector<string> newSplits;
         // remove prepending digits
         for (size_t i = 0; i < splits.size(); ++i) {
@@ -279,20 +309,14 @@ private:
         }
         if (newSplits.size() > 1) {
             for (size_t i = 0; i < (newSplits.size() - 1); ++i) {
-                vector<string>::const_iterator foundView = std::find(views.begin(), views.end(), newSplits[i]);
-                if (foundView != views.end()) {
-                    _view = *foundView;
-                } else {
-                    if (!_layer.empty()) {
-                        _layer += '_';
-                    }
-                    _layer += newSplits[i];
+                if (!_layer.empty()) {
+                    _layer += '_';
                 }
+                _layer += newSplits[i];
             }
-            _chan = newSplits.back();
-        } else {
-            _chan = newSplits.front();
         }
+        _chan = newSplits.back();
+        _exact = (splits.size() == 1) && (splits[0] == _chan);
 
         try {
             _mappedChannel = fromExrChannel(_chan);
@@ -322,9 +346,12 @@ typedef map<Channel, string> ChannelsMap;
 // ("R" for "diffuse.R") would read zeros.
 // Layers are keyed on the sanitized layer name, so "1diffuse.R" and "diffuse.G", or "a.b.R" and "a_b.G", are one
 // layer; and within a layer, an exact name doesn't win over a "1R"-style one. Both are contrived.
+// In a multi-view file, only the channels of the view (inView, if not NULL) are considered, and the view is not
+// part of the layer name ("right.R" is the channel R without a layer of the view "right").
 static void
 mapChannels(const Imf_::Header& header,
             const vector<string>& views,
+            const std::set<string>* inView,
             ChannelsMap* channels)
 {
     channels->clear();
@@ -335,8 +362,8 @@ mapChannels(const Imf_::Header& header,
     for (Imf_::ChannelList::ConstIterator chan = imfchannels.begin(); chan != imfchannels.end(); ++chan) {
         const string chanName(chan.name());
 
-        /// empty channel, discard it
-        if (chanName.empty()) {
+        /// empty channel, or not in the view: discard it
+        if (chanName.empty() || (inView && !inView->count(chanName))) {
             continue;
         }
 
@@ -359,7 +386,7 @@ mapChannels(const Imf_::Header& header,
                 layer = layers.insert(layers.end(), make_pair(exrExctractor._layer, ChannelsMap()));
             }
             layer->second.insert(mapped);
-        } else if (exrExctractor._chan == chanName) {
+        } else if (exrExctractor._exact) {
             channels->insert(mapped);
         } else {
             qualified.insert(mapped);
@@ -377,6 +404,142 @@ mapChannels(const Imf_::Header& header,
             *channels = *best;
         }
     }
+}
+
+// The channels of the header in the order in which OpenImageIO presents them, so that the layers and their
+// channels are those of ReadOIIO: sorted by layer (the name up to its last '.'), and in each layer R, G, B, A, Z...
+// first, or R, G, B, X, Y, Z... if the layer has X and Y or Z, then by name (OpenImageIO v3.1.17, OpenEXR core
+// library reader: src/openexr.imageio/exrinput_c.cpp:849-930 CChanNameHolder, :941-997 query_channels(); the other
+// reader, exrinput.cpp:750-921, sorts them the same way).
+static vector<string>
+oiioChannelOrder(const Imf_::ChannelList& imfchannels)
+{
+    struct Chan {
+        string name, layer, suffix;
+        int special;
+    };
+    vector<Chan> chans;
+    for (Imf_::ChannelList::ConstIterator it = imfchannels.begin(); it != imfchannels.end(); ++it) {
+        Chan c;
+        c.name = it.name();
+        const size_t dot = c.name.find_last_of('.');
+        c.layer = (dot == string::npos) ? string() : c.name.substr(0, dot + 1);
+        c.suffix = (dot == string::npos) ? c.name : c.name.substr(dot + 1);
+        c.special = 10000;
+        chans.push_back(c);
+    }
+    static const char* const special[] = { "R", "Red", "G", "Green", "B", "Blue", "Y", "real", "imag", "A", "Alpha", "AR", "RA", "AG",
+                                           "GA", "AB", "BA", "Z", "Depth", "Zback", nullptr };
+    static const char* const specialXYZ[] = { "R", "Red", "G", "Green", "B", "Blue", "X", "Y", "Z", "real", "imag", "A", "Alpha", "AR",
+                                              "RA", "AG", "GA", "AB", "BA", "Depth", "Zback", nullptr };
+    // by layer first: the channels of a layer are not contiguous in the ChannelList, which is sorted by name (P.X,
+    // P.Xa.R, P.Y), and the sort order of a layer depends on all of its channels (OpenImageIO's compare_layer)
+    std::stable_sort(chans.begin(), chans.end(), [](const Chan& a, const Chan& b) { return a.layer < b.layer; });
+    for (size_t b = 0; b < chans.size();) {
+        size_t e = b + 1;
+        while (e < chans.size() && chans[e].layer == chans[b].layer) {
+            ++e;
+        }
+        bool hasX = false, hasYZ = false;
+        for (size_t i = b; i < e; ++i) {
+            hasX = hasX || iequals(chans[i].suffix, "X");
+            hasYZ = hasYZ || iequals(chans[i].suffix, "Y") || iequals(chans[i].suffix, "Z");
+        }
+        const char* const* order = (hasX && hasYZ) ? specialXYZ : special;
+        for (size_t i = b; i < e; ++i) {
+            for (int k = 0; order[k]; ++k) {
+                if (iequals(chans[i].suffix, order[k])) {
+                    chans[i].special = k;
+                    break;
+                }
+            }
+        }
+        b = e;
+    }
+    std::sort(chans.begin(), chans.end(), [](const Chan& a, const Chan& b) {
+        if (a.layer != b.layer) {
+            return a.layer < b.layer;
+        }
+        if (a.special != b.special) {
+            return a.special < b.special;
+        }
+        return a.suffix < b.suffix;
+    });
+    vector<string> names;
+    for (size_t i = 0; i < chans.size(); ++i) {
+        names.push_back(chans[i].name);
+    }
+
+    return names;
+}
+
+// The channels, views and name of the file, as ReadOIIO gets them (a multi-part file: its first part, the one
+// that Imf::InputFile reads).
+static ImagePartChannels
+partChannels(const Imf_::Header& header)
+{
+    ImagePartChannels part;
+    part.channelNames = oiioChannelOrder(header.channels());
+    if (Imf_::hasMultiView(header)) {
+        part.multiView = Imf_::multiView(header); // (ImfStandardAttributes.h:728)
+    }
+    if (header.hasName()) {
+        part.name = header.name();
+    }
+
+    return part;
+}
+
+// The layers of the file, by view, and of all its views, as ReadOIIO gets them (see getImageLayers()). A
+// luminance/chroma file (Y, RY, BY) has the layers Color (Y), RY and BY, as with OpenImageIO's OpenEXR core library
+// reader (exrinput_c.cpp), its default with OpenEXR >= 3.1.10 (src/libOpenImageIO/CMakeLists.txt:100-109); its
+// other reader converts it to RGB, a color layer only (exrinput.cpp:851-871, :926-951).
+static void
+getLayers(const ImagePartChannels& part,
+          ViewsLayersMap* layersMap,
+          LayersUnionVect* layersUnion)
+{
+    getImageLayers(vector<ImagePartChannels>(1, part), layersMap, layersUnion);
+}
+
+// The channels of the file in the layers of a view (all of them, in a file without views)
+static std::set<string>
+channelsOfView(const ImagePartChannels& part,
+               const LayersMap& layers)
+{
+    std::set<string> names;
+    for (LayersMap::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        for (size_t i = 0; i < it->second.channelIndexes.size(); ++i) {
+            const int c = it->second.channelIndexes[i];
+            if ((c >= 0) && (c < (int)part.channelNames.size())) {
+                names.insert(part.channelNames[c]);
+            }
+        }
+    }
+
+    return names;
+}
+
+// The channels of the color plane of a view of the file (see mapChannels()). In a file without views, the view
+// doesn't matter, and these are all the channels of the file.
+static void
+mapViewChannels(const Imf_::Header& header,
+                const ImagePartChannels& part,
+                const ViewsLayersMap& layersMap,
+                ViewsLayersMap::const_iterator view,
+                ChannelsMap* channels)
+{
+    if (part.multiView.empty()) {
+        mapChannels(header, part.multiView, nullptr, channels);
+
+        return;
+    }
+    vector<string> views;
+    for (ViewsLayersMap::const_iterator it = layersMap.begin(); it != layersMap.end(); ++it) {
+        views.push_back(it->first);
+    }
+    const std::set<string> inView = channelsOfView(part, view->second);
+    mapChannels(header, views, &inView, channels);
 }
 
 // The display window (the format) and the data window (the RoD) of the file, in OFX pixel coordinates (x2 and y2
@@ -486,12 +649,12 @@ InputFile::~InputFile()
 #endif
 }
 
-// What getFrameBounds() and guessParamsFromFilename() need to know about a file, read from its header. The file is
-// not kept open: decode() opens it again (see InputFile).
+// What getFrameBounds(), guessParamsFromFilename() and restoreStateFromParams() need to know about a file, read from
+// its header. The file is not kept open: decode() opens it again (see InputFile).
 struct File {
     File()
         : channel_map()
-        , views()
+        , part()
         , displayWindow()
         , dataWindow()
         , pixelAspectRatio(1.)
@@ -502,14 +665,15 @@ struct File {
 
     bool operator==(const File& other) const
     {
-        return channel_map == other.channel_map && views == other.views && sameRect(displayWindow, other.displayWindow)
-            && sameRect(dataWindow, other.dataWindow) && pixelAspectRatio == other.pixelAspectRatio;
+        return channel_map == other.channel_map && part.channelNames == other.part.channelNames && part.multiView == other.part.multiView
+            && part.name == other.part.name && sameRect(displayWindow, other.displayWindow) && sameRect(dataWindow, other.dataWindow)
+            && pixelAspectRatio == other.pixelAspectRatio;
     }
 
     bool operator!=(const File& other) const { return !(*this == other); }
 
-    ChannelsMap channel_map;
-    vector<string> views;
+    ChannelsMap channel_map; // the color plane of the default view
+    ImagePartChannels part; // the channels, views and name (see partChannels())
     OfxRectI displayWindow;
     OfxRectI dataWindow;
     float pixelAspectRatio;
@@ -520,12 +684,14 @@ private:
 
 File::File(const Imf_::Header& header)
     : channel_map()
-    , views()
+    , part(partChannels(header))
     , displayWindow()
     , dataWindow()
     , pixelAspectRatio(1.)
 {
-    mapChannels(header, views, &channel_map);
+    ViewsLayersMap layersMap;
+    getLayers(part, &layersMap, nullptr);
+    mapViewChannels(header, part, layersMap, layersMap.begin(), &channel_map);
     getWindows(header, &displayWindow, &dataWindow);
     pixelAspectRatio = header.pixelAspectRatio();
 }
@@ -616,7 +782,15 @@ FileManager::clear()
 
 ReadEXRPlugin::ReadEXRPlugin(OfxImageEffectHandle handle,
                              const vector<string>& extensions)
-    : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles, false)
+    : GenericReaderPlugin(handle, extensions, kSupportsRGBA, kSupportsRGB, kSupportsXY, kSupportsAlpha, kSupportsTiles,
+#ifdef OFX_EXTENSIONS_NUKE
+                          getImageEffectHostDescription() && getImageEffectHostDescription()->isMultiPlanar
+#else
+                          false
+#endif
+                          )
+    , _layersMutex()
+    , _layers()
 {
 }
 
@@ -638,9 +812,50 @@ ReadEXRPlugin::changedParam(const InstanceChangedArgs& args,
 }
 
 void
+ReadEXRPlugin::restoreStateFromParams()
+{
+    GenericReaderPlugin::restoreStateFromParams();
+
+    if (!isMultiPlanar()) {
+        return;
+    }
+    // the layers of the file of the first frame (as ReadOIIO), read before taking the lock
+    LayersUnionVect layers;
+    string filename;
+    _fileParam->getValueAtTime(_firstFrame->getValue(), filename); // the time in _fileParam is the *file* time
+    if (!filename.empty()) {
+        try {
+            const Exr::File file = Exr::FileManager::s_readerManager.get(filename);
+            ViewsLayersMap layersMap;
+            Exr::getLayers(file.part, &layersMap, &layers);
+        } catch (const std::exception&) {
+            // no layers (getFrameBounds() and decode() report the error)
+            layers.clear();
+        }
+    }
+    std::lock_guard<std::mutex> lock(_layersMutex);
+    _layers.swap(layers);
+}
+
+OfxStatus
+ReadEXRPlugin::getClipComponents(const ClipComponentsArguments& args,
+                                 ClipComponentsSetter& clipComponents)
+{
+    // (a copy: setClipPlanes() calls the host, without the lock)
+    LayersUnionVect layers;
+    {
+        std::lock_guard<std::mutex> lock(_layersMutex);
+        layers = _layers;
+    }
+    setClipPlanes(args, clipComponents, layers);
+
+    return kOfxStatOK;
+}
+
+void
 ReadEXRPlugin::decode(const string& filename,
                       OfxTime /*time*/,
-                      int /*view*/,
+                      int view,
                       const OfxRectI& renderWindow,
                       const OfxPointD& renderScale,
                       float* pixelData,
@@ -658,7 +873,50 @@ ReadEXRPlugin::decode(const string& filename,
 
         return;
     }
+    decodeView(filename, view, nullptr, renderWindow, pixelData, bounds, pixelComponentCount, rowBytes);
+}
 
+void
+ReadEXRPlugin::decodePlane(const string& filename,
+                           OfxTime time,
+                           int view,
+                           const OfxRectI& renderWindow,
+                           const OfxPointD& renderScale,
+                           float* pixelData,
+                           const OfxRectI& bounds,
+                           PixelComponentEnum pixelComponents,
+                           PixelComponentEnum /*remappedComponents*/,
+                           int pixelComponentCount,
+                           const string& rawComponents,
+                           int rowBytes)
+{
+    if (pixelComponents != ePixelComponentCustom) {
+        // the color plane
+        decode(filename, time, view, renderWindow, renderScale, pixelData, bounds, pixelComponents, pixelComponentCount, rowBytes);
+
+        return;
+    }
+    // a layer of the file (getClipComponents())
+    MultiPlane::ImagePlaneDesc plane, pairedPlane;
+    MultiPlane::ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(rawComponents, &plane, &pairedPlane);
+    if ((pixelComponentCount < 1) || (pixelComponentCount > 4) || (plane.getNumComponents() != pixelComponentCount)) {
+        throwSuiteStatusException(kOfxStatErrFormat);
+
+        return;
+    }
+    decodeView(filename, view, &plane, renderWindow, pixelData, bounds, pixelComponentCount, rowBytes);
+}
+
+void
+ReadEXRPlugin::decodeView(const string& filename,
+                          int view,
+                          const MultiPlane::ImagePlaneDesc* plane,
+                          const OfxRectI& renderWindow,
+                          float* pixelData,
+                          const OfxRectI& bounds,
+                          int nComps,
+                          int rowBytes)
+{
     // pixelData holds the image of the given bounds: write the render window, clipped to these bounds. The render
     // window is usually the whole RoD (tiles are not supported: the host provides full RoD images), but it may be
     // smaller, and the RoD is the one getFrameBounds() returned, from a header that may be older than the file.
@@ -669,7 +927,11 @@ ReadEXRPlugin::decode(const string& filename,
     if ((x1 >= x2) || (y1 >= y2)) {
         return;
     }
-    const ptrdiff_t pixelBytes = 4 * sizeof(float);
+    assert(nComps >= 1 && nComps <= 4);
+    const ptrdiff_t pixelBytes = (ptrdiff_t)nComps * sizeof(float);
+    // the view of a multi-view file is the one of this name (as in ReadOIIO), else the one of this index
+    // (getViewName() is "Main" for the view 0 of a host without views)
+    const string viewName = getViewName(view);
 
     bool outOfMemory = false;
     bool failed = false;
@@ -682,8 +944,47 @@ ReadEXRPlugin::decode(const string& filename,
         const Imf_::Header& header = file.header();
         // if the file changed since its header was cached: update the cache, for the next getRegionOfDefinition
         Exr::FileManager::s_readerManager.update(filename, Exr::File(header));
-        Exr::ChannelsMap channels;
-        Exr::mapChannels(header, vector<string>(), &channels);
+
+        // the layers of the view (see Exr::getLayers())
+        const ImagePartChannels part = Exr::partChannels(header);
+        ViewsLayersMap layersMap;
+        Exr::getLayers(part, &layersMap, nullptr);
+        const ViewsLayersMap::const_iterator foundView = findImageView(layersMap, viewName, view);
+
+        // the channel of the file read in each component ("" if none), and the value of the components that have
+        // none
+        vector<string> names(nComps);
+        vector<float> constants(nComps, 0.f);
+        if (!plane) {
+            Exr::ChannelsMap channels;
+            Exr::mapViewChannels(header, part, layersMap, foundView, &channels);
+            for (Exr::ChannelsMap::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+                names[(int)it->first] = it->second;
+            }
+            // a color plane without alpha (R, G or B, no A: e.g. in one view only) has alpha 1, as the layers without
+            // alpha below (#384 doesn't take alpha from another group; GenericReader also sets it to 1 for an Opaque
+            // file)
+            if (names[Exr::Channel_alpha].empty() && !channels.empty()) {
+                constants[Exr::Channel_alpha] = 1.f;
+            }
+        } else {
+            // the channels of the layer, in order, and alpha 1 if it has none (as ReadOIIO). The layer may be missing
+            // from this view (it is in another view), or from the file (that changed since getClipComponents): the
+            // plane is black.
+            for (LayersMap::const_iterator it = foundView->second.begin(); it != foundView->second.end(); ++it) {
+                if (it->first == plane->getPlaneID()) {
+                    const vector<int>& indexes = it->second.channelIndexes;
+                    for (int c = 0; c < nComps; ++c) {
+                        if (c < (int)indexes.size()) {
+                            names[c] = part.channelNames[indexes[c]];
+                        } else if (c == 3) {
+                            constants[c] = 1.f;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
 
         // OpenEXR windows are inclusive, with y down. EXR pixel (x, y) is OFX pixel (x + dataOffset, dispwin.max.y - y)
         // (see Exr::getWindows()): the display window is moved to (0,0), and y is flipped.
@@ -703,39 +1004,53 @@ ReadEXRPlugin::decode(const string& filename,
         const int readY2 = (std::min)(y2, dataY2);
         const bool hasData = (readX1 < readX2) && (readY1 < readY2);
 
-        // Does the file write R, G, B and A at every pixel (no channel missing, none subsampled)? UINT channels
+        // Does the file write every component at every pixel (no channel missing, none subsampled)? UINT channels
         // are normalized, as in ReadOIIO.
-        bool complete = (channels.size() == 4);
+        bool complete = true;
         vector<int> uintChannels;
-        for (Exr::ChannelsMap::const_iterator it = channels.begin(); it != channels.end(); ++it) {
-            const Imf_::Channel* chan = header.channels().findChannel(it->second);
+        for (int c = 0; c < nComps; ++c) {
+            const Imf_::Channel* chan = names[c].empty() ? nullptr : header.channels().findChannel(names[c]);
             if (!chan || (chan->xSampling != 1) || (chan->ySampling != 1)) {
                 complete = false;
             }
             if (chan && (chan->type == Imf_::UINT)) {
-                uintChannels.push_back((int)it->first);
+                uintChannels.push_back(c);
             }
         }
+        // the pixels where the file writes nothing in the data window: the constants (0, or 1 for the alpha of a
+        // layer without one)
+        auto fillConstants = [&constants, nComps](float* dst, size_t nPixels) {
+            for (size_t i = 0; i < nPixels; ++i) {
+                std::copy(constants.begin(), constants.end(), dst + i * nComps);
+            }
+        };
 
         // black where the file writes nothing: out of the data window, and in it if the file doesn't write every
         // channel of every pixel
         for (int y = y1; y < y2; ++y) {
             float* dst = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(x1 - bounds.x1) * pixelBytes);
-            if (!hasData || (y < readY1) || (y >= readY2) || !complete) {
-                std::fill(dst, dst + (size_t)(x2 - x1) * 4, 0.f);
+            if (!hasData || (y < readY1) || (y >= readY2)) {
+                std::fill(dst, dst + (size_t)(x2 - x1) * nComps, 0.f);
             } else {
-                std::fill(dst, dst + (size_t)(readX1 - x1) * 4, 0.f);
-                std::fill(dst + (size_t)(readX2 - x1) * 4, dst + (size_t)(x2 - x1) * 4, 0.f);
+                std::fill(dst, dst + (size_t)(readX1 - x1) * nComps, 0.f);
+                std::fill(dst + (size_t)(readX2 - x1) * nComps, dst + (size_t)(x2 - x1) * nComps, 0.f);
+                if (!complete) {
+                    fillConstants(dst + (size_t)(readX1 - x1) * nComps, (size_t)(readX2 - readX1));
+                }
             }
         }
 
-        if (hasData) {
+        // Nothing to read if no component has a channel (a layer that this view doesn't have): the image is the
+        // constants written above. (Some OpenEXR builds throw "No frame buffer specified as pixel data destination"
+        // on readPixels() with an empty frame buffer.)
+        const bool hasChannels = std::find_if(names.begin(), names.end(), [](const string& n) { return !n.empty(); }) != names.end();
+        if (hasData && hasChannels) {
             // The EXR lines exrY1..exrY2 (inclusive) are the OFX lines readY2 - 1..readY1. They are read into a frame
             // buffer where EXR pixel (x, y) is at base + x * pixelBytes + y * yStride:
             // - straight into pixelData (yStride < 0: y is flipped), with a single readPixels() call (so that OpenEXR
             //   decompresses each chunk of 1 to 256 lines once, and may use its threads), if each line of the data
             //   window fits in the render window (always, unless the render window or the bounds are narrower);
-            // - else into a buffer of kBlockLines lines of the data window at most (32 MB for an 8K-wide image),
+            // - else into a buffer of kBlockLines lines of the data window at most (32 MB for an 8K-wide RGBA image),
             //   in blocks aligned on the chunks (a multiple of 256 lines from the top of the data window: each chunk
             //   is decompressed once), from which the part in the render window is copied.
             const int kBlockLines = 256;
@@ -752,21 +1067,25 @@ ReadEXRPlugin::decode(const string& filename,
                     yStride = -(ptrdiff_t)rowBytes;
                     base = (char*)pixelData + (ptrdiff_t)(dispwin.max.y - bounds.y1) * rowBytes + (ptrdiff_t)(dataOffset - bounds.x1) * pixelBytes;
                 } else {
-                    buffer.assign((size_t)dataWidth * (blockY2 - blockY1 + 1) * 4, 0.f);
+                    buffer.resize((size_t)dataWidth * (blockY2 - blockY1 + 1) * nComps);
+                    fillConstants(&buffer[0], (size_t)dataWidth * (blockY2 - blockY1 + 1));
                     yStride = (ptrdiff_t)dataWidth * pixelBytes;
                     base = (char*)&buffer[0] - (ptrdiff_t)datawin.min.x * pixelBytes - (ptrdiff_t)blockY1 * yStride;
                 }
                 Imf_::FrameBuffer fbuf;
-                for (Exr::ChannelsMap::const_iterator it = channels.begin(); it != channels.end(); ++it) {
-                    const Imf_::Channel* chan = header.channels().findChannel(it->second);
+                for (int c = 0; c < nComps; ++c) {
+                    if (names[c].empty()) {
+                        continue;
+                    }
+                    const Imf_::Channel* chan = header.channels().findChannel(names[c]);
                     const int xs = chan ? chan->xSampling : 1;
                     const int ys = chan ? chan->ySampling : 1;
                     // The sample of a Slice at (x, y) is at base + (x / xs) * xStride + (y / ys) * yStride. A
                     // subsampled channel (RY, BY: not converted) is written as before #123: its samples side by
                     // side from the left of the data window, on the lines that have samples (datawin.min.x, and the
                     // x and y of the samples, are multiples of the sampling rates; so are blockY1 - datawin.min.y).
-                    char* chanBase = base + (ptrdiff_t)it->first * sizeof(float) + (ptrdiff_t)(datawin.min.x - datawin.min.x / xs) * pixelBytes;
-                    fbuf.insert(it->second.c_str(), Imf_::Slice(Imf_::FLOAT, chanBase, pixelBytes, ys * yStride, xs, ys));
+                    char* chanBase = base + (ptrdiff_t)c * sizeof(float) + (ptrdiff_t)(datawin.min.x - datawin.min.x / xs) * pixelBytes;
+                    fbuf.insert(names[c].c_str(), Imf_::Slice(Imf_::FLOAT, chanBase, pixelBytes, ys * yStride, xs, ys));
                 }
                 file.setFrameBuffer(fbuf);
                 file.readPixels(blockY1, blockY2);
@@ -775,12 +1094,12 @@ ReadEXRPlugin::decode(const string& filename,
                 for (int y = dispwin.max.y - blockY2; y <= dispwin.max.y - blockY1; ++y) {
                     float* dst = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(readX1 - bounds.x1) * pixelBytes);
                     if (!direct) {
-                        const float* src = &buffer[((size_t)(dispwin.max.y - y - blockY1) * dataWidth + (readX1 - dataX1)) * 4];
-                        std::copy(src, src + (size_t)(readX2 - readX1) * 4, dst);
+                        const float* src = &buffer[((size_t)(dispwin.max.y - y - blockY1) * dataWidth + (readX1 - dataX1)) * nComps];
+                        std::copy(src, src + (size_t)(readX2 - readX1) * nComps, dst);
                     }
                     // UINT: 0..2^32-1 -> 0..1
                     for (size_t k = 0; k < uintChannels.size(); ++k) {
-                        for (float* p = dst + uintChannels[k]; p < dst + (size_t)(readX2 - readX1) * 4; p += 4) {
+                        for (float* p = dst + uintChannels[k]; p < dst + (size_t)(readX2 - readX1) * nComps; p += nComps) {
                             *p = (float)(*p * (1. / 4294967295.));
                         }
                     }
@@ -803,7 +1122,7 @@ ReadEXRPlugin::decode(const string& filename,
         setPersistentMessage(Message::eMessageError, "", filename + ": OpenEXR error: " + error);
         throwSuiteStatusException(kOfxStatFailed);
     }
-} // ReadEXRPlugin::decode
+} // ReadEXRPlugin::decodeView
 
 /**
  * @brief Called when the input image/video file changed.
@@ -982,10 +1301,11 @@ ReadEXRPluginFactory::load()
 void
 ReadEXRPluginFactory::describe(ImageEffectDescriptor& desc)
 {
-    GenericReaderDescribe(desc, _extensions, kPluginEvaluation, kSupportsTiles, false);
+    // multi-planar: the layers of the file are planes (kFnOfxImageEffectPropMultiPlanar, in hosts that support it)
+    GenericReaderDescribe(desc, _extensions, kPluginEvaluation, kSupportsTiles, true);
     // basic labels
     desc.setLabel("ReadEXROFX");
-    desc.setPluginDescription("Read EXR images using OpenEXR.");
+    desc.setPluginDescription("Read EXR images using OpenEXR. Only the first part of a multi-part file is read: use ReadOIIO to read all of them.");
     // (GenericReaderDescribe() declares eRenderFullySafe: see Exr::FileManager and Exr::InputFile)
 
     desc.setIsObsolete(true); // This plugin was superseded by ReadOIIO

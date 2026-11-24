@@ -25,6 +25,7 @@
 
 #include "ExrThreads.h"
 #include "OIIOGlobal.h"
+#include "ofxsMultiPlane.h"
 
 #include <ImathBox.h>
 #include <ImfChannelList.h>
@@ -32,6 +33,7 @@
 #include <ImfFrameBuffer.h>
 #include <ImfHeader.h>
 #include <ImfOutputFile.h>
+#include <ImfStandardAttributes.h> // Imf::addMultiView()
 #include <ImfThreading.h>
 #include <half.h>
 
@@ -319,6 +321,72 @@ struct Reader {
 
     // the purge caches action
     OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, H(inst), nullptr, nullptr); }
+
+    // the planes of the output clip (the getClipComponents action of a multi-planar host), none if it fails
+    std::vector<std::string> planes(int view = 0)
+    {
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
+        PropSet o;
+        std::vector<std::string> r;
+        if (p->mainEntry(kFnOfxImageEffectActionGetClipComponents, H(inst), PH(&a), PH(&o)) != kOfxStatOK) {
+            return r;
+        }
+        const std::string name = std::string(kFnOfxImageEffectActionGetClipComponentsPropString) + kOfxImageEffectOutputClipName;
+        int n = 0;
+        pGetDimension(PH(&o), name.c_str(), &n);
+        for (int i = 0; i < n; ++i) {
+            const char* plane = "";
+            pGetString(PH(&o), name.c_str(), i, &plane);
+            r.push_back(plane);
+        }
+
+        return r;
+    }
+
+    // the user selects another file (instanceChanged, on this thread: the main thread)
+    OfxStatus changeFile(const std::string& filename)
+    {
+        {
+            HostWrite lock;
+            ctx.params.at(kOfxImageEffectFileParamName).ov.s = { filename };
+        }
+        PropSet a;
+        OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. };
+        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+
+        return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+    }
+
+    // render a plane (kFnOfxImagePlaneColour, or the string of a plane) of a view into an image of nComps
+    // components (comps: RGBA, or the string of the plane) that covers the RoD (prepare() first), filled with NaN
+    OfxStatus renderPlane(const std::string& plane, const std::string& comps, int nComps, int view)
+    {
+        const int w = img.x2 - img.x1;
+        const int h = img.y2 - img.y1;
+        const int rowBytes = w * nComps * (int)sizeof(float);
+        out->buffer.assign((size_t)rowBytes * h, 0);
+        fillUnwritten((float*)out->buffer.data(), (size_t)w * h * nComps);
+        OfxPropertySetHandle ip = PH(&out->image);
+        pSetPointer(ip, kOfxImagePropData, 0, out->buffer.data());
+        pSetInt(ip, kOfxImagePropRowBytes, 0, rowBytes);
+        pSetString(ip, kOfxImageEffectPropComponents, 0, comps.c_str());
+        PropSet ra = makeRenderInArgs(1., 0, 0);
+        int win[4] = { img.x1, img.y1, img.x2, img.y2 };
+        pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+        pSetString(PH(&ra), kOfxImageEffectPropRenderPlanes, 0, plane.c_str());
+        pSetInt(PH(&ra), kFnOfxImageEffectPropView, 0, view);
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        pSetString(ip, kOfxImageEffectPropComponents, 0, kOfxImageComponentRGBA);
+
+        return st;
+    }
 
     OfxStatus prepareAndRender()
     {
@@ -807,6 +875,347 @@ testLumaChroma(OfxPlugin* p, const std::string& dir, const std::string& prefix)
     check(bad == 0, "every pixel is the expected value (%d wrong)", bad);
 }
 
+// ------------------------------------------------------------------ layers and views (#386)
+
+// The value of the k-th channel written by writeChannels() at EXR pixel (x, y): exact in FLOAT, distinct for each
+// channel
+float
+channelValue(int x, int y, int k)
+{
+    return pixelValue(x, y, 0) + 8.f * k;
+}
+
+const int kLayersW = 24, kLayersH = 16;
+
+// A kLayersW x kLayersH FLOAT file with these channels (the k-th one is channelValue(x, y, k)), and the multiView
+// attribute if views is not empty
+bool
+writeChannels(const std::string& path, const std::vector<std::string>& channels, const std::vector<std::string>& views)
+{
+    try {
+        Imf::Header header(kLayersW, kLayersH);
+        if (!views.empty()) {
+            Imf::addMultiView(header, views);
+        }
+        std::vector<std::vector<float>> data(channels.size(), std::vector<float>((size_t)kLayersW * kLayersH));
+        Imf::FrameBuffer fb;
+        for (size_t k = 0; k < channels.size(); ++k) {
+            for (int y = 0; y < kLayersH; ++y) {
+                for (int x = 0; x < kLayersW; ++x) {
+                    data[k][(size_t)y * kLayersW + x] = channelValue(x, y, (int)k);
+                }
+            }
+            header.channels().insert(channels[k], Imf::Channel(Imf::FLOAT));
+            fb.insert(channels[k], Imf::Slice(Imf::FLOAT, (char*)data[k].data(), sizeof(float), sizeof(float) * kLayersW));
+        }
+        Imf::OutputFile out(path.c_str(), header);
+        out.setFrameBuffer(fb);
+        out.writePixels(kLayersH);
+    } catch (const std::exception& e) {
+        std::printf("  cannot write %s: %s\n", path.c_str(), e.what());
+
+        return false;
+    }
+
+    return true;
+}
+
+// The index of a channel in the list (-1 if absent)
+int
+channelIndex(const std::vector<std::string>& channels, const std::string& name)
+{
+    std::vector<std::string>::const_iterator it = std::find(channels.begin(), channels.end(), name);
+
+    return it == channels.end() ? -1 : (int)(it - channels.begin());
+}
+
+// The number of wrong values in the render of a plane (renderPlane()) of a file written by writeChannels(): each
+// component c is the channel expected[c] of the file, or 1 if it is "1", or 0 if it is "0"
+int
+wrongPlaneValues(const Reader& r, const std::vector<std::string>& channels, const std::vector<std::string>& expected)
+{
+    const int nComps = (int)expected.size();
+    const float* d = reinterpret_cast<const float*>(r.out->buffer.data());
+    int bad = 0;
+    for (int y = r.img.y1; y < r.img.y2; ++y) {
+        for (int x = r.img.x1; x < r.img.x2; ++x) {
+            const float* px = d + ((size_t)(y - r.img.y1) * (r.img.x2 - r.img.x1) + (x - r.img.x1)) * nComps;
+            for (int c = 0; c < nComps; ++c) {
+                const int k = channelIndex(channels, expected[c]);
+                const float v = (expected[c] == "1") ? 1.f : (expected[c] == "0") ? 0.f
+                                                                                  : (k < 0 ? -1.f : channelValue(x, kLayersH - 1 - y, k));
+                if (isUnwritten(&px[c]) || px[c] != v) {
+                    if (bad < 5) {
+                        std::printf("  pixel (%d,%d) component %d: %.9g, expected %.9g (%s)\n", x, y, c, px[c], v, expected[c].c_str());
+                    }
+                    ++bad;
+                }
+            }
+        }
+    }
+
+    return bad;
+}
+
+// The string of a plane (as the plug-ins name it, see GenericReaderPlugin::setClipPlanes())
+std::string
+planeString(const std::string& layer, const std::vector<std::string>& channels)
+{
+    return OFX::MultiPlane::ImagePlaneDesc::mapPlaneToOFXPlaneString(OFX::MultiPlane::ImagePlaneDesc(layer, "", "", channels));
+}
+
+std::string
+joined(const std::vector<std::string>& v)
+{
+    std::string s;
+    for (size_t i = 0; i < v.size(); ++i) {
+        s += (i ? " " : "") + v[i];
+    }
+
+    return s.empty() ? "(none)" : s;
+}
+
+// the views of the project (see ofx_test_host.h)
+void
+setViews(const std::vector<std::string>& names)
+{
+    gViewNames = names;
+    gViewCount = (int)names.size();
+}
+
+struct PlaneRender {
+    int view;
+    std::string layer; // "" for the color plane
+    std::vector<std::string> channels; // the channels of the plane
+    std::vector<std::string> expected; // the channels of the file read in each component ("1": 1, "0": 0)
+};
+
+// A multi-planar host (OFX_EXTENSIONS_NUKE plane suite, as Natron): ReadEXR's planes (getClipComponents) are the
+// layers of the file, as ReadOIIO's (for the views 0 and 1), and each plane of each view reads the right channels.
+void
+testPlanes(OfxPlugin* p, OfxPlugin* oiio, const std::string& dir, const char* name, const std::vector<std::string>& channels,
+           const std::vector<std::string>& views, const std::vector<std::string>& expectedLayers, const std::vector<PlaneRender>& renders)
+{
+    std::printf("==== planes and views: %s ====\n", name);
+    const std::string path = dir + "/" + name + ".exr";
+    if (!writeChannels(path, channels, views)) {
+        ++gFailures;
+
+        return;
+    }
+    Reader r;
+    if (!r.create(p, path)) {
+        ++gFailures;
+
+        return;
+    }
+    const std::vector<std::string> planes = r.planes();
+    std::vector<std::string> expectedPlanes = expectedLayers;
+    expectedPlanes.push_back(kFnOfxImagePlaneColour); // (last)
+    check(planes == expectedPlanes, "planes: %s (expected %s)", joined(planes).c_str(), joined(expectedPlanes).c_str());
+    if (oiio) {
+        Reader ro;
+        if (!ro.create(oiio, path)) {
+            ++gFailures;
+        } else {
+            for (int view = 0; view < 2; ++view) {
+                const std::vector<std::string> oiioPlanes = ro.planes(view);
+                check(r.planes(view) == oiioPlanes, "view %d: the same planes as ReadOIIO (%s)", view, joined(oiioPlanes).c_str());
+            }
+        }
+    }
+    const OfxStatus st = r.prepare();
+    check(ok(st), "getRegionOfDefinition = %d", st);
+    if (!ok(st)) {
+        return;
+    }
+    for (const PlaneRender& pr : renders) {
+        const std::string plane = pr.layer.empty() ? std::string(kFnOfxImagePlaneColour) : planeString(pr.layer, pr.channels);
+        const std::string comps = pr.layer.empty() ? std::string(kOfxImageComponentRGBA) : plane;
+        gPersistentError.clear();
+        const OfxStatus rs = r.renderPlane(plane, comps, (int)pr.expected.size(), pr.view);
+        const int bad = ok(rs) ? wrongPlaneValues(r, channels, pr.expected) : -1;
+        check(ok(rs) && bad == 0 && gPersistentError.empty(), "view %d (%s), plane %s: %s (render = %d, %d wrong values%s%s)", pr.view,
+              pr.view < (int)gViewNames.size() ? gViewNames[pr.view].c_str() : "?", pr.layer.empty() ? "color" : pr.layer.c_str(),
+              joined(pr.expected).c_str(), rs, bad, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+    }
+}
+
+// The layers and views in a multi-planar host (#386)
+void
+testLayersViews(OfxPlugin* p, OfxPlugin* oiio, const std::string& dir)
+{
+    const std::vector<std::string> rgba = { "R", "G", "B", "A" }, rgb = { "R", "G", "B" }, z = { "Z" };
+    // layers only: diffuse.RGBA is the color plane (#384: one layer, the one with the most of R, G, B and A)
+    {
+        const std::vector<std::string> ch = { "diffuse.R", "diffuse.G", "diffuse.B", "diffuse.A", "specular.R", "specular.G", "specular.B", "depth.Z" };
+        testPlanes(p, oiio, dir, "layers", ch, { }, { planeString("depth", z), planeString("diffuse", rgba), planeString("specular", rgb) },
+                   { { 0, "", rgba, { "diffuse.R", "diffuse.G", "diffuse.B", "diffuse.A" } },
+                     { 0, "diffuse", rgba, { "diffuse.R", "diffuse.G", "diffuse.B", "diffuse.A" } },
+                     { 0, "specular", rgb, { "specular.R", "specular.G", "specular.B" } },
+                     { 0, "depth", z, { "depth.Z" } },
+                     // a layer without alpha, in 4 components: alpha 1 (as ReadOIIO)
+                     { 0, "specular", rgba, { "specular.R", "specular.G", "specular.B", "1" } } });
+    }
+    // plain R, G, B, A (the color plane) and layers
+    {
+        const std::vector<std::string> ch = { "R", "G", "B", "A", "specular.R", "specular.G", "specular.B", "Z" };
+        testPlanes(p, oiio, dir, "color-layers", ch, { }, { planeString("depth", z), planeString("specular", rgb) },
+                   { { 0, "", rgba, { "R", "G", "B", "A" } },
+                     { 0, "specular", rgb, { "specular.R", "specular.G", "specular.B" } },
+                     { 0, "depth", z, { "Z" } } });
+    }
+    // luminance/chroma: Y is the color plane, RY and BY are layers (as with OpenImageIO's OpenEXR core reader); the
+    // color plane is Y, RY, BY (not converted, #123), with alpha 1 (no alpha)
+    testPlanes(p, oiio, dir, "luma-chroma-planes", { "Y", "RY", "BY" }, { }, { planeString("BY", { "BY" }), planeString("RY", { "RY" }) },
+               { { 0, "", rgba, { "Y", "RY", "BY", "1" } }, { 0, "RY", { "RY" }, { "RY" } }, { 0, "BY", { "BY" }, { "BY" } } });
+    // a layer whose channels sort apart (P.X, P.Xa.R, P.Y, P.Z): P is one layer, X, Y, Z (OpenImageIO sorts by layer)
+    testPlanes(p, oiio, dir, "split-layer", { "R", "G", "B", "P.X", "P.Xa.R", "P.Y", "P.Z" }, { },
+               { planeString("P", { "X", "Y", "Z" }), planeString("P.Xa", { "R" }) }, { { 0, "P", { "X", "Y", "Z" }, { "P.X", "P.Y", "P.Z" } } });
+    // views: left (the default view, unprefixed) and right, as written by OpenEXR (layer.view.channel) and by Nuke
+    // (view.layer.channel); spec is in the left view only: black in the right one
+    setViews({ "left", "right" });
+    {
+        const std::vector<std::string> ch = { "R", "G", "B", "A", "depth.Z", "right.R", "right.G", "right.B", "right.A", "depth.right.Z", "spec.R" };
+        const std::vector<std::string> layers = { planeString("depth", z), planeString("spec", { "R" }) };
+        const std::vector<PlaneRender> renders = { { 0, "", rgba, { "R", "G", "B", "A" } },
+                                                   { 1, "", rgba, { "right.R", "right.G", "right.B", "right.A" } },
+                                                   { 0, "depth", z, { "depth.Z" } },
+                                                   { 1, "depth", z, { "depth.right.Z" } },
+                                                   { 0, "spec", { "R" }, { "spec.R" } },
+                                                   { 1, "spec", { "R" }, { "0" } } };
+        testPlanes(p, oiio, dir, "views", ch, { "left", "right" }, layers, renders);
+        const std::vector<std::string> nuke = { "R", "G", "B", "A", "depth.Z", "right.R", "right.G", "right.B", "right.A", "right.depth.Z", "spec.R" };
+        std::vector<PlaneRender> nukeRenders = renders;
+        nukeRenders[3].expected = { "right.depth.Z" };
+        testPlanes(p, oiio, dir, "views-nuke", nuke, { "left", "right" }, layers, nukeRenders);
+        // the views are matched by name: the host's view 0 is right
+        setViews({ "right", "left" });
+        testPlanes(p, oiio, dir, "views-by-name", ch, { "left", "right" }, layers,
+                   { { 0, "", rgba, { "right.R", "right.G", "right.B", "right.A" } },
+                     { 1, "", rgba, { "R", "G", "B", "A" } },
+                     { 0, "depth", z, { "depth.right.Z" } } });
+        setViews({ "left", "right" });
+        // the view is not part of the layer: in the right view (right.R, right.G, right.B, without right.A, and Nuke's
+        // right.diffuse.RGBA), the color plane is the plain right.R, G, B (#384), with alpha 1 (none)
+        const std::vector<std::string> noRightA = { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "diffuse.A", "right.R", "right.G", "right.B",
+                                                    "right.diffuse.R", "right.diffuse.G", "right.diffuse.B", "right.diffuse.A" };
+        testPlanes(p, oiio, dir, "views-no-right-alpha", noRightA, { "left", "right" }, { planeString("diffuse", rgba) },
+                   { { 0, "", rgba, { "R", "G", "B", "A" } },
+                     { 1, "", rgba, { "right.R", "right.G", "right.B", "1" } },
+                     { 1, "diffuse", rgba, { "right.diffuse.R", "right.diffuse.G", "right.diffuse.B", "right.diffuse.A" } } });
+    }
+    // a file without views: every view reads the same channels ("right." is a layer)
+    {
+        const std::vector<std::string> ch = { "R", "G", "B", "A", "right.R", "right.G", "right.B", "right.A" };
+        testPlanes(p, oiio, dir, "no-views", ch, { }, { planeString("right", rgba) },
+                   { { 0, "", rgba, { "R", "G", "B", "A" } },
+                     { 1, "", rgba, { "R", "G", "B", "A" } },
+                     { 1, "right", rgba, { "right.R", "right.G", "right.B", "right.A" } } });
+    }
+    // (the host's default views)
+    gViewNames = { "main", "right" };
+    gViewCount = 1;
+}
+
+// getClipComponents and renders on other threads while the main thread switches files (instanceChanged reads the
+// layers of the new file): getClipComponents returns the planes of one of the files, and nothing else, and a render
+// that succeeds is the color plane of one of them (the same values: diffuse.RGBA and R, G, B, A are their first 4
+// channels). The data races are caught only under ThreadSanitizer (make test-exr-tsan).
+void
+testPlanesWhileFileChanges(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== planes and renders while the file changes ====\n");
+    const std::string files[2] = { dir + "/layers.exr", dir + "/views.exr" }; // (written by testLayersViews())
+    Reader r;
+    if (!r.create(p, files[0]) || !ok(r.prepare())) {
+        ++gFailures;
+
+        return;
+    }
+    // a proxy threshold of 1/2: at scale 1, GenericReader::render() doesn't read the file param a second time (for a
+    // proxy file), and doesn't assert that it is still the same (another race with a file change, #373)
+    {
+        ParamRec& threshold = r.ctx.params.at("proxyThreshold");
+        threshold.hasOv = true;
+        threshold.ov.d = { 0.5, 0.5 };
+    }
+    const std::vector<std::string> planes0 = r.planes();
+    if (!ok(r.changeFile(files[1]))) {
+        ++gFailures;
+
+        return;
+    }
+    const std::vector<std::string> planes1 = r.planes();
+    check(planes0 != planes1 && !planes0.empty() && !planes1.empty(), "the files have other planes (%zu and %zu)", planes0.size(), planes1.size());
+    std::atomic<int> running(2), wrongPlanes(0), calls(0), okRenders(0), wrongRenders(0);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 2; ++t) {
+        threads.emplace_back([&, t]() {
+            for (int i = 0; i < 200; ++i) {
+                if (t == 0) {
+                    const std::vector<std::string> planes = r.planes();
+                    if (planes != planes0 && planes != planes1) {
+                        ++wrongPlanes;
+                    }
+                } else {
+                    PropSet ra = makeRenderInArgs(1., 0, 0);
+                    int win[4] = { r.img.x1, r.img.y1, r.img.x2, r.img.y2 };
+                    pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
+                    // (may fail: the file changed)
+                    if (ok(p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&ra), nullptr))) {
+                        ++okRenders;
+                        if (wrongPlaneValues(r, { "R", "G", "B", "A" }, { "R", "G", "B", "A" }) != 0) {
+                            ++wrongRenders;
+                        }
+                    }
+                }
+                ++calls;
+            }
+            --running;
+        });
+    }
+    int changes = 0, failedChanges = 0;
+    while (running > 0) {
+        if (!ok(r.changeFile(files[changes % 2]))) {
+            ++failedChanges;
+        }
+        ++changes;
+    }
+    for (std::thread& t : threads) {
+        t.join();
+    }
+    check(wrongPlanes == 0 && failedChanges == 0 && okRenders > 0 && wrongRenders == 0,
+          "%d getClipComponents and renders, %d file changes (%d wrong planes, %d failed changes, %d renders succeeded, %d wrong)", (int)calls,
+          changes, (int)wrongPlanes, failedChanges, (int)okRenders, (int)wrongRenders);
+}
+
+// A host that is not multi-planar: the color plane only, of the view of the render (the default view of the host's
+// view 0, as ReadEXR 1)
+void
+testViewsColorOnly(OfxPlugin* p, const std::string& dir)
+{
+    std::printf("==== a multi-view file in a host without planes ====\n");
+    const std::string path = dir + "/views-color.exr";
+    const std::vector<std::string> ch = { "R", "G", "B", "A", "right.R", "right.G", "right.B", "right.A" };
+    if (!writeChannels(path, ch, { "left", "right" })) {
+        ++gFailures;
+
+        return;
+    }
+    Reader r;
+    if (!r.create(p, path)) {
+        ++gFailures;
+
+        return;
+    }
+    gPersistentError.clear();
+    const OfxStatus st = r.prepare();
+    const OfxStatus rs = ok(st) ? r.renderPlane(kFnOfxImagePlaneColour, kOfxImageComponentRGBA, 4, 0) : st;
+    const int bad = ok(rs) ? wrongPlaneValues(r, ch, { "R", "G", "B", "A" }) : -1;
+    check(ok(rs) && bad == 0, "view 0: R, G, B, A (render = %d, %d wrong values)", rs, bad);
+}
+
 // A truncated file: getRegionOfDefinition may succeed (the header is complete), but the render must fail with an
 // error message.
 void
@@ -1101,14 +1510,20 @@ int
 main(int argc, char** argv)
 {
     const bool isBench = argc >= 3 && !std::strcmp(argv[1], "--bench");
-    if (argc < 2 || (!isBench && argc != 2)) {
-        std::printf("usage: %s <scratch dir> | --bench <scratch dir> [n]\n", argv[0]);
+    const bool multiPlanar = argc == 3 && !std::strcmp(argv[1], "--multiplanar");
+    if (argc < 2 || (!isBench && !multiPlanar && argc != 2)) {
+        std::printf("usage: %s <scratch dir> | --multiplanar <scratch dir> | --bench <scratch dir> [n]\n", argv[0]);
 
         return 2;
     }
-    const std::string dir = isBench ? argv[2] : argv[1];
+    const std::string dir = (isBench || multiPlanar) ? argv[2] : argv[1];
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // (the output before a crash)
     initHost();
+    if (multiPlanar) {
+        // a Natron-like host: multiple planes (and dynamic choices, for ReadOIIO's output-layer menu)
+        pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+        pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+    }
     OfxPlugin* p = findPlugin("fr.inria.openfx.ReadEXR");
     if (!p) {
         std::printf("FAIL: ReadEXR not found\n");
@@ -1132,6 +1547,36 @@ main(int argc, char** argv)
     }
     std::printf("==== describe ====\n");
     check(!std::strcmp(safety, kOfxImageEffectRenderFullySafe), "render thread safety: %s", safety);
+    check(p->pluginVersionMajor == 2, "version %u.%u (2: planes and views, #386)", p->pluginVersionMajor, p->pluginVersionMinor);
+    if (multiPlanar) {
+        int multiPlanarDesc = 0;
+        pGetInt(PH(&desc.props), kFnOfxImageEffectPropMultiPlanar, 0, &multiPlanarDesc);
+        check(multiPlanarDesc == 1, "multi-planar");
+        // ReadOIIO, for the planes that it presents for the same files
+        OfxPlugin* oiio = findPlugin("fr.inria.openfx.ReadOIIO");
+        Effect oiioDesc;
+        if (oiio) {
+            oiio->setHost(&gOfxHost);
+            if (!ok(oiio->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(oiio->mainEntry(kOfxActionDescribe, H(oiioDesc), nullptr, nullptr))) {
+                oiio = nullptr;
+            }
+        }
+        check(oiio != nullptr, "ReadOIIO, loaded");
+        // a file without layers and views reads as in a host without planes
+        ExrSpec s;
+        s.display = s.data = box(0, 0, 99, 59);
+        testPixels(p, dir, "default", s, { 0, 0, 100, 60 });
+        testLayersViews(p, oiio, dir);
+        testPlanesWhileFileChanges(p, dir);
+        testThreads(p, dir);
+        if (oiio) {
+            oiio->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+        }
+        p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+        std::printf("%s (%d failure%s)\n", gFailures ? "FAIL" : "PASS", gFailures, gFailures == 1 ? "" : "s");
+
+        return gFailures ? 1 : 0;
+    }
 
     // the windows of tests/hostdemo/run.sh (#115), and more channel types
     ExrSpec s;
@@ -1173,7 +1618,7 @@ main(int argc, char** argv)
     s.uintRed = true;
     testPixels(p, dir, "layer-uint", s, { 0, 0, 64, 32 });
     s.uintRed = false;
-    s.prefix = "right."; // a layer prefix, as in a multi-view file (ReadEXR has no view choice: #386)
+    s.prefix = "right."; // a layer prefix, as in a multi-view file, but without the multiView attribute (#386)
     testPixels(p, dir, "right-layer-channels", s, { 0, 0, 64, 32 });
     s.prefix = "1";
     testPixels(p, dir, "digit-prefix-channels", s, { 0, 0, 64, 32 });
@@ -1200,6 +1645,7 @@ main(int argc, char** argv)
     s.extra.clear();
     testPixels(p, dir, "layer-alpha-only", s, { 0, 0, 64, 32 });
 
+    testViewsColorOnly(p, dir);
     testLumaChroma(p, dir, "");
     testLumaChroma(p, dir, "diffuse."); // (#358)
     testWindow(p, dir);

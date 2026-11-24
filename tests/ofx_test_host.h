@@ -504,8 +504,11 @@ OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 OfxStatus fnClipGetImagePlaneV2(OfxImageClipHandle c, OfxTime, int, const char*, const OfxRectD*, OfxPropertySetHandle* out)
 { if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(tThreadImage ? tThreadImage : &reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus fnClipGetRoDV2(OfxImageClipHandle c, OfxTime t, int, OfxRectD* b) { return ieClipGetRoD(c, t, b); }
-int gViewCount = 1; // the views of the project (1 or 2: "main", "right"); all render the same image
-OfxStatus fnGetViewName(OfxImageEffectHandle, int v, const char** n) { if (n) *n = (v == 1) ? "right" : "main"; return kOfxStatOK; }
+// the views of the project: getViewCount returns gViewCount (1 or 2), and getViewName the name of a view in
+// gViewNames, "main" for an index out of it. Tests that set other names (e.g. { "left", "right" }) restore them.
+int gViewCount = 1;
+std::vector<std::string> gViewNames = { "main", "right" };
+OfxStatus fnGetViewName(OfxImageEffectHandle, int v, const char** n) { if (n) *n = (v >= 0 && v < (int)gViewNames.size()) ? gViewNames[v].c_str() : "main"; return kOfxStatOK; }
 OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = gViewCount; return kOfxStatOK; }
 FnOfxImageEffectPlaneSuiteV2 gPlaneSuiteV2 = { fnClipGetImagePlaneV2, fnClipGetRoDV2, fnGetViewName, fnGetViewCount };
 

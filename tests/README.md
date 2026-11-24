@@ -29,9 +29,9 @@ files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 * `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
 * `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
 * `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
-  `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`, `test-reader-hooks-tsan-debug`,
-  `test-readffmpeg-views-concurrent-tsan` and `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test` doesn't
-  run either.
+  `test-exr-multiplanar-tsan`, `test-exr-multiplanar-ubsan`, `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`,
+  `test-reader-hooks-tsan-debug`, `test-readffmpeg-views-concurrent-tsan` and
+  `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test` doesn't run either.
 
 `make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
 with `pkg-config`:
@@ -78,7 +78,7 @@ make test-exit-without-unload # a host renders ReadOIIO, destroys the instance a
 make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
 make test-sequence-parsing # SequenceParsing: its own test (patterns, views, UTF-8, negative frames, %d, padding, int limits) and UTF-8 cases (UBSan)
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
-make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
+make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders, layers, views
 make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales 1/2 and 1/4, rewritten files (ASan, UBSan, guard pages)
 make test-oiio-layer-menu # ReadOIIO: the output-layer menu rebuilt by a file change while renders and isIdentity run on other threads (#298)
 make test-oiio-layer-menu-tsan # the same with ThreadSanitizer (not in make test)
@@ -749,6 +749,23 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   destruction of the last user stops it on MS Windows and leaves it elsewhere; a new instance starts it again; an OIIO
   instance created and destroyed while a ReadEXR instance exists (as Natron's Read node does with a temporary ReadOIIO)
   leaves it running (it is linked with `OIIOGlobal.cpp` for this).
+* **a multi-view file in a host without planes**: the color plane of view 0 is the default view's R, G, B, A (#386).
+* **layers and views** (#386), in a second run (`exr_read_test --multiplanar`, also run by `make test-exr`,
+  `test-exr-tsan` and `test-exr-ubsan`; ctest: `test-exr-multiplanar`, and `test-exr-multiplanar-tsan` and
+  `test-exr-multiplanar-ubsan` with `IO_TESTS_SANITIZERS`), in a Natron-like host (multiple planes, dynamic choices,
+  the host's views by name):
+  * ReadEXR is multi-planar, version 2, and the planes of its getClipComponents, for the views 0 and 1, are those of
+    ReadOIIO (linked in) for the same files: `diffuse.RGBA`, `specular.RGB` and `depth.Z`; plain R, G, B, A with
+    `specular.RGB` and `Z`; Y, RY, BY; `P.X`, `P.Xa.R`, `P.Y`, `P.Z` (layer P's channels are not contiguous in the
+    file); multi-view files (views `left` and `right`, OpenEXR's `depth.right.Z` and Nuke's `right.depth.Z`, a layer in
+    the left view only, and a right view without alpha); and `right.RGBA` in a file without views.
+  * Each plane of each view reads the file's channels: alpha 1 for a plane without one, in 4 components (a layer, or
+    the color plane, e.g. the right view without `right.A`); black for a layer that the view doesn't have. The views
+    are matched by name (the host's view 0 may be `right`), and the color plane is the view's plain R, G, B, A, else
+    one layer (#384).
+  * getClipComponents and renders run on other threads while the main thread switches files: the planes are those of
+    one of the files, and the renders that succeed are right. Data races are caught only under ThreadSanitizer
+    (`test-exr-tsan`).
 * **ReadEXR renders while OIIO instances come and go**: 4 instances render 20 times each from 4 threads while another
   thread creates and destroys 400 `OIIOThreadsUser`, under a 300 s watchdog: stopping OpenEXR's pool while a render
   adds tasks could leave a task that no thread runs, and the render waiting forever.
@@ -1239,7 +1256,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `ocio_cdl_test.cpp`         | OCIOCDLTransform's Export param: the .cc file it writes is read back by OCIO. |
 | `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, a changed config or context, and Reload (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
-| `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
+| `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-ubsan`, `test-exr-tsan-debug`, `bench-exr`; ctest also `test-exr-multiplanar`, `-tsan`, `-ubsan`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, layers and views (the same planes as ReadOIIO, `--multiplanar`), and timings. |
 | `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, PNG offsets near the int limits at scales 1/2 and 1/4, rewritten files, with ASan, UBSan (signed-integer-overflow) and guard pages. |
 | `oiio_layer_menu_test.cpp`  | ReadOIIO's output-layer menu, rebuilt by file changes on the main thread while 4 threads render one instance and call isIdentity, in a Natron-like host (`test-oiio-layer-menu`, `test-oiio-layer-menu-tsan`, #298). |
 | `png_corrupt_test.cpp`      | ReadPNG and WritePNG on libpng errors (`test-png-corrupt`): corrupt and truncated PNG files, an image too wide for libpng, an oFFs offset out of range, text chunk labels, an 8 TB image, with ASan, UBSan (signed overflow) and a leak check. |

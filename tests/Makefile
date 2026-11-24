@@ -349,8 +349,8 @@ clean-ofx14-scan:
 	rm -rf ofx14_host_test_asan ofx14_host_test_asan.dSYM .ofx14scan .ofx14scanfull .ofx14scanasan .ofx14scanasanfull
 
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
-# -pthread: the test uses std::thread
-EXR_READ_SRCS := ../EXR/ReadEXR.cpp ../OIIO/OIIOGlobal.cpp $(READER_HOOKS_SRCS)
+# With ReadOIIO: ReadEXR must present the same planes (#386). -pthread: the test uses std::thread
+EXR_READ_SRCS := ../EXR/ReadEXR.cpp ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp $(READER_HOOKS_SRCS)
 EXR_READ_CXXFLAGS := -I../EXR -I../OIIO -pthread
 
 exr_read_test: exr_read_test.cpp ofx_test_host.h $(EXR_READ_SRCS) $(OFX_SUPPORT)
@@ -375,6 +375,7 @@ clean: clean-exr-ubsan
 test-exr-ubsan: exr_read_test_ubsan
 	rm -rf .exr_read_ubsan && mkdir -p .exr_read_ubsan
 	OCIO=$(CURDIR)/test.ocio MallocPreScribble=1 MallocScribble=1 MALLOC_PERTURB_=170 ./exr_read_test_ubsan $(CURDIR)/.exr_read_ubsan
+	OCIO=$(CURDIR)/test.ocio MallocPreScribble=1 MallocScribble=1 MALLOC_PERTURB_=170 ./exr_read_test_ubsan --multiplanar $(CURDIR)/.exr_read_ubsan
 clean-exr-ubsan:
 	rm -rf exr_read_test_ubsan exr_read_test_ubsan.dSYM .exr_read_ubsan
 
@@ -748,15 +749,18 @@ test-ocio-anim: ocio_colorspace_anim_test ocio_anim_fuzz
 test-oiio-threads: oiio_threadpool_test
 	OCIO=$(CURDIR)/test.ocio ./oiio_threadpool_test
 
-# ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders (#123)
+# ReadEXR: pixels, data/display windows, UINT, a truncated file, concurrent renders (#123); then in a multi-planar
+# host: the layers and views, as ReadOIIO's (#386)
 test-exr: exr_read_test
 	rm -rf .exr_read && mkdir -p .exr_read
 	OCIO=$(CURDIR)/test.ocio ./exr_read_test $(CURDIR)/.exr_read
+	OCIO=$(CURDIR)/test.ocio ./exr_read_test --multiplanar $(CURDIR)/.exr_read
 
 # the same with ThreadSanitizer (needs a compiler that supports -fsanitize=thread)
 test-exr-tsan: exr_read_test_tsan
 	rm -rf .exr_read_tsan && mkdir -p .exr_read_tsan
 	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./exr_read_test_tsan --multiplanar $(CURDIR)/.exr_read_tsan
 
 # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer (no suppressions)
 test-exr-tsan-debug: exr_read_test_tsan_debug reader_hooks_test_tsan_debug
