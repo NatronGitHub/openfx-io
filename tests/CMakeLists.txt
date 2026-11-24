@@ -581,7 +581,7 @@ elseif(_io_t_ocio OR _io_t_oiio OR _io_t_ffmpeg)
 endif()
 
 # ---- test-runscript: RunScript on MS Windows (argument quoting, running a program, a batch file and a shebang script);
-# on all systems: splitting the script's stderr into lines, with bounded memory
+# on all systems: splitting the script's stderr into lines, with bounded memory; on POSIX: aborting the script
 if(_io_t_runscript)
   set(_io_libs "")
   if(WIN32)
@@ -592,5 +592,14 @@ if(_io_t_runscript)
                   INCLUDES ${S}/RunScript LIBS ${_io_libs})
   io_test(test-runscript-win32 COMMAND runscript_win32_test)
   io_test_program(runscript_output_test SOURCES ${T}/runscript_output_test.cpp INCLUDES ${S}/RunScript)
-  io_test(test-runscript-output COMMAND runscript_output_test)
+  io_test(test-runscript-output TIMEOUT 300 COMMAND runscript_output_test)
+  if(NOT WIN32)
+    # test-runscript-render (POSIX): an aborted render kills the script (#287); only the OFX Support library
+    io_test_program(runscript_render_test THREADS
+                    SOURCES ${T}/runscript_render_test.cpp ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp
+                            ${S}/SupportExt/ofxsThreadSuite.cpp ${S}/SupportExt/tinythread.cpp ${_io_ofx_support}
+                    DEFINITIONS OFX_EXTENSIONS_VEGAS OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_TUTTLE OFX_EXTENSIONS_NATRON
+                    INCLUDES ${S}/RunScript ${S}/SupportExt ${S}/openfx/include ${S}/openfx/Support/include)
+    io_test(test-runscript-render TIMEOUT 300 COMMAND runscript_render_test)
+  endif()
 endif()

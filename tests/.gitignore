@@ -47,6 +47,8 @@
 /oiio_threadpool_test.dSYM/
 /runscript_output_test
 /runscript_output_test.dSYM/
+/runscript_render_test
+/runscript_render_test.dSYM/
 /exr_read_test
 /exr_read_test.dSYM/
 /exr_read_test_tsan

@@ -19,18 +19,20 @@
 
 /*
  * OFX RunScript plugin: splitting the standard error of the script into lines, with bounded memory
- * (used on all systems: by RunScriptWin32.cpp on MS Windows, with pstream elsewhere).
+ * (used on all systems: by RunScriptWin32.cpp on MS Windows, by RunScriptPosix.h elsewhere).
  */
 
 #ifndef IO_RunScriptOutput_h
 #define IO_RunScriptOutput_h
 
 #include <cstddef>
-#include <streambuf>
 #include <string>
 #include <vector>
 
 namespace RunScriptOutput {
+
+// polled while the script runs (RunScriptPosix.h, RunScriptWin32.h): return true to kill it
+typedef bool (*AbortCallback)(void* context);
 
 // remove an incomplete UTF-8 sequence at the end of s (e.g. after s was cut)
 inline void
@@ -169,33 +171,6 @@ private:
     bool _cr; // the last character was a '\r'
     bool _cut; // characters were dropped from the current line
 };
-
-// Read sb until its end, into lines (on POSIX, sb is the pstreambuf reading the script's standard error).
-// Reads what is available in chunks, rather than character by character or with std::getline (which would make a
-// "line" of all the output that has no '\n').
-inline void
-readAll(std::streambuf* sb,
-        LineCollector* lines)
-{
-    typedef std::streambuf::traits_type traits;
-    char buf[4096];
-    for (;;) {
-        // blocks until there is something to read, or the end of file
-        const traits::int_type c = sb->sbumpc();
-        if (traits::eq_int_type(c, traits::eof())) {
-            break;
-        }
-        buf[0] = traits::to_char_type(c);
-        std::streamsize n = 1;
-        // what is already buffered (or, for a pstreambuf, available in the pipe): reading it does not block
-        const std::streamsize avail = sb->in_avail();
-        if (avail > 0) {
-            n += sb->sgetn(buf + 1, avail < (std::streamsize)sizeof(buf) - 1 ? avail : (std::streamsize)sizeof(buf) - 1);
-        }
-        lines->add(buf, (std::size_t)n);
-    }
-    lines->finish();
-}
 
 } // namespace RunScriptOutput
 

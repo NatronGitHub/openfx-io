@@ -19,10 +19,10 @@ each ctest test is one run of a `make` target, named after it (`test-<target>`, 
 the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `make test-ofx`; `test-ocio-anim`,
 `test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
 `test-ofx14-11`, `test-ofx14-gl` and `test-ofx14-full` are `make test-ofx14`; `test-ofx14-scan` and
-`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32` and `test-runscript-output` are
-`make test-runscript`). A test is only added if the bundle has the plug-ins it links (e.g. `test-seexpr`, with the
-SeExpr of the build). The programs run in `build/tests`, where they write their files. CMake options (see
-[`CMakeLists.txt`](CMakeLists.txt)):
+`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32`, `test-runscript-output` and
+`test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
+it links (e.g. `test-seexpr`, with the SeExpr of the build). The programs run in `build/tests`, where they write their
+files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 
 * `IO_TESTS_WITH_LIBRAW` (ON): the tests that link ReadOIIO also build its RAW support, when the bundle has it
   (`make WITH_LIBRAW=1`);
@@ -64,7 +64,7 @@ make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSan
 make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context (#275, #282-#284)
 make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
-make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort
+make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287)
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
 make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
 make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
