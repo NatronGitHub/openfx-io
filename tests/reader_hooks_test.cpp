@@ -25,6 +25,9 @@
  * file param between two files of different sizes give one of the two files (a debug build used to abort), and a
  * proxy file is read at render scale 1/2, the full-resolution file at scale 1.
  *
+ * And that a render into an output image without pixel data (a NULL kOfxImagePropData, #278) fails with an error
+ * message, without calling decode().
+ *
  * And getClipPreferences() for an image sequence whose starting time is not its first frame
  * (issue #147): the PAR must be read from the first file of the sequence, looked up at the
  * first frame of the sequence (not at the host time of that frame). A file with a PAR of 0
@@ -63,6 +66,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1641,6 +1645,41 @@ testOpaqueClip(OfxPlugin* pClip, const std::string& still)
     }
 }
 
+// 7. An output image without pixel data (#278): a host whose clipGetImage succeeds with a NULL kOfxImagePropData.
+// render() must fail with an error message, without calling decode() (which would write through the NULL pointer).
+// decode() throws, so that a render that reaches it fails instead of crashing.
+void
+testNullPixelData(OfxPlugin* pDefault, const std::string& still)
+{
+    std::printf("==== output image without pixel data (#278) ====\n");
+    Reader r;
+    if (!r.create(pDefault, still)) {
+        ++gFailures;
+
+        return;
+    }
+    OfxStatus st = r.render(1.);
+    check(ok(st) && r.plugin->records.size() == 1, "valid output image: render = %d, decode() called %zu time(s)", st, r.plugin->records.size());
+
+    pSetPointer(PH(&r.out->image), kOfxImagePropData, 0, nullptr);
+    r.plugin->records.clear();
+    r.plugin->throwInDecode = true;
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        gPersistentError.clear();
+    }
+    std::fflush(stdout); // in case it crashes
+    st = r.render(1.);
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        error = gPersistentError;
+    }
+    check(st == kOfxStatFailed, "NULL pixel data: render = %d, expected kOfxStatFailed (%d)", st, kOfxStatFailed);
+    check(r.plugin->records.empty(), "NULL pixel data: decode() not called (called %zu time(s))", r.plugin->records.size());
+    check(!error.empty(), "NULL pixel data: persistent error message \"%s\"", error.c_str());
+}
+
 // 3. downscaling by GenericReader for a reader that doesn't support render scale (issue #104)
 
 // floor(a / 2^l) and ceil(a / 2^l)
@@ -1932,6 +1971,7 @@ main(int argc, char** argv)
     testRefreshFrameBoundsPar(pTiles, prefix);
     testClipToFileHelper();
     testOpaqueClip(pClip, still);
+    testNullPixelData(pDefault, still);
 
     pDefault->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     pFrameVarying->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
