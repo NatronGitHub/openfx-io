@@ -170,6 +170,27 @@ test-ocio-filetransform: ocio_filetransform_test
 clean-ocio-filetransform:
 	rm -rf ocio_filetransform_test ocio_filetransform_test.dSYM
 
+# the processor caches of the OCIO plug-ins (#282, #283, #284): concurrent renders, and a changed config or context, with
+# the OpenGL sources of ocio_cdl_test; and the same with ThreadSanitizer, not in `make test` (as test-oiio-threads-tsan;
+# no TSan with MinGW). (Added to test and clean here.)
+OCIO_PC_SRCS := ../OCIO/OCIODisplay.cpp ../OCIO/OCIOFileTransform.cpp ../OCIO/OCIOLogConvert.cpp \
+    ../OCIO/OCIOLookTransform.cpp $(OCIO_CDL_SRCS)
+ocio_processor_cache_test: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_PC_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+ocio_processor_cache_test_tsan: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_PC_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) -fsanitize=thread -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+
+.PHONY: test-ocio-processor-cache test-ocio-processor-cache-tsan clean-ocio-processor-cache
+test: test-ocio-processor-cache
+clean: clean-ocio-processor-cache
+test-ocio-processor-cache: ocio_processor_cache_test
+	rm -rf .ocio_processor_cache && ./ocio_processor_cache_test $(CURDIR)/.ocio_processor_cache
+test-ocio-processor-cache-tsan: ocio_processor_cache_test_tsan
+	rm -rf .ocio_processor_cache_tsan && TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./ocio_processor_cache_test_tsan $(CURDIR)/.ocio_processor_cache_tsan
+clean-ocio-processor-cache:
+	rm -rf ocio_processor_cache_test ocio_processor_cache_test.dSYM ocio_processor_cache_test_tsan ocio_processor_cache_test_tsan.dSYM \
+	       .ocio_processor_cache .ocio_processor_cache_tsan
+
 # OCIOColorSpace (with the OpenGL sources of ocio_cdl_test) and the reader/writer plug-ins
 OCIO_ANIM_SRCS := ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIOPluginBase.cpp \
     ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp \
