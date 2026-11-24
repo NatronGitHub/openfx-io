@@ -117,6 +117,9 @@
  *     - a 2-view EXR, with Parts "Split Views" and "Split Views,Layers" (multi-part: OpenImageIO's multi-part EXR
  *       writer ignores the oiio:ioproxy attribute) and "Single Part"; a JPEG 2000 file with the htj2k256 compression
  *       (OpenJPH, which writes the file by name; skipped without OpenJPH): each file must be read back, with its views
+ *     - an EXR file with the zstd compression (issue #171): if the file read back is not zstd (OpenImageIO < 3.2.1, or
+ *       its OpenEXR < 3.5, writes zip), the render must end with a persistent warning that names zstd; else no warning;
+ *       a zip render of the same instance then ends without a warning
  *
  *   A writer of image files removes the partial file of a failed or aborted render (issue #251), with the option
  *   --writer-remove-partial-file (only this test):
@@ -3124,6 +3127,69 @@ int testWriteOIIOFiles(const std::string& outFile)
     return failures;
 }
 
+// #171: WriteOIIO, an EXR file with the zstd compression. OpenImageIO writes zip instead, without an error, if it or
+// its OpenEXR does not support zstd: the render must then end with a persistent warning that names zstd, and without
+// it if the file is zstd. The compression of the file, read back, tells which case it is, with any OpenImageIO. The
+// next sequence render of the same instance, with the zip compression, must end without the warning.
+int testWriteOIIOEXRZstd(const std::string& outFile)
+{
+    const int W = 64, H = 48;
+    const std::string file = outFile + ".i171.exr";
+    std::printf("==== WriteOIIO EXR, compression zstd: a warning if the file is not zstd (issue #171) ====\n");
+    const int ver = OIIO::openimageio_version();
+    std::printf("  OpenImageIO %d.%d.%d, libraries: %s\n", ver / 10000, (ver / 100) % 100, ver % 100,
+                OIIO::get_string_attribute("library_list").c_str());
+    std::remove(file.c_str());
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        gPersistentWarning.clear();
+    }
+    WriterSession s;
+    if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WriteOIIO") || !s.setChoice("compression", "zstd")) return 1;
+    if (s.renderAll(1)) return 1;
+    std::string warning;
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        warning = gPersistentWarning;
+    }
+    std::string compression;
+    {
+        auto in = OIIO::ImageInput::open(file);
+        if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", file.c_str(), OIIO::geterror().c_str()); return 1; }
+        compression = in->spec().get_string_attribute("compression");
+    }
+    std::remove(file.c_str());
+    const bool isZstd = !compression.compare(0, 4, "zstd");
+    std::printf("  file compression \"%s\", persistent warning \"%s\"\n", compression.c_str(), warning.c_str());
+    if (!isZstd && (warning.find("zstd") == std::string::npos)) {
+        std::printf("  FAIL: the file is not zstd, and there is no warning\n");
+        return 1;
+    }
+    if (isZstd && !warning.empty()) {
+        std::printf("  FAIL: the file is zstd, but there is a warning\n");
+        return 1;
+    }
+
+    // the next sequence render of the same instance, with the zip compression: no warning
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        gPersistentWarning.clear();
+    }
+    if (!s.setChoice("compression", "zip") || s.renderAll(1)) return 1;
+    std::remove(file.c_str());
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        warning = gPersistentWarning;
+    }
+    std::printf("  then compression zip: persistent warning \"%s\"\n", warning.c_str());
+    if (!warning.empty()) {
+        std::printf("  FAIL: the zip render of the same instance has a warning\n");
+        return 1;
+    }
+    std::printf("  PASS\n");
+    return 0;
+}
+
 // ---- #294, #296: the PFM plug-ins fail on write errors and on invalid headers (options --pfm-write-errors, --pfm-read-errors) ----
 
 // #294, POSIX only: WritePFM, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full disk), so that fwrite()
@@ -4909,7 +4975,7 @@ main(int argc, char** argv)
         } else if (mode == "--writeoiio-disk-full") {
             failures = testWriteOIIODiskFull(outFile);
         } else if (mode == "--writeoiio-files") {
-            failures = testWriteOIIOFiles(outFile);
+            failures = testWriteOIIOFiles(outFile) + testWriteOIIOEXRZstd(outFile);
         } else if (mode == "--writer-remove-partial-file") {
             failures = testWriterRemovePartialFile(outFile);
         } else if (mode == "--swscale-exact") {
