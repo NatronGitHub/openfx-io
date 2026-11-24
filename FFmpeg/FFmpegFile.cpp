@@ -2261,7 +2261,7 @@ IsIntraOnly(const AVCodecContext* ctx)
 //     The bound does not see the leading pictures: a leading picture whose CRA is not read yet seeks (mov.c then
 //     only goes back to the previous keyframe for HEVC with an sgpd sync sample group, mov.c:4718-4742 and
 //     can_seek_to_key_sample(), mov.c:11973, which FFmpeg's mov muxer does not write; H.264 open GOPs are never
-//     handled there: decode() then decodes from the keyframe before, see previousKeyframeTs()).
+//     handled there: decode() then decodes from the keyframe before, see earlierRestartTs()).
 //   At worst (e.g. a keyframe whose DTS is just below the largest PTS read, not read yet), decoding forward reads a
 //   few packets that a seek would not; the decoded frame is the same either way.
 // - Without such an index (MPEG-TS and MPEG-PS, which have AVFMT_TS_DISCONT, mpegts.c:3880 and mpeg.c:707 in
@@ -2313,10 +2313,9 @@ FFmpegFile::Stream::indexKeyframeAtOrBefore(int64_t ts) const
     return (i >= 0) ? avformat_index_get_entry(_avstream, i) : nullptr;
 }
 
-// The timestamp of the keyframe of the index before the one that a backward seek to the 0-based frame finds, or
-// AV_NOPTS_VALUE if there is none, or if the index cannot be trusted (Stream::_indexReliable: in MPEG-TS and MPEG-PS,
-// the index entries are the points of the timestamp searches, flagged as keyframes, mpegts.c:3805 and mpeg.c:471, and
-// the seeks search the file, so a seek to one of them does not land one GOP earlier).
+// The timestamp from which decode() decodes again when a backward seek to the 0-based frame landed after it, or
+// AV_NOPTS_VALUE if there is none (decode() then decodes from the start of the file).
+// With an index to trust (Stream::_indexReliable), the keyframe of the index before the one that the seek finds.
 // mov_seek_stream() does the same for an open-GOP HEVC key sample marked in an sgpd box (mov.c:12017-12035), but
 // FFmpeg's mov muxer only writes sgpd boxes for audio roll groups (movenc.c:3305-3330), and H.264 has none.
 // A seek to the timestamp of this keyframe lands on it: mov_seek_stream() first subtracts min_corrected_pts +
@@ -2328,11 +2327,22 @@ FFmpegFile::Stream::indexKeyframeAtOrBefore(int64_t ts) const
 // pictures decoded from the previous IRAP picture on. For H.264, this depends on the encoder: the standard allows
 // leading B-frames to reference pictures two GOPs back, for which FFmpeg would substitute its default reference without
 // flagging the frame (libavcodec/h264_refs.c:392-407); x264 does not do this.
+// Without an index to trust (e.g. in MPEG-TS and MPEG-PS, whose index entries are the points of the timestamp
+// searches, flagged as keyframes, mpegts.c:3805 and mpeg.c:472 in FFmpeg 9.0.2, and whose seeks search the file, so
+// that a seek to one of them does not land one GOP earlier), the timestamp two forward windows before the frame
+// (Stream::forwardWindow(): the largest keyframe interval seen, at least 1 s and at most 10 s), or AV_NOPTS_VALUE if
+// that is at or before the first frame. A backward seek there (a binary search on the timestamps,
+// ff_seek_frame_binary(), libavformat/seek.c:290-358) lands at or before it, and the decoder starts at the next
+// keyframe, which is then at or before the requested frame, also if the requested frame is a leading picture of the
+// keyframe after it: decoding from there gives it, instead of decoding from the start of the file (issue #334). The
+// second window covers the decoding delay (the keyframe interval is counted in decoding order) and a seek that lands
+// a little after the timestamp.
 int64_t
-FFmpegFile::Stream::previousKeyframeTs(int frame) const
+FFmpegFile::Stream::earlierRestartTs(int frame) const
 {
     if (!_indexReliable) {
-        return AV_NOPTS_VALUE;
+        const int from = frame - 2 * forwardWindow();
+        return (from > firstFrame()) ? frameToPts(from) : int64_t(AV_NOPTS_VALUE);
     }
     const AVIndexEntry* keyframe = indexKeyframeAtOrBefore(frameToPts(frame));
     if (!keyframe || (keyframe->timestamp == int64_t(AV_NOPTS_VALUE))) {
@@ -2371,7 +2381,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     frame = frame - 1;
 
     // Check if the requested frame index is in range (AVStream::start_time is unknown in elementary streams)
-    const int firstFrame = (stream->_avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? stream->ptsToFrame(stream->_avstream->start_time) : 0;
+    const int firstFrame = stream->firstFrame();
     if (frame < firstFrame) {
         if (loadNearest) {
             frame = firstFrame;
@@ -2468,7 +2478,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     bool retriedSeek = false;
     bool retriedDecode = false;
-    int64_t earlierKeyTs = AV_NOPTS_VALUE; // the keyframe of the retry from an earlier keyframe, if any (see below)
+    int64_t retryTs = AV_NOPTS_VALUE; // the timestamp of the retry from an earlier point, if any (earlierRestartTs(), below)
     bool fromStartFailed = false; // the attempt from the start of the file gave no frame up to the requested one
     int requestDamageError = 0; // a damaged packet was dropped by an attempt of this request
     stream->_invalidDataSkipped = 0;
@@ -2496,7 +2506,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
             // the requested frame)
             clearDecodeError();
             const bool fromStart = retriedSeek && stream->_decodingFromStart;
-            const int64_t restartTs = ((earlierKeyTs != int64_t(AV_NOPTS_VALUE)) && !retriedSeek) ? earlierKeyTs : stream->frameToPts(frame);
+            const int64_t restartTs = ((retryTs != int64_t(AV_NOPTS_VALUE)) && !retriedSeek) ? retryTs : stream->frameToPts(frame);
             if (fromStart ? seekToFrame(stream, 0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD) : seekToFrame(stream, restartTs, AVSEEK_FLAG_BACKWARD)) {
                 stream->_decodingFromStart = fromStart;
                 retriedDecode = false; // (this attempt again)
@@ -2510,19 +2520,22 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
             fromStartFailed = true;
         }
 
-        // The seek landed after the requested frame: no frame is held, and the first decoded frame is after it,
-        // without damage. Not with a held frame: demuxAndDecode() then refused it as corrupt for a gap after it
+        // The seek landed after the requested frame: no frame is held, and the first decoded frame is after it (or no
+        // frame was decoded up to the end of the file, e.g. after the last keyframe of an MPEG-TS), without damage.
+        // Not with a held frame: demuxAndDecode() then refused it as corrupt for a gap after it
         // (canHoldFrame()), and decoding from an earlier keyframe would give the same corrupt frame and refuse it
         // again; only decoding from the start can accept it (Stream::_decodingFromStart). E.g. a
         // leading picture of an open-GOP keyframe (an HEVC CRA, an H.264 I-frame with a recovery point) in MP4/MOV,
         // whose index is on the DTS: the keyframe found has a DTS at or before the requested frame, but a PTS after
         // it, and the decoder drops its leading pictures after a seek. Decode from the keyframe before that one
-        // first, which decodes the leading pictures (once), rather than from the start of the file.
-        if (!hasPicture && !isIntraOnly && !retriedSeek && (earlierKeyTs == int64_t(AV_NOPTS_VALUE)) &&
-            !Stream::hasFrame(stream->_avHeldFrame) && (stream->_firstOutputFrame > frame) &&
+        // first, which decodes the leading pictures (once), rather than from the start of the file. Without an index
+        // to trust (e.g. MPEG-TS, MPEG-PS), decode from an earlier timestamp (see earlierRestartTs()).
+        if (!hasPicture && !isIntraOnly && !retriedSeek && (retryTs == int64_t(AV_NOPTS_VALUE)) &&
+            !Stream::hasFrame(stream->_avHeldFrame) &&
+            ((stream->_firstOutputFrame > frame) || ((stream->_firstOutputFrame < 0) && stream->_reachedEnd)) &&
             !stream->_invalidDataSkipped && !stream->_tooManyDroppedPackets && !stream->_noTimestamps && _errorMsg.empty()) {
-            earlierKeyTs = stream->previousKeyframeTs(frame);
-            if ((earlierKeyTs != int64_t(AV_NOPTS_VALUE)) && seekToFrame(stream, earlierKeyTs, AVSEEK_FLAG_BACKWARD)) {
+            retryTs = stream->earlierRestartTs(frame);
+            if ((retryTs != int64_t(AV_NOPTS_VALUE)) && seekToFrame(stream, retryTs, AVSEEK_FLAG_BACKWARD)) {
                 continue;
             }
             clearDecodeError(); // (a failed seek: from the start of the file, below)

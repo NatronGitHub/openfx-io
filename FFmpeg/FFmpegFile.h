@@ -695,6 +695,12 @@ private:
             }
         }
 
+        // The 0-based frame of the start time of the stream (0 if unknown, e.g. in elementary streams)
+        int firstFrame() const
+        {
+            return (_avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? ptsToFrame(_avstream->start_time) : 0;
+        }
+
         // The number of frames in 1 s (at least 1)
         int oneSecondInFrames() const
         {
@@ -718,9 +724,10 @@ private:
         // The keyframe of the index at or before the timestamp, as a backward seek searches it, or nullptr.
         const AVIndexEntry* indexKeyframeAtOrBefore(int64_t ts) const;
 
-        // The timestamp of the keyframe of the index before the one that a backward seek to the 0-based frame finds,
-        // or AV_NOPTS_VALUE (see FFmpegFile.cpp).
-        int64_t previousKeyframeTs(int frame) const;
+        // The timestamp from which to decode again when a backward seek to the 0-based frame landed after it: the
+        // keyframe of the index before the one that the seek finds, or without an index to trust a timestamp earlier by
+        // twice forwardWindow(); AV_NOPTS_VALUE if none (see FFmpegFile.cpp).
+        int64_t earlierRestartTs(int frame) const;
 
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
         // since the last seek, by decoding the next frame, or by decoding forward to a later frame when this is
