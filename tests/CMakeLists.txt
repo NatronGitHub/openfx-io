@@ -363,8 +363,14 @@ if(TARGET io_tests_ofx)
     set(_io_defs HAVE_PNG)
     set(_io_libs io_png)
   endif()
+  # also UBSan's signed-integer-overflow check, stopping at the first error (PNG offsets near the limits of an int at
+  # scales 1/2 and 1/4, #371), except with MinGW, as AddressSanitizer
+  set(_io_rw_sanitize ${_io_asan})
+  if(NOT WIN32)
+    list(APPEND _io_rw_sanitize -fsanitize=signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow)
+  endif()
   io_test_program(reader_window_test OFX THREADS SOURCES ${T}/reader_window_test.cpp ${_io_srcs} ${_io_reader_srcs}
-                  DEFINITIONS ${_io_defs} INCLUDES ${S}/PFM ${S}/PNG SANITIZE ${_io_asan} LIBS ${_io_libs})
+                  DEFINITIONS ${_io_defs} INCLUDES ${S}/PFM ${S}/PNG SANITIZE ${_io_rw_sanitize} LIBS ${_io_libs})
   io_test(test-reader-window DIR "${B}/.reader_window" ENV "${_io_ocio_env}" "${_io_asan_env}"
           COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window")
   # the 2-part EXR test, in a Natron-like host (tests/Makefile's second run of reader_window_test)

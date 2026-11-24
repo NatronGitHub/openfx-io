@@ -148,14 +148,19 @@ upscalePowerOfTwo(const OfxRectI& r,
     if (thisLevel == 0) {
         return r;
     }
-    OfxRectI ret;
     // multiply rather than shift: left-shifting a negative value (e.g. an EXR data window with a negative
-    // origin) is undefined behaviour before C++20
-    const int scale = 1 << thisLevel;
-    ret.x1 = r.x1 * scale;
-    ret.x2 = r.x2 * scale;
-    ret.y1 = r.y1 * scale;
-    ret.y2 = r.y2 * scale;
+    // origin) is undefined behaviour before C++20. In 64 bits, clamped to the int range, i.e. to kOfxFlagInfiniteMin
+    // and kOfxFlagInfiniteMax (ofxCore.h): the product overflowed an int for bounds near its limits (#371), and an
+    // infinite bound stays infinite. Any int times 2^32 fits in 64 bits, and a level beyond 32 gives the same result.
+    const long long scale = 1LL << (std::min)(thisLevel, 32u);
+    const auto up = [scale](int v) {
+        return (int)(std::max)((long long)kOfxFlagInfiniteMin, (std::min)((long long)kOfxFlagInfiniteMax, v * scale));
+    };
+    OfxRectI ret;
+    ret.x1 = up(r.x1);
+    ret.x2 = up(r.x2);
+    ret.y1 = up(r.y1);
+    ret.y2 = up(r.y2);
 
     return ret;
 }
@@ -177,26 +182,6 @@ upscalePowerOfTwo(const OfxRectD& r,
     ret.x2 = r.x2 * scale;
     ret.y1 = r.y1 * scale;
     ret.y2 = r.y2 * scale;
-
-    return ret;
-}
-
-/**
- * @brief Scales down the rectangle by the given power of 2
- **/
-inline OfxRectI
-downscalePowerOfTwo(const OfxRectI& r,
-                    unsigned int thisLevel)
-{
-    if (thisLevel == 0) {
-        return r;
-    }
-    OfxRectI ret;
-    assert(r.x1 % (1 << thisLevel) == 0 && r.x2 % (1 << thisLevel) == 0 && r.y1 % (1 << thisLevel) == 0 && r.y2 % (1 << thisLevel) == 0);
-    ret.x1 = r.x1 >> thisLevel;
-    ret.x2 = r.x2 >> thisLevel;
-    ret.y1 = r.y1 >> thisLevel;
-    ret.y2 = r.y2 >> thisLevel;
 
     return ret;
 }
@@ -226,132 +211,6 @@ intersect(const OfxRectI& r1,
     intersection->y2 = (std::min)(r1.y2, r2.y2);
 
     return true;
-}
-
-/*
-   test program for rounding integer to the next/previous pot:
- #include <stdio.h>
-   int main()
-   {
-   int i;
-   int pot = 3;
-   int scale = 1 << pot;
-   int scalem1 = scale - 1;
-   for(i=-100; i<100; ++i)
-   {
-   printf("%d => %d,%d %d,%d\n", i, i & ~scalem1, i+scalem1 & ~scalem1, (i >> pot) << pot, ((i+scalem1)>>pot) << pot);
-   }
-   }
- */
-/**
- * @brief round the rectangle by the given power of 2, and return the largest *enclosed* (inside) rectangle
- **/
-inline OfxRectI
-roundPowerOfTwoLargestEnclosed(const OfxRectI& r,
-                               unsigned int thisLevel)
-{
-    if (thisLevel == 0) {
-        return r;
-    }
-    OfxRectI ret;
-    int pot = (1 << thisLevel);
-    int pot_minus1 = pot - 1;
-    ret.x1 = (r.x1 + pot_minus1) & ~pot_minus1;
-    ret.x2 = r.x2 & ~pot_minus1;
-    ret.y1 = (r.y1 + pot_minus1) & ~pot_minus1;
-    ret.y2 = r.y2 & ~pot_minus1;
-    // check that it's enclosed
-    assert(ret.x1 >= r.x1 && ret.x2 <= r.x2 && ret.y1 >= r.y1 && ret.y2 <= r.y2);
-
-    return ret;
-}
-
-/**
- * @brief round the rectangle by the given power of 2, and return the smallest *enclosing* rectangle
- **/
-inline OfxRectI
-roundPowerOfTwoSmallestEnclosing(const OfxRectI& r,
-                                 unsigned int thisLevel)
-{
-    if (thisLevel == 0) {
-        return r;
-    }
-    OfxRectI ret;
-    int pot = (1 << thisLevel);
-    int pot_minus1 = pot - 1;
-    ret.x1 = r.x1 & ~pot_minus1;
-    ret.x2 = (r.x2 + pot_minus1) & ~pot_minus1;
-    ret.y1 = r.y1 & ~pot_minus1;
-    ret.y2 = (r.y2 + pot_minus1) & ~pot_minus1;
-    // check that it's enclosing
-    assert(ret.x1 <= r.x1 && ret.x2 >= r.x2 && ret.y1 <= r.y1 && ret.y2 >= r.y2);
-
-    return ret;
-}
-
-/**
- * @brief Scales down the rectangle by the given power of 2, and return the largest *enclosed* (inside) rectangle
- **/
-inline OfxRectI
-downscalePowerOfTwoLargestEnclosed(const OfxRectI& r,
-                                   unsigned int thisLevel)
-{
-    if (thisLevel == 0) {
-        return r;
-    }
-    OfxRectI ret;
-    int pot = (1 << thisLevel);
-    int pot_minus1 = pot - 1;
-    ret.x1 = (r.x1 + pot_minus1) >> thisLevel;
-    ret.x2 = r.x2 >> thisLevel;
-    ret.y1 = (r.y1 + pot_minus1) >> thisLevel;
-    ret.y2 = r.y2 >> thisLevel;
-    // check that it's enclosed
-    assert(ret.x1 * pot >= r.x1 && ret.x2 * pot <= r.x2 && ret.y1 * pot >= r.y1 && ret.y2 * pot <= r.y2);
-
-    return ret;
-}
-
-/**
- * @brief Scales down the rectangle by the given power of 2, and return the smallest *enclosing* rectangle
- **/
-inline OfxRectI
-downscalePowerOfTwoSmallestEnclosing(const OfxRectI& r,
-                                     unsigned int thisLevel)
-{
-    if (thisLevel == 0) {
-        return r;
-    }
-    OfxRectI ret;
-    int pot = (1 << thisLevel);
-    int pot_minus1 = pot - 1;
-    ret.x1 = r.x1 >> thisLevel;
-    ret.x2 = (r.x2 + pot_minus1) >> thisLevel;
-    ret.y1 = r.y1 >> thisLevel;
-    ret.y2 = (r.y2 + pot_minus1) >> thisLevel;
-    // check that it's enclosing
-    assert(ret.x1 * pot <= r.x1 && ret.x2 * pot >= r.x2 && ret.y1 * pot <= r.y1 && ret.y2 * pot >= r.y2);
-
-    return ret;
-}
-
-inline OfxRectI
-nextRectLevel(const OfxRectI& r)
-{
-    OfxRectI ret = r;
-
-    ret.x1 /= 2;
-    ret.y1 /= 2;
-    ret.x2 /= 2;
-    ret.y2 /= 2;
-
-    return ret;
-}
-
-inline double
-getScaleFromMipMapLevel(unsigned int level)
-{
-    return 1. / (1 << level);
 }
 
 inline unsigned int
