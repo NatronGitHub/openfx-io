@@ -832,6 +832,10 @@ with the SeExpr of the CMake build), in the Filter context:
   coordinate or frame (`sqrt(x - 100)`) gives black.
 * **SeNoise** with a noise size of 0, a denormal size (1e-310) or a render scale of 0, and **SeGrain** with a render
   scale of 0: no output value may be NaN or infinite. A positive noise size below 0.001 (0.0005) is used as is.
+* **SeNoise Reset Center**: after the user moves the center (which sets the hidden `transformCenterChanged` flag),
+  Reset Center sets the center and the translation, and clears the flag, all inside one
+  `paramEditBegin`/`paramEditEnd` block, so that undo restores the flag too
+  ([#351](https://github.com/NatronGitHub/openfx-io/issues/351)).
 
 It also passes when built with `-O3 -ffast-math` and with `-fsanitize=undefined,float-cast-overflow`.
 

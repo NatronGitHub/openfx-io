@@ -1177,6 +1177,11 @@ SeNoisePlugin::resetCenter(double time)
         newTranslate.y = translate.y + dy - dyrot;
         _translate->setValue(newTranslate.x, newTranslate.y);
     }
+    // Clear the flag in the edit block, after the center (whose change sets it), so that undo restores it (#351).
+    // Only set if necessary
+    if (_centerChanged->getValue()) {
+        _centerChanged->setValue(false);
+    }
 } // SeNoisePlugin::resetCenter
 
 void
@@ -1229,10 +1234,6 @@ SeNoisePlugin::changedParam(const InstanceChangedArgs& args,
         _rampInteractive->setIsSecretAndDisabled(noramp);
     } else if (paramName == kParamTransformResetCenter) {
         resetCenter(args.time);
-        // Only set if necessary
-        if (_centerChanged->getValue()) {
-            _centerChanged->setValue(false);
-        }
     } else if ((paramName == kParamTransformCenter) && ((args.reason == eChangeUserEdit) || (args.reason == eChangePluginEdit))) {
         // Only set if necessary
         if (!_centerChanged->getValue()) {

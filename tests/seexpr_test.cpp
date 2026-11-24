@@ -16,7 +16,9 @@
  *    infinite, and the noise NaN. A size of 0 or less is replaced by 0.001; a positive size (e.g. 0.0005) is used
  *    as is.
  *  - SeNoise's Reset Center sets the center and the translation between paramEditBegin and paramEditEnd (one undo
- *    step): the EditBlock was an unnamed temporary, which ended the block before the params were set.
+ *    step): the EditBlock was an unnamed temporary, which ended the block before the params were set. After the user
+ *    moved the center, Reset Center also clears the hidden "center changed" flag in that block (#351): it was cleared
+ *    after the block, so undoing a Reset Center left it false, and the next source reconnection re-centred again.
  *
  * Exit status: 0 = all checks passed.
  */
@@ -42,6 +44,7 @@ const char* const kPluginIdentifierSeGrain = "net.sf.openfx.SeGrain";
 const char* const kParamTransformResetCenter = "transformResetCenter";
 const char* const kParamTransformCenter = "transformCenter";
 const char* const kParamTransformTranslate = "transformTranslate";
+const char* const kParamTransformCenterChanged = "transformCenterChanged";
 
 int gFailures = 0;
 
@@ -333,11 +336,30 @@ recSetValue(OfxParamHandle ph,
     return s;
 }
 
-// SeNoise's Reset Center sets the center and the translation in one edit block, so that it is one undo step
+// Send kOfxActionInstanceChanged for a param changed by the user, as a host does
+OfxStatus
+userChangedParam(OfxPlugin* p,
+                 Effect& inst,
+                 const char* paramName)
+{
+    PropSet a;
+    OfxPropertySetHandle ap = PH(&a);
+    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+    pSetString(ap, kOfxPropName, 0, paramName);
+    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+    pSetDouble(ap, kOfxPropTime, 0, 1.);
+    double rs[2] = { 1., 1. };
+    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+
+    return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+}
+
+// SeNoise's Reset Center, after the user moved the center, sets the center and the translation, and clears the
+// "center changed" flag, in one edit block, so that it is one undo step
 void
 testSeNoiseResetCenter(OfxPlugin* p)
 {
-    std::printf("==== SeNoise, Reset Center: the center and translation are set in one edit block ====\n");
+    std::printf("==== SeNoise, Reset Center: the center, translation and center-changed flag are set in one edit block ====\n");
     Effect ctx;
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
@@ -361,21 +383,19 @@ testSeNoiseResetCenter(OfxPlugin* p)
 
         return;
     }
+    // the user moves the center: the host sets it, then sends instanceChanged
+    ParamRec* center = &ctx.params[kParamTransformCenter];
+    ParamRec* centerChanged = &ctx.params[kParamTransformCenterChanged];
+    prmSetValue(reinterpret_cast<OfxParamHandle>(center), 1., 2.);
+    check(ok(userChangedParam(p, inst, kParamTransformCenter)), "instance changed (%s)", kParamTransformCenter);
+    check(paramInt(centerChanged, 0) == 1, "moving the center sets %s", kParamTransformCenterChanged);
     const OfxParameterSuiteV1 saved = gParamSuite;
     gParamSuite.paramEditBegin = recEditBegin;
     gParamSuite.paramEditEnd = recEditEnd;
     gParamSuite.paramSetValue = recSetValue;
     gSetInsideEdit.clear();
     gSetOutsideEdit.clear();
-    PropSet a;
-    OfxPropertySetHandle ap = PH(&a);
-    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-    pSetString(ap, kOfxPropName, 0, kParamTransformResetCenter);
-    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-    pSetDouble(ap, kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. };
-    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-    OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+    OfxStatus st = userChangedParam(p, inst, kParamTransformResetCenter);
     gParamSuite = saved;
     const auto has = [](const std::vector<std::string>& v, const char* name) {
         return std::find(v.begin(), v.end(), name) != v.end();
@@ -386,6 +406,9 @@ testSeNoiseResetCenter(OfxPlugin* p)
           "%s and %s are set inside the edit block", kParamTransformCenter, kParamTransformTranslate);
     check(!has(gSetOutsideEdit, kParamTransformCenter) && !has(gSetOutsideEdit, kParamTransformTranslate),
           "%s and %s are not set outside it", kParamTransformCenter, kParamTransformTranslate);
+    check(paramInt(centerChanged, 0) == 0, "Reset Center clears %s", kParamTransformCenterChanged);
+    check(has(gSetInsideEdit, kParamTransformCenterChanged) && !has(gSetOutsideEdit, kParamTransformCenterChanged),
+          "%s is cleared inside the edit block, so that undo restores it (#351)", kParamTransformCenterChanged);
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
 }
 
