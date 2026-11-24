@@ -29,8 +29,9 @@ files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 * `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
 * `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
 * `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
-  `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`, `test-reader-hooks-tsan-debug` and
-  `test-readffmpeg-views-concurrent-tsan`, which `make test` doesn't run either.
+  `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`, `test-reader-hooks-tsan-debug`,
+  `test-readffmpeg-views-concurrent-tsan` and `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test` doesn't
+  run either.
 
 `make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
 with `pkg-config`:
@@ -54,6 +55,8 @@ make test-writer-remove-partial-file # a failed or aborted render of an image fi
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
+make test-writeffmpeg-codec-edit-during-begin # WriteFFmpeg: the Codec edited during beginSequenceRender (#319)
+make test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitizer: no data race (not in make test)
 make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
@@ -333,6 +336,18 @@ Max B-Frames, which the mpegvideo encoders without `AV_CODEC_CAP_DELAY` refuse),
 encoder that has no lossless mode (libvpx), which may fail with an error that says it. The test prints the codec, pixel
 format, color tags, number of packets and of key packets, and a hash of the packets of each movie. To check that a change
 of WriteFFmpeg keeps the settings and the movies of every encoder, diff the output of two builds.
+
+`test-writeffmpeg-codec-edit-during-begin` (issue [#319](https://github.com/NatronGitHub/openfx-io/issues/319)) runs
+`ofx_render_test OUT --codec-edit-during-begin`: WriteFFmpeg writes rawvideo in QuickTime with Pref. Pixel Coding RGB
+and Bit Depth 16, which rawvideo does not write there, so `beginSequenceRender` sends a persistent warning. It runs on a
+render thread, which the test host's `setPersistentMessage` stops there (`gPersistentMessageHook`), without
+synchronizing with the main thread (relaxed atomics), while the main thread calls `kOfxActionInstanceChanged` on the
+Codec (a user edit), as Natron may do: the OFX spec says that "an instance must be able to handle simultaneous actions
+called on the main and render threads". Then the frames are rendered, and the file must be complete.
+`make test-writeffmpeg-codec-edit-during-begin-tsan` runs it in `ofx_render_test_tsan`, built with
+[ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-writeffmpeg-codec-edit-during-begin-tsan`,
+with `IO_TESTS_SANITIZERS`): the replaced codec of a project (`_codecReplaced`), which `beginSequenceRender` reads and
+the Codec edit clears, was not guarded, and ThreadSanitizer reported the data race.
 
 `test-writeffmpeg-selected-encoder` (issue [#348](https://github.com/NatronGitHub/openfx-io/issues/348)) runs
 `ofx_render_test OUT --selected-encoder`: for each encoder of the Codec menu that is not the default encoder of its codec
@@ -1237,7 +1252,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` |
 
 ## Notes / limitations
 

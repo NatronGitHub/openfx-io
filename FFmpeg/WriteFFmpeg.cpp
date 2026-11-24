@@ -1907,6 +1907,8 @@ private:
     void updateVisibility();
     void checkCodec();
     bool replaceMissingCodec(const string& codecShortName);
+    string codecReplaced() const;
+    void setCodecReplaced(const string& codecShortName);
     int freeFormat();
     void getColorInfo(AVColorPrimaries* color_primaries, AVColorTransferCharacteristic* color_trc) const;
     const AVOutputFormat* initFormat(bool reportErrors, const string* filename = nullptr) const;
@@ -2015,8 +2017,15 @@ private:
     ChoiceParam* _codec;
     StringParam* _codecShortName;
     // if not empty, the codec of the project that this FFmpeg does not have, which was replaced by rawvideo (see
-    // checkCodec()): reported in the persistent message until the user chooses a codec
+    // checkCodec()): reported in the persistent message until the user chooses a codec. Read and written only through
+    // codecReplaced() and setCodecReplaced(): the main thread writes it (changedParam(), checkCodec()) while a render
+    // thread may read or write it in beginEncode() (encodeWarnings(), checkCodec()), #319 (C++ Core Guidelines CP.2
+    // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-races). It can not be recomputed from the
+    // params: replaceMissingCodec() sets the codecShortName param to rawvideo.
     string _codecReplaced;
+    // guards _codecReplaced only; a leaf lock, held only to copy or assign the string (no other lock is taken and the
+    // host is not called while it is held)
+    mutable std::mutex _codecReplacedMutex;
     // the warnings about the file being written (see encodeWarnings()), shown again at the end of the render, since
     // GenericWriterPlugin::render() clears the persistent message after each frame
     string _encodeWarnings;
@@ -2801,8 +2810,9 @@ WriteFFmpegPlugin::encodeWarnings(const AVOutputFormat* fmt,
                                   AVPixelFormat alphaFormat) const
 {
     string warnings;
-    if (!_codecReplaced.empty()) {
-        warnings += codecReplacedMessage(_codecReplaced, fmt, target) + "\n";
+    const string replaced = codecReplaced();
+    if (!replaced.empty()) {
+        warnings += codecReplacedMessage(replaced, fmt, target) + "\n";
     }
     warnings += rawvideoFallbackMessage(fmt, videoCodec, prefPixelCoding, prefBitDepth, prefAlpha, target);
     if (!warnings.empty() && (warnings.back() != '\n')) {
@@ -2830,7 +2840,7 @@ WriteFFmpegPlugin::getSettingsWarnings() const
         return encodeWarnings(nullptr, nullptr, FFmpeg::ePixelCodingNone, 0, false, AV_PIX_FMT_NONE, AV_PIX_FMT_NONE);
     }
     const bool alpha = alphaEnabled();
-    if (!alpha && _codecReplaced.empty() && (videoCodec->id != AV_CODEC_ID_RAWVIDEO)) {
+    if (!alpha && codecReplaced().empty() && (videoCodec->id != AV_CODEC_ID_RAWVIDEO)) {
         // (no warning)
         return string();
     }
@@ -5726,6 +5736,22 @@ WriteFFmpegPlugin::updateBitrateToleranceRange()
     _bitrateTolerance->setDisplayRange(minRange, kParamBitrateToleranceMax);
 }
 
+// The codec of the project that replaceMissingCodec() replaced (_codecReplaced), or an empty string.
+string
+WriteFFmpegPlugin::codecReplaced() const
+{
+    std::lock_guard<std::mutex> guard(_codecReplacedMutex);
+
+    return _codecReplaced;
+}
+
+void
+WriteFFmpegPlugin::setCodecReplaced(const string& codecShortName)
+{
+    std::lock_guard<std::mutex> guard(_codecReplacedMutex);
+    _codecReplaced = codecShortName;
+}
+
 // A project saved with the v308, v408, v410 or ayuv encoder, which this FFmpeg does not have (FFmpeg 9 removed them:
 // n8.0 libavcodec/allcodecs.c:354-359 lists v308, v408 and v410, n9.0 does not; FFmpeg 7 removed ayuv, which n6.1
 // allcodecs.c:65-66 lists): select rawvideo, with the Pref. params that give the same pixel layout
@@ -5758,7 +5784,7 @@ WriteFFmpegPlugin::replaceMissingCodec(const string& codecShortName)
     if (it == codecsShortNames.end()) {
         return false;
     }
-    _codecReplaced = codecShortName;
+    setCodecReplaced(codecShortName);
     _codecShortName->setValue(*it);
     _prefPixelCoding->setValue((int)ePrefPixelCodingYUV444);
     _prefBitDepth->setValue((int)bitDepth);
@@ -6149,7 +6175,7 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
         _codecShortName->setValue(codecsShortNames[codec]);
         if (args.reason == eChangeUserEdit) {
             // the user chose a codec: the replacement of a missing codec (checkCodec()) is no longer reported
-            _codecReplaced.clear();
+            setCodecReplaced(string());
         }
         updateVisibility();
         updatePixelFormat(); // also reports a codec that the container does not support

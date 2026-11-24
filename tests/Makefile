@@ -110,7 +110,7 @@ RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 # runscript_render_test: RunScript's render on POSIX only (runscript_win32_test tests abort on MS Windows)
 RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -131,9 +131,18 @@ ofx_render_test: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../PFM/ReadP
 	$(CXX) $(OFX_CXXFLAGS) $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) $(filter-out %.h,$^) $(OFX_LIBS) \
 	    $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,) -o $@
 
-# the same with ThreadSanitizer (test-readffmpeg-views-concurrent-tsan)
+# the same with ThreadSanitizer (test-readffmpeg-views-concurrent-tsan, test-writeffmpeg-codec-edit-during-begin-tsan)
 ofx_render_test_tsan: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -fsanitize=thread -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+
+# #319: WriteFFmpeg, the Codec edited on the main thread while beginSequenceRender runs on a render thread, with
+# ThreadSanitizer: no data race (not in `make test`, as the other ThreadSanitizer tests; no TSan with MinGW)
+.PHONY: test-writeffmpeg-codec-edit-during-begin-tsan clean-writeffmpeg-codec-edit-during-begin-tsan
+clean: clean-writeffmpeg-codec-edit-during-begin-tsan
+test-writeffmpeg-codec-edit-during-begin-tsan: ofx_render_test_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./ofx_render_test_tsan $(CURDIR)/.render_out.mov.i319tsan.mov --codec-edit-during-begin
+clean-writeffmpeg-codec-edit-during-begin-tsan:
+	rm -rf .render_out.mov.i319tsan.mov
 
 # includes ../OIIO/ReadOIIO.cpp (to reach its file-static helpers), so it's left out of the sources
 oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGIN_SRCS)) $(OFX_SUPPORT)
@@ -588,7 +597,7 @@ runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -676,6 +685,11 @@ test-writeffmpeg-param-change: ofx_render_test
 test-writeffmpeg-codec-params: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i343 --codec-params
 
+# #319: WriteFFmpeg, the Codec edited on the main thread while beginSequenceRender runs on a render thread: every frame
+# is encoded (with ThreadSanitizer: test-writeffmpeg-codec-edit-during-begin-tsan)
+test-writeffmpeg-codec-edit-during-begin: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i319.mov --codec-edit-during-begin
+
 # #294: WritePFM fails the render when the file can not grow (RLIMIT_FSIZE, as on a full disk). Skipped (exit status
 # 77) on MS Windows.
 test-pfm-write-errors: ofx_render_test
@@ -756,7 +770,7 @@ clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxPluginLog.txt \
+	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxPluginLog.txt .render_out.mov.i319.mov \
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst .reader_hooks.big.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \

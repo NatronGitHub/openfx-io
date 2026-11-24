@@ -15,8 +15,8 @@
 #   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
 #                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug,
 #                         test-ocio-processor-cache-tsan, test-oiio-layer-menu-tsan,
-#                         test-readffmpeg-views-concurrent-tsan (needs a compiler with -fsanitize=thread,undefined; not
-#                         with MinGW); default OFF
+#                         test-readffmpeg-views-concurrent-tsan, test-writeffmpeg-codec-edit-during-begin-tsan
+#                         (needs a compiler with -fsanitize=thread,undefined; not with MinGW); default OFF
 # (tests/Makefile's bench-exr is not a test: run it with make.)
 
 option(IO_TESTS_WITH_LIBRAW "Build ReadOIIO's RAW support in the tests that link it, when the bundle has it" ON)
@@ -294,6 +294,15 @@ if(TARGET io_tests_ofx)
   # test-writeffmpeg-codec-params (#343): the settings that WriteFFmpeg shows and the pixel format it selects for each
   # encoder of its Codec menu, and each encoder encodes with them
   io_test(test-writeffmpeg-codec-params ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i343" --codec-params)
+  # test-writeffmpeg-codec-edit-during-begin (#319): the Codec edited on the main thread while beginSequenceRender runs
+  # on a render thread: every frame is encoded
+  io_test(test-writeffmpeg-codec-edit-during-begin ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i319.mov" --codec-edit-during-begin)
+  if(IO_TESTS_SANITIZERS AND NOT WIN32)
+    # test-writeffmpeg-codec-edit-during-begin-tsan: the same with ThreadSanitizer (ofx_render_test_tsan, above), no
+    # data race in WriteFFmpeg
+    io_test(test-writeffmpeg-codec-edit-during-begin-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+            COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i319tsan.mov" --codec-edit-during-begin)
+  endif()
   # test-pfm-write-errors (#294): WritePFM fails the render when the file can not grow (RLIMIT_FSIZE); skipped (exit
   # status 77) on MS Windows
   io_test(test-pfm-write-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-write-errors)
