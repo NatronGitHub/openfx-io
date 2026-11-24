@@ -29,6 +29,7 @@
 #include "ofxsCopier.h" // for copyPixels
 #include "ofxsMacros.h"
 #include "ofxsPixelProcessor.h" // for getImageData
+#include <atomic>
 #include <memory>
 #include <ofxsImageEffect.h>
 #include <ofxsMultiPlane.h>
@@ -226,12 +227,27 @@ namespace IO {
 
         /**
          * @brief Override to return true if the file holds a single view, e.g. a movie with a single video stream.
-         * Only view 0 is then encoded: view 0 is the default view of the Nuke multiview extension
-         * (kFnOfxImageEffectPropView), the left or only view in Vegas (kOfxImageEffectPropRenderView), and the
-         * main view in Natron. Rendering another view fills the output image, but does not call encode(), so the
-         * file doesn't depend on the order in which the host renders the views.
+         * Only the view of the sequence render is then encoded: the view that beginSequenceRender gives in
+         * kFnOfxImageEffectPropView (Nuke multiview extension, default 0). That is 0 in OFX 1.4 hosts, which have
+         * no view in beginSequenceRender, in Vegas (0 is its left or only view), and in Natron (its main view).
+         * Rendering another view fills the output image, but does not call encode(), so the file doesn't depend on
+         * the order in which the host renders the views.
+         * This applies only when a render encodes a single view and a single plane with encode() (the default
+         * getViewToRender(), kGenericWriterViewDefault, with one plane), not to the encodePart() path.
          **/
-        virtual bool encodesMainViewOnly() const { return false; }
+        virtual bool encodesSequenceViewOnly() const { return false; }
+
+        /**
+         * @brief Whether the host rendered a frame of the current sequence render of a movie (!isImageFile()), since
+         * beginSequenceRender.
+         **/
+        bool sequenceRenderRan() const { return _sequenceRenderRan; }
+
+        /**
+         * @brief Whether a render of the current sequence render of a movie (!isImageFile()) failed or was aborted,
+         * since beginSequenceRender: its error, if any, is the persistent message.
+         **/
+        bool sequenceRenderFailed() const { return _sequenceRenderFailed; }
 
         virtual LayerViewsPartsEnum getPartsSplittingPreference() const { return eLayerViewsSinglePart; }
 
@@ -290,6 +306,14 @@ namespace IO {
         std::vector<OFX::PixelComponentEnum> _outputComponentsTable;
 
     private:
+        // the view of the current sequence render (kFnOfxImageEffectPropView in the beginSequenceRender that
+        // started it), see encodesSequenceViewOnly(); atomic, since the host may render on other threads than
+        // beginSequenceRender's
+        std::atomic<int> _sequenceView { 0 };
+        // see sequenceRenderRan() and sequenceRenderFailed(); atomic, for the same reason
+        std::atomic<bool> _sequenceRenderRan { false };
+        std::atomic<bool> _sequenceRenderFailed { false };
+
         class InputImagesHolder {
             std::list<const OFX::Image*> _imgs;
             std::list<OFX::ImageMemory*> _mems;

@@ -1903,8 +1903,8 @@ private:
                         const int dstNComps,
                         const int rowBytes) OVERRIDE FINAL;
     virtual bool isImageFile(const string& fileExtension) const OVERRIDE FINAL;
-    // a movie has a single video stream: only view 0 is encoded (#116)
-    virtual bool encodesMainViewOnly() const OVERRIDE FINAL { return true; }
+    // a movie has a single video stream: only the view of the sequence render is encoded (#116, #129)
+    virtual bool encodesSequenceViewOnly() const OVERRIDE FINAL { return true; }
     virtual void setOutputFrameRate(double fps) OVERRIDE FINAL;
     virtual PreMultiplicationEnum getExpectedInputPremultiplication() const OVERRIDE FINAL { return eImageUnPreMultiplied; }
 
@@ -5455,7 +5455,7 @@ WriteFFmpegPlugin::encode(const string& filename,
         ScopeExit notifyWaitingThreads([this] { _nextFrameToEncodeCond.notify_all(); });
 
         // A frame before the next one was already encoded, or will never be: waiting for it would never end.
-        // The frame that was just encoded is rendered again (only view 0 gets here, see encodesMainViewOnly()):
+        // The frame that was just encoded is rendered again (only one view gets here, see encodesSequenceViewOnly()):
         // nothing to do; any other one is an error. A host doesn't do that: Natron calls beginSequenceRender
         // before, and endSequenceRender after, each render of a Write node, which renders its frames in order.
         // No other thread waits for such a frame, so the render goes on.
@@ -5588,9 +5588,11 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
     // Whether all the frames were encoded: if a frame failed (in GenericWriterPlugin::render(), or in encode()'s
     // checks, which do not change _error), its error is the persistent message, and must stay.
     bool allEncoded;
+    bool noneEncoded;
     {
         std::lock_guard<std::mutex> guard(_nextFrameToEncodeMutex);
         allEncoded = (_nextFrameToEncode != INT_MIN) && (_nextFrameToEncode > _lastFrameToEncode);
+        noneEncoded = (_nextFrameToEncode == _firstFrameToEncode);
     }
 
     // Continue to write the audio/video interleave while there are still
@@ -5657,8 +5659,11 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         setPersistentMessage(Message::eMessageError, "", string("Unable to finalize the file: ") + szError);
         throwSuiteStatusException(kOfxStatFailed);
     }
-    if ((_error == SUCCESS) && allEncoded && (_packetsWritten == 0)) {
-        // issue #129: every frame was rendered, but nothing was written to the file
+    // issue #129: every frame was rendered, but nothing was written to the file; or the host rendered frames, but none
+    // reached encode() (_error is still CLEANUP, as beginEncode() left it), and none failed or was aborted (e.g. the
+    // host rendered only views other than the one of beginSequenceRender, see encodesSequenceViewOnly()): the file has
+    // no video stream. Not if nothing was rendered (e.g. the render was cancelled before its first frame), as before.
+    if (((_error == SUCCESS) && allEncoded && (_packetsWritten == 0)) || (noneEncoded && sequenceRenderRan() && !sequenceRenderFailed())) {
         setPersistentMessage(Message::eMessageError, "", "No frame was written to the file");
         throwSuiteStatusException(kOfxStatFailed);
     }
