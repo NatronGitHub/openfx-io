@@ -1930,6 +1930,7 @@ private:
                           AVPixelFormat alphaFormat) const;
     void updatePersistentMessage();
     bool initCodec(const AVOutputFormat* fmt, AVCodecID& outCodecId, const AVCodec*& outCodec) const;
+    string missingEncoderError() const;
 
     void getPixelPreferences(FFmpeg::PixelCodingEnum* pixelCoding, int* bitdepth) const;
     void getPixelFormats(const AVOutputFormat* fmt,
@@ -2752,7 +2753,7 @@ WriteFFmpegPlugin::getSettingsErrors() const
         AVCodecID codecId = AV_CODEC_ID_NONE;
         const AVCodec* videoCodec = nullptr;
         if (!initCodec(fmt, codecId, videoCodec)) {
-            addError("Unable to find codec");
+            addError(missingEncoderError());
         } else if (!codecCompatible(fmt, codecId)) {
             addError(string("The codec ") + videoCodec->name + " is not supported in container " + fmt->name);
         }
@@ -2909,33 +2910,35 @@ WriteFFmpegPlugin::initCodec(const AVOutputFormat* fmt,
     if (!fmt) {
         return false;
     }
-    outCodecId = fmt->video_codec;
     const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
 
     assert(_codec);
     int codec = _codec->getValue();
     assert(codec >= 0 && codec < (int)codecsShortNames.size());
 
+    // The encoder of the menu entry, and no other one: if it is missing from this FFmpeg build (e.g. the ProRes
+    // entries without prores_ks), the render fails, instead of using the default encoder of the container (#388).
     const AVCodec* userCodec = avcodec_find_encoder_by_name(getCodecFromShortName(codecsShortNames[codec]));
-    if (userCodec) {
-        outCodecId = userCodec->id;
-    }
-    if (outCodecId == AV_CODEC_ID_PRORES) {
-        // use prores_ks instead of prores
-        outVideoCodec = userCodec;
-
-        return true;
-    }
-    if (userCodec) {
-        outVideoCodec = userCodec;
-    } else {
-        outVideoCodec = avcodec_find_encoder(outCodecId);
-    }
-    if (!outVideoCodec) {
+    if (!userCodec) {
         return false;
     }
+    outCodecId = userCodec->id;
+    outVideoCodec = userCodec;
 
     return true;
+}
+
+// The error when initCodec() fails on a container: the encoder of the selected Codec menu entry is missing.
+string
+WriteFFmpegPlugin::missingEncoderError() const
+{
+    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
+    const int codec = _codec->getValue();
+    if (codec < 0 || codec >= (int)codecsShortNames.size()) {
+        return "Unable to find codec";
+    }
+
+    return string("Unable to find codec \"") + getCodecFromShortName(codecsShortNames[codec]) + "\": this encoder is not in the FFmpeg build";
 }
 
 // The Pref. Pixel Coding and Bit Depth params.
@@ -4919,7 +4922,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     AVCodecID codecId = AV_CODEC_ID_NONE;
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
-        setPersistentMessage(Message::eMessageError, "", "Unable to find codec");
+        setPersistentMessage(Message::eMessageError, "", missingEncoderError());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -5936,7 +5939,7 @@ WriteFFmpegPlugin::updatePixelFormat()
     AVCodecID codecId = AV_CODEC_ID_NONE;
     const AVCodec* videoCodec = nullptr;
     if (!initCodec(avOutputFormat, codecId, videoCodec)) {
-        updatePersistentMessage(); // "Unable to find codec", and the other errors
+        updatePersistentMessage(); // missingEncoderError(), and the other errors
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
