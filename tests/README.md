@@ -440,6 +440,8 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
 * **Frame bounds on the infinite flags** (#371): a test reader whose bounds touch `INT_MAX` or `INT_MIN`
   (`kOfxFlagInfiniteMax`/`kOfxFlagInfiniteMin`), rendered at scales 1/2 and 1/4: the render succeeds (GenericReader
   clamps the bounds one pixel inside the flags).
+* **An output image without pixel data** (#278): a host whose `clipGetImage` succeeds with a NULL `kOfxImagePropData`:
+  the render fails with kOfxStatFailed and an error message, and `decode()` is not called.
 
 Like `test-render`, it sets `OCIO=test.ocio`.
 

@@ -1694,7 +1694,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
         }
         plane.pixelData = (float*)dstPixelData;
         if (!plane.pixelData) {
+            // decode()/decodePlane(), fillWithBlack() and the copies below write through it (#278)
             setPersistentMessage(Message::eMessageError, "", "OFX Host provided an invalid image buffer");
+            throwSuiteStatusException(kOfxStatFailed);
+
+            return;
         }
 
         plane.rawComps = outputImages[i]->getPixelComponentsProperty();
