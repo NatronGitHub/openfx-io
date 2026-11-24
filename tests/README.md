@@ -49,6 +49,7 @@ make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails 
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
+make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
@@ -279,6 +280,20 @@ Profile, Hap Format, the Source clip), as Natron does when the user edits them d
 the file complete: these actions used to free the format context of the render (`freeFormat()`), which made the next
 frame fail ("file is not open") and lost the trailer, or, if a frame was being encoded, freed it under the render
 thread.
+
+`test-writeffmpeg-codec-params` (issue #343) runs `ofx_render_test OUT --codec-params`: for each encoder of the Codec
+menu, it prints the encoder settings that WriteFFmpeg shows (`-` hidden, `d` disabled, `E` enabled: Output Quality,
+Encoding Speed, Global Quality, Bitrate, Bitrate Tolerance, Quality, Keyframe Interval, Max B-Frames) and the pixel
+format it selects for each Pref. Pixel Coding, Bit Depth and Alpha. Then it encodes 3 frames of a color pattern that
+changes with the frame, in the first of mov, mkv, nut and avi whose muxer takes the codec (`avformat_query_codec()` and
+`avformat_init_output()`), with the default settings, with Keyframe Interval = 1, Max B-Frames = 2 and Output Quality =
+Lossless if they are shown, and with Alpha checked. Every movie must be encoded: a setting that is shown must work (e.g.
+Max B-Frames, which the mpegvideo encoders without `AV_CODEC_CAP_DELAY` refuse), except Output Quality = Lossless with an
+encoder that has no lossless mode (libvpx), which may fail with an error that says it. The test prints the codec, pixel
+format, color tags, number of packets and of key packets, and a hash of the packets of each movie. libx264rgb is a known
+failure ([#348](https://github.com/NatronGitHub/openfx-io/issues/348): WriteFFmpeg opens libx264, which refuses the RGB
+pixel formats of libx264rgb), reported with its reason, and an unexpected pass if it encodes. To check that a change of
+WriteFFmpeg keeps the settings and the movies of every encoder, diff the output of two builds.
 
 `test-readffmpeg-destroy-closes-file` (issue #290) runs `ofx_render_test OUT --destroy-closes-file`: a ReadFFmpeg
 instance renders a frame of a movie, which must then be open, and is destroyed: the movie must be closed before
@@ -1049,7 +1064,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-readffmpeg-destroy-closes-file` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). |
 
 ## Notes / limitations
 
