@@ -2615,15 +2615,47 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     return hasPicture;
 } // FFmpegFile::decode
 
+// A frame that the decoder says conceals damage: AV_FRAME_FLAG_CORRUPT (in H.264 and HEVC, only set with
+// AV_CODEC_FLAG_OUTPUT_CORRUPT or AV_CODEC_FLAG2_SHOW_ALL, libavcodec/h264_slice.c:1379-1384 and
+// libavcodec/hevc/refs.c:509-519 in FFmpeg 9.0.2) or decode_error_flags (which the H.264 decoder sets on a frame whose
+// slices had errors or were concealed, libavcodec/h264dec.c:752-764). Only a few decoders set them (e.g. through
+// libavcodec/error_resilience.c, and H.264, ProRes): a frame without them is not known to be good.
+static bool
+ConcealsDamage(const AVFrame* f)
+{
+    return (f->flags & AV_FRAME_FLAG_CORRUPT) || f->decode_error_flags;
+}
+
 // A frame decoded as a keyframe, without an error: e.g. an H.264 IDR frame (AV_FRAME_FLAG_KEY, libavcodec/h264_slice.c:
-// 1664 in FFmpeg 9.0.2), without decode_error_flags (which the H.264 decoder sets on a frame whose slices had errors or
-// were concealed, libavcodec/h264dec.c:752-764) or AV_FRAME_FLAG_CORRUPT (only set with AV_CODEC_FLAG_OUTPUT_CORRUPT or
-// AV_CODEC_FLAG2_SHOW_ALL, h264_slice.c:1379-1384)
+// 1664 in FFmpeg 9.0.2), that does not conceal damage (ConcealsDamage())
 static bool
 IsCleanKeyframe(const AVFrame* f)
 {
-    const bool key = (f->flags & AV_FRAME_FLAG_KEY) != 0;
-    return key && !(f->flags & AV_FRAME_FLAG_CORRUPT) && !f->decode_error_flags;
+    return (f->flags & AV_FRAME_FLAG_KEY) && !ConcealsDamage(f);
+}
+
+// The frame of the packet where the decoder restarted after damage (a packet with AV_PKT_FLAG_KEY, sent to a decoder
+// opened again, see demuxAndDecode()) is a valid restart point if it is a clean keyframe (IsCleanKeyframe()).
+// Or, if no clean keyframe was decoded yet since the file was opened (the decoder may never flag keyframes), if it
+// is an intra frame or has no picture type, and does not conceal damage: the frame flag then says nothing, and what
+// is left is the keyframe flag of the container, the picture type, and the decoder errors (a packet that needs the
+// previous ones may fail, or give no frame, in a decoder opened at it). E.g. the CineForm decoder sets neither
+// AV_FRAME_FLAG_KEY nor pict_type (libavcodec/cfhd.c in FFmpeg 9.0.2), and its descriptor has no
+// AV_CODEC_PROP_INTRA_ONLY (libavcodec/codec_desc.c:1530-1535), with which libavcodec would set the flag and
+// AV_PICTURE_TYPE_I (libavcodec/decode.c:455-456 and 2034-2039): requiring the flag kept such a stream tainted from
+// the first damaged packet to the end of the file (issue #312). The second frame of a CineForm 3D-transform group fails
+// in a decoder opened at it ("Invalid dimensions", cfhd.c:928-932). But the picture type is needed: e.g. in a MOV
+// without a sync-sample table, every packet has the keyframe flag (libavformat/mov.c:4947), and the MPEG-4 Part 2
+// decoder decodes a P-frame without its reference, from a gray frame, without an error
+// (ff_mpv_alloc_dummy_frames(), libavcodec/mpegvideo_dec.c:310-333).
+bool
+FFmpegFile::Stream::isCleanRestartFrame(const AVFrame* f) const
+{
+    if (IsCleanKeyframe(f)) {
+        return true;
+    }
+    const bool intraOrUnknown = (f->pict_type == AV_PICTURE_TYPE_I) || (f->pict_type == AV_PICTURE_TYPE_NONE);
+    return (_keyFrames == 0) && intraOrUnknown && !ConcealsDamage(f);
 }
 
 // After damage, the decoder is opened again instead of flushed: avcodec_flush_buffers() keeps the parameter sets
@@ -2758,7 +2790,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
     // unless it cannot be better (when decoding from the start, or for intra-only codecs): a frame
     // decoded after a seek may lack a reference frame, so decode() will then retry from the start.
     auto canHoldFrame = [acceptCorruptHeldFrame, stream](const AVFrame* f) -> bool {
-        return acceptCorruptHeldFrame || stream->_decodingFromStart || !((f->flags & AV_FRAME_FLAG_CORRUPT) || f->decode_error_flags);
+        return acceptCorruptHeldFrame || stream->_decodingFromStart || !ConcealsDamage(f);
     };
 
     if (Stream::hasFrame(held)) {
@@ -2813,16 +2845,17 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // Without PTS (e.g. AVI, where the demuxer only sets the DTS, libavformat/avidec.c:1554 in FFmpeg 9.0.2,
         // and the PTS of the frames that are not reordered, libavformat/demux.c:1131-1137), the frames cannot be
         // matched to their packets: while tainted, every frame is rejected, until the first frame after a
-        // restart of the decoder (which only has the packets from the restart keyframe on) is a clean keyframe.
+        // restart of the decoder (which only has the packets from the restart keyframe on) is a clean restart
+        // (Stream::isCleanRestartFrame()).
         const bool positionTainted = !acceptCorruptHeldFrame && stream->_tainted && stream->positionTaint();
         if (positionTainted && stream->_awaitRestartFrame) {
             stream->_awaitRestartFrame = false;
-            if (IsCleanKeyframe(decodedFrame)) {
+            if (stream->isCleanRestartFrame(decodedFrame)) {
                 stream->_tainted = false;
             }
         }
         if ((decodedFrame->pts != AV_NOPTS_VALUE) && (decodedFrame->pts == stream->_restartPts)) {
-            stream->verifyRestart(IsCleanKeyframe(decodedFrame));
+            stream->verifyRestart(stream->isCleanRestartFrame(decodedFrame));
         }
         // While tainted, a frame that conceals errors (decode_error_flags, AV_FRAME_FLAG_CORRUPT) is not used either,
         // whatever its packet: e.g. a damaged IDR frame that the H.264 decoder decodes without an error, but with
@@ -2833,7 +2866,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         // (guess_correct_pts(), libavcodec/decode.c:296-320 and 694-696 in FFmpeg 9.0.2): the taint is checked at
         // both, and while tainted, a frame whose two timestamps differ is not used (e.g. a frame decoded before
         // the damage, but placed after it at the DTS of a damaged packet).
-        const bool concealsDamage = (decodedFrame->flags & AV_FRAME_FLAG_CORRUPT) || decodedFrame->decode_error_flags;
+        const bool concealsDamage = ConcealsDamage(decodedFrame);
         if (!concealsDamage) {
             // (see decode(): the frames decoded without an error, keyframes or not)
             if (IsCleanKeyframe(decodedFrame)) {

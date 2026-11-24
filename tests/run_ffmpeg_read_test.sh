@@ -68,6 +68,10 @@
 #     drop them, and their frame times show the previous frame. With a damaged first GOP,
 #     its frames must fail with an error, and the other frames must decode. AV1 (libdav1d,
 #     which reports damage as AVERROR(ENOMEM) with threads) with two scrambled frames.
+#     CineForm in MOV (its decoder flags no frame as a keyframe, issue #312) with two damaged
+#     frames: the frames after each one must decode. MPEG-4 Part 2 in MOV without a sync-sample
+#     table (every packet has the keyframe flag) with a damaged first keyframe: the P-frames up
+#     to the next keyframe must fail (not decode from a gray frame), the later frames must decode.
 #   * Truncated ProRes, MJPEG and v210 in MOV (faststart): the missing frames fail with an error,
 #     sequentially and after a seek.
 #   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
@@ -1328,6 +1332,39 @@ CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check_damaged ramp_damaged_
 check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
 check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+# CineForm (CFHD, MOV, every packet a keyframe packet): the decoder flags no frame as a keyframe, and the descriptor
+# does not make it intra-only, so the reader restarts the decoder at the next packet after each damaged one (issue
+# #312: every frame after the first damaged packet failed). Also decoded first in a newly opened file (--fresh).
+CHECK_DAMAGED_ARGS="--fresh 14,15,28,29" check_damaged ramp_damaged_cfhd.mov "MOV (CineForm, 24 fps, two damaged frames)" \
+    cfhd N "13 27" 14,28 "" "" -c:v cfhd -pix_fmt yuv422p10le
+# MPEG-4 Part 2 (GOP 12, no B-frames, 1 encoder thread for the same bitstream everywhere) in MOV without a
+# sync-sample table ("stss" renamed to "free", in the moov of a faststart file; the clean file keeps it): the demuxer
+# flags every packet as a keyframe. With the first keyframe damaged, the decoder restarted at the next packet decodes
+# a P-frame from a gray frame, without an error: frames 1-12 must fail, sequentially, and the frames from the next
+# keyframe on must be those of the clean file (only sequentially: in such a file, a seek lands on a P-frame, also
+# without damage).
+echo "== MOV (MPEG-4 Part 2, GOP 12, no sync-sample table, damaged first keyframe) =="
+if ! have_encoder mpeg4 || ! command -v perl >/dev/null 2>&1; then
+    echo "SKIPPED: no mpeg4 encoder in the ffmpeg CLI, or no perl"
+elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg4 -threads 1 -g 12 -bf 0 -q:v 3 \
+    -movflags faststart "$tmp/clean_mpeg4.mov" ||
+    ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg4.mov" > "$tmp/mpeg4_nostss.mov" ||
+    ! ffmpeg -y -loglevel error -i "$tmp/mpeg4_nostss.mov" -c copy -bsf:v "noise=amount='if(eq(n,0),1,0)'" \
+        "$tmp/damaged_mpeg4_nostss.mov"; then
+    echo "FAIL: could not generate damaged_mpeg4_nostss.mov"
+    rc=1
+else
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/damaged_mpeg4_nostss.mov" --reference "$tmp/clean_mpeg4.mov" \
+            --reference-frames "$(seq -s, 13 48)" --fail "$(seq -s, 1 12)" --reference-sequential ${FFMPEG_READ_TEST_ARGS:-} \
+            2>"$tmp/damaged_mpeg4_nostss.err"; then
+            grep '^FAIL' "$tmp/damaged_mpeg4_nostss.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+fi
 check_ts_cc ramp_cc_error.ts "MPEG-TS (H.264 and MP2, a continuity counter error in frame 18, not a truncated file)"
 check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two damaged frames)" libsvtav1 -c:v libsvtav1 -g 8 -preset 8
 # Longer damaged runs in ProRes: frames after a run of 100 damaged packets must decode (in any order), and a

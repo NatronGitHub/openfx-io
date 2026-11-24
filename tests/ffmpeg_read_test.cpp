@@ -76,7 +76,10 @@
  *      file), whatever the other frames give: every frame is decoded sequentially, in reverse
  *      order, in a random order, and in the --order frames, each in a newly opened file, and each
  *      frame in its own newly opened file
- *      (e.g. the intact GOPs of a damaged file must decode as in the clean file, in any order),
+ *      (e.g. the intact GOPs of a damaged file must decode as in the clean file, in any order).
+ *      With --fail F1,F2,..., the frames Fi (not in --reference-frames) must fail in these orders;
+ *      with --reference-sequential (not with --order), only the sequential order is checked (e.g. in
+ *      a file whose seeks cannot be exact),
  *  19. optionally (--matrix N, --range N) sets the Y'CbCr matrix (0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020)
  *      and range (0 = Auto, 1 = Video, 2 = Full) of the conversion to RGB (FFmpegFile::setColorOverrides(), the
  *      ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params), and (--rgb R,G,B[,TOL]) checks that the mean of each
@@ -94,7 +97,7 @@
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,... [--reference-sequential]] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]
  * Exit status: 0 = all checks passed, 77 = skipped (--skip-without-decoder), other = failure.
  */
 
@@ -240,7 +243,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,... [--reference-sequential]] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]\n", argv[0]);
         return 2;
     }
     if (std::string(argv[1]) == "--image-files") {
@@ -288,6 +291,7 @@ main(int argc, char** argv)
     long orderMaxSeeks = -1; // --order-max-seeks: the most seeks of an --order request (-1: no bound)
     std::string referenceFile; // --reference: the clean file
     std::vector<int> referenceFrames; // --reference-frames: the 1-based frames that must be those of the clean file
+    bool referenceSequential = false; // --reference-sequential: only check the sequential order
     std::vector<int> positions; // if not empty, ramp frame i (0-based) is at frame positions[i] (0-based)
     bool verbose = false;
     int colorMatrix = 0; // --matrix: FFmpegFile::ColorMatrixEnum
@@ -344,6 +348,8 @@ main(int argc, char** argv)
             }
         } else if (a == "--frames" && i + 1 < argc) {
             expectedFrames = std::atoi(argv[++i]);
+        } else if (a == "--reference-sequential") {
+            referenceSequential = true;
         } else if (a == "--reference" && i + 1 < argc) {
             referenceFile = argv[++i];
         } else if (a == "--reference-frames" && i + 1 < argc) {
@@ -612,16 +618,30 @@ main(int argc, char** argv)
         }
     }
 
+    if (referenceSequential && (referenceFile.empty() || !renderOrder.empty())) {
+        std::fprintf(stderr, "--reference-sequential needs --reference, and cannot be combined with --order\n");
+        return 2;
+    }
     // --reference: the --reference-frames must be exactly those of the clean file, in every order.
     if (!referenceFile.empty()) {
-        if (!orderSeek.empty() || !orderNoSeek.empty() || !mustFail.empty() || !gaps.empty() || !concealed.empty() || !fresh.empty() || !positions.empty() || (rampStep > 0) ||
+        if (!orderSeek.empty() || !orderNoSeek.empty() || !gaps.empty() || !concealed.empty() || !fresh.empty() || !positions.empty() || (rampStep > 0) ||
             (maxSeqBytes >= 0) || (maxReverseBytes >= 0) || checkMonotonic) {
-            std::fprintf(stderr, "--reference only checks the --reference-frames (with --order): it cannot be combined with the other checks\n");
+            std::fprintf(stderr, "--reference only checks the --reference-frames and --fail (with --order): it cannot be combined with the other checks\n");
             return 2;
         }
         for (int f : renderOrder) {
             if ((f < 1) || (f > frames)) {
                 std::fprintf(stderr, "--order: frame %d is not in 1..%d\n", f, frames);
+                return 2;
+            }
+        }
+        for (int f : mustFail) {
+            if ((f < 1) || (f > frames)) {
+                std::fprintf(stderr, "--fail: frame %d is not in 1..%d\n", f, frames);
+                return 2;
+            }
+            if (std::find(referenceFrames.begin(), referenceFrames.end(), f) != referenceFrames.end()) {
+                std::fprintf(stderr, "--fail: frame %d is also in --reference-frames\n", f);
                 return 2;
             }
         }
@@ -644,18 +664,20 @@ main(int argc, char** argv)
             all.push_back(f);
         }
         orders.push_back(std::make_pair(std::string("sequential"), all));
-        orders.push_back(std::make_pair(std::string("reverse"), std::vector<int>(all.rbegin(), all.rend())));
-        std::vector<int> shuffled = all;
-        uint32_t seed = 5;
-        for (size_t i = shuffled.size(); i > 1; --i) {
-            seed = seed * 1664525u + 1013904223u; // LCG: the same order on every platform
-            std::swap(shuffled[i - 1], shuffled[(seed >> 8) % i]);
+        if (!referenceSequential) {
+            orders.push_back(std::make_pair(std::string("reverse"), std::vector<int>(all.rbegin(), all.rend())));
+            std::vector<int> shuffled = all;
+            uint32_t seed = 5;
+            for (size_t i = shuffled.size(); i > 1; --i) {
+                seed = seed * 1664525u + 1013904223u; // LCG: the same order on every platform
+                std::swap(shuffled[i - 1], shuffled[(seed >> 8) % i]);
+            }
+            orders.push_back(std::make_pair(std::string("random"), shuffled));
+            if (!renderOrder.empty()) {
+                orders.push_back(std::make_pair(std::string("--order"), renderOrder));
+            }
+            orders.push_back(std::make_pair(std::string("reopen"), all)); // each frame in its own newly opened file
         }
-        orders.push_back(std::make_pair(std::string("random"), shuffled));
-        if (!renderOrder.empty()) {
-            orders.push_back(std::make_pair(std::string("--order"), renderOrder));
-        }
-        orders.push_back(std::make_pair(std::string("reopen"), all)); // each frame in its own newly opened file
         int refErrors = 0;
         for (const auto& o : orders) {
             std::unique_ptr<FFmpegFile> file(new FFmpegFile(filename));
@@ -669,6 +691,12 @@ main(int argc, char** argv)
                     ok = file->decode(nullptr, f, loadNearest, refBuf.data());
                 } catch (const std::exception& e) {
                     ok = false;
+                }
+                if (std::find(mustFail.begin(), mustFail.end(), f) != mustFail.end()) {
+                    if (ok && (++refErrors <= 20)) {
+                        std::printf("  REFERENCE %s order: frame %d decoded, but must fail\n", o.first.c_str(), f);
+                    }
+                    continue;
                 }
                 if (ref[f].empty()) {
                     continue; // not a reference frame: anything
