@@ -140,6 +140,12 @@
  *       format info (Codec, Format, the Pref. params, Show Avail., DNxHD Codec Profile, Hap Format, the Source clip),
  *       and kOfxActionSyncPrivateData: each action must succeed, and every frame must be encoded
  *
+ *   WriteFFmpeg, the Codec edited during beginSequenceRender (issue #319), with the option --codec-edit-during-begin
+ *   (only this test):
+ *     - beginSequenceRender on a render thread is stopped where it sends its warning, while the main thread calls
+ *       kOfxActionInstanceChanged on the Codec (a user edit); then the frames render, and the file must be complete.
+ *       With ThreadSanitizer (ofx_render_test_tsan), WriteFFmpeg must have no data race between the two actions
+ *
  *   WritePFM and ReadPFM fail on errors (issues #294, #296), each with its option (only this test):
  *     - --pfm-write-errors (not on MS Windows: exit status 77): WritePFM, the file can not grow beyond 16 KB
  *       (RLIMIT_FSIZE, as on a full disk): the render must fail with an error that names the file, and the same
@@ -3966,6 +3972,95 @@ int testWriteFFmpegParamChangeDuringRender(const std::string& outFile)
     return failures;
 }
 
+// #319: the host calls kOfxImageEffectActionBeginSequenceRender on a render thread while its main thread calls
+// kOfxActionInstanceChanged ("An instance must be able to handle simultaneous actions called on the main and render
+// threads", OFX Thread and Recursion Safety). The user edits the Codec while beginSequenceRender sends its warning
+// (rawvideo in QuickTime with Pref. RGB, 16 bits, which rawvideo does not write there): the render thread stops in
+// setPersistentMessage, without synchronizing with the main thread (relaxed atomics, which ThreadSanitizer does not
+// count as synchronization), until the instanceChanged returns. The state of WriteFFmpeg that both actions read or
+// write must be guarded: with ThreadSanitizer (test-writeffmpeg-codec-edit-during-begin-tsan), the data race on the
+// replaced codec, which beginSequenceRender reads and the Codec edit clears, is reported without the fix. (This works
+// only because the render thread makes no host call between that read, in WriteFFmpeg's encodeWarnings(), and this
+// hook: a param read added there would take gHostDataMutex (ofx_test_host.h), a happens-before that would hide a
+// regression.) Then the frames are rendered, and the file must be complete.
+static std::atomic<int> gCodecRaceStep { 0 }; // 1: the render thread is stopped in setPersistentMessage, 2: it may go on
+static thread_local bool tCodecRaceRenderThread = false;
+
+static void codecRaceHook(const char* type)
+{
+    if (!tCodecRaceRenderThread || !type || std::strcmp(type, kOfxMessageWarning) || (gCodecRaceStep.load(std::memory_order_relaxed) != 0)) {
+        return;
+    }
+    gCodecRaceStep.store(1, std::memory_order_relaxed);
+    while (gCodecRaceStep.load(std::memory_order_relaxed) != 2) {
+        std::this_thread::yield();
+    }
+}
+
+int testWriteFFmpegCodecEditDuringBegin(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg, the Codec edited on the main thread while beginSequenceRender runs on a render thread (issue #319) ====\n");
+    const int N = 3;
+    std::remove(outFile.c_str());
+    int failures = 0;
+    {
+        WriterSession s;
+        WriterParams wp;
+        wp.strings = { { "codecShortName", "rawvideo" } };
+        wp.ints = { { "prefPixelCoding", 3 }, { "prefBitDepth", 3 }, { "enableAlpha", 0 } }; // RGB, 16 bits
+        if (s.create(outFile, 64, 48, N, wp)) return 1;
+        gCodecRaceStep.store(0, std::memory_order_relaxed);
+        gPersistentMessageHook = codecRaceHook;
+        OfxStatus beginStatus = kOfxStatFailed;
+        std::atomic<bool> beginDone { false };
+        std::thread renderThread([&]() {
+            tCodecRaceRenderThread = true;
+            beginStatus = s.begin(N);
+            beginDone.store(true);
+        });
+        while ((gCodecRaceStep.load(std::memory_order_relaxed) == 0) && !beginDone.load()) {
+            std::this_thread::yield();
+        }
+        const bool stopped = (gCodecRaceStep.load(std::memory_order_relaxed) == 1);
+        OfxStatus st = kOfxStatOK;
+        if (stopped) {
+            st = s.instanceChanged(kOfxTypeParameter, "codec");
+            gCodecRaceStep.store(2, std::memory_order_relaxed);
+        }
+        renderThread.join();
+        gPersistentMessageHook = nullptr;
+        if (!stopped) {
+            std::printf("  FAIL: beginSequenceRender sent no persistent warning\n");
+            ++failures;
+        }
+        if ((st != kOfxStatOK) && (st != kOfxStatReplyDefault)) {
+            std::printf("  FAIL: instanceChanged(codec) = %d (error: \"%s\")\n", st, WriterSession::persistentError().c_str());
+            ++failures;
+        }
+        if (!ok(beginStatus)) {
+            std::printf("  FAIL: beginSequenceRender = %d (error: \"%s\")\n", beginStatus, WriterSession::persistentError().c_str());
+            return failures + 1;
+        }
+        for (int t = 1; t <= N; ++t) {
+            st = s.render(t);
+            if (!ok(st)) {
+                std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, WriterSession::persistentError().c_str());
+                ++failures;
+            }
+        }
+        st = s.end(N);
+        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, WriterSession::persistentError().c_str()); ++failures; }
+    }
+    int nFrames = 0, nIFrames = 0;
+    if (probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
+        std::printf("  FAIL: %d frames in the file, expected %d\n", nFrames, N);
+        ++failures;
+    }
+    std::remove(outFile.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
 // Whether this process has the file open, or nothing if that can't be told.
 // POSIX: an open file descriptor with the same device and inode (the descriptors are listed in /proc/self/fd on
 // Linux, /dev/fd on macOS and the BSDs). MS Windows: FFmpeg's file protocol opens files without FILE_SHARE_DELETE, so
@@ -4687,6 +4782,8 @@ main(int argc, char** argv)
             failures = testSwscaleExact(outFile);
         } else if (mode == "--param-change") {
             failures = testWriteFFmpegParamChangeDuringRender(outFile);
+        } else if (mode == "--codec-edit-during-begin") {
+            failures = testWriteFFmpegCodecEditDuringBegin(outFile);
         } else if (mode == "--codec-params") {
             failures = testWriteFFmpegCodecParams(outFile);
         } else if (mode == "--selected-encoder") {

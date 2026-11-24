@@ -479,8 +479,13 @@ OfxMessageSuiteV1 gMsgSuite = { msg };
 std::string gPersistentError;
 // The current persistent warning message of the plug-in, if any (cleared by clearPersistentMessage).
 std::string gPersistentWarning;
+// A test's hook, called first by setPersistentMessage with its type, before any lock is taken (nullptr: none). Set and
+// reset while no other thread calls the host. (e.g. it stops a render thread there, without synchronizing with the
+// main thread, so that ThreadSanitizer sees a data race of the plug-in between them: #319)
+inline void (*gPersistentMessageHook)(const char* type) = nullptr;
 OfxStatus msgPersist(void*, const char* type, const char*, const char* fmt, ...)
-{ va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
+{ if (gPersistentMessageHook) gPersistentMessageHook(type);
+  va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
   std::lock_guard<std::mutex> lock(gMessagesMutex);
   va_start(a, fmt); recordMessage(type, fmt, a); va_end(a);
   if (type && !std::strcmp(type, kOfxMessageError)) { char buf[4096]; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a); gPersistentError = buf; } else { gPersistentError.clear(); }
