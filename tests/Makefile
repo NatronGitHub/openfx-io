@@ -110,7 +110,7 @@ RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 # runscript_render_test: RunScript's render on POSIX only (runscript_win32_test tests abort on MS Windows)
 RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -598,7 +598,7 @@ runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -709,6 +709,11 @@ test-pfm-read-errors: ofx_render_test
 test-writeffmpeg-selected-encoder: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i348 --selected-encoder; \
 	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeffmpeg-selected-encoder: SKIPPED"; else exit $$st; fi
+
+# #388: WriteFFmpeg fails the render when the encoder of the selected Codec menu entry is missing from the FFmpeg build
+# (prores_ks, hidden from avcodec_find_encoder_by_name() by OFX_IO_TEST_HIDE_ENCODERS; needs a shared libavcodec)
+test-writeffmpeg-missing-encoder: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio OFX_IO_TEST_HIDE_ENCODERS=prores_ks ./ofx_render_test $(CURDIR)/.render_out.i388 --missing-encoder
 
 # RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70);
 # on all systems: splitting the script's stderr into lines, with bounded memory (#111)

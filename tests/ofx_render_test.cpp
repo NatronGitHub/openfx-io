@@ -169,6 +169,14 @@
  *       the default encoder is in the menu and logs when it is selected (positive control); fails if the menu is
  *       empty, skipped (exit status 77) if no pair is checkable
  *
+ *   WriteFFmpeg, a Codec menu encoder missing from the FFmpeg build (issue #388), with the option --missing-encoder
+ *   (only this test), run with OFX_IO_TEST_HIDE_ENCODERS=prores_ks (see avcodec_find_encoder_by_name(), below):
+ *     - the Codec menu must still list the six ProRes entries (the indices of a saved project do not change)
+ *     - a writer on the default Codec (index 0, ProRes 4444, with an empty codecShortName, as in an old project) and
+ *       one configured for ProRes 422 HQ must fail the render with an error that names prores_ks: they must not
+ *       encode with the default encoder of the container
+ *     - positive control: an encoder of the menu that is not hidden must render
+ *
  *   ReadFFmpeg, DestroyInstance closes the movie (issue #290), with the option --destroy-closes-file (only this test):
  *     - render a frame, destroy the instance: the movie is no longer open, before Unload; twice, with the movie
  *       rewritten at another size in between: the second instance (maybe at the address of the first one) reads it
@@ -235,6 +243,28 @@ extern "C" {
 #include <sys/stat.h> // stat()
 #include <unistd.h> // close()
 #endif
+
+// #388: the encoders named in $OFX_IO_TEST_HIDE_ENCODERS (comma-separated) are missing from this FFmpeg build for
+// avcodec_find_encoder_by_name(), which WriteFFmpeg uses to find the encoder of a Codec menu entry. The plug-in sources
+// are linked into this program, so they call this definition, not libavcodec's. Without the variable, it is FFmpeg's
+// (n8.0 libavcodec/allcodecs.c:1032-1053). av_codec_iterate() still lists the hidden encoders.
+// This needs a shared libavcodec: with a static one (libavcodec.a), which also defines this function, ofx_render_test
+// fails to link (multiple definition).
+extern "C" const AVCodec*
+avcodec_find_encoder_by_name(const char* name)
+{
+    if (!name) return nullptr;
+    if (const char* hidden = std::getenv("OFX_IO_TEST_HIDE_ENCODERS")) {
+        const std::string list = std::string(",") + hidden + ",";
+        if (list.find(std::string(",") + name + ",") != std::string::npos) return nullptr;
+    }
+    void* it = nullptr;
+    const AVCodec* c = nullptr;
+    while ((c = av_codec_iterate(&it))) {
+        if (av_codec_is_encoder(c) && !std::strcmp(name, c->name)) return c;
+    }
+    return nullptr;
+}
 
 namespace {
 
@@ -4785,6 +4815,73 @@ int testWriteFFmpegSelectedEncoder(const std::string& outFile)
     return failures;
 }
 
+// #388: WriteFFmpeg must fail the render when the encoder of the selected Codec menu entry is missing from the FFmpeg
+// build, instead of encoding with the default encoder of the container (avcodec_find_encoder(fmt->video_codec)). Run
+// with OFX_IO_TEST_HIDE_ENCODERS=prores_ks: avcodec_find_encoder_by_name() (above) does not find it. The ProRes entries
+// stay in the menu, so that the menu indices of a saved project do not change: index 0 (ProRes 4444) with an empty
+// codecShortName (as in a project saved by an old version, which checkCodec() does not check) and ProRes 422 HQ must
+// fail, with an error that names the encoder. Positive control: an encoder of the menu that is not hidden renders.
+int testWriteFFmpegMissingEncoder(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg, a Codec menu encoder missing from the FFmpeg build fails the render (issue #388) ====\n");
+    av_log_set_level(AV_LOG_ERROR);
+    if (avcodec_find_encoder_by_name("prores_ks")) {
+        std::printf("  FAIL: run with OFX_IO_TEST_HIDE_ENCODERS=prores_ks\n");
+        return 1;
+    }
+    int failures = 0;
+    const std::vector<std::string> shortNames = codecMenuShortNames(outFile);
+    if (shortNames.empty()) { std::printf("  FAIL: no Codec menu entry (or no Codec param)\n"); return 1; }
+    const long nProRes = std::count_if(shortNames.begin(), shortNames.end(), [](const std::string& n) { return encoderOfShortName(n) == "prores_ks"; });
+    if ((nProRes != 6) || (encoderOfShortName(shortNames[0]) != "prores_ks")) {
+        std::printf("  FAIL: the Codec menu must start with the 6 ProRes entries (it has %ld, and starts with %s)\n", nProRes, shortNames[0].c_str());
+        ++failures;
+    }
+    // the default Codec (index 0) of a project saved by an old version (empty codecShortName), and ProRes 422 HQ
+    for (const char* shortName : { "", "prores_ksapch" }) {
+        const std::string label = *shortName ? shortName : "index 0, empty codecShortName";
+        const std::string file = outFile + "." + (*shortName ? shortName : "index0") + ".mov";
+        std::string error;
+        if (!encodeCodecVariant(file, shortName, {}, &error)) {
+            std::printf("  %s: FAIL: the render succeeded, encoded with %s\n", label.c_str(), videoStreamSignature(file).c_str());
+            ++failures;
+        } else if (((error.find("Unable to find codec") == std::string::npos) && (error.find("writer was configured for unavailable codec") == std::string::npos))
+                   || (error.find("prores_ks") == std::string::npos)) {
+            std::printf("  %s: FAIL: the render failed, but the error does not say that prores_ks is missing: \"%s\"\n", label.c_str(), error.c_str());
+            ++failures;
+        } else {
+            std::printf("  %s: the render failed: %s\n", label.c_str(), error.c_str());
+        }
+        std::remove(file.c_str());
+    }
+    // positive control: the first encoder of the menu that is not hidden, in a container that takes it
+    std::string control;
+    for (const std::string& shortName : shortNames) {
+        if ((encoderOfShortName(shortName) != "prores_ks") && !testContainerFor(shortName).empty()) {
+            control = shortName;
+            break;
+        }
+    }
+    if (control.empty()) {
+        std::printf("  FAIL: positive control: no encoder of the Codec menu that is not hidden\n");
+        ++failures;
+    } else {
+        const std::string file = outFile + "." + control + "." + testContainerFor(control);
+        std::string error;
+        if (encodeCodecVariant(file, control, {}, &error)) {
+            std::printf("  %s (positive control): FAIL: %s\n", control.c_str(), error.c_str());
+            ++failures;
+        } else {
+            std::printf("  %s (positive control): rendered, %s\n", control.c_str(), videoStreamSignature(file).c_str());
+        }
+        std::remove(file.c_str());
+    }
+    if (!failures) {
+        std::printf("  PASS\n");
+    }
+    return failures;
+}
+
 // Issue #291: the renders of the views of a stereo movie (one video stream per view) share the FFmpegFile of the
 // instance, and ReadFFmpeg is kOfxImageEffectRenderFullySafe. ReadFFmpeg selected the stream of the view, then decoded
 // it in a separate call: a concurrent render of the other view could select its own stream in between, and the render
@@ -4990,6 +5087,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegPixelFormatChoice(outFile);
         } else if (mode == "--selected-encoder") {
             failures = testWriteFFmpegSelectedEncoder(outFile);
+        } else if (mode == "--missing-encoder") {
+            failures = testWriteFFmpegMissingEncoder(outFile);
         } else if (mode == "--destroy-closes-file") {
             failures = testReadFFmpegDestroyClosesFile(outFile);
         } else if (mode == "--pfm-write-errors") {

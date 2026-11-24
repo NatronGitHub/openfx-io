@@ -59,6 +59,7 @@ make test-writeffmpeg-codec-edit-during-begin # WriteFFmpeg: the Codec edited du
 make test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitizer: no data race (not in make test)
 make test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218)
 make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
+make test-writeffmpeg-missing-encoder # WriteFFmpeg fails the render if the selected encoder is missing (#388)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
@@ -372,6 +373,16 @@ control: the default encoder must be in the menu and log when it is selected, el
 (e.g. ProRes: prores_ks is in the menu, its default encoder prores is not). An encoder that logs nothing (libxvid) is
 reported as not confirmed, but the default encoder must still not log. The test fails if the Codec menu is empty, and is
 skipped (exit status 77) if no pair is checkable.
+
+`test-writeffmpeg-missing-encoder` (issue [#388](https://github.com/NatronGitHub/openfx-io/issues/388)) runs
+`ofx_render_test OUT --missing-encoder` with `OFX_IO_TEST_HIDE_ENCODERS=prores_ks`. `ofx_render_test` defines its own
+`avcodec_find_encoder_by_name()`, which the plug-in sources linked into it call. It does not find the encoders of that
+comma-separated list, and is FFmpeg's otherwise. This needs a shared libavcodec: with `libavcodec.a`, `ofx_render_test`
+fails to link. The Codec menu must still list the six ProRes entries, so that the menu indices of saved projects do not
+change. Two writers must fail the render with an error that names prores_ks: one on the default Codec (index 0, ProRes
+4444) with an empty codecShortName, as in a project saved by an old version, and one configured for ProRes 422 HQ.
+WriteFFmpeg used to encode them with the default encoder of the container. Positive control: the first encoder of the
+menu that is not hidden must render.
 
 `test-readffmpeg-destroy-closes-file` (issue #290) runs `ofx_render_test OUT --destroy-closes-file`: a ReadFFmpeg
 instance renders a frame of a movie, which must then be open, and is destroyed: the movie must be closed before
@@ -1291,7 +1302,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
 
 ## Notes / limitations
 

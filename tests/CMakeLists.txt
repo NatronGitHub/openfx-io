@@ -316,6 +316,10 @@ if(TARGET io_tests_ofx)
   # the default encoder of its codec ID; skipped (exit status 77) if the FFmpeg build has no such encoder to check
   io_test(test-writeffmpeg-selected-encoder ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i348" --selected-encoder)
   set_tests_properties(test-writeffmpeg-selected-encoder PROPERTIES SKIP_RETURN_CODE 77)
+  # test-writeffmpeg-missing-encoder (#388): WriteFFmpeg fails the render when the encoder of the selected Codec menu
+  # entry is missing from the FFmpeg build (prores_ks, hidden by OFX_IO_TEST_HIDE_ENCODERS; needs a shared libavcodec)
+  io_test(test-writeffmpeg-missing-encoder ENV "${_io_ocio_env}" "OFX_IO_TEST_HIDE_ENCODERS=prores_ks"
+          COMMAND ofx_render_test "${B}/.render_out.i388" --missing-encoder)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})
