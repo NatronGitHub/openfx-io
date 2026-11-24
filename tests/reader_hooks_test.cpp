@@ -610,8 +610,9 @@ struct Reader {
     // scale), into an output image covering the whole RoD at that scale (the readers don't support
     // tiles), filled with `fill` beforehand. The RoD returned by getRegionOfDefinition is stored in rod.
     // plane: kFnOfxImagePlaneColour, or a Natron custom plane (then also the output image's components)
+    // image: if not null, the bounds of the output image instead (for a RoD too large to allocate)
     OfxStatus renderAtScale(double t, unsigned int level, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds,
-                            const char* plane = kFnOfxImagePlaneColour)
+                            const char* plane = kFnOfxImagePlaneColour, const OfxRectI* image = nullptr)
     {
         const double s = 1. / (1 << level);
         double rs[2] = { s, s };
@@ -630,7 +631,7 @@ struct Reader {
         *rod = { r[0], r[1], r[2], r[3] };
         // The output image: its bounds and RoD are in pixel coordinates, X = X' * SX / PAR (PAR = 1),
         // and cover the RoD (the smallest enclosing rectangle).
-        *bounds = { (int)std::floor(r[0] * s), (int)std::floor(r[1] * s), (int)std::ceil(r[2] * s), (int)std::ceil(r[3] * s) };
+        *bounds = image ? *image : OfxRectI { (int)std::floor(r[0] * s), (int)std::floor(r[1] * s), (int)std::ceil(r[2] * s), (int)std::ceil(r[3] * s) };
         const int w = bounds->x2 - bounds->x1;
         const int h = bounds->y2 - bounds->y1;
         const int rowBytes = w * 4 * (int)sizeof(float);
@@ -1700,6 +1701,32 @@ testMipmap(OfxPlugin* pMipmap, const std::string& still)
                     check(badOutside == 0, "%s: output outside the render window untouched (%d mismatches)", what, badOutside);
                 }
             }
+        }
+    }
+
+    // frame bounds on the infinite flags (kOfxFlagInfiniteMin/Max, ofxCore.h), at scales 1/2 and 1/4 (#371):
+    // GenericReader clamps them one pixel inside the flags, which Coords::downscalePowerOfTwoSmallestEnclosing keeps
+    // (without the clamp, the mipmap windows were infinite, and an assertion in buildMipMapLevelGeneric failed). The
+    // output image is the render window: the whole image at that scale.
+    std::printf("==== render scale 1/2 and 1/4, frame bounds on kOfxFlagInfiniteMin or kOfxFlagInfiniteMax (#371) ====\n");
+    const OfxRectI flagFrames[] = { { kOfxFlagInfiniteMax - 13, kOfxFlagInfiniteMax - 7, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax },
+                                    { kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMin + 13, kOfxFlagInfiniteMin + 7 } };
+    for (unsigned int level = 1; level <= 2; ++level) {
+        for (const OfxRectI& frame : flagFrames) {
+            gMipmapContent.bounds = frame;
+            gMipmapContent.value = [](int x, int y, int c) -> float { return (float)((x & 7) + (y & 3) + c); };
+            Reader r;
+            if (!r.create(pMipmap, still)) {
+                ++gFailures;
+                continue;
+            }
+            const OfxRectI ob = { floorDivPot(frame.x1, level), floorDivPot(frame.y1, level), ceilDivPot(frame.x2, level), ceilDivPot(frame.y2, level) };
+            OfxRectD rod = { 0., 0., 0., 0. };
+            OfxRectI bounds = { 0, 0, 0, 0 };
+            std::fflush(stdout); // in case it crashes
+            const OfxStatus st = r.renderAtScale(1., level, ob, kFill, &rod, &bounds, kFnOfxImagePlaneColour, &ob);
+            check(ok(st), "scale 1/%d, frame (%d,%d)-(%d,%d), render window (%d,%d)-(%d,%d): render = %d", 1 << level,
+                  frame.x1, frame.y1, frame.x2, frame.y2, ob.x1, ob.y1, ob.x2, ob.y2, st);
         }
     }
 }

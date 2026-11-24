@@ -70,7 +70,7 @@ make test-exit-without-unload # a host renders ReadOIIO, destroys the instance a
 make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders
-make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scale 1/2, rewritten files (ASan, guard pages)
+make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales 1/2 and 1/4, rewritten files (ASan, UBSan, guard pages)
 make test-oiio-layer-menu # ReadOIIO: the output-layer menu rebuilt by a file change while renders and isIdentity run on other threads (#298)
 make test-oiio-layer-menu-tsan # the same with ThreadSanitizer (not in make test)
 make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, no leak)
@@ -373,6 +373,9 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   the output image) and 1/2 (in GenericReader's buffer): alpha is 1 only where `decode()` wrote the image (the window
   that `clipToFile()` returned, or the one it reported with `setDecodedWindow()`), and the rest of the render window
   is transparent black.
+* **Frame bounds on the infinite flags** (#371): a test reader whose bounds touch `INT_MAX` or `INT_MIN`
+  (`kOfxFlagInfiniteMax`/`kOfxFlagInfiniteMin`), rendered at scales 1/2 and 1/4: the render succeeds (GenericReader
+  clamps the bounds one pixel inside the flags).
 
 Like `test-render`, it sets `OCIO=test.ocio`.
 
@@ -693,8 +696,9 @@ It sets `OCIO=test.ocio`.
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
 and extends past the display window, with OpenImageIO, for ReadOIIO; an RGB and a grey PFM for ReadPFM; 8-bit RGB and RGBA, 16-bit
 grey and RGBA, and interlaced (Adam7) 8-bit RGB and 16-bit RGBA PNG, with libpng, for ReadPNG (only if `pkg-config`
-finds libpng). It is built with [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) (not on MS
-Windows), and the output image is between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush
+finds libpng). It is built with [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) and
+[UBSan](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)'s `signed-integer-overflow` check, which stops at
+the first error (neither on MS Windows), and the output image is between two guard pages (`mprotect()`, `VirtualProtect()` on MS Windows), flush
 against one of them. Each file is read with two `filePremult` values, for both paths of `GenericReader::render()` at
 scale 1: `decode()` into the output image (Opaque RGB files, PreMultiplied RGBA files), and into GenericReader's
 buffer, which it then premultiplies (UnPreMultiplied files):
@@ -710,6 +714,9 @@ buffer, which it then premultiplies (UnPreMultiplied files):
 * **windows partly or entirely out of the RoD** (across an edge or a corner, longer than the RoD, the RoD with a
   border, beside it), in an image that covers the RoD and the window (and, for ReadOIIO, of the window only): the
   part in the RoD is the render of the whole RoD, the rest transparent black (#232).
+* **PNG offsets near the limits of an int** (oFFs: x1 = -2^31 + 4 and y1 = 2^24, and x2, y2 just below `INT_MAX`), at
+  scales 1/2 and 1/4: the RoD and the pixels are those of the same file without an offset, translated. GenericReader
+  computed the windows at the render scale and the pixel offsets in `int`, which overflowed (#371).
 * **a rewritten file**: smaller or larger, rendered with the RoD the host got before: only the window is written; for
   an Opaque RGB file (also a tiled EXR with a smaller data window, and an interlaced PNG), alpha is 1 in the new image
   and the rest of the window is transparent black.
@@ -1131,7 +1138,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, and a changed config or context (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-tsan-debug`, `bench-exr`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, and timings. |
-| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, rewritten files, with ASan and guard pages. |
+| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, PNG offsets near the int limits at scales 1/2 and 1/4, rewritten files, with ASan, UBSan (signed-integer-overflow) and guard pages. |
 | `oiio_layer_menu_test.cpp`  | ReadOIIO's output-layer menu, rebuilt by file changes on the main thread while 4 threads render one instance and call isIdentity, in a Natron-like host (`test-oiio-layer-menu`, `test-oiio-layer-menu-tsan`, #298). |
 | `png_corrupt_test.cpp`      | ReadPNG and WritePNG on libpng errors (`test-png-corrupt`): corrupt and truncated PNG files, an image too wide for libpng, with ASan and a leak check. |
 | `hostdemo/reader_window.cpp`, `hostdemo/reader_window.sh` | The readers' render windows in a host built on HostSupport (`test-reader-window-host`, ctest `io-reader-window`). |

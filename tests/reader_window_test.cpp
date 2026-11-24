@@ -18,8 +18,8 @@
  * ***** END LICENSE BLOCK ***** */
 /*
  * reader_window_test — render windows and render scales of ReadOIIO, ReadPFM and ReadPNG (issues #160, #163, #232,
- * #234), driven by the in-process host (ofx_test_host.h). Built with AddressSanitizer (make test-reader-window), and
- * the output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it
+ * #234, #371), driven by the in-process host (ofx_test_host.h). Built with AddressSanitizer and UBSan's
+ * signed-integer-overflow check (make test-reader-window), and the output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it
  * crashes.
  *
  *  - render scale 1/2: GenericReader decodes a full-resolution window into its buffer, then downscales it; decode()
@@ -40,6 +40,8 @@
  *    also in the black border that ReadOIIO adds around a data window).
  *  - files without alpha (RGB and grey PFM and TIFF, RGB PNG), read as RGBA with each filePremult, without and with
  *    an OCIO conversion (x2 to x1 of swap.ocio, next to $OCIO): the file's colours (times 2) and alpha 1 (#234)
+ *  - ReadPNG files with an offset (oFFs) near the limits of an int, at scales 1/2 and 1/4: the render of the file
+ *    without an offset, translated (#371)
  *  - a file rewritten with a smaller or larger image, rendered with the RoD that the host got before (decode() then
  *    gets a render window that is not the file's): only the window is written, and for an Opaque file, alpha is 1 in
  *    the new image and the rest of the window is transparent black (#232)
@@ -444,6 +446,7 @@ struct File {
     int dataX, dataY, dataW, dataH; // EXR: the data window, in the display window (y down)
     int pngBits = 8; // PNG: 8 or 16 bits
     bool pngInterlaced = false; // PNG: Adam7 interlacing
+    int pngOffsetX = 0, pngOffsetY = 0; // PNG: the image offset (oFFs chunk, in pixels), the origin of the bounds
 
     bool isFloat() const { return kind != ePNG; }
     bool isEXR() const { return (kind == eEXR) || (kind == eEXRTiled); }
@@ -615,6 +618,9 @@ writePNG(const std::string& path,
     static const int colorTypes[] = { PNG_COLOR_TYPE_GRAY, PNG_COLOR_TYPE_GRAY_ALPHA, PNG_COLOR_TYPE_RGB, PNG_COLOR_TYPE_RGB_ALPHA };
     png_set_IHDR(png, info, f.width, f.height, f.pngBits, colorTypes[f.nchannels - 1],
                  f.pngInterlaced ? PNG_INTERLACE_ADAM7 : PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    if ((f.pngOffsetX != 0) || (f.pngOffsetY != 0)) {
+        png_set_oFFs(png, info, f.pngOffsetX, f.pngOffsetY, PNG_OFFSET_PIXEL);
+    }
     png_write_info(png, info);
     const size_t bytes = (f.pngBits == 16) ? 2 : 1;
     const size_t rowBytes = (size_t)f.width * f.nchannels * bytes;
@@ -910,6 +916,98 @@ testFile(OfxPlugin* p,
         }
     }
 }
+
+#ifdef HAVE_PNG
+// A PNG file with an offset (oFFs) near the limits of an int, at render scales 1/2 and 1/4 (#371): GenericReader's
+// proxy path computed the frame window at the render scale, the full-resolution render window and the offset of the
+// buffer's origin in int, which overflowed (undefined behaviour: this test is built with
+// -fsanitize=signed-integer-overflow). The offsets are multiples of 4, so the render is the one of the file without
+// an offset, translated, bit for bit.
+void
+testLargeOffsets(OfxPlugin* p,
+                 const std::string& dir,
+                 const File& f)
+{
+    const std::string path0 = dir + "/offset-none" + extension(f.kind);
+    if (!writeFile(path0, f)) {
+        check(false, "offset-none: write the file");
+
+        return;
+    }
+    struct Offset {
+        const char* name;
+        int x, y;
+    };
+    // offset-min: x1 = -2^31 + 4 (an oFFs offset is at least -INT_MAX) and y1 = 2^24, for which the offset of the
+    // buffer's origin (x1 * 4 + row size * y1) is out of the int range; offset-max: x2 and y2 just below INT_MAX
+    // (kOfxFlagInfiniteMax), for which x2 + 3 (the smallest enclosing window at scale 1/4) and the window at scale 1/4
+    // times 4 are out of it
+    const Offset offsets[] = {
+        { "offset-min", -2147483644, 16777216 },
+        { "offset-max", 2147483584, 2147483584 },
+    };
+    const int filePremult = (f.nchannels == 4) ? 2 : 0;
+    for (const Offset& o : offsets) {
+        File fo = f;
+        fo.pngOffsetX = o.x;
+        fo.pngOffsetY = o.y;
+        const std::string path = dir + "/" + o.name + extension(f.kind);
+        if (!writeFile(path, fo)) {
+            check(false, "%s: write the file", o.name);
+
+            continue;
+        }
+        for (double scale : { 0.5, 0.25 }) {
+            const std::string title = strprintf("%s %s, scale %g", f.plugin + 16, o.name, scale);
+            if (!selected(title)) {
+                continue;
+            }
+            std::printf("==== %s ====\n", title.c_str());
+            Reader r0, r;
+            if (!r0.create(p, path0, filePremult) || !r.create(p, path, filePremult)) {
+                check(false, "create");
+
+                continue;
+            }
+            OfxStatus st0 = r0.getRoD(scale);
+            OfxStatus st = r.getRoD(scale);
+            if (!ok(st0) || !ok(st)) {
+                check(false, "getRegionOfDefinition = %d, %d", st0, st);
+
+                continue;
+            }
+            const int dx = (int)(o.x * scale);
+            const int dy = (int)(o.y * scale);
+            const bool sameRoD = r.rod.x1 == r0.rod.x1 + dx && r.rod.y1 == r0.rod.y1 + dy && r.rod.x2 == r0.rod.x2 + dx && r.rod.y2 == r0.rod.y2 + dy;
+            check(sameRoD, "RoD %d,%d,%d,%d (the RoD without an offset, translated)", r.rod.x1, r.rod.y1, r.rod.x2, r.rod.y2);
+            if (!sameRoD) {
+                continue; // the pixel loop below would read out of r's image
+            }
+            r0.setImage(r0.rod, scale, true);
+            r.setImage(r.rod, scale, true);
+            gPersistentError.clear();
+            st0 = r0.render(r0.rod, scale, false);
+            st = r.render(r.rod, scale, false);
+            check(ok(st0) && ok(st) && gPersistentError.empty(), "render = %d, %d%s%s", st0, st,
+                  gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+            int bad = 0;
+            for (int y = r0.rod.y1; y < r0.rod.y2; ++y) {
+                for (int x = r0.rod.x1; x < r0.rod.x2; ++x) {
+                    for (int c = 0; c < 4; ++c) {
+                        if (!sameBits(&r.pixel(x + dx, y + dy)[c], &r0.pixel(x, y)[c])) {
+                            if (bad < 3) {
+                                std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, r.pixel(x + dx, y + dy)[c], r0.pixel(x, y)[c]);
+                            }
+                            ++bad;
+                        }
+                    }
+                }
+            }
+            check(bad == 0, "the pixels of the file without an offset (%d wrong)", bad);
+        }
+    }
+}
+#endif
 
 // An RGB or grey file (no alpha) read as RGBA with every filePremult, without and with an OCIO conversion (#234): the
 // output is the file's colours (converted, if OCIO is not identity; R = G = B for a grey file) and alpha is 1, as
@@ -1391,6 +1489,8 @@ main(int argc,
     testFile(png, dir, "rgba16", pngRGBA16);
     testFile(png, dir, "interlaced", pngInterlaced);
     testFile(png, dir, "interlaced16", pngInterlaced16);
+    // offsets near the limits of an int, at scales 1/2 and 1/4 (#371)
+    testLargeOffsets(png, dir, pngRGBA);
 #endif
 
     // files rewritten: smaller, then larger

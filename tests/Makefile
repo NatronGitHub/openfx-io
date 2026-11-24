@@ -341,12 +341,14 @@ clean-exr-ubsan:
 	rm -rf exr_read_test_ubsan exr_read_test_ubsan.dSYM .exr_read_ubsan
 
 # ReadOIIO, ReadPFM and ReadPNG (if pkg-config finds libpng): render windows narrower than the image, render scale
-# 1/2, files rewritten while rendering (#160, #163). With AddressSanitizer (not on MS Windows, as OCIO_FT_ASAN), and
-# guard pages around the output image. -pthread: the test uses std::thread. (Added to test and clean here, on lines of
-# their own.)
+# 1/2, files rewritten while rendering (#160, #163), PNG offsets near the limits of an int at scales 1/2 and 1/4
+# (#371). With AddressSanitizer and UBSan's signed-integer-overflow check, stopping at the first error (not on MS
+# Windows, as OCIO_FT_ASAN), and guard pages around the output image. -pthread: the test uses std::thread. (Added to
+# test and clean here, on lines of their own.)
 READER_WINDOW_SRCS := ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp ../PFM/ReadPFM.cpp $(if $(HAVE_PNG),../PNG/ReadPNG.cpp,) \
     $(READER_HOOKS_SRCS)
-READER_WINDOW_CXXFLAGS := -I../PFM -I../PNG -pthread $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer) \
+READER_WINDOW_CXXFLAGS := -I../PFM -I../PNG -pthread \
+    $(if $(filter Windows_NT,$(OS)),,-fsanitize=address,signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow -fno-omit-frame-pointer) \
     $(if $(HAVE_PNG),-DHAVE_PNG $(shell $(PKGCONF) --cflags libpng),)
 READER_WINDOW_LIBS := $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,)
 

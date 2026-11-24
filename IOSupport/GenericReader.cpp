@@ -28,6 +28,7 @@
 #include <cfloat> // DBL_MAX
 #include <climits>
 #include <cmath>
+#include <cstddef> // std::ptrdiff_t
 #include <cstring> // memset
 #include <fstream>
 #include <memory>
@@ -933,6 +934,9 @@ GenericReaderPlugin::copyPixelData(const OfxRectI& renderWindow,
 
 // update the window of dst defined by nextRenderWindow by halving the corresponding area in src.
 // proofread and fixed by F. Devernay on 3/10/2014
+// The pixel offsets are in std::ptrdiff_t: in int, they overflowed for bounds far from the origin (e.g. a PNG oFFs
+// offset or an EXR data window, #371), and the address of pixel (0,0) may be out of the buffers, so each row pointer
+// is computed from the buffer's start.
 template <typename PIX>
 static void
 halveWindow(const OfxRectI& nextRenderWindow,
@@ -944,42 +948,68 @@ halveWindow(const OfxRectI& nextRenderWindow,
             int dstRowBytes,
             int nComponents)
 {
-    int srcRowSize = srcRowBytes / sizeof(PIX);
-    int dstRowSize = dstRowBytes / sizeof(PIX);
-    const PIX* srcData = srcPixels - (srcBounds.x1 * nComponents + srcRowSize * srcBounds.y1);
-    PIX* dstData = dstPixels - (dstBounds.x1 * nComponents + dstRowSize * dstBounds.y1);
+    const std::ptrdiff_t srcRowSize = srcRowBytes / (std::ptrdiff_t)sizeof(PIX);
+    const std::ptrdiff_t dstRowSize = dstRowBytes / (std::ptrdiff_t)sizeof(PIX);
 
-    assert(nextRenderWindow.x1 * 2 >= (srcBounds.x1 - 1) && (nextRenderWindow.x2 - 1) * 2 < srcBounds.x2 && nextRenderWindow.y1 * 2 >= (srcBounds.y1 - 1) && (nextRenderWindow.y2 - 1) * 2 < srcBounds.y2);
+    assert(nextRenderWindow.x1 * 2LL >= (srcBounds.x1 - 1LL) && (nextRenderWindow.x2 - 1LL) * 2 < srcBounds.x2 && nextRenderWindow.y1 * 2LL >= (srcBounds.y1 - 1LL) && (nextRenderWindow.y2 - 1LL) * 2 < srcBounds.y2);
     for (int y = nextRenderWindow.y1; y < nextRenderWindow.y2; ++y) {
-        const PIX* srcLineStart = srcData + y * 2 * srcRowSize;
-        PIX* dstLineStart = dstData + y * dstRowSize;
-        bool pickNextRow = (y * 2) < (srcBounds.y2 - 1);
-        bool pickThisRow = (y * 2) >= (srcBounds.y1);
-        int sumH = (int)pickNextRow + (int)pickThisRow;
+        // the rows 2y (this row) and 2y + 1 (the next row) of src
+        const std::ptrdiff_t srcY = 2 * (std::ptrdiff_t)y;
+        const bool pickNextRow = srcY < (srcBounds.y2 - 1);
+        const bool pickThisRow = srcY >= srcBounds.y1;
+        const int sumH = (int)pickNextRow + (int)pickThisRow;
         assert(sumH == 1 || sumH == 2);
+        const PIX* srcThisRow = pickThisRow ? srcPixels + (srcY - srcBounds.y1) * srcRowSize : NULL;
+        const PIX* srcNextRow = pickNextRow ? srcPixels + (srcY + 1 - srcBounds.y1) * srcRowSize : NULL;
+        PIX* dstLineStart = dstPixels + ((std::ptrdiff_t)y - dstBounds.y1) * dstRowSize;
         for (int x = nextRenderWindow.x1; x < nextRenderWindow.x2; ++x) {
-            bool pickNextCol = (x * 2) < (srcBounds.x2 - 1);
-            bool pickThisCol = (x * 2) >= (srcBounds.x1);
-            int sumW = (int)pickThisCol + (int)pickNextCol;
+            const std::ptrdiff_t srcX = 2 * (std::ptrdiff_t)x;
+            const bool pickNextCol = srcX < (srcBounds.x2 - 1);
+            const bool pickThisCol = srcX >= srcBounds.x1;
+            const int sumW = (int)pickThisCol + (int)pickNextCol;
             assert(sumW == 1 || sumW == 2);
+            // the offsets of the columns 2x and 2x + 1 of src in a row, and of the column x of dst
+            const std::ptrdiff_t thisCol = (srcX - srcBounds.x1) * nComponents;
+            const std::ptrdiff_t nextCol = thisCol + nComponents;
+            const std::ptrdiff_t dstCol = ((std::ptrdiff_t)x - dstBounds.x1) * nComponents;
             for (int k = 0; k < nComponents; ++k) {
                 /// a b
                 /// c d
 
-                PIX a = (pickThisCol && pickThisRow) ? srcLineStart[x * 2 * nComponents + k] : 0;
-                PIX b = (pickNextCol && pickThisRow) ? srcLineStart[(x * 2 + 1) * nComponents + k] : 0;
-                PIX c = (pickThisCol && pickNextRow) ? srcLineStart[(x * 2 * nComponents) + srcRowSize + k] : 0;
-                PIX d = (pickNextCol && pickNextRow) ? srcLineStart[(x * 2 + 1) * nComponents + srcRowSize + k] : 0;
+                PIX a = (pickThisCol && pickThisRow) ? srcThisRow[thisCol + k] : 0;
+                PIX b = (pickNextCol && pickThisRow) ? srcThisRow[nextCol + k] : 0;
+                PIX c = (pickThisCol && pickNextRow) ? srcNextRow[thisCol + k] : 0;
+                PIX d = (pickNextCol && pickNextRow) ? srcNextRow[nextCol + k] : 0;
 
                 assert(sumW == 2 || (sumW == 1 && ((a == 0 && c == 0) || (b == 0 && d == 0))));
                 assert(sumH == 2 || (sumH == 1 && ((a == 0 && b == 0) || (c == 0 && d == 0))));
                 int sum = sumH * sumW;
                 // guard against division by zero
                 assert(sum);
-                dstLineStart[x * nComponents + k] = sum ? ((a + b + c + d) / sum) : 0;
+                dstLineStart[dstCol + k] = sum ? ((a + b + c + d) / sum) : 0;
             }
         }
     }
+}
+
+// At a render scale below 1 (downscaleLevels > 0), keep the frame bounds off the infinite flags: "Infinite regions
+// are flagged by setting x1 = kOfxFlagInfiniteMin, y1 = kOfxFlagInfiniteMin, x2 = kOfxFlagInfiniteMax,
+// y2 = kOfxFlagInfiniteMax" (ofxCore.h), and Coords::downscalePowerOfTwoSmallestEnclosing() keeps them, so a window
+// at the render scale built from bounds on a flag would be infinite (#371). The bounds are half-open: clamping
+// x2 = kOfxFlagInfiniteMax to kOfxFlagInfiniteMax - 1 drops the last column of the image (x = kOfxFlagInfiniteMax - 1),
+// which is black at the render scale, and likewise for the other sides. The host got an infinite RoD for these bounds
+// anyway. At scale 1, the bounds are unchanged.
+static void
+clampProxyFrameBounds(int downscaleLevels,
+                      OfxRectI* bounds)
+{
+    if (downscaleLevels <= 0) {
+        return;
+    }
+    bounds->x1 = (std::max)(bounds->x1, kOfxFlagInfiniteMin + 1);
+    bounds->y1 = (std::max)(bounds->y1, kOfxFlagInfiniteMin + 1);
+    bounds->x2 = (std::min)(bounds->x2, kOfxFlagInfiniteMax - 1);
+    bounds->y2 = (std::min)(bounds->y2, kOfxFlagInfiniteMax - 1);
 }
 
 template <typename PIX>
@@ -1015,11 +1045,11 @@ buildMipMapLevelGeneric(ImageEffect* instance,
         // - nextRenderWindow contains the renderWindow at the level before i
         //
         /// Halve the smallest enclosing po2 rect as we need to render a minimum of the renderWindow
-        nextRenderWindow = downscalePowerOfTwoSmallestEnclosing(nextRenderWindow, 1);
+        nextRenderWindow = Coords::downscalePowerOfTwoSmallestEnclosing(nextRenderWindow, 1);
 #ifdef DEBUG
         {
             // check that doing i times 1 level is the same as doing i levels
-            OfxRectI nrw = downscalePowerOfTwoSmallestEnclosing(renderWindowFullRes, i);
+            OfxRectI nrw = Coords::downscalePowerOfTwoSmallestEnclosing(renderWindowFullRes, i);
             assert(nrw.x1 == nextRenderWindow.x1 && nrw.x2 == nextRenderWindow.x2 && nrw.y1 == nextRenderWindow.y1 && nrw.y2 == nextRenderWindow.y2);
         }
 #endif
@@ -1051,7 +1081,7 @@ buildMipMapLevelGeneric(ImageEffect* instance,
 
     /// On the last iteration halve directly into the dstPixels
     /// The nextRenderWindow should be equal to the original render window.
-    nextRenderWindow = downscalePowerOfTwoSmallestEnclosing(nextRenderWindow, 1);
+    nextRenderWindow = Coords::downscalePowerOfTwoSmallestEnclosing(nextRenderWindow, 1);
     assert(originalRenderWindow.x1 == nextRenderWindow.x1 && originalRenderWindow.x2 == nextRenderWindow.x2 && originalRenderWindow.y1 == nextRenderWindow.y1 && originalRenderWindow.y2 == nextRenderWindow.y2);
 
     halveWindow<PIX>(nextRenderWindow, previousImg, previousBounds, previousRowBytes, dstPixels, dstBounds, dstRowBytes, nComponents);
@@ -1831,13 +1861,14 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
         return;
     }
+    clampProxyFrameBounds(downscaleLevels, &frameBounds);
 
     // The render window, in the frame bounds (at the render scale, the smallest enclosing rectangle). It is not in
     // them if the file changed since the host got the RoD (a reader may update its cached frame bounds when it reads
     // the file, e.g. ReadEXR): the part of the render window out of the new frame bounds is black.
     OfxRectI renderWindow = args.renderWindow;
     {
-        OfxRectI frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        OfxRectI frameWindow = Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
         // The part of the render window in the RoD that the host got: if it is out of the frame bounds, the reader's
         // cached frame bounds may be older than the file (e.g. the file reverted to the header that the host got the
         // RoD from), and the reader may read them again. A render window larger than an up-to-date RoD (e.g. the
@@ -1870,7 +1901,8 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
                 return;
             }
-            frameWindow = downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+            clampProxyFrameBounds(downscaleLevels, &frameBounds);
+            frameWindow = Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
         }
         if ((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2)) {
             for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
