@@ -2040,6 +2040,11 @@ WriteOIIOPluginFactory::load()
         }
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());
+    // MS Windows: OpenEXROutput's constructor (ImageOutput::create("x.exr") above) starts OpenEXR's pool
+    // (pvt::set_exr_threads()), outside of any instance: stop it now, a host may exit without kOfxActionUnload
+    // (#256). A no-op while an instance uses it; the next ExrThreadsUser starts it again (OpenImageIO would not: it
+    // caches the thread count it set).
+    stopUnusedExrThreads();
 #endif
     // last: only count a successful load (if load throws, the host does not call unload)
     OIIOPluginLoaded(getUID());

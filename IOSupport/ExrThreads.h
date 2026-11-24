@@ -43,7 +43,9 @@ private:
 // MS Windows: stop OpenEXR's pool if no ExrThreadsUser is alive (elsewhere, nothing). For the unload action of its
 // users (the last OIIO plug-in, ReadEXR, WriteEXR): OpenImageIO also starts the pool outside of any instance (e.g.
 // OpenEXROutput's constructor calls set_exr_threads(), when WriteOIIO creates an ImageOutput for an .exr file), and
-// its threads must not be joined while the binary is unloaded, under the loader lock, which dead-locks (#250).
+// its threads must not be joined while the binary is unloaded, under the loader lock, which dead-locks (#250). Also
+// called at the end of WriteOIIO's load, which creates such an ImageOutput, for a host that exits without
+// kOfxActionUnload (#256).
 void stopUnusedExrThreads();
 
 // The number of live ExrThreadsUser objects, and of threads of OpenEXR's global pool (-1 without OpenEXR), for the tests

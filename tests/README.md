@@ -603,14 +603,18 @@ swap only undoes its first change); `ocio_anim_fuzz scenario 0 0` with `SCEN=mai
 `kNatronOfxHostIsNatron`, string params read at the given time): `make test-ocio-anim` also
 runs the test and a fuzz run so.
 
-### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118, #250)
+### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118, #250, #256)
 
 `oiio_threadpool_test.cpp` loads ReadOIIO, WriteOIIO and OIIOResize in the in-process
 host of `ofx_test_host.h`, which share OpenImageIO's default thread pool, as in IO.ofx.
 The instances of the OIIO plug-ins are counted (`OIIOThreadsUser`, OIIOGlobal.h): the first one starts the pool, and
 the destruction of the last one stops it, for a host that exits without kOfxActionUnload (OpenImageIO requires its
 pools to be shut down before exit, #250). Each OIIO plug-in also stops the pool in its unload action, but only if it
-is the last OIIO plug-in loaded:
+is the last OIIO plug-in loaded. The test checks that:
+* WriteOIIO's load starts OpenEXR's pool (OpenImageIO's OpenEXR writer starts it when the load creates an
+  `ImageOutput` for `.exr`), and on MS Windows that the pool is stopped at the end of that load, while no instance
+  exists (#256); with an instance, it must run (`ExrThreadsUser`, ExrThreads.h, starts it again). Built without
+  OpenEXR's headers, these checks cannot run, and the test fails if OpenImageIO has an EXR writer;
 * after ReadOIIO's unload (and a reload and unload, as in a plug-in scan) while an OIIOResize instance exists, the
   pool must keep its `hardware_concurrency() - 1` threads and OIIOResize must render (`ImageBufAlgo::resize()`, with
   the host's 4 CPUs);
