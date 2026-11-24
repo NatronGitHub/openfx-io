@@ -620,9 +620,22 @@ private:
         // palette decoder of FFmpeg n9.0.2 clears its palette when flushed (rawdec has no flush callback, and
         // msrle_decode_flush(), libavcodec/msrle.c:142-147, and qtrle_decode_flush(), qtrle.c:566-571, only unref the
         // frame), but opening the decoder again (FFmpegFile::flushDecoder()) does.
+        // A decoder may still return frames that it output before the flush: they are dropped. E.g. the HEVC decoder
+        // queues the frames it outputs (av_container_fifo_write(s->output_fifo), libavcodec/hevc/refs.c:313 in FFmpeg
+        // n9.0.2, refs.c:311 in n8.0.1), returns them before it reads a packet (hevc_receive_frame(),
+        // hevcdec.c:3848-3849 in n9.0.2, 3842 in n8.0.1), and does not empty the queue when flushed
+        // (hevc_decode_flush(), hevcdec.c:4197-4209 in n9.0.2, 4190-4201 in n8.0.1). With frame threads,
+        // ff_thread_flush() already drops the frames decoded by the threads (libavcodec/pthread_frame.c:986-997 in
+        // n9.0.2). After a request that stopped at the first of two frames output together, the second one would
+        // otherwise come first after a seek, and decode() would take it for a seek that landed after the requested
+        // frame. Without a new packet, avcodec_receive_frame() then returns AVERROR(EAGAIN).
         void flushCodec()
         {
             avcodec_flush_buffers(_codecContext);
+            AVFrame* stale = av_frame_alloc();
+            while (stale && (avcodec_receive_frame(_codecContext, stale) >= 0)) {
+            }
+            av_frame_free(&stale);
             _paletteNeeded = true;
         }
 

@@ -50,6 +50,7 @@
 #     have a pre-roll that is not displayed).
 #   * AVI (MPEG-4 with B-frames), which has no PTS, and AVI with H.264 (with and without B-frames), MPEG-2 with
 #     B-frames, MPEG-1 and UtVideo, and DV (#339).
+#   * APNG with partial frames blended over the previous ones (#162): every frame after seeks.
 #   * WebM (VP9 and VP8, 24 fps): also millisecond timestamps.
 #   * VFR Matroska (H.264, 30 fps with timestamps jittered by up to +-6 ms, as in
 #     screen recordings).
@@ -93,6 +94,7 @@
 #   * Open-GOP HEVC and H.264 in MP4 (#328): a seek for a leading picture decodes from the keyframe before, not from
 #     the start of the file (--order-no-start-seek), with at most 2 seeks per request; and open-GOP H.264 in MPEG-TS,
 #     whose index is not used for that: at most 2 seeks per request too (--order-max-seeks).
+#     HEVC MP4 with a CRA every 2 frames (#162): the same, every frame must be the sequential one.
 #   * MOV with broken timestamps (the PTS of a P-frame and a B-frame are swapped, so
 #     that one frame time has two frames and another one none): every frame must
 #     decode, and give the same image sequentially and after a seek, except at these
@@ -1360,6 +1362,22 @@ check ramp_dv.dv "DV (PAL)" dvvideo 25 -vf scale=720:576 -c:v dvvideo -pix_fmt y
 # probes again after a seek (see FFmpegFile::getStreamStartTime()). With and without B-frames.
 check ramp_mpeg1_bframes.avi "AVI (MPEG-1 with B-frames, no PTS)" mpeg1video 24 -c:v mpeg1video -g 8 -bf 2 -q:v 2
 check ramp_mpeg1.avi "AVI (MPEG-1 without B-frames, no PTS)" mpeg1video 24 -c:v mpeg1video -g 8 -bf 0 -q:v 2
+# APNG (#162): in RGBA (opaque testsrc2), the encoder writes partial frames, blended over the previous one (blend op OVER) or over
+# the one before it (dispose op PREVIOUS), so that a frame depends on the earlier ones: after seeks, in reverse
+# and in a random order, every frame must be the sequential one, with 1 and 8 decoder threads.
+echo "== APNG (testsrc2 in RGBA, opaque: partial frames blended over the previous ones) =="
+if ! have_encoder apng; then
+    echo "SKIPPED: no apng encoder in the ffmpeg CLI"
+elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=24 -frames:v 48 -pix_fmt rgba -c:v apng -f apng "$tmp/blend.apng"; then
+    echo "FAIL: could not generate blend.apng"
+    rc=1
+else
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/blend.apng" --tol 1 --frames 48 --order 40,10,30,5,47,46 \
+            ${FFMPEG_READ_TEST_ARGS:-} || { echo "(with $threads decoder threads)"; rc=1; }
+    done
+fi
 check ramp_prores_24.mkv "Matroska (ProRes, 24 fps)" prores_ks 24 -c:v prores_ks
 check ramp_vp9_24.webm "WebM (VP9, 24 fps)" libvpx-vp9 24 -c:v libvpx-vp9 -g 8 -crf 10 -b:v 0
 check ramp_vp8_24.webm "WebM (VP8, 24 fps)" libvpx 24 -c:v libvpx -g 8 -crf 4 -b:v 10M
@@ -1411,6 +1429,11 @@ CHECK_OPEN_GOP_ORDERS="$(seq 96 -1 70 | paste -sd, -) 90,75,95,72,80" check_open
 CHECK_OPEN_GOP_ORDERS="$(seq 96 -1 70 | paste -sd, -) 90,75,95,72,80" check_open_gop_seek open_gop_back_mpeg2.mpg \
     "MPEG-PS (MPEG-2, open GOPs): backward requests do not decode from the start" mpeg2video "--order-no-start-seek --order-max-seeks 2" \
     -c:v mpeg2video -g 24 -bf 7 -f vob
+# HEVC with a CRA every 2 frames (#162): each CRA has a leading (RASL) picture, which the decoder drops after a
+# seek to that CRA: a request for one, after a far frame or in a random order, decodes from the CRA before.
+check_open_gop_seek open_gop_seek_hevc_g2.mp4 "MP4 (HEVC, open GOPs of 2 frames): every frame after seeks" libx265 \
+    "--order-no-start-seek --order-max-seeks 2" \
+    -c:v libx265 -x265-params "keyint=2:min-keyint=2:scenecut=0:open-gop=1:log-level=error"
 # Damaged packets (GOP 8: I0 P3 B1 B2 P6 B4 B5 P7 in decoding order, without scene cuts): the damaged
 # frame is a gap, and the frames of its GOP (and the last ones of the previous GOP, which the decoder
 # outputs after the next reference frame) show what the decoder conceals.
