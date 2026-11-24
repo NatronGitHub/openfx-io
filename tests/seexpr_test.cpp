@@ -12,6 +12,10 @@
  *  - render: the coordinates of cpixel() may be out of the range of int (or infinite): they are clamped to +-1e9
  *    before their conversion to int, which gives the edge pixel, as before; a finite frame is used as is, an infinite
  *    one is clamped; a NaN coordinate or frame gives black.
+ *  - render: the parameter variables (x1, pos1, color1) and mix have their value at the render time
+ *    (paramGetValueAtTime), not at the host's current time (paramGetValue), from the first evaluation of the
+ *    expression on (it returned an uninitialized value when the variable was first read at a pixel, in a branch that
+ *    the evaluation before the render did not take); the RoD (Size) has bottomLeft and size at the requested time.
  *  - SeNoise with a noise size of 0 (the range of the param starts at 0) or a render scale of 0: the scale was
  *    infinite, and the noise NaN. A size of 0 or less is replaced by 0.001; a positive size (e.g. 0.0005) is used
  *    as is.
@@ -27,6 +31,7 @@
 #include <pthread.h>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <chrono>
 #include <string>
@@ -208,6 +213,33 @@ isDeeperThanCap(const char* script)
     return maxDepth > 256;
 }
 
+// Render the script at time t and copy the RGBA output pixel (x, y) to px; false if the render failed
+bool
+renderPixel(OfxPlugin* p,
+            Effect& ctx,
+            Effect& inst,
+            Clip* out,
+            const char* script,
+            double t,
+            int w,
+            int h,
+            int x,
+            int y,
+            float px[4])
+{
+    setOverrideString(&ctx, "script", script);
+    PropSet a = makeRenderInArgs(t, w, h);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    if (!ok(st)) {
+        std::printf("  render(\"%s\") = %d\n", script, st);
+
+        return false;
+    }
+    std::memcpy(px, reinterpret_cast<const float*>(out->buffer.data()) + ((size_t)y * w + x) * 4, 4 * sizeof(float));
+
+    return true;
+}
+
 // The value of the red channel of the output pixel (x, y) after rendering the script at time t, or -1 if the
 // render failed
 float
@@ -222,17 +254,152 @@ renderRed(OfxPlugin* p,
           int x,
           int y)
 {
-    setOverrideString(&ctx, "script", script);
-    PropSet a = makeRenderInArgs(t, w, h);
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
-    if (!ok(st)) {
-        std::printf("  render(\"%s\") = %d\n", script, st);
+    float px[4];
 
-        return -1.f;
+    return renderPixel(p, ctx, inst, out, script, t, w, h, x, y, px) ? px[0] : -1.f;
+}
+
+// testParamsAtTime(): the params x1, pos1, color1, bottomLeft, size and mix are animated. paramGetValueAtTime(t) gives their value at t,
+// paramGetValue() gives their value at the host's current time (kHostCurrentTime), which is not the render time.
+const double kHostCurrentTime = 70.;
+bool gAnimateMix = false; // mix is animated only for its own check, so that the other checks do not depend on it
+
+// The value of component i of the animated param named name at time t, or false if it is not animated
+bool
+animatedValue(const std::string& name,
+              double t,
+              int i,
+              double* v)
+{
+    if (name == "x1") {
+        *v = 0.01 * t;
+    } else if (name == "pos1") {
+        *v = (i + 2) * 0.01 * t;
+    } else if (name == "color1") {
+        *v = (i == 0 ? 4 : i + 5) * 0.01 * t; // no component is the source value, 0.5
+    } else if (name == "bottomLeft") {
+        *v = (i + 1) * t; // (t, 2t)
+    } else if (name == "size") {
+        *v = (i + 3) * t; // (3t, 4t)
+    } else if (gAnimateMix && name == "mix") {
+        *v = (t < 40.) ? 1. : 0.; // 0 at the host's current time: the output would be the source
+    } else {
+        return false;
     }
-    const float* px = reinterpret_cast<const float*>(out->buffer.data()) + ((size_t)y * w + x) * 4;
 
-    return px[0];
+    return true;
+}
+
+OfxStatus
+animGetV(OfxParamHandle ph,
+         double t,
+         va_list ap)
+{
+    ParamRec* r = reinterpret_cast<ParamRec*>(ph);
+    const int n = (r->type == kOfxParamTypeDouble) ? 1 : (r->type == kOfxParamTypeDouble2D) ? 2 : (r->type == kOfxParamTypeRGB) ? 3 : 0;
+    double v = 0.;
+    if (n == 0 || !animatedValue(r->name, t, 0, &v)) {
+        return prmGetV(ph, ap); // not animated (no param here has a stringAtTime)
+    }
+    for (int i = 0; i < n; ++i) {
+        animatedValue(r->name, t, i, &v);
+        *va_arg(ap, double*) = v;
+    }
+
+    return kOfxStatOK;
+}
+
+OfxStatus
+animGetValue(OfxParamHandle ph,
+             ...)
+{
+    va_list ap;
+    va_start(ap, ph);
+    OfxStatus s = animGetV(ph, kHostCurrentTime, ap);
+    va_end(ap);
+
+    return s;
+}
+
+OfxStatus
+animGetValueAtTime(OfxParamHandle ph,
+                   OfxTime t,
+                   ...)
+{
+    va_list ap;
+    va_start(ap, t);
+    OfxStatus s = animGetV(ph, t, ap);
+    va_end(ap);
+
+    return s;
+}
+
+// The parameter variables (x1, pos1, color1) and mix have their value at the render time, from the first evaluation
+// of the expression on: a variable that is only read at one pixel, in a branch that the evaluation before the render
+// does not take, was not initialized; and the values came from paramGetValue(), which ofxParam.h forbids in render
+void
+testParamsAtTime(OfxPlugin* p,
+                 Effect& ctx,
+                 Effect& inst,
+                 Clip* out,
+                 int w,
+                 int h)
+{
+    std::printf("==== render: parameter variables and mix have their value at the render time, from the first evaluation ====\n");
+    const OfxParameterSuiteV1 saved = gParamSuite;
+    gParamSuite.paramGetValue = animGetValue;
+    gParamSuite.paramGetValueAtTime = animGetValueAtTime;
+    const struct {
+        const char* script;
+        int component;
+        const char* param;
+    } scripts[] = {
+        { "x1", 0, "x1" },
+        { "x == 3 && y == 3 ? x1 : 0", 0, "x1" }, // x1 is only read at (3, 3)
+        { "x == 3 && y == 3 ? pos1 : 0", 0, "pos1" },
+        { "x == 3 && y == 3 ? pos1 : 0", 1, "pos1" },
+        { "x == 3 && y == 3 ? color1 : 0", 0, "color1" },
+        { "x == 3 && y == 3 ? color1 : 0", 1, "color1" },
+        { "x == 3 && y == 3 ? color1 : 0", 2, "color1" },
+    };
+    for (double t : { 10., 20. }) {
+        for (const auto& s : scripts) {
+            float px[4];
+            if (!renderPixel(p, ctx, inst, out, s.script, t, w, h, 3, 3, px)) {
+                check(false, "%s at %g: render failed", s.script, t);
+                continue;
+            }
+            double expected = 0.;
+            animatedValue(s.param, t, s.component, &expected);
+            const float v = px[s.component];
+            check(std::fabs(v - expected) < 1e-6, "%s at %g: component %d of (3, 3) = %g (expected %g, the value at %g)",
+                  s.script, t, s.component, v, expected, t);
+        }
+    }
+    gAnimateMix = true; // 1 at the render time, 0 at the host's current time (the output would be the source, 0.5)
+    const float v = renderRed(p, ctx, inst, out, "0.25", 10., w, h, 3, 3);
+    check(v == 0.25f, "0.25 with mix animated, at 10: %g (expected 0.25, mix = 1 at 10)", v);
+    gAnimateMix = false;
+
+    // getRegionOfDefinition() with the Region of Definition "Size": bottomLeft and size at the requested time
+    setOverrideInt(&ctx, "rod", 2); // eRegionOfDefinitionOptionSize
+    for (double t : { 10., 20. }) {
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, t);
+        double rs[2] = { 1., 1. };
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        PropSet o;
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        double rod[4] = { 0., 0., 0., 0. };
+        for (int i = 0; i < 4; ++i) {
+            pGetDouble(PH(&o), kOfxImageEffectPropRegionOfDefinition, i, &rod[i]);
+        }
+        const double expected[4] = { t, 2 * t, t + 3 * t, 2 * t + 4 * t };
+        check(ok(st) && std::equal(rod, rod + 4, expected), "RoD (Size) at %g = %d, (%g, %g, %g, %g) (expected (%g, %g, %g, %g), bottomLeft and size at %g)",
+              t, st, rod[0], rod[1], rod[2], rod[3], expected[0], expected[1], expected[2], expected[3], t);
+    }
+    ctx.params["rod"].hasOv = false;
+    gParamSuite = saved;
 }
 
 } // namespace
@@ -802,6 +969,8 @@ main(int /*argc*/,
         const float v = renderRed(p, ctx, inst, out, script, 10., W, H8, 3, 3);
         check(v == 0.5f, "%s: %g (expected 0.5, the source pixel or the edge pixel)", script, v);
     }
+
+    testParamsAtTime(p, ctx, inst, out, W, H8);
 
     p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
