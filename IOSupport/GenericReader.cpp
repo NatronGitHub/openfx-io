@@ -228,8 +228,6 @@ enum FrameModeEnum {
 #define kSupportsMultiResolution 1
 #define kSupportsRenderScale 1 // GenericReader supports render scale: it scales images and uses proxy image when applicable
 
-#define GENERIC_READER_USE_MULTI_THREAD
-
 static bool gHostIsNatron = false;
 static bool gHostSupportsRGBA = false;
 static bool gHostSupportsRGB = false;
@@ -925,15 +923,9 @@ GenericReaderPlugin::copyPixelData(const OfxRectI& renderWindow,
     assert(srcBounds.y1 <= renderWindow.y1 && renderWindow.y1 <= renderWindow.y2 && renderWindow.y2 <= srcBounds.y2);
     assert(srcBounds.x1 <= renderWindow.x1 && renderWindow.x1 <= renderWindow.x2 && renderWindow.x2 <= srcBounds.x2);
 
-#ifdef GENERIC_READER_USE_MULTI_THREAD
     copyPixels(*this, renderWindow, renderScale,
                srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
                dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-#else
-    copyPixelsNT(*this, renderWindow,
-                 srcPixelData, srcBounds, srcPixelComponents, srcPixelComponentCount, srcBitDepth, srcRowBytes,
-                 dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstBitDepth, dstRowBytes);
-#endif
 }
 
 // update the window of dst defined by nextRenderWindow by halving the corresponding area in src.
