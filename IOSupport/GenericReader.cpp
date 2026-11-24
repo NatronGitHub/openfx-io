@@ -59,7 +59,6 @@
 #include "GenericOCIO.h"
 #endif
 #include "IOUtility.h"
-#include "tinythread.h" // thread_local, for pre-C++11 compilers
 
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;

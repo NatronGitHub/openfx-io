@@ -94,7 +94,7 @@ PLUGIN_SRCS := \
     ../OIIO/ReadOIIO.cpp ../OIIO/WriteOIIO.cpp ../OIIO/OIIOGlobal.cpp \
     ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/SequenceParsing/SequenceParsing.cpp \
-    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
+    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp \
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp \
     ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp
 
@@ -140,7 +140,7 @@ oiio_layers_test: oiio_layers_test.cpp $(filter-out ../OIIO/ReadOIIO.cpp,$(PLUGI
 # GenericReader and its in-repo dependencies only: the test defines its own readers
 READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/SequenceParsing/SequenceParsing.cpp \
-    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
+    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp \
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp
 
 # -pthread: the test uses std::thread
@@ -152,7 +152,7 @@ reader_hooks_test: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(
 OCIO_CDL_SRCS := ../OCIO/OCIOCDLTransform.cpp ../OCIO/OCIOPluginBase.cpp \
     ../IOSupport/GenericOCIO.cpp ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp \
     ../SupportExt/glad/glad.cpp ../SupportExt/glad/gladegl.cpp ../SupportExt/ofxsOGLUtilities.cpp \
-    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp ../SupportExt/ofxsFileOpen.cpp
+    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/ofxsFileOpen.cpp
 OCIO_CDL_CXXFLAGS := -DOFX_SUPPORTS_OPENGLRENDER -I../OCIO -I../SupportExt/glad -I../openfx/Support/Plugins/include
 ifeq ($(OS),Windows_NT)
   OCIO_CDL_LIBS := -lopengl32
@@ -264,7 +264,7 @@ OFX14_SRCS := ../EXR/ReadEXR.cpp ../EXR/WriteEXR.cpp \
     ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp ../IOSupport/GenericWriter.cpp ../IOSupport/GenericOCIO.cpp \
     ../IOSupport/GenericOCIOOpenGL.cpp ../IOSupport/glsl.cpp ../IOSupport/SequenceParsing/SequenceParsing.cpp \
     ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp \
-    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp \
+    ../SupportExt/ofxsMultiPlane.cpp ../SupportExt/ofxsThreadSuite.cpp \
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp ../SupportExt/ofxsOGLTextRenderer.cpp \
     ../SupportExt/ofxsOGLFontData.cpp ../SupportExt/ofxsRamp.cpp ../SupportExt/ofxsGenerator.cpp \
     ../SupportExt/ofxsTransformInteract.cpp ../SupportExt/ofxsRectangleInteract.cpp ../SupportExt/ofxsOGLUtilities.cpp \
@@ -522,7 +522,7 @@ SEEXPR_FOUND := $(and $(wildcard $(SEEXPR_HOME)/include/SeExpression.h),$(wildca
 SEEXPR_SRCS := ../SeExpr/SeExpr.cpp ../SeExpr/SeNoise.cpp ../SeExpr/SeGrain.cpp \
     ../SupportExt/ofxsRectangleInteract.cpp ../SupportExt/ofxsTransformInteract.cpp ../SupportExt/ofxsRamp.cpp \
     ../SupportExt/ofxsOGLTextRenderer.cpp ../SupportExt/ofxsOGLFontData.cpp \
-    ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp
+    ../SupportExt/ofxsThreadSuite.cpp
 SEEXPR_CXXFLAGS := -I$(SEEXPR_HOME)/include -I../openfx/Support/Plugins/include
 SEEXPR_LIBS := -L$(SEEXPR_LIBDIR) -lSeExpr
 ifeq ($(OS),Windows_NT)
@@ -560,7 +560,7 @@ runscript_output_test: runscript_output_test.cpp ../RunScript/RunScriptOutput.h 
 	$(CXX) $(CXXFLAGS) -I../RunScript runscript_output_test.cpp -o $@
 
 # RunScript's render on POSIX (#287): an aborted render kills the script. Only the OFX Support library: no OFX_LIBS.
-RUNSCRIPT_RENDER_SRCS := ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp ../SupportExt/ofxsThreadSuite.cpp ../SupportExt/tinythread.cpp
+RUNSCRIPT_RENDER_SRCS := ../RunScript/RunScript.cpp ../RunScript/RunScriptWin32.cpp ../SupportExt/ofxsThreadSuite.cpp
 runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $(RUNSCRIPT_RENDER_SRCS) ../RunScript/RunScriptOutput.h ../RunScript/RunScriptPosix.h $(OFX_SUPPORT)
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 

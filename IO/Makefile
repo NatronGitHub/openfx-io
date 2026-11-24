@@ -1,6 +1,6 @@
 TOP_SRCDIR = ..
 
-PLUGINOBJECTS = ofxsThreadSuite.o tinythread.o \
+PLUGINOBJECTS = ofxsThreadSuite.o \
 ofxsFileOpen.o \
 ofxsOGLTextRenderer.o \
 ofxsOGLFontData.o \

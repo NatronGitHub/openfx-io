@@ -23,6 +23,7 @@
  */
 
 #include <algorithm>
+#include <mutex>
 #include <cstdio> // fopen, fwrite...
 #include <vector>
 
@@ -111,8 +112,8 @@ enum PNGBitDepthEnum {
 typedef MultiThread::Mutex Mutex;
 typedef MultiThread::AutoMutex AutoMutex;
 #else
-typedef tthread::fast_mutex Mutex;
-typedef MultiThread::AutoMutexT<tthread::fast_mutex> AutoMutex;
+typedef std::mutex Mutex;
+typedef std::lock_guard<std::mutex> AutoMutex;
 #endif
 
 static Color::LutManager<Mutex>* gLutManager;
