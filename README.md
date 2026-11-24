@@ -31,6 +31,20 @@ To fetch the latest sources from github, execute the following commands:
     cd openfx-io
     git submodule update --init --recursive
 
+GitHub's source archives (the "Source code" tarballs and zips of releases and tags, and `archive/<ref>.tar.gz`) don't
+contain the submodules, and they have no `.git`, so `git submodule update` can't fetch them. Either clone the tag
+with its submodules:
+
+    git clone --recursive --branch <tag> https://github.com/NatronGitHub/openfx-io.git
+
+or extract the archive of each submodule into its path, at the commit that GitHub shows next to its directory in the
+parent repository's tree (e.g. "openfx @ <sha>" in openfx-io's tree at that tag; tinydir's parent is SequenceParsing):
+
+- `openfx`: [NatronGitHub/openfx](https://github.com/NatronGitHub/openfx)
+- `SupportExt`: [NatronGitHub/openfx-supportext](https://github.com/NatronGitHub/openfx-supportext)
+- `IOSupport/SequenceParsing`: [NatronGitHub/SequenceParsing](https://github.com/NatronGitHub/SequenceParsing)
+- `IOSupport/SequenceParsing/tinydir`: [NatronGitHub/tinydir](https://github.com/NatronGitHub/tinydir)
+
 In order to get a specific tag, corresponding to a source release, do `git tag -l`
 to get the list of tags, and then `git checkout tags/<tag_name>`
 to checkout a given tag.

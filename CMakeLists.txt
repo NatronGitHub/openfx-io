@@ -53,11 +53,26 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "Prevented in-tree built. This is bad practice.")
 endif()
 
-# Check that the submodules have been initialized and updated
-foreach(_sub openfx/include SupportExt/ofxsMacros.h IOSupport/SequenceParsing/SequenceParsing.h)
+# Check that the submodules have been initialized and updated. A source tarball (GitHub's archive/<ref>.tar.gz, or a
+# release tarball) has no .git and empty submodule directories: git submodule update can't fetch them there.
+foreach(_sub openfx/include SupportExt/ofxsMacros.h IOSupport/SequenceParsing/SequenceParsing.h
+             IOSupport/SequenceParsing/tinydir/tinydir.h)
   if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${_sub}")
-    message(FATAL_ERROR "\n submodule(s) are missing, please update your repository:\n"
-                        "  > git submodule update --init --recursive\n")
+    if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
+      message(FATAL_ERROR "\n submodule(s) are missing, please update your repository:\n"
+                          "  > git submodule update --init --recursive\n")
+    else()
+      message(FATAL_ERROR "\n submodule(s) are missing, and this source tree has no .git (a source tarball?).\n"
+                          " Either clone the repository with its submodules:\n"
+                          "  > git clone --recursive --branch <tag> https://github.com/NatronGitHub/openfx-io.git\n"
+                          " or extract the archive of each submodule, at the commit this tree pins, into its path:\n"
+                          "  openfx                              https://github.com/NatronGitHub/openfx\n"
+                          "  SupportExt                          https://github.com/NatronGitHub/openfx-supportext\n"
+                          "  IOSupport/SequenceParsing           https://github.com/NatronGitHub/SequenceParsing\n"
+                          "  IOSupport/SequenceParsing/tinydir   https://github.com/NatronGitHub/tinydir\n"
+                          " (each pinned commit is in the parent repository's tree, at the tarball's tag or commit for openfx-io:\n"
+                          " GitHub shows it next to the submodule's directory, e.g. \"openfx @ <sha>\").\n")
+    endif()
   endif()
 endforeach()
 
