@@ -176,6 +176,10 @@ private:
         // A packet read from the demuxer that avcodec_send_packet() refused with AVERROR(EAGAIN), and whose drain gave
         // the requested frame: it is sent first by the next sequential request (empty if none, see demuxAndDecode()).
         AVPacket* _pendingPacket;
+        // Palette formats (AV_PIX_FMT_FLAG_PAL): the last palette side data (AV_PKT_DATA_PALETTE) read from the stream
+        // (empty if none), which is given again to the decoder after it is opened or flushed (see attachPalette()).
+        std::vector<uint8_t> _palette;
+        bool _paletteNeeded; // the decoder was opened or flushed since it last got _palette
         bool _heldFrameIsLast; // the decoder was drained after _avHeldFrame: it is the last frame of the stream
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
@@ -282,6 +286,8 @@ private:
             , _avHeldFrame(nullptr)
             , _avNextFrame(nullptr)
             , _pendingPacket(nullptr)
+            , _palette()
+            , _paletteNeeded(true)
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
             , _invalidDataSkipped(0)
@@ -542,6 +548,49 @@ private:
             _verifyNextPacket = false;
             _awaitRestartFrame = false;
             _candidatePts.clear();
+        }
+
+        // Flush the decoder: it gets the palette again with the next packet (see attachPalette()). This is defensive: no
+        // palette decoder of FFmpeg n9.0.2 clears its palette when flushed (rawdec has no flush callback, and
+        // msrle_decode_flush(), libavcodec/msrle.c:142-147, and qtrle_decode_flush(), qtrle.c:566-571, only unref the
+        // frame), but opening the decoder again (FFmpegFile::flushDecoder()) does.
+        void flushCodec()
+        {
+            avcodec_flush_buffers(_codecContext);
+            _paletteNeeded = true;
+        }
+
+        // Keep the palette side data of a packet, if any (a palette of the wrong size is ignored, as by
+        // ff_copy_palette()).
+        static void keepPalette(const AVPacket& pkt, std::vector<uint8_t>* palette)
+        {
+            size_t size = 0;
+            const uint8_t* pal = av_packet_get_side_data(&pkt, AV_PKT_DATA_PALETTE, &size);
+            if (pal && (size == AVPALETTE_SIZE)) {
+                palette->assign(pal, pal + size);
+            }
+        }
+
+        // Before a packet of the stream is sent to the decoder. Some demuxers send the palette only once, as side data
+        // of the first packet (AVI, MOV: FFmpeg n9.0.2 libavformat/avidec.c:1526-1536, libavformat/mov.c:11902-11910),
+        // and the decoders that read it from the packets (ff_copy_palette(), libavcodec/decode.c:2321-2334) keep a
+        // zeroed palette until then (e.g. libavcodec/rawdec.c:96-103). The reader seeks and flushes the decoder, so
+        // that packet is not the first one it decodes: the last palette read is attached to the first packet sent
+        // after the decoder was opened or flushed, unless that packet has its own. A palette change (AVI 'xxpc' chunks,
+        // libavformat/avidec.c:1345-1356) also comes as side data: after a backward seek, the last palette read is
+        // used, as the decoder itself would (and as in ffplay, which only flushes the decoder after a seek).
+        void attachPalette(AVPacket* pkt)
+        {
+            if (av_packet_get_side_data(pkt, AV_PKT_DATA_PALETTE, nullptr)) {
+                keepPalette(*pkt, &_palette);
+            } else if (_paletteNeeded && !_palette.empty()) {
+                uint8_t* pal = av_packet_new_side_data(pkt, AV_PKT_DATA_PALETTE, _palette.size());
+                if (!pal) {
+                    return; // out of memory: the next packet gets it
+                }
+                std::copy(_palette.begin(), _palette.end(), pal);
+            }
+            _paletteNeeded = false;
         }
 
         // a packet is sent to the decoder (window: the number of packets that may be decoded at once)
@@ -835,6 +884,7 @@ private:
     }
 
     // get stream start time
+    std::vector<std::vector<uint8_t>> readFirstPalettes();
     int64_t getStreamStartTime(Stream& stream);
 
     // What probeStreamStart() reads from the first packets of a stream (see FFmpegFile.cpp)

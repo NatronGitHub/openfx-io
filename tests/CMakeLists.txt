@@ -164,7 +164,7 @@ find_program(IO_BASH NAMES bash)
 # ---- test-ffmpeg: the FFmpeg reader-core harness (FFmpegFile.cpp), on clips that the ffmpeg CLI generates
 if(_io_t_ffmpeg)
   io_test_program(ffmpeg_read_test
-    SOURCES ${T}/ffmpeg_read_test.cpp ${S}/FFmpeg/FFmpegFile.cpp ${T}/ofx_stubs.cpp
+    SOURCES ${T}/ffmpeg_read_test.cpp ${S}/FFmpeg/FFmpegFile.cpp ${S}/FFmpeg/PixelFormat.cpp ${T}/ofx_stubs.cpp
     INCLUDES ${FFMPEG_INCLUDE_DIRS} ${S}/FFmpeg ${S}/IOSupport ${S}/SupportExt ${S}/openfx/include
              ${S}/openfx/Support/include
     LIBS PkgConfig::FFMPEG)

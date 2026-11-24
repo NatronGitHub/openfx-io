@@ -92,12 +92,16 @@
  *      at least MIN_LEVELS distinct values (more than 256 needs more than 8 bits; issue #213). With
  *      --skip-without-decoder, the harness exits with status 77 (skipped) instead of failing if the libavcodec it
  *      links has no decoder for the stream (e.g. no libdav1d for AV1: the native av1 decoder needs a hwaccel).
+ *  21. optionally (--components N) checks that the reader gives N components (FFmpegFile::getNumberOfComponents():
+ *      3 = RGB, 4 = RGBA), and (--alpha A[,TOL]) that it gives 4 components and that the mean alpha of the first and
+ *      the last frame is A (on a 0-255 scale) within TOL (default 0.1: the alpha of the test clips is exact), e.g. a
+ *      palette or gray + alpha clip that is half transparent (issue #321). --alpha with --components 3 is an error.
  *
  * A wrong seek target (e.g. the old frameToPts operator-precedence bug that
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,... [--reference-sequential]] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,... [--reference-sequential]] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]
  * Exit status: 0 = all checks passed, 77 = skipped (--skip-without-decoder), other = failure.
  */
 
@@ -243,7 +247,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,... [--reference-sequential]] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--skip-without-decoder] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,... [--reference-sequential]] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]\n", argv[0]);
         return 2;
     }
     if (std::string(argv[1]) == "--image-files") {
@@ -301,6 +305,9 @@ main(int argc, char** argv)
     int expectedBitDepth = 0; // --bit-depth
     double fineRampMaxStep = -1.; // --fine-ramp
     int fineRampMinLevels = 0;
+    int expectedComponents = 0; // --components (3 or 4; 0: not checked)
+    double expectedAlpha = -1.; // --alpha
+    double alphaTol = 0.1; // the alpha of the test clips is exact
     bool skipWithoutDecoder = false; // --skip-without-decoder
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -320,6 +327,29 @@ main(int argc, char** argv)
             const int n = std::sscanf(argv[++i], "%lf,%lf,%lf,%lf", &expectedRgb[0], &expectedRgb[1], &expectedRgb[2], &rgbTol);
             if (n < 3) {
                 std::fprintf(stderr, "bad --rgb value: %s\n", argv[i]);
+                return 2;
+            }
+        } else if (a == "--components" && i + 1 < argc) {
+            char* end = nullptr;
+            const long n = std::strtol(argv[++i], &end, 10);
+            if ((end == argv[i]) || (*end != '\0') || ((n != 3) && (n != 4))) {
+                std::fprintf(stderr, "bad --components value: %s\n", argv[i]);
+                return 2;
+            }
+            expectedComponents = static_cast<int>(n);
+        } else if (a == "--alpha" && i + 1 < argc) {
+            // A in [0, 255], TOL >= 0 (these comparisons are false for NaN)
+            char* end = nullptr;
+            const char* arg = argv[++i];
+            expectedAlpha = std::strtod(arg, &end);
+            bool ok = (end != arg) && (expectedAlpha >= 0.) && (expectedAlpha <= 255.);
+            if (ok && (*end == ',')) {
+                const char* tol = end + 1;
+                alphaTol = std::strtod(tol, &end);
+                ok = (end != tol) && (alphaTol >= 0.);
+            }
+            if (!ok || (*end != '\0')) {
+                std::fprintf(stderr, "bad --alpha value: %s\n", arg);
                 return 2;
             }
         } else if (a == "--bit-depth" && i + 1 < argc) {
@@ -445,6 +475,14 @@ main(int argc, char** argv)
         return 2;
     }
 
+    if (expectedAlpha >= 0.) {
+        if (expectedComponents == 3) {
+            std::fprintf(stderr, "--alpha needs 4 components, not --components 3\n");
+            return 2;
+        }
+        expectedComponents = 4;
+    }
+
     FFmpegFile file(filename);
     if (file.isInvalid()) {
         if (skipWithoutDecoder && hasNoVideoDecoder(filename)) {
@@ -509,8 +547,12 @@ main(int argc, char** argv)
             return 1;
         }
     }
-    if (expectedRgb[0] >= 0.) {
-        // --rgb: the first frame, then the last one (after a seek)
+    if ((expectedComponents > 0) && (nComps != expectedComponents)) {
+        std::fprintf(stderr, "FAIL: --components/--alpha: the reader gives %d components, expected %d\n", nComps, expectedComponents);
+        return 1;
+    }
+    if ((expectedRgb[0] >= 0.) || (expectedAlpha >= 0.)) {
+        // --rgb and --alpha: the first frame, then the last one (after a seek)
         std::vector<unsigned char> rgbBuf(static_cast<size_t>(w) * h * nComps * sizeOfData);
         for (int f : { 1, frames }) {
             bool ok = false;
@@ -521,8 +563,19 @@ main(int argc, char** argv)
                 error = e.what();
             }
             if (!ok) {
-                std::fprintf(stderr, "FAIL: --rgb: frame %d failed to decode: %s\n", f, error.c_str());
+                std::fprintf(stderr, "FAIL: --rgb/--alpha: frame %d failed to decode: %s\n", f, error.c_str());
                 return 1;
+            }
+            if (expectedAlpha >= 0.) {
+                const double alpha = meanComponent(rgbBuf.data(), w, h, nComps, sizeOfData, 3, 257.0); // 65535 is 255
+                std::printf("  frame %d: mean alpha %.2f (expected %.2f +-%.2f)\n", f, alpha, expectedAlpha, alphaTol);
+                if (std::fabs(alpha - expectedAlpha) > alphaTol) {
+                    std::fprintf(stderr, "FAIL: --alpha: frame %d: mean alpha is %.2f, expected %.2f +-%.2f\n", f, alpha, expectedAlpha, alphaTol);
+                    return 1;
+                }
+            }
+            if (expectedRgb[0] < 0.) {
+                continue;
             }
             double rgb[3];
             for (int c = 0; c < 3; ++c) {

@@ -735,6 +735,47 @@ NegativeStartIsPreroll(const AVFormatContext* context,
     return isMov && (avstream->pts_wrap_bits >= 63) && !(context->iformat->flags & AVFMT_TS_DISCONT);
 }
 
+// The palette side data (AV_PKT_DATA_PALETTE) of the first packet of each palette stream (AV_PIX_FMT_FLAG_PAL), by
+// stream index (empty if none), for the streams found by avformat_find_stream_info(). Some demuxers attach the
+// palette only to the first packet (see Stream::attachPalette()), which avformat_find_stream_info() read and
+// buffered: a seek drops it, and it is not read again (ff_read_frame_flush(), FFmpeg n9.0.2 libavformat/seek.c:716-744),
+// so the first packets are read before anything seeks (only if the file has a palette stream; the next probes then
+// seek, see probeStreamStart()). They come from that buffer, unless the palette stream starts late: then up to
+// kMaxPackets packets are read from the file.
+std::vector<std::vector<uint8_t>>
+FFmpegFile::readFirstPalettes()
+{
+    std::vector<std::vector<uint8_t>> palettes(_context->nb_streams);
+    std::vector<bool> pending(_context->nb_streams, false);
+    int pendingStreams = 0;
+    for (unsigned i = 0; i < _context->nb_streams; ++i) {
+        const AVCodecParameters* par = _context->streams[i]->codecpar;
+        const AVPixFmtDescriptor* desc = (par->codec_type == AVMEDIA_TYPE_VIDEO) ? av_pix_fmt_desc_get(AVPixelFormat(par->format)) : nullptr;
+        if (desc && (desc->flags & AV_PIX_FMT_FLAG_PAL)) {
+            pending[i] = true;
+            ++pendingStreams;
+        }
+    }
+    if (pendingStreams == 0) {
+        return palettes;
+    }
+    _readAtOpen = true;
+    MyAVPacket avPacket;
+    const int kMaxPackets = 1024; // bounded, for a palette stream without packets
+    for (int packets = 0; (pendingStreams > 0) && (packets < kMaxPackets) && (av_read_frame(_context, avPacket.pkt()) >= 0); ++packets) {
+        const int idx = avPacket->stream_index;
+        // the streams found while reading (AVFMTCTX_NOHEADER, e.g. MPEG-TS) are not in palettes and pending
+        if ((idx >= 0) && (size_t(idx) < pending.size()) && pending[idx]) {
+            pending[idx] = false;
+            --pendingStreams;
+            Stream::keepPalette(*avPacket.pkt(), &palettes[idx]);
+        }
+        av_packet_unref(avPacket.pkt());
+    }
+
+    return palettes;
+}
+
 // get stream start time
 // The frames are counted from it (AVStream::start_time: the first PTS of the stream). In a stream cut on an
 // I-frame, the leading B-frames of an open GOP, which reference a frame before the cut, have a PTS before it:
@@ -769,7 +810,7 @@ FFmpegFile::getStreamStartTime(Stream& stream)
 #endif
 
         // Seek 1st key-frame in video stream.
-        avcodec_flush_buffers(stream._codecContext);
+        stream.flushCodec();
 
         // Here, avPacket needs to be local as we don't need to keep any information outside this function context.
         // Do not replace this with _avPacket, which is global, because _avPacket is associated with the playback process
@@ -912,7 +953,7 @@ FFmpegFile::probeStreamStart(Stream& stream)
 {
     StreamStartProbe probe;
 
-    avcodec_flush_buffers(stream._codecContext);
+    stream.flushCodec();
     // If nothing was read or sought since avformat_find_stream_info(), the first packets are those it kept,
     // from the start of the file: no seek is needed. Otherwise, seek to the start time (by bytes if it is
     // unknown, e.g. in elementary streams), never with AVSEEK_FLAG_FRAME, which makes some demuxers (FLV)
@@ -953,6 +994,9 @@ FFmpegFile::probeStreamStart(Stream& stream)
             break; // no packet in the stream
         }
         --packetsLeft;
+        if (!eof) {
+            stream.attachPalette(avPacket.pkt());
+        }
         res = avcodec_send_packet(stream._codecContext, eof ? nullptr : avPacket.pkt());
         av_packet_unref(avPacket.pkt());
         if ((res < 0) && (res != AVERROR(EAGAIN)) && (res != AVERROR_INVALIDDATA)) {
@@ -964,7 +1008,7 @@ FFmpegFile::probeStreamStart(Stream& stream)
         }
     }
     av_frame_free(&avFrame);
-    avcodec_flush_buffers(stream._codecContext);
+    stream.flushCodec();
 
     return probe;
 } // FFmpegFile::probeStreamStart
@@ -1567,7 +1611,7 @@ FFmpegFile::getStreamFrames(Stream& stream)
 
         // Seek last key-frame.
         _readAtOpen = true;
-        avcodec_flush_buffers(stream._codecContext);
+        stream.flushCodec();
         av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
 
         // Read up to last frame, extending max PTS for every valid PTS value found for the video stream.
@@ -1721,6 +1765,7 @@ FFmpegFile::FFmpegFile(const string& filename)
     _context->probesize = 100000000;
 
     CHECK(avformat_find_stream_info(_context, nullptr));
+    const std::vector<std::vector<uint8_t>> firstPalettes = readFirstPalettes();
 
 #if TRACE_FILE_OPEN
     std::cout << "  " << _context->nb_streams << " streams:" << std::endl;
@@ -1834,6 +1879,9 @@ FFmpegFile::FFmpegFile(const string& filename)
         }
         Stream* stream = new Stream();
         stream->_idx = i;
+        if (i < firstPalettes.size()) { // not a stream found after readFirstPalettes()
+            stream->_palette = firstPalettes[i];
+        }
         stream->_avstream = avstream;
         stream->_codecContext = codecCtx;
         stream->_videoCodec = videoCodec;
@@ -1850,18 +1898,11 @@ FFmpegFile::FFmpegFile(const string& filename)
             }
             const int bitDepth = maxComponentDepth(*avPixFmtDescriptor);
             stream->_bitDepth = bitDepth;
-            // Sanity check the number of components.
-            // Only 3 or 4 components are supported by |engine|, that is
-            // Nuke/NukeStudio will only accept 3 or 4 component data.
-            // For a monochrome image (single channel) promote to 3
-            // channels. This is in keeping with all the assumptions
-            // throughout the code that if it is not 4 channels data
-            // then it must be three channel data. This ensures that
-            // all the buffer size calculations are correct.
-            stream->_numberOfComponents = avPixFmtDescriptor->nb_components;
-            if (3 > stream->_numberOfComponents) {
-                stream->_numberOfComponents = 3;
-            }
+            // The output is RGBA if the pixel format has an alpha channel (AV_PIX_FMT_FLAG_ALPHA), else RGB. This is
+            // the flag, not the component count: the palette of PAL8 has an alpha channel, but its descriptor has 1
+            // component (the index), and gray + alpha (ya8, ya16) has 2 (FFmpeg n9.0.2 libavutil/pixdesc.h:138-147,
+            // libavutil/pixdesc.c:427-436 and 1836-1863). Every descriptor with 4 components has the flag.
+            stream->_numberOfComponents = FFmpeg::pixelFormatAlpha(stream->_codecContext->pix_fmt) ? 4 : 3;
         }
 
         if (stream->_bitDepth > 8) {
@@ -2683,12 +2724,13 @@ FFmpegFile::flushDecoder(Stream* stream)
                 avcodec_free_context(&stream->_codecContext);
                 stream->_codecContext = ctx;
                 stream->_damagedSinceOpen = false;
+                stream->_paletteNeeded = true;
                 return;
             }
         }
         avcodec_free_context(&ctx);
     }
-    avcodec_flush_buffers(stream->_codecContext);
+    stream->flushCodec();
 }
 
 bool
@@ -3212,6 +3254,7 @@ FFmpegFile::demuxAndDecode(AVFrame* avFrameOut, int64_t frame, bool acceptCorrup
         }
         if (!resending) {
             stream->packetSent(*avPacket.pkt(), frameThreadsActive ? (std::max)(1, stream->_codecContext->thread_count) : 1);
+            stream->attachPalette(avPacket.pkt());
         }
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
         if ((res >= 0) && !acceptCorruptHeldFrame) {
