@@ -1159,8 +1159,11 @@ private:
     void flushDecoder(Stream* stream);
     bool seekToFrame(Stream* stream, int64_t frame, int seekFlags);
 
+    // decodeAsIntraOnly: each frame is decoded from its own packet, as for an intra-only codec (IsIntraOnly()), or for a
+    // stream found to be all keyframes after damage (Stream::allKeyframesAfterDamage(), e.g. all-intra H.264): no taint,
+    // a held frame that conceals damage may be displayed in a timestamp gap, and decoding stops at damaged packets.
     // damagedFrom: intra-only, the first frame of the frames up to the requested one known to be damaged (-1 if none)
-    bool demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool acceptCorruptHeldFrame, int damagedFrom = -1);
+    bool demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool decodeAsIntraOnly, int damagedFrom = -1);
 
     bool imageConvert(Stream* stream, AVFrame* avFrameIn, AVFrame* avFrameOut);
 };

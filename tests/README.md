@@ -1167,7 +1167,12 @@ must show the frame before them, also when each one is decoded first in a newly 
 generated directly in yuvj420p (`RAMP_PIX_FMT`), without a round trip through the video range: on
 every FFmpeg version, that round trip loses a luma level (32 becomes 31, hidden by the `--ramp`
 tolerance of 1.6), to which FFmpeg n8.0 adds a chroma bias
-([#345](https://github.com/NatronGitHub/openfx-io/issues/345)). A truncated H.264 MP4 (faststart,
+([#345](https://github.com/NatronGitHub/openfx-io/issues/345)). Two ProRes frames whose slices are damaged (packets 2 and 18, about one byte in 60 modified, issue #219), which
+the decoder outputs with `decode_error_flags` and with undecoded slices that depend on its buffers (the read order and
+the threads), must show the previous frame too (`--gaps`, also decoded first in a newly opened file, `--fresh`). The
+script first checks that the ffmpeg CLI decodes every frame, with one "corrupt decoded frame" warning per damaged
+packet (`CHECK_DAMAGED_NOISE`), and fails otherwise. A first ProRes frame with damaged slices (packet 0) has no previous
+frame to show and must fail, with an error (`--fail 1`). A truncated H.264 MP4 (faststart,
 with B-frames) must fail from the DTS of the truncated packet, found in the index at open, in any
 render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
 decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one damaged
