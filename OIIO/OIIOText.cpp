@@ -406,22 +406,10 @@ OIIOTextPlugin::render(const RenderArguments& args)
     OIIO::ROI srcRoi(tmpSpec.x, tmpSpec.x + tmpSpec.width, tmpSpec.y, tmpSpec.y + tmpSpec.height);
     int ytext = textCoordToInt(y * args.renderScale.y);
     if (flipit) {
-        // from the OIIO 1.5 release notes:
-        // Fixes, minor enhancements, and performance improvements:
-        // * ImageBufAlgo:
-        //   * flip(), flop(), flipflop() have been rewritten to work more
-        //     sensibly for cropped images. In particular, the transformation now
-        //     happens with respect to the display (full) window, rather than
-        //     simply flipping or flopping within the data window. (1.5.2)
-#if OIIO_VERSION >= 10502
-        // the transformation happens with respect to the display (full) window
+        // ImageBufAlgo::flip() works with respect to the display (full) window, not the data window
         tmpSpec.y = ((tmpSpec.full_y + tmpSpec.full_height - 1) - tmpSpec.y) - (tmpSpec.height - 1);
         tmpSpec.full_y = 0;
         ytext = (tmpSpec.full_y + tmpSpec.full_height - 1) - ytext;
-#else
-        // only the data window is flipped
-        ytext = tmpSpec.y + ((tmpSpec.y + tmpSpec.height - 1) - ytext);
-#endif
     }
     assert(tmpSpec.width == args.renderWindow.x2 - args.renderWindow.x1);
     assert(tmpSpec.height == args.renderWindow.y2 - args.renderWindow.y1);

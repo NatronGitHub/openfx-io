@@ -30,6 +30,7 @@
 #include <cstring> // memset
 #include <fstream>
 #include <iostream>
+#include <memory> // std::unique_ptr
 #include <new> // std::bad_alloc
 #include <set>
 #include <sstream>
@@ -121,13 +122,6 @@ using std::vector;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
-#if OIIO_PLUGIN_VERSION >= 22
-// OIIO_VERSION_MAJOR >= 2
-typedef std::unique_ptr<ImageInput> ImageInputPtr;
-#else
-typedef ImageInput* ImageInputPtr;
-#endif
-
 #define kPluginName "ReadOIIO"
 #define kPluginGrouping "Image/Readers"
 #define kPluginDescription                                                              \
@@ -176,10 +170,8 @@ typedef ImageInput* ImageInputPtr;
                                                               "Default: 0. If you set this value above 0.99999, then default value will be used. If you set this value below 0.00001, then no maximum adjustment will be performed. A value of 0.75 is reasonable for still shots, but sequences should always use 0.\n" \
                                                               "Adjusting maximum should not damage any picture (esp. if you use default value) and is very useful for correcting channel overflow problems (magenta clouds on landscape shots, green-blue highlights for indoor shots)." // default: 0.
 
-#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
 #define kParamRawUserSat "rawUserSat"
 #define kParamRawUserSatLabel "Max. value", "The camera sensor saturation (maximum) value. Raw values greater or equal to this are considered saturated and are processed using the algorithm specified by the rawHighlightMode parameter. 0 means to use the default value."
-#endif
 
 // int output_color;
 #define kParamRawOutputColor "rawOutputColor"
@@ -205,10 +197,8 @@ enum RawOutputColorEnum {
 #endif
 };
 
-#if OIIO_VERSION >= 10904
 #define kParamRawAber "rawAber"
 #define kParamRawAberLabel "Aber.", "Correction of chromatic aberrations, given as a red multiplier and a blue multiplier. The default values of (1.,1.) correspond to no correction."
-#endif
 
 // int use_camera_matrix;
 // 0: do not use embedded color profile
@@ -225,11 +215,6 @@ enum RawUseCameraMatrixEnum {
     eRawUseCameraMatrixForce,
 };
 
-// oiio 1.7.17 can be patched using
-// https://github.com/OpenImageIO/oiio/commit/42cf4d82419795e50bc8be474161968f9f33ff41.diff
-// from
-// https://github.com/OpenImageIO/oiio/pull/1851
-#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
 #define kParamRawHighlightMode "rawHighlightMode"
 #define kParamRawHighlightModeLabel "Highlight Mode", "Algorithm for restoring highlight clippings. Highlights are part of your images that are burned due to the inability of your camera to capture the highlights. Highlight recovery is applied after white balance and demosaic."
 #define kParamRawHighlightModeClip "Clip", "Clip all highlights to white.", "clip"
@@ -244,7 +229,6 @@ enum RawHighlightModeEnum {
 };
 #define kParamRawHighlightRebuildLevel "rawHighlightRebuildLevel"
 #define kParamRawHighlightRebuildLevelLabel "Rebuild Level", "Level of aggressiveness used to rebuild highlights. rawHighlightRebuildLevel=2 (which corresponds to -H 5 in LibRaw/dcraw) is a good compromise.  If that's not good enough, use rawHighlightRebuildLevel=6, cut out the non-white highlights, and paste them into an image generated with rawHighlightRebuildLevel=0. "
-#endif
 
 // int exp_correc; float exp_shift
 #define kParamRawExposure "rawExposure"
@@ -269,8 +253,7 @@ enum RawHighlightModeEnum {
 #define kParamRawDemosaicMixed "Mixed", "Mixed VCD/Modified AHD interpolation." WARN_DEMOSAIC, "mixed"
 #define kParamRawDemosaicLMMSE "LMMSE", "LMMSE interpolation." WARN_DEMOSAIC, "lmmse"
 #define kParamRawDemosaicAMaZE "AMaZE", "AMaZE interpolation." WARN_DEMOSAIC, "amaze"
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
-// not available in OIIO 1.7.11:
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0)
 #define kParamRawDemosaicDHT "DHT", "DHT interpolation.", "dht"
 #define kParamRawDemosaicAAHD "AAHD", "Modified AHD interpolation by Anton Petrusevich.", "aahd"
 #endif
@@ -287,7 +270,7 @@ enum RawDemosaicEnum {
     eRawDemosaicMixed,
     eRawDemosaicLMMSE,
     eRawDemosaicAMaZE,
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0)
     eRawDemosaicDHT,
     eRawDemosaicAAHD,
 #endif
@@ -458,13 +441,14 @@ private:
 
     void getOIIOChannelIndexesFromLayerName(const string& filename, int view, const string& layerName, PixelComponentEnum pixelComponents, const vector<ImageSpec>& subimages, vector<int>& channels, int& numChannels, int& subImageIndex);
 
-    void openFile(const string& filename, ImageInputPtr* img, vector<ImageSpec>* subimages);
+    // throws (with a persistent message) if the file cannot be opened: never returns null
+    std::unique_ptr<ImageInput> openFile(const string& filename, vector<ImageSpec>* subimages);
 
     virtual bool getFrameBounds(const string& filename, OfxTime time, int view, OfxRectI* bounds, OfxRectI* format, double* par, string* error, int* tile_width, int* tile_height) OVERRIDE FINAL;
 
     string metadata(const string& filename);
 
-    void getSpecsFromImageInput(const ImageInputPtr& img, vector<ImageSpec>* subimages) const;
+    void getSpecsFromImageInput(ImageInput& img, vector<ImageSpec>* subimages) const;
 
     void getSpecs(const string& filename, vector<ImageSpec>* subimages, string* error = 0) const;
 
@@ -483,20 +467,14 @@ private:
     BooleanParam* _rawAutoBright;
     BooleanParam* _rawUseCameraWB;
     DoubleParam* _rawAdjustMaximumThr;
-#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
     IntParam* _rawUserSat;
-#endif
     ChoiceParam* _rawOutputColor;
     ChoiceParam* _rawUseCameraMatrix;
-#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     ChoiceParam* _rawHighlightMode;
     IntParam* _rawHighlightRebuildLevel;
-#endif
     DoubleParam* _rawExposure;
     ChoiceParam* _rawDemosaic;
-#if OIIO_VERSION >= 10904
     Double2DParam* _rawAber;
-#endif
 
     /// V2 params
     ChoiceParam* _outputLayer;
@@ -544,20 +522,14 @@ ReadOIIOPlugin::ReadOIIOPlugin(OfxImageEffectHandle handle,
     _rawAutoBright = fetchBooleanParam(kParamRawAutoBright);
     _rawUseCameraWB = fetchBooleanParam(kParamRawUseCameraWB);
     _rawAdjustMaximumThr = fetchDoubleParam(kParamRawAdjustMaximumThr);
-#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
     _rawUserSat = fetchIntParam(kParamRawUserSat);
-#endif
     _rawOutputColor = fetchChoiceParam(kParamRawOutputColor);
     _rawUseCameraMatrix = fetchChoiceParam(kParamRawUseCameraMatrix);
-#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     _rawHighlightMode = fetchChoiceParam(kParamRawHighlightMode);
     _rawHighlightRebuildLevel = fetchIntParam(kParamRawHighlightRebuildLevel);
-#endif
     _rawExposure = fetchDoubleParam(kParamRawExposure);
     _rawDemosaic = fetchChoiceParam(kParamRawDemosaic);
-#if OIIO_VERSION >= 10904
     _rawAber = fetchDouble2DParam(kParamRawAber);
-#endif
     _offsetNegativeDispWindow = fetchBooleanParam(kParamOffsetNegativeDisplayWindow);
     _edgePixels = fetchChoiceParam(kParamEdgePixels);
 
@@ -576,7 +548,6 @@ oiio_versions()
     int ver = openimageio_version();
     oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
     oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100) << std::endl;
-#if OIIO_VERSION >= 10705
     string libs = OIIO::get_string_attribute("library_list");
     if (libs.size()) {
         oss << std::endl
@@ -588,7 +559,6 @@ oiio_versions()
             oss << s.substr(pos + 1) << std::endl;
         }
     }
-#endif
 
     return oss.str();
 }
@@ -668,16 +638,10 @@ ReadOIIOPlugin::changedParam(const InstanceChangedArgs& args,
             }
         }
     } else if ((paramName == kParamRawAutoBright) || (paramName == kParamRawUseCameraWB) || (paramName == kParamRawAdjustMaximumThr) ||
-#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
                (paramName == kParamRawUserSat) ||
-#endif
                (paramName == kParamRawOutputColor) || (paramName == kParamRawUseCameraMatrix) || (paramName == kParamRawExposure) ||
-#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
                (paramName == kParamRawHighlightMode) || (paramName == kParamRawHighlightRebuildLevel) ||
-#endif
-#if OIIO_VERSION >= 10904
                (paramName == kParamRawAber) ||
-#endif
                (paramName == kParamRawDemosaic)) {
         // advanced (RAW) parameters: nothing to do here, they are read when the file is opened (getConfig())
     } else {
@@ -882,13 +846,13 @@ ReadOIIOPlugin::buildOutputLayerMenu(const vector<ImageSpec>& subimages)
 } // buildOutputLayerMenu
 
 void
-ReadOIIOPlugin::getSpecsFromImageInput(const ImageInputPtr& img,
+ReadOIIOPlugin::getSpecsFromImageInput(ImageInput& img,
                                        vector<ImageSpec>* subimages) const
 {
     subimages->clear();
     int subImageIndex = 0;
     ImageSpec spec;
-    while (img->seek_subimage(subImageIndex, 0, spec)) {
+    while (img.seek_subimage(subImageIndex, 0, spec)) {
         subimages->push_back(spec);
         ++subImageIndex;
 #ifndef OFX_READ_OIIO_SUPPORTS_SUBIMAGES
@@ -897,7 +861,7 @@ ReadOIIOPlugin::getSpecsFromImageInput(const ImageInputPtr& img,
     }
     // clear the error of the failed seek past the last subimage, which is expected: else it would be the message of
     // the next read error (#242)
-    (void)img->geterror();
+    (void)img.geterror();
 }
 
 void
@@ -911,11 +875,7 @@ ReadOIIOPlugin::getSpecs(const string& filename,
         ImageSpec config;
         getConfig(&config);
 
-#if OIIO_PLUGIN_VERSION >= 22
-        ImageInputPtr img = ImageInput::open(filename, &config);
-#else
-        auto_ptr<ImageInput> img(ImageInput::open(filename, &config));
-#endif
+        std::unique_ptr<ImageInput> img = ImageInput::open(filename, &config);
         if (!img.get()) {
             if (error) {
                 *error = "Could node open file " + filename;
@@ -923,11 +883,7 @@ ReadOIIOPlugin::getSpecs(const string& filename,
 
             return;
         }
-#if OIIO_PLUGIN_VERSION >= 22
-        getSpecsFromImageInput(img, subimages);
-#else
-        getSpecsFromImageInput(img.get(), subimages);
-#endif
+        getSpecsFromImageInput(*img, subimages);
         img->close();
     }
     if (subimages->empty()) {
@@ -1410,15 +1366,13 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
 
     config->attribute("raw:adjust_maximum_thr", (float)_rawAdjustMaximumThr->getValue());
 
-#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
-    // Add "raw:user_sat" configuration attribute to the reader. #1666 (1.7.15/1.8.4)
+    // Add "raw:user_sat" configuration attribute to the reader. (OpenImageIO #1666)
     // Set camera maximum value if "raw:user_sat" is not 0
     // user_sat is used to set sensor saturation (max possible) value.
     int rawUserSat = _rawUserSat->getValue();
     if (rawUserSat > 0) {
         config->attribute("raw:user_sat", rawUserSat);
     }
-#endif
 
     // Check to see if the user has explicitly set the output colorspace primaries
     const char* cs = NULL;
@@ -1478,12 +1432,11 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
         config->attribute("raw:Exposure", (float)rawExposure);
     }
 
-#if OIIO_VERSION >= 10904
     // Chromatic Aberration
     // see:
     // https://github.com/NatronGitHub/Natron/issues/309
     // https://github.com/OpenImageIO/oiio/issues/2029
-    // added to OIIO 1.9.4 via https://github.com/OpenImageIO/oiio/pull/2030
+    // https://github.com/OpenImageIO/oiio/pull/2030
     // Correction of chromatic aberrations; the only specified values are
     // - the red multiplier
     // - the blue multiplier.
@@ -1492,9 +1445,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
         float floats[2] = { (float)rawAber.x, (float)rawAber.y };
         config->attribute("raw:aber", TypeDesc(TypeDesc::FLOAT, 2), &floats[0]);
     }
-#endif
 
-#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
     // Highlight adjustment
     // (0=clip, 1=unclip, 2=blend, 3+=rebuild)
     // LibRaw offers several algorithms for restoring highlight clippings — Solid White, Unclip, Blend, and Rebuild
@@ -1513,7 +1464,6 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
             config->attribute("raw:HighlightMode", (int)rawHighlightMode + rawHighlightRebuildLevel);
         }
     }
-#endif
 
     // Interpolation quality
     // note: LibRaw must be compiled with demosaic pack GPL2 to use demosaic
@@ -1548,7 +1498,7 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
         d = "DCB";
         break;
     case eRawDemosaicAHDMod:
-        d = "AHD-Mod"; // new name since oiio 1.7.13
+        d = "AHD-Mod";
         break;
     case eRawDemosaicAFD:
         d = "AFD";
@@ -1565,12 +1515,12 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     case eRawDemosaicAMaZE:
         d = "AMaZE";
         break;
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0)
     case eRawDemosaicDHT:
-        d = "DHT"; // available since oiio 1.7.13
+        d = "DHT";
         break;
     case eRawDemosaicAAHD:
-        d = "AAHD"; // available since oiio 1.7.13
+        d = "AAHD";
         break;
 #endif
     }
@@ -1579,25 +1529,24 @@ ReadOIIOPlugin::getConfig(ImageSpec* config) const
     }
 }
 
-void
+std::unique_ptr<ImageInput>
 ReadOIIOPlugin::openFile(const string& filename,
-                         ImageInputPtr* img,
                          vector<ImageSpec>* subimages)
 {
     // use the right config
     ImageSpec config;
     getConfig(&config);
 
-    *img = ImageInput::open(filename, &config);
-    if (!(*img)) {
+    std::unique_ptr<ImageInput> img = ImageInput::open(filename, &config);
+    if (!img) {
         // (OIIO::geterror() also clears OpenImageIO's pending error)
         const string error = OIIO::geterror();
         setPersistentMessage(Message::eMessageError, "", string("Cannot open file ") + filename + (error.empty() ? "" : ": " + error));
         throwSuiteStatusException(kOfxStatFailed);
-
-        return;
     }
     getSpecsFromImageInput(*img, subimages);
+
+    return img;
 }
 
 void
@@ -1907,23 +1856,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
     vector<int> channels;
     int numChannels = 0;
-#if OIIO_PLUGIN_VERSION >= 22
-    ImageInputPtr img;
-#else
-    auto_ptr<ImageInput> img;
-#endif
     vector<ImageSpec> subimages;
-
-    ImageInputPtr rawImg = 0;
-    openFile(filename, &rawImg, &subimages);
-    if (rawImg) {
-#if OIIO_PLUGIN_VERSION >= 22
-        img.swap(rawImg);
-#else
-        img.reset(rawImg);
-#endif
-    }
-    if (img.get() && !std::strcmp(img->format_name(), "raw")) {
+    std::unique_ptr<ImageInput> img = openFile(filename, &subimages);
+    if (!std::strcmp(img->format_name(), "raw")) {
         pinOpenMPAfterRawRead.raw = true;
     }
 
@@ -2052,7 +1987,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
     // (into a local spec: subimages must stay the specs of all the subimages, see getFrameBoundsOfSpecs() below)
     ImageSpec seekSpec;
-    if (img.get() && !img->seek_subimage(subImageIndex, 0, seekSpec)) {
+    if (!img->seek_subimage(subImageIndex, 0, seekSpec)) {
         stringstream ss;
         ss << "Cannot seek subimage " << subImageIndex << " in " << filename;
         setPersistentMessage(Message::eMessageError, "", ss.str());
@@ -2064,7 +1999,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     // the last subimage in getSpecsFromImageInput()): if the file was rewritten in place since openFile(), the header
     // is not the one that subimages, and thus the windows, buffers and channels below, come from, and reading would
     // write out of them (#242).
-    if (img.get() && !sameLayout(seekSpec, subimages[subImageIndex])) {
+    if (!sameLayout(seekSpec, subimages[subImageIndex])) {
         setPersistentMessage(Message::eMessageError, "", string("File changed while it was read: ") + filename);
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2151,7 +2086,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     std::size_t incr; // number of channels processed
     for (std::size_t i = 0; i < channels.size(); i += incr) {
         incr = 1;
-        // if the channel was already read, just duplicate it (calling multiple times read_scanlines() on the same channel seems buggy in OIIO 1.7.12)
+        // if the channel was already read, just duplicate it (rather than reading the same channel again)
         bool duplicate = false;
         for (std::size_t j = 0; !duplicate && j < i; ++j) {
             if (channels[i] == channels[j]) {
@@ -2414,22 +2349,14 @@ ReadOIIOPlugin::metadata(const string& filename)
 {
     stringstream ss;
 
-#if OIIO_PLUGIN_VERSION >= 22
-    ImageInputPtr img;
-#else
-    auto_ptr<ImageInput> img;
-#endif
+    std::unique_ptr<ImageInput> img;
 
     {
         // use the right config
         ImageSpec config;
         getConfig(&config);
 
-#if OIIO_PLUGIN_VERSION >= 22
         img = ImageInput::open(filename, &config);
-#else
-        img.reset(ImageInput::open(filename, &config));
-#endif
         if (!img.get()) {
             setPersistentMessage(Message::eMessageError, "", string("ReadOIIO: cannot open file ") + filename);
             throwSuiteStatusException(kOfxStatFailed);
@@ -2646,7 +2573,7 @@ ReadOIIOPluginFactory::load()
         if (libraw_gpl3) {
             libraw_demosaic[i++] = eRawDemosaicAMaZE;
         }
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0)
         libraw_demosaic[i++] = eRawDemosaicDHT;
         libraw_demosaic[i++] = eRawDemosaicAAHD;
 #endif
@@ -2659,26 +2586,6 @@ ReadOIIOPluginFactory::load()
     }
 
     _extensions.clear();
-#if 0
-    // hard-coded extensions list
-    const char* extensionsl[] = {
-        /*"bmp",*/ // OpenImageIO does not read correctly https://raw.githubusercontent.com/NatronGitHub/Natron-Tests/master/TestImageBMP/input.bmp
-        "cin", "dds", "dpx", "f3d", "fits", "hdr",
-#if OIIO_VERSION >= 20100
-        "heic", "heif",
-#endif
-        "ico",
-        "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
-        "pbm", "pgm", "ppm",
-#if OIIO_VERSION >= 10605
-        "pfm", // PFM was flipped before 1.6.5
-#endif
-        "psd", "pdd", "psb", "ptex", "rla", "sgi", "rgb", "rgba", "bw", "int", "inta", "pic", "tga", "tpic", "tif", "tiff", "tx", "env", "sm", "vsm", "zfile", NULL
-    };
-    for (const char** ext = extensionsl; *ext != NULL; ++ext) {
-        _extensions.push_back(*ext);
-    }
-#else
     // get extensions from OIIO (but there is no distinctions between readers and writers)
     string extensions_list;
     getattribute("extension_list", extensions_list);
@@ -2694,9 +2601,6 @@ ReadOIIOPluginFactory::load()
         }
     }
     const char* extensions_denylist[] = {
-#if OIIO_VERSION < 10605
-        "pfm", // PFM was flipped before 1.6.5
-#endif
         "avi",
         "mov",
         "qt",
@@ -2715,7 +2619,6 @@ ReadOIIOPluginFactory::load()
         extensionsl.remove(*e);
     }
     _extensions.assign(extensionsl.begin(), extensionsl.end());
-#endif
     // LibRaw's OpenMP runtime must outlive IO.ofx, as its worker threads do (#239)
     pinOpenMPRuntime();
     // last: only count a successful load (if load throws, the host does not call unload)
@@ -2748,20 +2651,14 @@ ReadOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
                               "Field3D (*.f3d)\n"
                               "FITS (*.fits)\n"
                               "HDR/RGBE (*.hdr)\n"
-#if OIIO_VERSION >= 20100
                               "HEIC/HEIF (*.heic *.heif)\n"
-#endif
                               "ICO (*.ico)\n"
                               "IFF (*.iff)\n"
                               "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
                               "JPEG-2000 (*.jp2 *.j2k)\n"
                               "OpenEXR (*.exr)\n"
                               "PNG / Portable Network Graphics (*.png)\n"
-#if OIIO_VERSION >= 10400
                               "PNM / Netpbm (*.pbm *.pgm *.ppm *.pfm)\n"
-#else
-                               "PNM / Netpbm (*.pbm *.pgm *.ppm)\n"
-#endif
                               "PSD (*.psd *.pdd *.psb)\n"
                               "Ptex (*.ptex)\n"
                               "RAW digital camera files (*.crw *.cr2 *.nef *.raf *.dng and others)\n"
@@ -2854,7 +2751,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     page->addChild(*param);
                 }
             }
-#if OIIO_VERSION >= 10804 || (OIIO_VERSION >= 10715 && OIIO_VERSION < 10800)
             {
                 IntParamDescriptor* param = desc.defineIntParam(kParamRawUserSat);
                 param->setLabelAndHint(kParamRawUserSatLabel);
@@ -2869,7 +2765,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     page->addChild(*param);
                 }
             }
-#endif
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawOutputColor);
                 param->setLabelAndHint(kParamRawOutputColorLabel);
@@ -2916,7 +2811,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     page->addChild(*param);
                 }
             }
-#if OIIO_VERSION >= 10808 || (OIIO_VERSION >= 10717 && OIIO_VERSION < 10800)
             {
                 ChoiceParamDescriptor* param = desc.defineChoiceParam(kParamRawHighlightMode);
                 param->setLabelAndHint(kParamRawHighlightModeLabel);
@@ -2951,7 +2845,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     page->addChild(*param);
                 }
             }
-#endif
             {
                 DoubleParamDescriptor* param = desc.defineDoubleParam(kParamRawExposure);
                 param->setLabelAndHint(kParamRawExposureLabel);
@@ -3000,7 +2893,7 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicAMaZE);
                     param->appendOption(kParamRawDemosaicAMaZE);
                 }
-#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0) && OIIO_VERSION >= 10712
+#if LIBRAW_VERSION >= LIBRAW_MAKE_VERSION(0, 16, 0)
                 assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicDHT);
                 param->appendOption(kParamRawDemosaicDHT);
                 assert(libraw_demosaic[param->getNOptions()] == eRawDemosaicAAHD);
@@ -3015,7 +2908,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     page->addChild(*param);
                 }
             }
-#if OIIO_VERSION >= 10904
             {
                 Double2DParamDescriptor* param = desc.defineDouble2DParam(kParamRawAber);
                 param->setLabelAndHint(kParamRawAberLabel);
@@ -3030,7 +2922,6 @@ ReadOIIOPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                     page->addChild(*param);
                 }
             }
-#endif
         }
     }
 

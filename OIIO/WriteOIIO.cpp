@@ -64,13 +64,6 @@ using std::vector;
 
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
-#if OIIO_PLUGIN_VERSION >= 22
-// OIIO_VERSION_MAJOR >= 2
-typedef std::unique_ptr<ImageOutput> ImageOutputPtr;
-#else
-typedef ImageOutput* ImageOutputPtr;
-#endif
-
 // The ImageOutput that OpenImageIO would use to write filename, to query what its format supports, or null if it
 // cannot write it. A failed ImageOutput::create() leaves an error, which OpenImageIO prints at exit if it is never
 // retrieved (#228): it is retrieved here. An empty name (no file yet) is not passed to create(), which would fail.
@@ -602,7 +595,6 @@ oiio_versions()
     std::ostringstream oss;
     oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
     oss << oiioVersionString(openimageio_version()) << std::endl;
-#if OIIO_VERSION >= 10705
     string libs = OIIO::get_string_attribute("library_list");
     if (libs.size()) {
         oss << std::endl
@@ -614,7 +606,6 @@ oiio_versions()
             oss << s.substr(pos + 1) << std::endl;
         }
     }
-#endif
 
     return oss.str();
 }
@@ -1004,12 +995,11 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
     }
 }
 
-// OpenImageIO 2.2 or later (ImageOutput::set_ioproxy(), IOFile(FILE*, Mode) and its protected m_file). If a writer
-// does not use the proxy after all, it writes the file by name, as without it.
-#if OIIO_VERSION >= 20200
 // The file that an ImageOutput writes through (ImageOutput::set_ioproxy()). It keeps the first write error, because
 // OpenImageIO does not report every one: its PNG writer ignores them, and its JPEG writer, when it writes to a "file"
 // proxy, exits the process on them (libjpeg's default error_exit()) (#362).
+// It uses IOFile(FILE*, Mode) and its protected m_file. If a writer does not use the proxy after all, it writes the file
+// by name, as without it.
 // - proxytype() is not "file", so that the JPEG writer encodes into memory, then writes that through this proxy
 //   (OpenImageIO 3.1.17 jpegoutput.cpp:150-157).
 // - The file is created by the first write, so that a writer that ignores the proxy and writes the file by name
@@ -1102,19 +1092,12 @@ private:
     bool _created = false;
     mutable string _failure;
 };
-#endif
 
 struct WriteOIIOEncodePlanesData {
-#if OIIO_VERSION >= 20200
     // The file of output, if the format supports ioproxy (#362). Declared before output, whose destructor may still
     // write to it.
     std::unique_ptr<CheckedFile> file;
-#endif
-#if OIIO_PLUGIN_VERSION >= 22
-    ImageOutputPtr output;
-#else
-    auto_ptr<ImageOutput> output;
-#endif
+    std::unique_ptr<ImageOutput> output;
     vector<ImageSpec> specs;
     string filename; // the file that output writes (for the error messages of endEncodeParts())
     bool zstdWrittenAsZip = false; // an EXR file with the zstd compression, which OpenImageIO writes as zip (#171)
@@ -1156,11 +1139,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     assert(user_data);
     WriteOIIOEncodePlanesData* data = (WriteOIIOEncodePlanesData*)user_data;
     data->filename = filename;
-#if OIIO_PLUGIN_VERSION >= 22
     data->output = ImageOutput::create(filename);
-#else
-    data->output.reset(ImageOutput::create(filename));
-#endif
     if (!data->output.get()) {
         // output is NULL: retrieve OpenImageIO's error (#228)
         const string reason = OIIO::geterror();
@@ -1420,28 +1399,13 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     }
 #endif // ifdef OFX_IO_USING_OCIO
     if (!_quality->getIsSecret()) {
-#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string(quality);
-#else
-        spec.attribute("CompressionQuality", quality);
-#endif
     } else if (!_dwaCompressionLevel->getIsSecret()) {
-#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string((int)dwaCompressionLevel);
-#else
-        spec.attribute("openexr:dwaCompressionLevel", (float)dwaCompressionLevel);
-#endif
     } else if (!_zipCompressionLevel->getIsSecret()) {
-#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string(zipCompressionLevel); // zip and zips compression level 1 to 9 range
-#else
-        spec.attribute("CompressionQuality", zipCompressionLevel);
-        spec.attribute("tiff:zipquality", zipCompressionLevel);
-#endif
     } else if (!_zstdCompressionLevel->getIsSecret()) {
-#if OIIO_VERSION >= 20100 // Introduced in OIIO 2.1.0 https://github.com/OpenImageIO/oiio/pull/2111
         compression += ':' + std::to_string(zstdCompressionLevel); // zstd compression level 1 to 22 range
-#endif
     }
     spec.attribute("Orientation", orientation + 1);
     if (isEXR && !lineOrder.empty()) {
@@ -1768,14 +1732,12 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
         return;
     }
-#if OIIO_VERSION >= 20200
     if (data->output->supports("ioproxy")) {
         data->file = std::make_unique<CheckedFile>(filename);
         // set_ioproxy(), not the oiio:ioproxy attribute, which the multi-part EXR writer ignores (OpenImageIO 3.1.17
         // exroutput.cpp:765-790); true, since the output supports ioproxy
         (void)data->output->set_ioproxy(data->file.get());
     }
-#endif
     // Some formats only support opening all subimages at once.
     // See https://openimageio.readthedocs.io/en/stable/imageoutput.html
     if (!data->output->open(filename, data->specs.size(), &data->specs.front())) {
@@ -1787,12 +1749,10 @@ void
 WriteOIIOPlugin::reportOutputError(const WriteOIIOEncodePlanesData& data)
 {
     string error = data.output->geterror();
-#if OIIO_VERSION >= 20200
     // e.g. "File too large", which the error of OpenImageIO may not say ("Failed OpenEXR write: ... File output failed.")
     if (data.file && !data.file->failure().empty() && (error.find(data.file->failure()) == string::npos)) {
         error += (error.empty() ? "" : " (") + data.file->failure() + (error.empty() ? "" : ")");
     }
-#endif
     reportWriteError(data.filename, error);
 }
 
@@ -1895,14 +1855,12 @@ WriteOIIOPlugin::endEncodeParts(void* user_data)
         // does not erase them (OIIO 3.1.17 imageoutput.cpp, ~ImageOutput(): the output_error_messages erase is
         // commented out), so it would grow by one string per frame.
         (void)data->output->geterror();
-#if OIIO_VERSION >= 20200
         if (data->file) {
             data->file->close();
             if (!data->file->failure().empty()) {
                 reportWriteError(data->filename, data->file->failure());
             }
         }
-#endif
     }
     if (data->zstdWrittenAsZip) {
         _zstdWrittenAsZip = true;
@@ -1950,25 +1908,6 @@ void
 WriteOIIOPluginFactory::load()
 {
     _extensions.clear();
-#if 0
-    // hard-coded extensions list
-    const char* extensionsl[] = {
-        "bmp", "cin", /*"dds",*/ "dpx", /*"f3d",*/ "fits", "hdr",
-#if OIIO_VERSION >= 20100
-        "heic", "heif",
-#endif
-        "ico",
-        "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
-        "pbm", "pgm", "ppm",
-#if OIIO_VERSION >= 10605
-        "pfm", // PFM was flipped before 1.6.5
-#endif
-        "psd", "pdd", "psb", /*"ptex",*/ "rla", "sgi", "rgb", "rgba", "bw", "int", "inta", "pic", "tga", "tpic", "tif", "tiff", "tx", "env", "sm", "vsm", "zfile", NULL
-    };
-    for (const char** ext = extensionsl; *ext != NULL; ++ext) {
-        _extensions.push_back(*ext);
-    }
-#else
     // get extensions from OIIO: extension_list has the extensions of all formats, readers and writers, so
     // keep only those of the formats in output_format_list (e.g. OIIO reads but can't write Cineon, #80),
     // and among them those that a writer accepts (e.g. the BMP writer takes .bmp but not .dib), see below
@@ -1999,9 +1938,6 @@ WriteOIIOPluginFactory::load()
         }
     }
     const char* extensions_denylist[] = {
-#if OIIO_VERSION < 10605
-        "pfm", // PFM was flipped before 1.6.5
-#endif
         "avi",
         "mov",
         "qt",
@@ -2034,7 +1970,6 @@ WriteOIIOPluginFactory::load()
     // (#256). A no-op while an instance uses it; the next ExrThreadsUser starts it again (OpenImageIO would not: it
     // caches the thread count it set).
     stopUnusedExrThreads();
-#endif
     // last: only count a successful load (if load throws, the host does not call unload)
     OIIOPluginLoaded(getUID());
 }
