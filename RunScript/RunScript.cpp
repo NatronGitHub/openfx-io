@@ -343,6 +343,12 @@ RunScriptPlugin::render(const RenderArguments& args)
     DBG(std::cout << "rendering time " << args.time << " scale " << args.renderScale.x << ',' << args.renderScale.y << " window " << args.renderWindow.x1 << ',' << args.renderWindow.y1 << " - " << args.renderWindow.x2 << ',' << args.renderWindow.y2 << " field " << (int)args.fieldToRender << " view " << args.renderView << std::endl);
 
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
+        // only the render action says why (#438): getRegionOfDefinition and getRegionsOfInterest fail silently,
+        // because a host may call them at another scale to find out whether the plug-in supports render scales
+        // (Natron calls getRegionOfDefinition at scale 0.5, then never renders it at a scale other than 1)
+        std::ostringstream ss;
+        ss << "RunScript renders at full resolution only (render scale 1), but the host asked for a render scale of " << args.renderScale.x << " x " << args.renderScale.y << '.';
+        setPersistentMessage(Message::eMessageError, "", ss.str());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;

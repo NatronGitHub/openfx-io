@@ -112,7 +112,7 @@ RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
 # runscript_win32_test: MS Windows only (elsewhere, it would pass without testing anything, #309)
 RUNSCRIPT_WIN32_TEST := $(if $(filter Windows_NT,$(OS)),runscript_win32_test,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz $(RUNSCRIPT_WIN32_TEST) runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -600,7 +600,7 @@ runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -707,6 +707,10 @@ test-pfm-write-errors: ofx_render_test
 test-pfm-read-errors: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --pfm-read-errors
 
+# #438: a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render fail with an error message
+test-writer-render-scale: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --writer-render-scale
+
 # #348: WriteFFmpeg encodes with the encoder selected in the Codec menu, not with the default encoder of its codec ID
 # (e.g. libx264rgb, libopenh264, libxvid, libopenjpeg); skipped if the FFmpeg build has no such encoder
 test-writeffmpeg-selected-encoder: ofx_render_test
@@ -791,9 +795,9 @@ clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxPluginLog.txt .render_out.mov.i319.mov \
+	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i438.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxPluginLog.txt .render_out.mov.i319.mov \
 	       oiio_layers_test oiio_layers_test.dSYM \
-	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst .reader_hooks.big.tst \
+	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst .reader_hooks.big.tst .reader_hooks.wide.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \
 	       ocio_colorspace_anim_test ocio_colorspace_anim_test.dSYM ocio_anim_fuzz ocio_anim_fuzz.dSYM \
 	       oiio_threadpool_test oiio_threadpool_test.dSYM \

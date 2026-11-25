@@ -38,7 +38,11 @@
  * And that startingTime and timeOffset stay consistent (issue #154): timeOffset = startingTime - firstFrame, the time
  * domain starts at startingTime and render maps it to the first frame, when the user changes startingTime, timeOffset
  * or firstFrame, when the plug-in changes startingTime for a new file (as Natron sets originalFrameRange), and on a
- * project load (where no persistent param may be set).
+ * project load (where no persistent param may be set). In Time Offset frame mode, the time offset is kept when the
+ * file changes (issue #260).
+ *
+ * And that a frame that exists but can not be read is not a missing frame (issue #414, POSIX only), and that the
+ * pixels of a proxy file whose aspect ratio is not the original's are not written out of the RoD (issue #439).
  *
  * Minimal test readers are defined below (a GenericReaderPlugin subclass with the
  * default isOutputFrameVarying(), and a subclass returning true), and are driven
@@ -72,6 +76,11 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/stat.h> // chmod
+#include <unistd.h> // geteuid
+#endif
+
 using namespace OFX;
 using namespace OFX::IO;
 
@@ -99,6 +108,10 @@ const int kBigHeight = 8;
 // the size of the "big3" files (whose name ends with ".big3.tst"), for the proxy test at scale 1/3 (#194)
 const int kBig3Width = 3 * kWidth;
 const int kBig3Height = 3 * kHeight;
+// the size of the "wide" files (whose name ends with ".wide.tst"), the proxy of a big file whose aspect ratio is not the
+// big file's (#439): 10x5 for 16x8, a proxy scale of 0.625 in x and y
+const int kWideWidth = 10;
+const int kWideHeight = 5;
 const OfxRangeI kVideoRange = { 1, 10 }; // the frame range of "video" files
 
 // the value decode() writes to R, G and B at render time t
@@ -139,7 +152,8 @@ ClipContent gClipContent;
 // others are still images or image sequences. The file only needs to exist. Files whose name
 // contains "par2" have a pixel aspect ratio of 2, and those whose name contains "par0" an invalid pixel aspect ratio of 0.
 // Files whose name ends with ".big.tst" are kBigWidth x kBigHeight, and their R, G and B are 1 more. Files whose name
-// ends with ".big3.tst" are kBig3Width x kBig3Height, and their R, G and B are 2 more.
+// ends with ".big3.tst" are kBig3Width x kBig3Height, and their R, G and B are 2 more. Files whose name ends with
+// ".wide.tst" are kWideWidth x kWideHeight, and their R, G and B are 3 more.
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
@@ -178,6 +192,7 @@ public:
     }
     static bool isBig(const std::string& filename) { return endsWith(filename, ".big.tst"); }
     static bool isBig3(const std::string& filename) { return endsWith(filename, ".big3.tst"); }
+    static bool isWide(const std::string& filename) { return endsWith(filename, ".wide.tst"); }
 
 private:
     virtual bool isVideoStream(const std::string& filename) OVERRIDE FINAL
@@ -253,7 +268,7 @@ private:
             throwSuiteStatusException(kOfxStatFailed);
         }
         // the output depends on the render time, like a reader with an animated param evaluated at getRenderTime()
-        const float v = pixelValue(t) + (isBig(filename) ? 1.f : (isBig3(filename) ? 2.f : 0.f));
+        const float v = pixelValue(t) + (isBig(filename) ? 1.f : (isBig3(filename) ? 2.f : (isWide(filename) ? 3.f : 0.f)));
         for (int y = renderWindow.y1; y < renderWindow.y2; ++y) {
             float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes) + (ptrdiff_t)(renderWindow.x1 - bounds.x1) * pixelComponentCount;
             for (int x = renderWindow.x1; x < renderWindow.x2; ++x, pix += pixelComponentCount) {
@@ -277,6 +292,10 @@ private:
             bounds->x1 = bounds->y1 = 0;
             bounds->x2 = kBig3Width;
             bounds->y2 = kBig3Height;
+        } else if (isWide(filename)) {
+            bounds->x1 = bounds->y1 = 0;
+            bounds->x2 = kWideWidth;
+            bounds->y2 = kWideHeight;
         } else {
             bounds->x1 = bounds->y1 = 0;
             bounds->x2 = kWidth;
@@ -1055,6 +1074,152 @@ testStartingTime(OfxPlugin* pDefault, const std::string& prefix)
     }
 }
 
+// 1f. In Time Offset frame mode, the time offset that the user set is kept when the file changes (#260): the starting
+// time follows the first frame of the new file. In Natron, which sets originalFrameRange before instanceChanged(filename),
+// the first frame becomes the new sequence's. Other hosts don't set it (the plug-in sets it from the first file), so the
+// first frame goes back to the start of that range, after the user changed it. In Starting Time mode, the starting time
+// is kept there (#154). Before the fix, the starting time was kept (or set to the first frame by originalFrameRange),
+// and the offset changed.
+void
+testTimeOffsetMode(OfxPlugin* pDefault, const std::string& prefix)
+{
+    std::printf("==== Time Offset frame mode: the time offset is kept when the file changes (#260) ====\n");
+    // prefix.toA.0001.tst ... 0010, prefix.toB.0001.tst ... 0010, prefix.toC.0021.tst ... 0023, prefix.toD.0021.tst ... 0023
+    auto fileAt = [prefix](const char* name) {
+        return [prefix, name](double t) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), ".%s.%04d.tst", name, (int)std::floor(t + 0.5));
+
+            return prefix + buf;
+        };
+    };
+    const std::function<std::string(double)> fileAtA = fileAt("toA"), fileAtB = fileAt("toB"), fileAtC = fileAt("toC"), fileAtD = fileAt("toD");
+    std::vector<std::string> files;
+    for (int f = 1; f <= 10; ++f) {
+        files.push_back(fileAtA(f));
+        files.push_back(fileAtB(f));
+    }
+    for (int f = 21; f <= 23; ++f) {
+        files.push_back(fileAtC(f));
+        files.push_back(fileAtD(f));
+    }
+    for (const std::string& f : files) {
+        std::FILE* fp = std::fopen(f.c_str(), "wb");
+        if (!fp) {
+            check(false, "cannot create %s", f.c_str());
+
+            return;
+        }
+        std::fclose(fp);
+    }
+    auto checkOffset = [](Reader& r, const char* what, int expected) {
+        const int timeOffset = paramInt(&r.ctx.params["timeOffset"], 0);
+        check(timeOffset == expected, "%s: timeOffset %d (expected %d)", what, timeOffset, expected);
+    };
+    // the user picks another file, without originalFrameRange (hosts other than Natron)
+    auto pick = [](Reader& r, const std::function<std::string(double)>& fileAt, int first) {
+        setOverrideString(&r.ctx, kOfxImageEffectFileParamName, fileAt(first));
+        r.ctx.params[kOfxImageEffectFileParamName].stringAtTime = fileAt;
+        check(r.changed(kOfxImageEffectFileParamName, kOfxChangeUserEdited), "instanceChanged(filename, user edit)");
+    };
+    {
+        Reader r;
+        if (r.create(pDefault, fileAtA(1), fileAtA)) {
+            setParamInt(r.ctx, "frameMode", 1); // Time Offset
+            check(r.changed("frameMode", kOfxChangeUserEdited), "instanceChanged(frameMode, user edit)");
+            setParamInt(r.ctx, "timeOffset", 100);
+            check(r.changed("timeOffset", kOfxChangeUserEdited), "instanceChanged(timeOffset, user edit)");
+            setParamInt(r.ctx, "firstFrame", 3);
+            check(r.changed("firstFrame", kOfxChangeUserEdited), "instanceChanged(firstFrame, user edit)");
+            checkStartingTime(r, "Time Offset mode, timeOffset 100, firstFrame 3", 3, 10, 103);
+
+            pick(r, fileAtB, 1);
+            checkStartingTime(r, "Time Offset mode, new file (no originalFrameRange)", 1, 10, 101);
+            checkOffset(r, "Time Offset mode, new file (no originalFrameRange)", 100);
+
+            // Natron: originalFrameRange, then instanceChanged(filename), both kOfxChangeUserEdited
+            setOverrideString(&r.ctx, kOfxImageEffectFileParamName, fileAtC(21));
+            r.ctx.params[kOfxImageEffectFileParamName].stringAtTime = fileAtC;
+            r.ctx.params["originalFrameRange"].hasOv = true;
+            r.ctx.params["originalFrameRange"].ov.i = { 21, 23 };
+            check(r.changed("originalFrameRange", kOfxChangeUserEdited), "instanceChanged(originalFrameRange, user edit)");
+            check(r.changed(kOfxImageEffectFileParamName, kOfxChangeUserEdited), "instanceChanged(filename, user edit)");
+            checkStartingTime(r, "Time Offset mode, new sequence 21..23 (Natron)", 21, 23, 121);
+            checkOffset(r, "Time Offset mode, new sequence 21..23 (Natron)", 100);
+
+            // Starting Time mode, no originalFrameRange: the starting time is kept, the offset follows (#154)
+            setParamInt(r.ctx, "frameMode", 0); // Starting Time
+            check(r.changed("frameMode", kOfxChangeUserEdited), "instanceChanged(frameMode, user edit)");
+            setParamInt(r.ctx, "firstFrame", 22);
+            check(r.changed("firstFrame", kOfxChangeUserEdited), "instanceChanged(firstFrame, user edit)");
+            checkStartingTime(r, "Starting Time mode, firstFrame 22", 22, 23, 122);
+            pick(r, fileAtD, 21);
+            checkStartingTime(r, "Starting Time mode, new file (no originalFrameRange)", 21, 23, 122);
+        } else {
+            ++gFailures;
+        }
+    }
+    for (const std::string& f : files) {
+        std::remove(f.c_str());
+    }
+}
+
+// 1g. A frame of a sequence that exists but can not be read is not a missing frame (#414): on Unix, GenericReader
+// tested whether it could open the file (std::ifstream), on MS Windows whether it exists (FindFirstFileW), so "Hold
+// previous" held the previous frame on Unix only. Now both test existence (OFX::exists_utf8()): the frame is decoded
+// (and a real reader then fails with its error). POSIX only: chmod 000 doesn't make a file unreadable on MS Windows.
+void
+testUnreadableFrame(OfxPlugin* pDefault, const std::string& prefix)
+{
+    std::printf("==== a frame that exists but can not be read is not a missing frame (#414) ====\n");
+#ifdef _WIN32
+    (void)pDefault;
+    (void)prefix;
+    std::printf("  (not run on MS Windows: chmod 000 doesn't make a file unreadable)\n");
+#else
+    if (::geteuid() == 0) {
+        std::printf("  (not run as root, who can read a file with mode 000)\n");
+
+        return;
+    }
+    auto fileAt = [prefix](double t) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), ".unreadable.%04d.tst", (int)std::floor(t + 0.5));
+
+        return prefix + buf;
+    };
+    std::vector<std::string> files;
+    for (int f = 1; f <= 3; ++f) {
+        files.push_back(fileAt(f));
+        std::FILE* fp = std::fopen(files.back().c_str(), "wb");
+        if (!fp) {
+            check(false, "cannot create %s", files.back().c_str());
+
+            return;
+        }
+        std::fclose(fp);
+    }
+    {
+        Reader r;
+        if (r.create(pDefault, fileAt(1), fileAt)) {
+            setParamInt(r.ctx, "onMissingFrame", GenericReaderPlugin::eMissingPrevious);
+            check(::chmod(fileAt(2).c_str(), 0) == 0, "chmod 000 %s", fileAt(2).c_str());
+            r.plugin->frameBoundsCalls.clear();
+            const double f = decodedFrame(r, 2.);
+            const std::string read = r.plugin->frameBoundsCalls.empty() ? std::string() : r.plugin->frameBoundsCalls.back().first;
+            check(f == 2. && read == fileAt(2), "On Missing Frame \"Hold previous\", frame 2 exists but can not be read: render at time 2 decodes sequence frame %g of %s (expected 2, %s)",
+                  f, read.c_str(), fileAt(2).c_str());
+            (void)::chmod(fileAt(2).c_str(), 0644);
+        } else {
+            ++gFailures;
+        }
+    }
+    for (const std::string& f : files) {
+        std::remove(f.c_str());
+    }
+#endif
+}
+
 // 2. getRenderTime() in decode() is the render time; it is restored after render()
 void
 testRenderTime(OfxPlugin* pFrameVarying, const std::string& still, const std::string& video)
@@ -1493,6 +1658,50 @@ testProxyFileThird(OfxPlugin* pDefault, const std::string& still, const std::str
               "scale %s: render = %d, %d wrong values, read %s (the %s file)", k.name, st, wrong,
               r.plugin->frameBoundsCalls.back().first.c_str(), k.proxy ? "proxy" : "full-resolution");
     }
+}
+
+// 2g. a proxy file whose aspect ratio is not the original's (#439): the big file (16x8) with the wide file (10x5) as its
+// proxy (scale 0.625, mipmap level 1). The RoD is the big file's, 8x4 at render scale 1/2. A render at scale 1/2 of a
+// window larger than the RoD (10x5, the proxy's size, into an image of that size) reads the proxy: its pixels in the
+// RoD are written, and the rest of the window is transparent black, as out of the RoD at scale 1. Before the fix, the
+// proxy's pixels out of the RoD were written too.
+void
+testProxyFileAspect(OfxPlugin* pDefault, const std::string& big, const std::string& wide)
+{
+    std::printf("==== proxy file whose aspect ratio is not the original's, render scale 1/2 (#439) ====\n");
+    Reader r;
+    if (!r.create(pDefault, big)) {
+        ++gFailures;
+
+        return;
+    }
+    setOverrideString(&r.ctx, kOfxImageEffectProxyParamName, wide);
+    check(r.changed(kOfxImageEffectProxyParamName, kOfxChangeUserEdited), "instanceChanged(proxy)");
+    ParamRec& original = r.ctx.params["originalProxyScale"];
+    check(paramDouble(&original, 0) == 0.625 && paramDouble(&original, 1) == 0.625, "originalProxyScale = %g %g (0.625 0.625)",
+          paramDouble(&original, 0), paramDouble(&original, 1));
+    const float vWide = pixelValue(1.) + 3.f;
+    const OfxRectI window = { 0, 0, kWideWidth, kWideHeight }; // the proxy's size, larger than the RoD at scale 1/2
+    const OfxRectI rodAtScale = { 0, 0, kBigWidth / 2, kBigHeight / 2 };
+    OfxRectD rod;
+    OfxRectI bounds;
+    const OfxStatus st = r.renderAtScale(1., 1, window, -1.f, &rod, &bounds, kFnOfxImagePlaneColour, &window);
+    int wrongIn = 0, wrongOut = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const bool inRoD = (x < rodAtScale.x2) && (y < rodAtScale.y2);
+            for (int c = 0; c < 4; ++c) {
+                const float expected = inRoD ? ((c == 3) ? 1.f : vWide) : 0.f;
+                if (r.outputPixel(bounds, x, y, c) != expected) {
+                    ++(inRoD ? wrongIn : wrongOut);
+                }
+            }
+        }
+    }
+    check(ok(st) && r.plugin->frameBoundsCalls.back().first == wide, "render = %d, read %s (the proxy file)", st,
+          r.plugin->frameBoundsCalls.back().first.c_str());
+    check(wrongIn == 0, "the proxy's pixels in the RoD (8x4 at scale 1/2): %d wrong values", wrongIn);
+    check(wrongOut == 0, "transparent black out of the RoD: %d wrong values", wrongOut);
 }
 
 // 4. refreshFrameBounds() (#163): only when the part of the render window in the host's RoD is out of the frame
@@ -1993,7 +2202,8 @@ main(int argc, char** argv)
     const std::string video = prefix + ".video.tst";
     const std::string big = prefix + ".big.tst";
     const std::string big3 = prefix + ".big3.tst";
-    for (const std::string& f : { still, video, big, big3 }) {
+    const std::string wide = prefix + ".wide.tst";
+    for (const std::string& f : { still, video, big, big3, wide }) {
         std::FILE* fp = std::fopen(f.c_str(), "wb");
         if (!fp) {
             std::printf("FAIL: cannot create %s\n", f.c_str());
@@ -2024,11 +2234,14 @@ main(int argc, char** argv)
     testClipPreferencesPar0(pDefault, prefix);
     testIOUtility();
     testStartingTime(pDefault, prefix);
+    testTimeOffsetMode(pDefault, prefix);
+    testUnreadableFrame(pDefault, prefix);
     testRenderTime(pFrameVarying, still, video);
     testThreads(pFrameVarying, still);
     testFileSwitch(pDefault, still, big);
     testProxyFile(pDefault, still, big);
     testProxyFileThird(pDefault, still, big3);
+    testProxyFileAspect(pDefault, big, wide);
     testDecodePlane(pMultiPlanar, still, video);
     testOpaquePlanes(pMultiPlanar, still);
     testMipmap(pMipmap, still);
@@ -2048,6 +2261,7 @@ main(int argc, char** argv)
     std::remove(video.c_str());
     std::remove(big.c_str());
     std::remove(big3.c_str());
+    std::remove(wide.c_str());
 
     std::printf("Result: failures=%d\n", gFailures);
     std::printf(gFailures == 0 ? "PASS\n" : "FAIL\n");

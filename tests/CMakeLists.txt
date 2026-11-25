@@ -312,6 +312,9 @@ if(TARGET io_tests_ofx)
   set_tests_properties(test-pfm-write-errors PROPERTIES SKIP_RETURN_CODE 77)
   # test-pfm-read-errors (#296): ReadPFM's getRegionOfDefinition fails on a header with an empty, negative or huge size
   io_test(test-pfm-read-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-read-errors)
+  # test-writer-render-scale (#438): a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render
+  # fail with an error message, getRegionOfDefinition fails without one
+  io_test(test-writer-render-scale ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writer-render-scale)
   # test-writeffmpeg-selected-encoder (#348): WriteFFmpeg encodes with the encoder selected in the Codec menu, not with
   # the default encoder of its codec ID; skipped (exit status 77) if the FFmpeg build has no such encoder to check
   io_test(test-writeffmpeg-selected-encoder ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i348" --selected-encoder)

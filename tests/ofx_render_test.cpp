@@ -2979,14 +2979,30 @@ public:
     // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
     void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
 
-    OfxStatus begin(int nFrames) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, nFrames); }
+    OfxStatus begin(int nFrames, double renderScale = 1.) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, nFrames, renderScale); }
     OfxStatus end(int nFrames) { return sequenceAction(kOfxImageEffectActionEndSequenceRender, nFrames); }
 
-    // May be called concurrently.
-    OfxStatus render(int t)
+    // May be called concurrently. renderScale: if not 0, the render scale (else makeRenderInArgs()'s)
+    OfxStatus render(int t, double renderScale = 0.)
     {
         PropSet a = makeRenderInArgs((double)t, _W, _H);
+        if (renderScale != 0.) {
+            double rs[2] = { renderScale, renderScale };
+            pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        }
         return _p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), nullptr);
+    }
+
+    // kOfxImageEffectActionGetRegionOfDefinition at time 1 and the given render scale
+    OfxStatus regionOfDefinition(double renderScale)
+    {
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        double rs[2] = { renderScale, renderScale };
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        return _p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), PH(&o));
     }
 
     // begin, render each frame in order, end: 0 if all succeeded
@@ -3011,7 +3027,7 @@ public:
     }
 
 private:
-    OfxStatus sequenceAction(const char* action, int nFrames)
+    OfxStatus sequenceAction(const char* action, int nFrames, double renderScale = 1.)
     {
         PropSet a;
         OfxPropertySetHandle ap = PH(&a);
@@ -3019,7 +3035,7 @@ private:
         pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
         pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
         pSetInt(ap, kOfxPropIsInteractive, 0, 0);
-        double rs[2] = { 1., 1. };
+        double rs[2] = { renderScale, renderScale };
         pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
@@ -3770,6 +3786,52 @@ int testWritePFMDiskFull(const std::string& outFile)
     if (!failures) std::printf("  PASS\n");
     return failures;
 #endif
+}
+
+// #438: a writer (GenericWriter, here WritePFM) at a render scale other than 1. beginSequenceRender and render fail with
+// an error message that says why (they used to fail with no message), and write no file. getRegionOfDefinition fails
+// with no message: Natron calls it at scale 0.5 to find out whether the plug-in supports render scales
+// (Engine/OfxEffectInstance.cpp), then renders it at scale 1 only. At scale 1, the same instance writes the file.
+int testWriterRenderScale(const std::string& outFile)
+{
+    const std::string file = outFile + ".i438.pfm";
+    std::printf("==== WritePFM at render scale 0.5: the render fails with an error message (issue #438) ====\n");
+    std::remove(file.c_str());
+    int failures = 0;
+    WriterSession s;
+    if (s.create(file, 8, 4, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
+    auto check = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "ok" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    auto exists = [&file]() {
+        std::FILE* f = std::fopen(file.c_str(), "rb");
+        if (f) std::fclose(f);
+        return f != nullptr;
+    };
+    msgClear(nullptr);
+    OfxStatus st = s.regionOfDefinition(0.5);
+    std::string error = WriterSession::persistentError();
+    check(!ok(st) && error.empty(), "getRegionOfDefinition at scale 0.5 fails (" + std::to_string(st) + ") without a message: \"" + error + "\"");
+    msgClear(nullptr);
+    st = s.begin(1, 0.5);
+    error = WriterSession::persistentError();
+    check(!ok(st) && error.find("render scale") != std::string::npos,
+          "beginSequenceRender at scale 0.5 fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
+    s.end(1);
+    msgClear(nullptr);
+    st = s.render(1, 0.5);
+    error = WriterSession::persistentError();
+    check(!ok(st) && error.find("render scale") != std::string::npos,
+          "render at scale 0.5 fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
+    check(!exists(), "no file is written at scale 0.5");
+    // (no msgClear: a successful render must clear the error itself, as a host shows it until then)
+    check(s.renderAll(1) == 0 && exists(), "at scale 1, the file is written");
+    error = WriterSession::persistentError();
+    check(error.empty(), "after the render at scale 1, no error: \"" + error + "\"");
+    std::remove(file.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
 }
 
 // #296: ReadPFM, a header with an empty, negative or huge size: getRegionOfDefinition must fail (as decode() does),
@@ -5855,6 +5917,8 @@ main(int argc, char** argv)
             failures = testReadFFmpegDestroyClosesFile(outFile);
         } else if (mode == "--pfm-write-errors") {
             failures = testWritePFMDiskFull(outFile);
+        } else if (mode == "--writer-render-scale") {
+            failures = testWriterRenderScale(outFile);
         } else if (mode == "--pfm-read-errors") {
             failures = testReadPFMHeaderSize(outFile);
         } else if (mode == "--views-concurrent") {
