@@ -49,6 +49,7 @@
 #include <filesystem> // std::filesystem::weakly_canonical
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility> // std::move
@@ -447,6 +448,33 @@ enum PrefBitDepthEnum {
     ePrefBitDepth12,
     ePrefBitDepth16,
 };
+
+// rawvideo, with the Pref. params that give the pixel layout of a missing encoder of a project (see
+// replaceMissingCodec()).
+struct MissingCodecReplacement {
+    string codecShortName; // the missing encoder (v308, v408, v410 or ayuv)
+    PrefPixelCodingEnum pixelCoding;
+    PrefBitDepthEnum bitDepth;
+    bool alpha;
+};
+
+// The replacement of codecShortName, if it is one of these encoders.
+static std::optional<MissingCodecReplacement>
+missingCodecReplacement(const string& codecShortName)
+{
+    // these encoders only took one pixel format: yuv444p, yuva444p (v408, ayuv), yuv444p10
+    if (codecShortName == "v308") {
+        return MissingCodecReplacement { codecShortName, ePrefPixelCodingYUV444, ePrefBitDepth8, false };
+    }
+    if ((codecShortName == "v408") || (codecShortName == "ayuv")) {
+        return MissingCodecReplacement { codecShortName, ePrefPixelCodingYUV444, ePrefBitDepth8, true };
+    }
+    if (codecShortName == "v410") {
+        return MissingCodecReplacement { codecShortName, ePrefPixelCodingYUV444, ePrefBitDepth10, false };
+    }
+
+    return std::nullopt;
+}
 
 #define kParamPrefAlpha "enableAlpha" // enableAlpha rather than prefAlpha for backward compat
 #define kParamPrefAlphaLabel "Alpha", "If checked, and the input contains alpha, formats with an alpha channel are preferred."
@@ -1558,11 +1586,20 @@ isOptionSeparator(char c)
     return c == ':' || c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-// " at character N", for the 0-based position pos in a user option string
+// " at character N", for the 0-based byte position pos in the user option string str, which is UTF-8 (as are OFX
+// strings): N counts the characters, not the bytes (UTF-8 continuation bytes are 10xxxxxx), #127.
 static string
-optionCharPos(size_t pos)
+optionCharPos(const string& str,
+              size_t pos)
 {
-    return " at character " + std::to_string(pos + 1);
+    size_t chars = 1;
+    for (size_t j = 0; (j < pos) && (j < str.size()); ++j) {
+        if ((static_cast<unsigned char>(str[j]) & 0xC0) != 0x80) {
+            ++chars;
+        }
+    }
+
+    return " at character " + std::to_string(chars);
 }
 
 // Normalize a user option string (see kParamOptionsSyntaxHint) to the strict syntax of
@@ -1580,9 +1617,10 @@ optionCharPos(size_t pos)
 //   an unquoted '=' is an error ("tune= preset=slow" is not {tune: "preset=slow"}, as it would be
 //   for av_dict_parse_string with a ':' separator), and so is a '=' after a complete pair ("g=1 =2"
 //   is not {g: "1=2"}).
-// - Errors: a key without '=' ("tune preset=slow", "g:=1", "a :=1"), a '=' without a key, an empty
-//   value (rejected by av_dict_parse_string), an unterminated single quote (av_get_token() would
-//   take the rest of the string), and double quotes (not a quoting character for av_get_token()).
+// - Errors: a key without '=' ("tune preset=slow", "g:=1", "a :=1"; "-preset slow" and "preset slow" get a hint
+//   about the ffmpeg command line), a '=' without a key, an empty value (rejected by av_dict_parse_string), also
+//   quoted ("''=x", "g=''"), an unterminated single quote (av_get_token() would take the rest of the string), and
+//   double quotes (not a quoting character for av_get_token(), reported before any other error).
 // Returns false and sets *error (which says what is wrong and where) on error.
 static bool
 normalizeOptionString(const string& str,
@@ -1601,7 +1639,9 @@ normalizeOptionString(const string& str,
     State state = eBetweenPairs;
     size_t keyPos = 0; // position in str of the current key
     size_t keyOut = 0; // position in *out of the current key
+    size_t valueOut = 0; // position in *out of the current value (after its '=')
     bool spaceAfterEqual = false; // whitespace was skipped after the '=' of the current pair
+    size_t tokenChars = 0; // the characters of the current key or value, once unquoted by av_get_token()
     size_t i = 0; // position in str
 
     auto fail = [&](const string& msg) {
@@ -1609,6 +1649,21 @@ normalizeOptionString(const string& str,
 
         return false;
     };
+    // A double quote (outside single quotes, not escaped) is reported first: the errors that it causes later (a value
+    // after a space with an '=', or a key followed by a space) would not say what is wrong (#127).
+    for (size_t j = 0; j < n; ++j) {
+        if (str[j] == '\\') {
+            ++j;
+        } else if (str[j] == '\'') {
+            const size_t end = str.find('\'', j + 1);
+            if (end == string::npos) {
+                break; // reported below
+            }
+            j = end;
+        } else if (str[j] == '"') {
+            return fail("double quote" + optionCharPos(str, j) + ": double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'");
+        }
+    }
     // the token (up to the next unquoted separator) that starts at pos, for error messages
     auto tokenAt = [&](size_t pos) {
         size_t j = pos;
@@ -1648,16 +1703,30 @@ normalizeOptionString(const string& str,
     };
     auto missingEqual = [&]() {
         const string found = (i >= n) ? string("the end of the string")
-            : (str[i] == ':')         ? "':'" + optionCharPos(i)
-                                      : "\"" + tokenAt(i) + "\"" + optionCharPos(i);
+            : (str[i] == ':')         ? "':'" + optionCharPos(str, i)
+                                      : "\"" + tokenAt(i) + "\"" + optionCharPos(str, i);
 
-        return fail("missing '=' after the key \"" + out->substr(keyOut) + "\"" + optionCharPos(keyPos) + ", found " + found
-                    + (i < n ? " (a key cannot contain a colon or a space, unless it is quoted or escaped)" : ""));
+        const string key = out->substr(keyOut);
+        // the ffmpeg command line ("-preset slow" or "preset slow"): a key that starts with '-', or that is followed
+        // by a single token without '=' (#127)
+        const bool bareValue = (i < n) && (str[i] != ':') && !tokenHasEqual(i);
+        string hint;
+        if ((!key.empty() && (key[0] == '-')) || bareValue) {
+            const size_t nameStart = key.find_first_not_of('-');
+            const string name = (nameStart == string::npos) ? key : key.substr(nameStart);
+            const string value = bareValue ? tokenAt(i) : string("value");
+            hint = " (this is not the ffmpeg command line: write \"" + name + "=" + value + "\", not \"" + key
+                + (bareValue ? " " + value : string()) + "\")";
+        } else if (i < n) {
+            hint = " (a key cannot contain a colon or a space, unless it is quoted or escaped)";
+        }
+
+        return fail("missing '=' after the key \"" + key + "\"" + optionCharPos(str, keyPos) + ", found " + found + hint);
     };
     auto missingValue = [&]() {
-        string msg = "missing value after \"" + out->substr(keyOut) + "\"" + optionCharPos(keyPos);
+        string msg = "missing value after \"" + out->substr(keyOut) + "\"" + optionCharPos(str, keyPos);
         if (i < n && str[i] != ':') {
-            msg += ", found the pair \"" + tokenAt(i) + "\"" + optionCharPos(i) + " (values cannot be empty, and a value after a space cannot contain an unquoted '=')";
+            msg += ", found the pair \"" + tokenAt(i) + "\"" + optionCharPos(str, i) + " (values cannot be empty, and a value after a space cannot contain an unquoted '=')";
         } else {
             msg += " (values cannot be empty)";
         }
@@ -1667,20 +1736,20 @@ normalizeOptionString(const string& str,
     // copy the token character (or escape sequence, or single-quoted string) at i to *out
     auto copyTokenChar = [&]() {
         const char c = str[i];
-        if (c == '"') {
-            return fail("double quote" + optionCharPos(i) + ": double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'");
-        }
+        assert(c != '"'); // reported first, above
         if (c == '\'') {
             const size_t end = str.find('\'', i + 1);
             if (end == string::npos) {
-                return fail("unterminated single quote" + optionCharPos(i));
+                return fail("unterminated single quote" + optionCharPos(str, i));
             }
             *out += str.substr(i, end + 1 - i);
+            tokenChars += end - i - 1;
             i = end + 1;
 
             return true;
         }
         *out += c;
+        ++tokenChars;
         ++i;
         if (c == '\\' && i < n) {
             *out += str[i];
@@ -1688,6 +1757,11 @@ normalizeOptionString(const string& str,
         }
 
         return true;
+    };
+    // an empty quoted value ("g=''"), which av_dict_parse_string() rejects with a generic message (#127)
+    auto emptyValue = [&]() {
+        return fail("missing value after \"" + out->substr(keyOut, valueOut - keyOut) + "\"" + optionCharPos(str, keyPos)
+                    + " (values cannot be empty, '' is an empty value)");
     };
 
     while (i < n) {
@@ -1700,13 +1774,14 @@ normalizeOptionString(const string& str,
                 break;
             }
             if (c == '=') {
-                return fail("missing key before '='" + optionCharPos(i));
+                return fail("missing key before '='" + optionCharPos(str, i));
             }
             if (!out->empty()) {
                 *out += ':';
             }
             keyPos = i;
             keyOut = out->size();
+            tokenChars = 0;
             state = eKey;
             if (!copyTokenChar()) {
                 return false;
@@ -1715,7 +1790,11 @@ normalizeOptionString(const string& str,
         case eKey:
         case eAfterKey:
             if (c == '=') {
+                if (tokenChars == 0) { // ''=x
+                    return fail("missing key before '='" + optionCharPos(str, i) + " ('' is an empty key)");
+                }
                 *out += '=';
+                valueOut = out->size();
                 ++i;
                 state = eAfterEqual;
                 spaceAfterEqual = false;
@@ -1741,12 +1820,16 @@ normalizeOptionString(const string& str,
                 return missingValue();
             }
             state = eValue;
+            tokenChars = 0;
             if (!copyTokenChar()) {
                 return false;
             }
             break;
         case eValue:
             if (sep) {
+                if (tokenChars == 0) {
+                    return emptyValue();
+                }
                 ++i;
                 state = eBetweenPairs;
             } else if (!copyTokenChar()) {
@@ -1760,6 +1843,9 @@ normalizeOptionString(const string& str,
     }
     if (state == eAfterEqual) {
         return missingValue();
+    }
+    if ((state == eValue) && (tokenChars == 0)) {
+        return emptyValue();
     }
 
     return true;
@@ -1911,8 +1997,18 @@ private:
 
 private:
     void updateVisibility();
+    // The Codec menu entry that the params select (see selectedCodec()).
+    struct CodecSelection {
+        int index = -1; // in getCodecsShortNames(), or -1 if the codec is unavailable
+        // if the codec of the project is missing, rawvideo (index) replaces it with these Pref. params
+        // (replaceMissingCodec())
+        std::optional<MissingCodecReplacement> replacement;
+    };
+    CodecSelection selectedCodec() const;
+    int selectedCodecIndex() const { return selectedCodec().index; }
+    string unavailableCodecError() const;
     void checkCodec();
-    bool replaceMissingCodec(const string& codecShortName);
+    void replaceMissingCodec(const MissingCodecReplacement& replacement, int rawvideoIndex);
     string codecReplaced() const;
     void setCodecReplaced(const string& codecShortName);
     int freeFormat();
@@ -1989,6 +2085,10 @@ private:
     bool _isOpen; // Flag for the configuration state of the FFmpeg components.
     uint64_t _pts_counter;
     int64_t _lastDts; // the dts of the last video packet written, in the codec time base (AV_NOPTS_VALUE if none)
+    // the canonical path of the file that beginEncode() opened (canonicalLocalPath(), empty if it is not a local file),
+    // written by beginEncode() and freeFormat(), and read by encode(), which the host calls between them (as
+    // _formatContext)
+    std::filesystem::path _openPath;
     int64_t _packetsWritten; // the number of video packets written since beginEncode()
     WriterError _error;
     AVFormatContext* _formatContext;
@@ -2026,7 +2126,7 @@ private:
     // if not empty, the codec of the project that this FFmpeg does not have, which was replaced by rawvideo (see
     // checkCodec()): reported in the persistent message until the user chooses a codec. Read and written only through
     // codecReplaced() and setCodecReplaced(): the main thread writes it (changedParam(), checkCodec()) while a render
-    // thread may read or write it in beginEncode() (encodeWarnings(), checkCodec()), #319 (C++ Core Guidelines CP.2
+    // thread may read it in beginEncode() (encodeWarnings()), #319 (C++ Core Guidelines CP.2
     // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-races). It can not be recomputed from the
     // params: replaceMissingCodec() sets the codecShortName param to rawvideo.
     string _codecReplaced;
@@ -2375,8 +2475,8 @@ WriteFFmpegPlugin::isRec709Format(const int height) const
     // First check for codecs which require special handling:
     //  * JPEG codecs always use Rec 601.
     assert(_codec);
-    int codec = _codec->getValue();
-    const bool isJpeg = IsJpeg(_codec, codec);
+    const int codec = selectedCodecIndex();
+    const bool isJpeg = (codec >= 0) && IsJpeg(_codec, codec);
     if (isJpeg) {
         return false;
     }
@@ -2420,7 +2520,7 @@ WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
                                 AVStream* avStream,
                                 AVPixelFormat pixelFormat) const
 {
-    const int codec = _codec->getValue();
+    const int codec = selectedCodecIndex();
     const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
     int dnxhdCodecProfile_i = 0;
     _dnxhdCodecProfile->getValue(dnxhdCodecProfile_i);
@@ -2936,8 +3036,10 @@ WriteFFmpegPlugin::initCodec(const AVOutputFormat* fmt,
     const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
 
     assert(_codec);
-    int codec = _codec->getValue();
-    assert(codec >= 0 && codec < (int)codecsShortNames.size());
+    const int codec = selectedCodecIndex();
+    if (codec < 0 || codec >= (int)codecsShortNames.size()) {
+        return false;
+    }
 
     // The encoder of the menu entry, and no other one: if it is missing from this FFmpeg build (e.g. the ProRes
     // entries without prores_ks), the render fails, instead of using the default encoder of the container (#388).
@@ -2956,7 +3058,7 @@ string
 WriteFFmpegPlugin::missingEncoderError() const
 {
     const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-    const int codec = _codec->getValue();
+    const int codec = selectedCodecIndex();
     if (codec < 0 || codec >= (int)codecsShortNames.size()) {
         return "Unable to find codec";
     }
@@ -2969,7 +3071,10 @@ void
 WriteFFmpegPlugin::getPixelPreferences(FFmpeg::PixelCodingEnum* pixelCoding,
                                        int* bitdepth) const
 {
-    switch ((PrefPixelCodingEnum)_prefPixelCoding->getValue()) {
+    // the Pref. params that replaceMissingCodec() sets, if the params still select the replacement of a missing codec
+    // (a render that no main thread action preceded, #398)
+    const std::optional<MissingCodecReplacement> replacement = selectedCodec().replacement;
+    switch (replacement ? replacement->pixelCoding : (PrefPixelCodingEnum)_prefPixelCoding->getValue()) {
     case ePrefPixelCodingYUV420:
         *pixelCoding = FFmpeg::ePixelCodingYUV420;
         break;
@@ -2987,7 +3092,7 @@ WriteFFmpegPlugin::getPixelPreferences(FFmpeg::PixelCodingEnum* pixelCoding,
         *pixelCoding = FFmpeg::ePixelCodingXYZ;
         break;
     }
-    switch ((PrefBitDepthEnum)_prefBitDepth->getValue()) {
+    switch (replacement ? replacement->bitDepth : (PrefBitDepthEnum)_prefBitDepth->getValue()) {
     case ePrefBitDepth8:
     default:
         *bitdepth = 8;
@@ -3092,7 +3197,7 @@ WriteFFmpegPlugin::getPixelFormatsFromList(const AVOutputFormat* fmt,
         return;
     }
     if (AV_CODEC_ID_PRORES == videoCodec->id) {
-        int index = _codec->getValue();
+        const int index = selectedCodecIndex();
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
         assert(index < (int)codecsShortNames.size());
         int profile = getProfileFromShortName(codecsShortNames[index]);
@@ -4409,8 +4514,10 @@ WriteFFmpegPlugin::colourSpaceConvert(AVFrame* avFrameIn,
 bool
 WriteFFmpegPlugin::alphaEnabled() const
 {
-    // is the writer configured to write alpha channel to file ?
-    bool enableAlpha = _prefAlpha->getValue();
+    // is the writer configured to write alpha channel to file ? (as replaceMissingCodec() sets it, if the params still
+    // select the replacement of a missing codec, #398)
+    const std::optional<MissingCodecReplacement> replacement = selectedCodec().replacement;
+    const bool enableAlpha = replacement ? replacement->alpha : _prefAlpha->getValue();
 
     return enableAlpha && _inputClip->getPixelComponents() == ePixelComponentRGBA;
 }
@@ -4681,10 +4788,12 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 // A dts can not be after the pts, nor more frames before it than frames were sent to the encoder
                 // (the input pts are 0, 1, 2... in the codec time base): use the pts (there are no B-frames with
                 // fewer than 3 frames), or the next tick after the previous dts.
+                // The file is then correct, and the user can do nothing about it: the value, which is garbage, is only
+                // logged at the verbose level (#352), not as a warning of every such render.
                 if ((pkt->pts != AV_NOPTS_VALUE) && (pkt->dts != AV_NOPTS_VALUE) && (pkt->pts >= 0) &&
                     ((pkt->dts > pkt->pts) || (pkt->dts < pkt->pts - (int64_t)_pts_counter))) {
                     const int64_t dts = (_lastDts == AV_NOPTS_VALUE) ? pkt->pts : (std::min)(pkt->pts, _lastDts + 1);
-                    av_log(avCodecContext, AV_LOG_WARNING, "invalid dts %" PRId64 " for pts %" PRId64 ", using %" PRId64 "\n", (int64_t)pkt->dts, (int64_t)pkt->pts, dts);
+                    av_log(avCodecContext, AV_LOG_VERBOSE, "invalid dts %" PRId64 " for pts %" PRId64 " from the encoder, using %" PRId64 "\n", (int64_t)pkt->dts, (int64_t)pkt->pts, dts);
                     pkt->dts = dts;
                 }
                 if ((int64_t)(pkt->dts) != AV_NOPTS_VALUE) {
@@ -4800,6 +4909,109 @@ WriteFFmpegPlugin::writeToFile(AVFormatContext* avFormatContext,
     return writeVideo(avFormatContext, &_streamVideo, finalise, time, pixelData, bounds, pixelDataNComps, dstNComps, rowBytes);
 }
 
+// If url is a local file for libavformat, set *path to it and return true, else return false
+// (e.g. "pipe:1" or "udp://..."). As url_find_protocol() in libavformat/avio.c: the protocol is the
+// leading URL_SCHEME_CHARS before a ':', "file" if there is none (or, on Windows, for "C:..."), and
+// the file protocol strips the "file:" prefix (file_open() in libavformat/file.c).
+static bool
+urlToLocalPath(const string& url,
+               string* path)
+{
+    const size_t n = url.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-.");
+    if ((n == string::npos) || (url[n] != ':')
+#ifdef _WIN32
+        || (n == 1) // DOS path
+#endif
+    ) {
+        *path = url;
+
+        return true;
+    }
+    if (url.compare(0, n, "file") == 0) {
+        *path = url.substr(n + 1);
+
+        return true;
+    }
+
+    return false;
+}
+
+// The canonical form of a path given in UTF-8 (as are OFX strings): absolute, with the symbolic links,
+// "." and ".." resolved, even if the file (or its directory) does not exist yet.
+static std::filesystem::path
+canonicalPathUtf8(const string& utf8)
+{
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    const fs::path p(OFX::utf8_to_utf16(utf8));
+#else
+    const fs::path p(utf8);
+#endif
+    std::error_code ec;
+    fs::path c = fs::weakly_canonical(p, ec);
+    if (!ec) {
+        return c;
+    }
+    // e.g. a directory that can not be read: at least an absolute, lexically normal path
+    c = fs::absolute(p, ec);
+
+    return (ec ? p : c).lexically_normal();
+}
+
+// The canonical path of url (as given to avio_open()) if it is a local file, else an empty path.
+static std::filesystem::path
+canonicalLocalPath(const string& url)
+{
+    string path;
+    if (!urlToLocalPath(url, &path)) {
+        return std::filesystem::path(); // other protocols
+    }
+
+    return canonicalPathUtf8(path);
+}
+
+// Whether url (as given to avio_open()) is the output that beginEncode() opened, openUrl, whose canonical path was
+// openPath when it was opened (canonicalLocalPath(), empty if it is not a local file): a file may be reached through
+// different paths, e.g. /tmp/x.mov and /private/tmp/x.mov on macOS, where /tmp is a symbolic link. openPath is not
+// computed again, so that a symbolic link in openUrl that is retargeted during the render does not make the file
+// that is being written another one (#140).
+static bool
+isSameOutputUrl(const string& url,
+                const string& openUrl,
+                const std::filesystem::path& openPath)
+{
+    if (url == openUrl) {
+        return true;
+    }
+    if (openPath.empty()) {
+        return false; // other protocols: only the same url
+    }
+    const std::filesystem::path path = canonicalLocalPath(url);
+    if (path.empty()) {
+        return false;
+    }
+#ifdef _WIN32
+    // Windows file systems are case-insensitive
+    const std::wstring& wa = path.native();
+    const std::wstring& wb = openPath.native();
+    if (CompareStringOrdinal(wa.c_str(), (int)wa.size(), wb.c_str(), (int)wb.size(), TRUE) == CSTR_EQUAL) {
+        return true;
+    }
+#else
+    if (path.native() == openPath.native()) {
+        return true;
+    }
+#endif
+    // the same existing file, e.g. through a hard link, on a case-insensitive file system (macOS), or on Windows
+    // through an 8.3 short name on the same drive (#140). Not through another drive letter (subst, or a mapped network
+    // drive and its UNC path): libstdc++'s equivalent() on Windows first compares st_dev, the drive (GCC 15
+    // libstdc++-v3/src/c++17/fs_ops.cc:878-881), so these are still other files, which fails safe (an error).
+    std::error_code ec;
+    const bool same = std::filesystem::equivalent(path, openPath, ec);
+
+    return !ec && same;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // open
 // Internal function to create all the required streams for writing a QuickTime
@@ -4837,8 +5049,17 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     assert(!_convertCtx);
 
-    // first, check that the codec setting is OK
-    checkCodec();
+    // First, check that the params select an available codec, without changing them (as checkCodec() does):
+    // beginSequenceRender may be called on a render thread (ofxThreadSafety.rst: "The only actions that can be called
+    // on a render thread are... kOfxImageEffectActionBeginSequenceRender"), and paramSetValue "should only be called
+    // from within a ::kOfxActionInstanceChanged or interact action" (ofxParam.h). selectedCodec() gives the codec to
+    // encode with (#398).
+    if (selectedCodecIndex() < 0) {
+        setPersistentMessage(Message::eMessageError, "", unavailableCodecError());
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 
     // Parse the user codec and format options before allocating anything, so that a syntax error
     // is reported immediately. The holders free the dictionaries on every path.
@@ -5087,7 +5308,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         }
         if (codecId == AV_CODEC_ID_PRORES) {
-            int index = _codec->getValue();
+            const int index = selectedCodecIndex();
             const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
             assert(index < (int)codecsShortNames.size());
             // avCodecContext->profile = getProfileFromShortName(codecsShortNames[index]);
@@ -5224,7 +5445,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // - https://forum.blackmagicdesign.com/viewtopic.php?f=21&t=51457#p355458
     const char* encoder = nullptr;
     if (codecId == AV_CODEC_ID_PRORES) {
-        int index = _codec->getValue();
+        const int index = selectedCodecIndex();
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
         assert(index < (int)codecsShortNames.size());
         switch (getProfileFromShortName(codecsShortNames[index])) {
@@ -5344,93 +5565,13 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     }
 
     _isOpen = true;
+    // the file that is open, now that it exists (encode() compares the file of each frame with it, #140)
+    _openPath = canonicalLocalPath(filename);
     _lastDts = AV_NOPTS_VALUE;
     _packetsWritten = 0;
     _error = CLEANUP;
     freeFormatOnFailure.release();
 } // WriteFFmpegPlugin::beginEncode
-
-// If url is a local file for libavformat, set *path to it and return true, else return false
-// (e.g. "pipe:1" or "udp://..."). As url_find_protocol() in libavformat/avio.c: the protocol is the
-// leading URL_SCHEME_CHARS before a ':', "file" if there is none (or, on Windows, for "C:..."), and
-// the file protocol strips the "file:" prefix (file_open() in libavformat/file.c).
-static bool
-urlToLocalPath(const string& url,
-               string* path)
-{
-    const size_t n = url.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-.");
-    if ((n == string::npos) || (url[n] != ':')
-#ifdef _WIN32
-        || (n == 1) // DOS path
-#endif
-    ) {
-        *path = url;
-
-        return true;
-    }
-    if (url.compare(0, n, "file") == 0) {
-        *path = url.substr(n + 1);
-
-        return true;
-    }
-
-    return false;
-}
-
-// The canonical form of a path given in UTF-8 (as are OFX strings): absolute, with the symbolic links,
-// "." and ".." resolved, even if the file (or its directory) does not exist yet.
-static std::filesystem::path
-canonicalPathUtf8(const string& utf8)
-{
-    namespace fs = std::filesystem;
-#ifdef _WIN32
-    const fs::path p(OFX::utf8_to_utf16(utf8));
-#else
-    const fs::path p(utf8);
-#endif
-    std::error_code ec;
-    fs::path c = fs::weakly_canonical(p, ec);
-    if (!ec) {
-        return c;
-    }
-    // e.g. a directory that can not be read: at least an absolute, lexically normal path
-    c = fs::absolute(p, ec);
-
-    return (ec ? p : c).lexically_normal();
-}
-
-// Whether the urls a and b (as given to avio_open()) are the same output: a file may be reached through
-// different paths, e.g. /tmp/x.mov and /private/tmp/x.mov on macOS, where /tmp is a symbolic link.
-static bool
-isSameOutputUrl(const string& a,
-                const string& b)
-{
-    if (a == b) {
-        return true;
-    }
-    string pa, pb;
-    if (!urlToLocalPath(a, &pa) || !urlToLocalPath(b, &pb)) {
-        return false; // other protocols: only the same url
-    }
-    const std::filesystem::path ca = canonicalPathUtf8(pa);
-    const std::filesystem::path cb = canonicalPathUtf8(pb);
-#ifdef _WIN32
-    // Windows file systems are case-insensitive
-    const std::wstring& wa = ca.native();
-    const std::wstring& wb = cb.native();
-
-    return CompareStringOrdinal(wa.c_str(), (int)wa.size(), wb.c_str(), (int)wb.size(), TRUE) == CSTR_EQUAL;
-#else
-    if (ca.native() == cb.native()) {
-        return true;
-    }
-    // the same existing file, e.g. through a hard link or on a case-insensitive file system (macOS)
-    std::error_code ec;
-    const bool same = std::filesystem::equivalent(ca, cb, ec);
-
-    return !ec && same;
-#endif
-}
 
 #define checkAvError()                                              \
     if (error < 0) {                                                \
@@ -5505,7 +5646,7 @@ WriteFFmpegPlugin::encode(const string& filename,
             // to that file: the param at this frame (if it is animated, or was changed during the render) must
             // name the same file, maybe through another path (#137).
             const string openUrl = _formatContext->url ? _formatContext->url : "";
-            if (!isSameOutputUrl(filename, openUrl)) {
+            if (!isSameOutputUrl(filename, openUrl, _openPath)) {
                 stringstream ss;
                 ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
                 setPersistentMessage(Message::eMessageError, "", ss.str());
@@ -5789,10 +5930,15 @@ WriteFFmpegPlugin::updateBitrateToleranceRange()
     _bitrateTolerance->setDisplayRange(minRange, kParamBitrateToleranceMax);
 }
 
-// The codec of the project that replaceMissingCodec() replaced (_codecReplaced), or an empty string.
+// The codec of the project that replaceMissingCodec() replaced (_codecReplaced), or that it replaces (the params still
+// select the replacement: checkCodec() has not set them yet, #398), or an empty string.
 string
 WriteFFmpegPlugin::codecReplaced() const
 {
+    const std::optional<MissingCodecReplacement> replacement = selectedCodec().replacement;
+    if (replacement) {
+        return replacement->codecShortName;
+    }
     std::lock_guard<std::mutex> guard(_codecReplacedMutex);
 
     return _codecReplaced;
@@ -5805,6 +5951,44 @@ WriteFFmpegPlugin::setCodecReplaced(const string& codecShortName)
     _codecReplaced = codecShortName;
 }
 
+// The Codec menu entry that the params select, without changing them, so that a render action can use it (#398):
+// the entry of the codecShortName param (the menu may differ between FFmpeg builds, so the index of a saved project
+// may name another entry), or rawvideo for a missing encoder that replaceMissingCodec() replaces, or else the
+// entry of the Codec param. checkCodec() sets the params to it on the main thread.
+WriteFFmpegPlugin::CodecSelection
+WriteFFmpegPlugin::selectedCodec() const
+{
+    CodecSelection selection;
+    const int codec = _codec->getValue();
+    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
+    string codecShortName;
+    _codecShortName->getValue(codecShortName);
+    const bool inMenu = (codec >= 0) && (codec < (int)codecsShortNames.size());
+    // codecShortName may be empty if this was configured in an old version
+    if (codecShortName.empty() || (inMenu && (codecShortName == codecsShortNames[codec]))) {
+        selection.index = inMenu ? codec : -1;
+
+        return selection;
+    }
+    vector<string>::const_iterator it = find(codecsShortNames.begin(), codecsShortNames.end(), codecShortName);
+    if (it != codecsShortNames.end()) {
+        // another entry, whose label (or index) changed
+        selection.index = (int)(it - codecsShortNames.begin());
+
+        return selection;
+    }
+    std::optional<MissingCodecReplacement> replacement = missingCodecReplacement(codecShortName);
+    if (replacement) {
+        it = find(codecsShortNames.begin(), codecsShortNames.end(), string("rawvideo"));
+        if (it != codecsShortNames.end()) {
+            selection.index = (int)(it - codecsShortNames.begin());
+            selection.replacement = std::move(replacement);
+        }
+    }
+
+    return selection;
+}
+
 // A project saved with the v308, v408, v410 or ayuv encoder, which this FFmpeg does not have (FFmpeg 9 removed them:
 // n8.0 libavcodec/allcodecs.c:354-359 lists v308, v408 and v410, n9.0 does not; n8.0 has no ayuv encoder
 // either): select rawvideo, with the Pref. params that give the same pixel layout
@@ -5813,84 +5997,63 @@ WriteFFmpegPlugin::setCodecReplaced(const string& codecShortName)
 // writes the closest pixel format that the container has (e.g. UYVY for v308 in Matroska, BGRA for v408 in AVI).
 // These encoders only took one pixel format (yuv444p, yuva444p, yuv444p10), so the Pref. params of the project had no
 // effect on them. The replacement is reported as a warning in the persistent message (codecReplacedMessage(), with the
-// pixel format of the current container) until the user chooses a codec. Returns false if rawvideo is not available
-// either.
-bool
-WriteFFmpegPlugin::replaceMissingCodec(const string& codecShortName)
+// pixel format of the current container) until the user chooses a codec. missingCodecReplacement() gives the Pref.
+// params, and selectedCodec() the replacement and the index of rawvideo in the Codec menu.
+void
+WriteFFmpegPlugin::replaceMissingCodec(const MissingCodecReplacement& replacement,
+                                       int rawvideoIndex)
 {
-    PrefBitDepthEnum bitDepth;
-    bool alpha;
-    if (codecShortName == "v308") {
-        bitDepth = ePrefBitDepth8;
-        alpha = false;
-    } else if ((codecShortName == "v408") || (codecShortName == "ayuv")) {
-        bitDepth = ePrefBitDepth8;
-        alpha = true;
-    } else if (codecShortName == "v410") {
-        bitDepth = ePrefBitDepth10;
-        alpha = false;
-    } else {
-        return false;
-    }
-    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-    vector<string>::const_iterator it = find(codecsShortNames.begin(), codecsShortNames.end(), string("rawvideo"));
-    if (it == codecsShortNames.end()) {
-        return false;
-    }
-    setCodecReplaced(codecShortName);
-    _codecShortName->setValue(*it);
-    _prefPixelCoding->setValue((int)ePrefPixelCodingYUV444);
-    _prefBitDepth->setValue((int)bitDepth);
-    _prefAlpha->setValue(alpha);
-    _codec->setValue((int)(it - codecsShortNames.begin()));
+    setCodecReplaced(replacement.codecShortName);
+    _codecShortName->setValue(FFmpegSingleton::Instance().getCodecsShortNames()[rawvideoIndex]);
+    _prefPixelCoding->setValue((int)replacement.pixelCoding);
+    _prefBitDepth->setValue((int)replacement.bitDepth);
+    _prefAlpha->setValue(replacement.alpha);
+    _codec->setValue(rawvideoIndex);
     updateVisibility();
-
-    return true;
 }
 
-// Check that the secret codecShortName corresponds to the selected codec.
-// It may change because different versions of FFmpeg support different codecs, so the choice menu may
-// be different in different instances.
-// This is also done in beginEdit() because setValue() cannot be called in the plugin constructor.
+// The error when the params select no codec of this FFmpeg (selectedCodec().index is -1).
+string
+WriteFFmpegPlugin::unavailableCodecError() const
+{
+    string codecShortName;
+    _codecShortName->getValue(codecShortName);
+    if (codecShortName.empty()) {
+        return "writer was configured for unavailable codec.";
+    }
+
+    return string("writer was configured for unavailable codec \"") + codecShortName + "\".";
+}
+
+// Set the Codec param (and the others that replaceMissingCodec() sets) to the entry that the params select
+// (selectedCodec()), which may differ because different versions of FFmpeg support different codecs, so the choice
+// menu may be different in different instances. paramSetValue is only allowed in kOfxActionInstanceChanged (ofxParam.h:
+// "paramSetValue should only be called from within a ::kOfxActionInstanceChanged or interact action"): this is only
+// called by the main thread actions, never by beginEncode() (#398). This is also done in beginEdit() because
+// setValue() cannot be called in the plugin constructor.
 void
 WriteFFmpegPlugin::checkCodec()
 {
-    int codec = _codec->getValue();
-    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-
-    // assert(codec < (int)codecsShortNames.size());
-    string codecShortName;
-
-    _codecShortName->getValue(codecShortName);
-    // codecShortName may be empty if this was configured in an old version
-    if (!codecShortName.empty() && (((int)codecsShortNames.size() <= codec) || (codecShortName != codecsShortNames[codec]))) {
-        // maybe it's another one but the label changed, if yes select it
-        vector<string>::const_iterator it;
-
-        it = find(codecsShortNames.begin(), codecsShortNames.end(), codecShortName);
-        if (it != codecsShortNames.end()) {
-            // found it! update the choice param
-            codec = it - codecsShortNames.begin();
-            _codec->setValue(codec);
-            updateVisibility();
-            // hide the codec name
-            _codecShortName->setIsSecret(true);
-        } else if (replaceMissingCodec(codecShortName)) {
-            // the codec was replaced, see _codecReplaced
-            _codecShortName->setIsSecret(true);
-        } else {
-            _codecShortName->setIsSecret(false);
-            setPersistentMessage(Message::eMessageError, "", string("writer was configured for unavailable codec \"") + codecShortName + "\".");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
-        }
-    } else if ((int)codecsShortNames.size() <= codec) {
-        setPersistentMessage(Message::eMessageError, "", "writer was configured for unavailable codec.");
+    const CodecSelection selection = selectedCodec();
+    if (selection.index < 0) {
+        _codecShortName->setIsSecret(false);
+        setPersistentMessage(Message::eMessageError, "", unavailableCodecError());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
     }
+    if (selection.replacement) {
+        // the codec was replaced, see _codecReplaced (also if the Codec param is already rawvideo: the codecShortName
+        // and Pref. params must be set, or the Pref. params would have no effect)
+        replaceMissingCodec(*selection.replacement, selection.index);
+    } else if (selection.index != _codec->getValue()) {
+        _codec->setValue(selection.index);
+        updateVisibility();
+    } else {
+        return;
+    }
+    // hide the codec name
+    _codecShortName->setIsSecret(true);
 }
 
 // http://stackoverflow.com/questions/3418231/replace-part-of-a-string-with-another-string
@@ -6306,6 +6469,7 @@ WriteFFmpegPlugin::freeFormat()
         avformat_free_context(_formatContext); // also cleans up the allocation by avformat_new_stream()
         _formatContext = nullptr;
     }
+    _openPath.clear();
     if (_convertCtx) {
         sws_freeContext(_convertCtx);
         _convertCtx = nullptr;
