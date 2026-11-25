@@ -63,6 +63,15 @@ else()
   set(_io_asan -fsanitize=address -fno-omit-frame-pointer)
 endif()
 
+# UBSan's float-cast-overflow and signed-integer-overflow checks, stopping at the first error, except with MinGW (MS
+# Windows), which has no UBSan runtime: test-writer-int-ranges and reader_hooks_test (#184)
+if(WIN32)
+  set(_io_int_ubsan "")
+else()
+  set(_io_int_ubsan -fsanitize=float-cast-overflow,signed-integer-overflow
+                    -fno-sanitize-recover=float-cast-overflow,signed-integer-overflow)
+endif()
+
 # the OFX C++ Support library (host-facing plug-in runtime), as tests/Makefile's OFX_SUPPORT: ofxsDrawContextOpenGL.cpp
 # (DrawArgs::isOpenGLContextCurrent, used by SupportExt's OverlayDraw) loads OpenGL at run time
 set(_io_ofx_support
@@ -315,6 +324,16 @@ if(TARGET io_tests_ofx)
   # test-writer-render-scale (#438): a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render
   # fail with an error message, getRegionOfDefinition fails without one
   io_test(test-writer-render-scale ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writer-render-scale)
+  # test-writer-int-ranges (#184): GenericWriter's Project format and WriteFFmpeg's frame range, step, frames and fps,
+  # with host values out of the range of int (or NaN): built with UBSan's float-cast-overflow and signed-integer-overflow
+  # checks, stopping at the first error (ofx_render_test_ubsan); on MS Windows (MinGW has no UBSan runtime),
+  # ofx_render_test.
+  if(WIN32)
+    io_test(test-writer-int-ranges ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --int-ranges)
+  else()
+    io_test_program(ofx_render_test_ubsan OFX SOURCES ${_io_render_srcs} LIBS ${_io_render_libs} SANITIZE ${_io_int_ubsan})
+    io_test(test-writer-int-ranges ENV "${_io_ocio_env}" COMMAND ofx_render_test_ubsan "${B}/.render_out.mov" --int-ranges)
+  endif()
   # test-writeffmpeg-selected-encoder (#348): WriteFFmpeg encodes with the encoder selected in the Codec menu, not with
   # the default encoder of its codec ID; skipped (exit status 77) if the FFmpeg build has no such encoder to check
   io_test(test-writeffmpeg-selected-encoder ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i348" --selected-encoder)
@@ -336,7 +355,8 @@ if(TARGET io_tests_ofx)
   io_test(test-layers COMMAND oiio_layers_test)
 
   # test-reader-hooks: GenericReader's hooks, on test readers
-  io_test_program(reader_hooks_test OFX THREADS SOURCES ${T}/reader_hooks_test.cpp ${_io_reader_srcs})
+  # with the UBSan checks of test-writer-int-ranges (#184: tiles and sequence times near the limits of an int)
+  io_test_program(reader_hooks_test OFX THREADS SOURCES ${T}/reader_hooks_test.cpp ${_io_reader_srcs} SANITIZE ${_io_int_ubsan})
   io_test(test-reader-hooks ENV "${_io_ocio_env}" COMMAND reader_hooks_test "${B}/.reader_hooks")
 
   # test-ocio-cdl: OCIOCDLTransform's Export param writes a .cc file that OCIO reads back

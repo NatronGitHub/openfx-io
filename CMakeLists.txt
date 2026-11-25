@@ -102,7 +102,7 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" "${PROJECT_SOURCE_DI
 include(OpenFXLocal)
 include(IOSupport)
 
-if(OFX_CXX_STANDARD LESS 17 OR OFX_CXX_STANDARD EQUAL 98)
+if(OFX_CXX_STANDARD LESS 17)
   message(FATAL_ERROR "OFX_CXX_STANDARD=${OFX_CXX_STANDARD}: openfx-io needs C++17 or later (OpenImageIO 3.x, OpenColorIO 2.5)")
 endif()
 

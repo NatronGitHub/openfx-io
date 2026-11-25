@@ -42,8 +42,8 @@
 #include <cfloat> // DBL_MAX
 #include <chrono> // std::chrono::milliseconds
 #include <climits> // INT_MAX
-#include <condition_variable>
 #include <cmath> // std::ceil, std::fabs
+#include <condition_variable>
 #include <cstdio>
 #include <cstring> // strncpy
 #include <filesystem> // std::filesystem::weakly_canonical
@@ -86,6 +86,7 @@ extern "C" {
 #include <libavutil/timecode.h>
 #include <libswscale/swscale.h>
 }
+#include "IOMutex.h"
 #include "IOUtility.h"
 #include "ofxsFileOpen.h"
 #include "ofxsMacros.h"
@@ -106,18 +107,6 @@ extern "C" {
 #endif
 
 #include "ofxsMultiThread.h"
-#ifdef OFX_USE_MULTITHREAD_MUTEX
-namespace {
-typedef OFX::MultiThread::Mutex Mutex;
-typedef OFX::MultiThread::AutoMutex AutoMutex;
-}
-#else
-// some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
-namespace {
-typedef std::mutex Mutex;
-typedef std::lock_guard<std::mutex> AutoMutex;
-}
-#endif
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -895,16 +884,13 @@ static int64_t
 bitrateToInt64(double mbps)
 {
     const double bps = mbps * 1000000;
-    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even with -ffast-math, unlike comparisons
-    if (OFX::IsNaN(bps) || (bps <= 0.)) {
-        return 0;
-    }
     const double maxBps = (double)INT_MAX * 1000.;
-    if (OFX::IsInfinite(bps) || (bps >= maxBps)) {
-        return (int64_t)maxBps;
+    if ((bps > 0.) && (bps < maxBps)) {
+        return (int64_t)bps;
     }
 
-    return (int64_t)bps;
+    // bps <= 0, or NaN, which fails every comparison (not a NaN test, as in clampToInt())
+    return (bps >= maxBps) ? (int64_t)maxBps : 0;
 }
 
 // Trap fractional frame rates so that they can be specified correctly
@@ -2105,7 +2091,9 @@ private:
     // https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#rconc-mutex).
     std::mutex _nextFrameToEncodeMutex;
     std::condition_variable _nextFrameToEncodeCond;
-    int _nextFrameToEncode; //< the frame index we need to encode next, INT_MIN means uninitialized
+    // the frame index we need to encode next, INT_MIN means uninitialized; a long long, since the last frame plus the
+    // step may be above INT_MAX (the frames are ints from INT_MIN + 1 to INT_MAX, see isEncodableFrame())
+    long long _nextFrameToEncode;
     int _firstFrameToEncode;
     int _lastFrameToEncode;
     int _frameStep;
@@ -3119,9 +3107,9 @@ static bool
 encoderOpensPixelFormat(const AVCodec* codec,
                         AVPixelFormat pixelFormat)
 {
-    static Mutex mutex;
+    static IOMutex mutex;
     static std::map<std::pair<const AVCodec*, int>, bool> cache;
-    AutoMutex lock(mutex);
+    IOAutoMutex lock(mutex);
     const std::pair<const AVCodec*, int> key(codec, (int)pixelFormat);
     std::map<std::pair<const AVCodec*, int>, bool>::const_iterator it = cache.find(key);
     if (it != cache.end()) {
@@ -3848,7 +3836,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // avCodecContext->time_base.num = (int)CONVERSION_FACTOR;
     // avCodecContext->time_base.den = (int)(fps * CONVERSION_FACTOR);
 
-    int frameRate = (0.0 < fps) ? (int)fps : 0;
+    int frameRate = clampToInt(fps, 0, INT_MAX); // fps is set from the input clip, and may be out of the range of int (#184)
     const AVRational frame_rate = frameRateFromFps(fps);
     AVRational time_base = av_inv_q(clipFrameRate(frame_rate, avCodec->id));
     // copy timebase while removing common factors
@@ -5014,6 +5002,23 @@ isSameOutputUrl(const string& url,
     return !ec && same;
 }
 
+// Whether a frame of the host (an OfxTime, rounded) can be encoded: frames are ints from INT_MIN + 1 to INT_MAX, since
+// _nextFrameToEncode is INT_MIN when the encoding failed (#184). A NaN fails both comparisons (not a NaN test).
+static bool
+isEncodableFrame(double frame)
+{
+    return (frame >= (double)(INT_MIN + 1)) && (frame <= (double)INT_MAX);
+}
+
+// The frame that a render at time encodes, which _nextFrameToEncode is compared with: the nearest frame, halves
+// rounded down, so that the render of a whole frame encodes that frame for both signs (a fielded render, at a frame
+// step of 0.5, encodes the images of the whole frames: the half frames are taken as re-renders).
+static double
+frameAtTime(double time)
+{
+    return std::ceil(time - 0.5);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // open
 // Internal function to create all the required streams for writing a QuickTime
@@ -5044,6 +5049,18 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     if (args.isInteractive) {
         setPersistentMessage(Message::eMessageError, "", "can only write files when in non-interactive mode.");
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
+
+    // The frames of a movie are ints (#184): fail, rather than encode other frames than the host renders.
+    if (!isEncodableFrame(frameAtTime(args.frameRange.min)) || !isEncodableFrame(frameAtTime(args.frameRange.max))) {
+        stringstream ss;
+        ss.precision(17); // the frames as they are
+        ss << "The frame range " << args.frameRange.min << " to " << args.frameRange.max << " is out of the range of frame numbers ("
+           << (INT_MIN + 1) << " to " << INT_MAX << ")";
+        setPersistentMessage(Message::eMessageError, "", ss.str());
         throwSuiteStatusException(kOfxStatFailed);
 
         return;
@@ -5559,10 +5576,14 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // Flag that we didn't encode any frame yet
     {
         std::lock_guard<std::mutex> guard(_nextFrameToEncodeMutex);
-        _nextFrameToEncode = (int)args.frameRange.min;
-        _firstFrameToEncode = (int)args.frameRange.min;
-        _lastFrameToEncode = (int)args.frameRange.max;
-        _frameStep = (int)args.frameStep;
+        // the host's frame range (checked above) and step, as ints (#184): a step below 1 (0.5 for fielded renders,
+        // "generally set to 1 (for full frame renders) or 0.5 (for fielded renders)",
+        // kOfxImageEffectActionBeginSequenceRender in ofxImageEffect.h) gives 1, since the frames are ints
+        // (clampToInt(), and not (int): with -ffinite-math-only, the check above may let a NaN through)
+        _nextFrameToEncode = clampToInt(frameAtTime(args.frameRange.min), INT_MIN + 1, INT_MAX);
+        _firstFrameToEncode = clampToInt(frameAtTime(args.frameRange.min), INT_MIN + 1, INT_MAX);
+        _lastFrameToEncode = clampToInt(frameAtTime(args.frameRange.max), INT_MIN + 1, INT_MAX);
+        _frameStep = clampToInt(args.frameStep, 1, INT_MAX);
         _nextFrameToEncodeCond.notify_all();
     }
 
@@ -5597,8 +5618,18 @@ WriteFFmpegPlugin::encode(const string& filename,
                           const int rowBytes)
 {
     assert(dstNCompsStartIndex == 0);
-    // the frame number, which _nextFrameToEncode is compared with
-    const int frame = (int)std::lround(time);
+    // the frame number, which _nextFrameToEncode is compared with: a render out of the frame range of
+    // beginSequenceRender, which a host doesn't do, fails if its frame is not an int (#184)
+    if (!isEncodableFrame(frameAtTime(time))) {
+        stringstream ss;
+        ss.precision(17);
+        ss << "The frame at time " << time << " is out of the range of frame numbers (" << (INT_MIN + 1) << " to " << INT_MAX << ")";
+        setPersistentMessage(Message::eMessageError, "", ss.str());
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
+    const int frame = clampToInt(frameAtTime(time), INT_MIN + 1, INT_MAX); // (not (int): see beginEncode())
 
     /// Check that we're really encoding in sequential order
     {
@@ -5696,7 +5727,7 @@ WriteFFmpegPlugin::encode(const string& filename,
                 assert(_formatContext);
                 if (!writeToFile(_formatContext, false, time, pixelData, &bounds, pixelDataNComps, dstNComps, rowBytes)) {
                     _error = SUCCESS;
-                    _nextFrameToEncode = frame + _frameStep;
+                    _nextFrameToEncode = (long long)frame + _frameStep;
                     if (abort()) {
                         _nextFrameToEncode = INT_MIN;
                     }
@@ -5712,7 +5743,7 @@ WriteFFmpegPlugin::encode(const string& filename,
             // the exception itself, not a copy (C++ Core Guidelines E.15, https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#re-exception-ref)
             throw;
         }
-    } // MultiThread::AutoMutex lock(_nextFrameToEncodeMutex);
+    } // std::unique_lock<std::mutex> guard(_nextFrameToEncodeMutex);
 } // WriteFFmpegPlugin::encode
 
 ////////////////////////////////////////////////////////////////////////////////

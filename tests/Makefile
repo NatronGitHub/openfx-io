@@ -157,8 +157,9 @@ READER_HOOKS_SRCS := ../IOSupport/GenericReader.cpp ../IOSupport/ExrThreads.cpp 
     ../SupportExt/ofxsFileOpen.cpp ../SupportExt/ofxsLut.cpp
 
 # -pthread: the test uses std::thread
+# (with the UBSan checks of test-writer-int-ranges, INT_RANGES_UBSAN, below: #184)
 reader_hooks_test: reader_hooks_test.cpp ofx_test_host.h $(READER_HOOKS_SRCS) $(OFX_SUPPORT)
-	$(CXX) $(OFX_CXXFLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
+	$(CXX) $(OFX_CXXFLAGS) $(INT_RANGES_UBSAN) -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
 
 # OCIOCDLTransform and its in-repo dependencies only, with OpenGL render support, as in
 # ../Makefile.master (OCIOPluginBase.cpp needs it) and its OCIO_OPENGL_OBJS
@@ -711,6 +712,25 @@ test-pfm-read-errors: ofx_render_test
 # #438: a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render fail with an error message
 test-writer-render-scale: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --writer-render-scale
+
+# #184: GenericWriter's Project format and WriteFFmpeg's frame range, step, frames and fps, with host values out of the
+# range of int (or NaN): ofx_render_test built with UBSan's float-cast-overflow and signed-integer-overflow checks,
+# stopping at the first error (ofx_render_test_ubsan); on MS Windows (MinGW has no UBSan runtime), ofx_render_test.
+# reader_hooks_test is built with the same checks. (Added to test and clean here, on lines of their own.)
+INT_RANGES_UBSAN := $(if $(filter Windows_NT,$(OS)),,-fsanitize=float-cast-overflow,signed-integer-overflow \
+    -fno-sanitize-recover=float-cast-overflow,signed-integer-overflow)
+INT_RANGES_TEST := $(if $(filter Windows_NT,$(OS)),ofx_render_test,ofx_render_test_ubsan)
+ofx_render_test_ubsan: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../PFM/ReadPFM.cpp ../PFM/WritePFM.cpp $(RENDER_PNG_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(INT_RANGES_UBSAN) $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) $(filter-out %.h,$^) $(OFX_LIBS) \
+	    $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,) -o $@
+
+.PHONY: test-writer-int-ranges clean-writer-int-ranges
+test: test-writer-int-ranges
+clean: clean-writer-int-ranges
+test-writer-int-ranges: $(INT_RANGES_TEST)
+	OCIO=$(CURDIR)/test.ocio ./$(INT_RANGES_TEST) $(CURDIR)/.render_out.mov --int-ranges
+clean-writer-int-ranges:
+	rm -rf ofx_render_test_ubsan ofx_render_test_ubsan.dSYM
 
 # #348: WriteFFmpeg encodes with the encoder selected in the Codec menu, not with the default encoder of its codec ID
 # (e.g. libx264rgb, libopenh264, libxvid, libopenjpeg); skipped if the FFmpeg build has no such encoder

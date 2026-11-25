@@ -98,6 +98,7 @@ static_assert(!ffmpegIsRelease80(FFMPEG_VERSION),
 // library.
 std::string ffmpegRuntimeVersionError();
 
+#include "IOMutex.h" // FFmpegFile::Mutex
 #include "ofxsMultiThread.h"
 
 // For the plug-ins' load(): if ffmpegRuntimeVersionError() is not empty, prints it on stderr and throws
@@ -113,11 +114,6 @@ requireSupportedFFmpegRuntime(const char* pluginName)
         OFX::throwSuiteStatusException(kOfxStatFailed);
     }
 }
-
-#ifndef OFX_USE_MULTITHREAD_MUTEX
-// some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
-#include <mutex>
-#endif
 
 #define CHECKMSG(x, msg)         \
     {                            \
@@ -198,13 +194,8 @@ public:
         }
     };
 
-#ifdef OFX_USE_MULTITHREAD_MUTEX
-    typedef OFX::MultiThread::Mutex Mutex;
-    typedef OFX::MultiThread::AutoMutex AutoMutex;
-#else
-    typedef std::mutex Mutex;
-    typedef std::lock_guard<std::mutex> AutoMutex;
-#endif
+    using Mutex = OFX::IO::IOMutex;
+    using AutoMutex = OFX::IO::IOAutoMutex;
 
 private:
     struct Stream {

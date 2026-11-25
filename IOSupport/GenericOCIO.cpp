@@ -40,13 +40,13 @@
    texture_paint - Similar to matte_paint but for painting textures for 3D objects (see the description of texture painting in SPI’s pipeline)
  */
 
-#include <algorithm> // std::swap (C++03)
+#include <algorithm> // std::find, std::sort
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
-#include <utility> // std::swap (C++11)
+#include <utility> // std::swap
 #ifdef DEBUG
 #include <cstdio>
 #define DBG(x) x

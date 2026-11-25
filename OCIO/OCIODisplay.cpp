@@ -282,7 +282,7 @@ private:
     DoubleParam* _gamma;
     ChoiceParam* _channel;
 
-    auto_ptr<GenericOCIO> _ocio;
+    std::unique_ptr<GenericOCIO> _ocio;
 
     // everything that the processor depends on
     struct ProcKey {
@@ -783,7 +783,7 @@ OCIODisplayPlugin::contextDetached(void* contextData)
 void
 OCIODisplayPlugin::renderGPU(const RenderArguments& args)
 {
-    auto_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
+    std::unique_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
     if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -792,7 +792,7 @@ OCIODisplayPlugin::renderGPU(const RenderArguments& args)
 
     checkBadRenderScaleOrField(srcImg, args);
 
-    auto_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
+    std::unique_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -882,7 +882,7 @@ OCIODisplayPlugin::render(const RenderArguments& args)
     }
 #endif
 
-    auto_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
+    std::unique_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
     if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -893,7 +893,7 @@ OCIODisplayPlugin::render(const RenderArguments& args)
     BitDepthEnum srcBitDepth = srcImg->getPixelDepth();
     PixelComponentEnum srcComponents = srcImg->getPixelComponents();
 
-    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    std::unique_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 

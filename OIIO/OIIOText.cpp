@@ -24,6 +24,7 @@
 
 #include <cfloat> // DBL_MAX
 #include <climits> // INT_MAX
+#include <memory>
 
 #include "ofxsMacros.h"
 
@@ -261,21 +262,19 @@ static int
 textCoordToInt(double v)
 {
     const double maxCoord = 268435456.; // 2^28
-    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even with -ffast-math, unlike comparisons
-    if (OFX::IsNaN(v)) {
-        return 0;
+    // in OFX::IO::clampToInt()'s order: with -ffinite-math-only (which may fold the comparisons), a NaN gives a bound,
+    // never the conversion
+    if (v >= maxCoord) {
+        return (int)maxCoord;
     }
-    if (OFX::IsInfinite(v)) {
-        return (v > 0.) ? (int)maxCoord : -(int)maxCoord;
+    if (v > -maxCoord) {
+        return (int)v; // -maxCoord < v < maxCoord
     }
     if (v <= -maxCoord) {
         return -(int)maxCoord;
     }
-    if (v >= maxCoord) {
-        return (int)maxCoord;
-    }
 
-    return int(v);
+    return 0; // NaN fails every comparison (not a NaN test)
 }
 
 void
@@ -287,7 +286,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
         return;
     }
 
-    auto_ptr<const Image> srcImg(_srcClip ? _srcClip->fetchImage(args.time) : 0);
+    std::unique_ptr<const Image> srcImg(_srcClip ? _srcClip->fetchImage(args.time) : nullptr);
     if (srcImg.get()) {
         checkBadRenderScaleOrField(srcImg, args);
     }
@@ -298,7 +297,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
         return;
     }
     assert(_dstClip);
-    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    std::unique_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -335,7 +334,7 @@ OIIOTextPlugin::render(const RenderArguments& args)
     int pixelComponentCount = 0;
     BitDepthEnum bitDepth = eBitDepthNone;
     OIIO::ImageSpec srcSpec;
-    auto_ptr<const OIIO::ImageBuf> srcBuf;
+    std::unique_ptr<const OIIO::ImageBuf> srcBuf;
     OfxRectI dstRod = dstImg->getRegionOfDefinition();
     if (!srcImg.get()) {
         setPersistentMessage(Message::eMessageError, "", "Source needs to be connected");

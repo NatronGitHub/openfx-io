@@ -36,6 +36,7 @@
 #ifdef DEBUG
 #include <cstdio>
 #endif
+#include <memory>
 #include <stdexcept> // std::runtime_error
 #include <tuple> // std::tie
 
@@ -327,10 +328,10 @@ OCIOFileTransformPlugin::setupAndCopy(PixelProcessorFilterBase& processor,
         return;
     }
 
-    auto_ptr<const Image> orig((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> orig((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : nullptr);
 
     bool doMasking = ((!_maskApply || _maskApply->getValueAtTime(time)) && _maskClip && _maskClip->isConnected());
-    auto_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : nullptr);
     if (doMasking) {
         bool maskInvert;
         _maskInvert->getValueAtTime(time, maskInvert);
@@ -607,7 +608,7 @@ OCIOFileTransformPlugin::contextDetached(void* contextData)
 void
 OCIOFileTransformPlugin::renderGPU(const RenderArguments& args)
 {
-    auto_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
+    std::unique_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
     if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -616,7 +617,7 @@ OCIOFileTransformPlugin::renderGPU(const RenderArguments& args)
 
     checkBadRenderScaleOrField(srcImg, args);
 
-    auto_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
+    std::unique_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -706,7 +707,7 @@ OCIOFileTransformPlugin::render(const RenderArguments& args)
     }
 #endif
 
-    auto_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
+    std::unique_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
     if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -723,7 +724,7 @@ OCIOFileTransformPlugin::render(const RenderArguments& args)
         return;
     }
     assert(_dstClip);
-    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    std::unique_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 

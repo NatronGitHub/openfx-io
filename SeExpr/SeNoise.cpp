@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cfloat> // DBL_MAX
 #include <cmath>
+#include <memory>
 //#include <iostream>
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #define NOMINMAX 1
@@ -804,7 +805,7 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase& processor,
 {
     const double time = args.time;
 
-    auto_ptr<Image> dst(_dstClip->fetchImage(time));
+    std::unique_ptr<Image> dst(_dstClip->fetchImage(time));
     if (!dst.get()) {
         throwSuiteStatusException(kOfxStatFailed);
     }
@@ -815,7 +816,7 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase& processor,
         throwSuiteStatusException(kOfxStatFailed);
     }
     checkBadRenderScaleOrField(dst, args);
-    auto_ptr<const Image> src((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> src((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : nullptr);
     if (src.get()) {
         checkBadRenderScaleOrField(src, args);
         BitDepthEnum srcBitDepth = src->getPixelDepth();
@@ -825,7 +826,7 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase& processor,
         }
     }
     bool doMasking = ((!_maskApply || _maskApply->getValueAtTime(time)) && _maskClip && _maskClip->isConnected());
-    auto_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : nullptr);
     if (mask.get()) {
         checkBadRenderScaleOrField(mask, args);
     }

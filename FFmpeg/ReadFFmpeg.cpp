@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <climits> // INT_MIN, INT_MAX
 #include <cmath>
+#include <memory>
 #include <sstream>
 #ifdef DEBUG
 #include <cstdio>
@@ -609,7 +610,7 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
 
 class ReadFFmpegPluginFactory
     : public PluginFactoryHelper<ReadFFmpegPluginFactory> {
-    auto_ptr<FFmpegFileManager> _manager;
+    std::unique_ptr<FFmpegFileManager> _manager;
 
 public:
     ReadFFmpegPluginFactory(const string& id,

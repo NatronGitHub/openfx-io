@@ -27,6 +27,7 @@
 #include <climits> // INT_MAX
 #include <cctype>
 #include <map>
+#include <memory>
 #include <limits>
 #include <set>
 #include <utility>
@@ -292,7 +293,8 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 // and work even if the compiler assumes that there are no NaNs or infinities (-ffast-math), unlike comparisons.
 // - The coordinates are clamped to [-kSeExprMaxArg, kSeExprMaxArg] (far out of any image, so that the result is the same
 //   as without clamping: the edge pixel for coordinates out of the image) before their conversion to int.
-// - A finite frame is used as is (OfxTime is a double); an infinite one is clamped to +-kSeExprMaxArg.
+// - The frame is clamped to the range of int (OfxTime is a double, but hosts convert frames to int, #184): every int
+//   frame is used as is.
 // - A NaN coordinate or frame gives a black pixel.
 #define kSeExprMaxArg 1e9
 
@@ -314,16 +316,17 @@ clampPixelArg(double* v)
     return true;
 }
 
-// The frame of cpixel() or apixel(): unchanged if finite, clamped to +-kSeExprMaxArg if infinite. Returns false if it
-// is NaN.
+// The frame of cpixel() or apixel(), clamped to [INT_MIN, INT_MAX] (#184). Returns false if it is NaN.
 static bool
 clampPixelFrame(double* v)
 {
     if (OFX::IsNaN(*v)) {
         return false;
     }
-    if (OFX::IsInfinite(*v)) {
-        *v = (*v > 0.) ? kSeExprMaxArg : -kSeExprMaxArg;
+    if (*v > (double)INT_MAX) {
+        *v = INT_MAX;
+    } else if (*v < (double)INT_MIN) {
+        *v = INT_MIN;
     }
 
     return true;
@@ -1722,8 +1725,8 @@ stubAddUnknown(int input,
 }
 
 // A frame of an input: a NaN frame gives the default frame range (cpixel() gives black; the frame is computed from the
-// frame and constants, and tested with OFX::IsNaN()), an infinite frame is clamped as in the render
-// (clampPixelFrame()), and the frame is rounded as on master
+// frame and constants, and tested with OFX::IsNaN()), the frame is clamped as in the render (clampPixelFrame()), and
+// rounded as on master
 static void
 stubAddFrame(int input,
              double frame,
@@ -3283,7 +3286,7 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase& processor,
 {
     const double time = args.time;
 
-    auto_ptr<Image> dst(_dstClip->fetchImage(time));
+    std::unique_ptr<Image> dst(_dstClip->fetchImage(time));
     if (!dst.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -3331,7 +3334,7 @@ SeExprPlugin::setupAndProcess(SeExprProcessorBase& processor,
 
     // auto ptr for the mask.
     bool doMasking = ((!_maskApply || _maskApply->getValueAtTime(time)) && _maskClip && _maskClip->isConnected());
-    auto_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : nullptr);
     // do we do masking
     if (doMasking) {
         bool maskInvert;

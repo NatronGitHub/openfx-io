@@ -294,7 +294,7 @@ namespace IO {
 
 #ifdef OFX_IO_USING_OCIO
         OFX::BooleanParam* _outputSpaceSet;
-        auto_ptr<GenericOCIO> _ocio;
+        std::unique_ptr<GenericOCIO> _ocio;
 #endif
 
         const std::vector<std::string>& _extensions;

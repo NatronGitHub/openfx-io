@@ -627,7 +627,7 @@ private:
 protected:
 #ifdef OFX_IO_USING_OCIO
     OFX::BooleanParam* _inputSpaceSet;
-    auto_ptr<GenericOCIO> _ocio;
+    std::unique_ptr<GenericOCIO> _ocio;
 #endif
 
     OFX::Clip* _syncClip; //< Mantated input clip
