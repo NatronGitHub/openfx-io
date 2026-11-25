@@ -135,8 +135,12 @@ fi
 
 NFRAMES=40
 ramp() {
-    # ramp RATE: the lavfi source of a gray ramp at RATE fps
-    echo "color=c=gray:s=128x128:r=$1,format=gray,geq=lum='16+4*N':cb=128:cr=128,format=yuv420p"
+    # ramp RATE: the lavfi source of a gray ramp at RATE fps, generated directly in the pixel format RAMP_PIX_FMT
+    # (default yuv420p). A clip in a full-range format (e.g. yuvj420p for MJPEG) sets RAMP_PIX_FMT to it: otherwise
+    # the ffmpeg CLI converts the full-range gray to yuv420p and back, and that round trip through the video range
+    # loses a luma level on every FFmpeg version (32 becomes 31, hidden by the --ramp tolerance of 0.4 * 4 = 1.6),
+    # to which FFmpeg n8.0 adds a chroma bias (issue #345).
+    echo "color=c=gray:s=128x128:r=$1,format=gray,geq=lum='16+4*N':cb=128:cr=128,format=${RAMP_PIX_FMT:-yuv420p}"
 }
 have_encoder() {
     # Not `ffmpeg ... | grep -q`: grep -q exits at the first match, ffmpeg then gets SIGPIPE if it still
@@ -1331,10 +1335,10 @@ check_damaged ramp_damaged_gop.mkv "MKV (H.264, 24 fps, damaged first GOP: its f
 # Intra-only codecs: after a seek to the damaged frame, the previous frame must be held too, also in a run of
 # 4 damaged frames, decoded first in a newly opened file (--fresh), in reverse and in another order.
 CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check_damaged ramp_damaged_run_prores.mov "MOV (ProRes, 24 fps, a run of 4 damaged frames)" prores_ks N "20 21 22 23" 21,22,23,24 "" "" -c:v prores_ks -profile:v 2
-CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check_damaged ramp_damaged_run_mjpeg.avi "AVI (MJPEG, 24 fps, a run of 4 damaged frames)" mjpeg N "20 21 22 23" 21,22,23,24 "" "" \
+RAMP_PIX_FMT=yuvj420p CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check_damaged ramp_damaged_run_mjpeg.avi "AVI (MJPEG, 24 fps, a run of 4 damaged frames)" mjpeg N "20 21 22 23" 21,22,23,24 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
-check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
+RAMP_PIX_FMT=yuvj420p check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 # CineForm (CFHD, MOV, every packet a keyframe packet): the decoder flags no frame as a keyframe, and the descriptor
 # does not make it intra-only, so the reader restarts the decoder at the next packet after each damaged one (issue
@@ -1434,7 +1438,7 @@ for intra in "v210 mov -pix_fmt yuv422p10le" "rawvideo avi" "huffyuv avi -pix_fm
 done
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
 check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
-check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+RAMP_PIX_FMT=yuvj420p check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
 check_truncated_intra ramp_truncated_v210.mov "MOV (v210, faststart, truncated in frame 16)" 16 v210 -c:v v210 -pix_fmt yuv422p10le
 check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 \
     -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p
