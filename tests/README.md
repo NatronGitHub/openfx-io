@@ -60,6 +60,7 @@ make test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitiz
 make test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218)
 make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
 make test-writeffmpeg-missing-encoder # WriteFFmpeg fails the render if the selected encoder is missing (#388)
+make test-writeffmpeg-format-from-filename # WriteFFmpeg: the Format menu entry chosen from the output filename (#382)
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
@@ -422,6 +423,17 @@ change. Two writers must fail the render with an error that names prores_ks: one
 4444) with an empty codecShortName, as in a project saved by an old version, and one configured for ProRes 422 HQ.
 WriteFFmpeg used to encode them with the default encoder of the container. Positive control: the first encoder of the
 menu that is not hidden must render.
+
+`test-writeffmpeg-format-from-filename` (issue [#382](https://github.com/NatronGitHub/openfx-io/issues/382)) runs
+`ofx_render_test OUT --format-from-filename`: for each extension that WriteFFmpeg declares, plus `MKV` and `WebM`, it
+creates a WriteFFmpeg instance with the file `OUT.<extension>` and reads the Format menu entry that it chose. The file
+would be written in that container, or, with "guess from filename", in the muxer that `av_guess_format()` guesses from
+the filename. That container must be the guessed muxer, except for the extensions of the test's table: `mkv`,
+`matroska` and `webm` give matroska, `mpg` and `mpeg` give mpeg, `ts`, `m2t`, `m2ts` and `mts` give mpegts, and
+`mov`, `mp4`, `3gp`, `3g2`, `avi`, `flv` and `ogv` give the muxer of that name. Before #382, `3gp` and `3g2` gave mp4.
+A row whose extension, in lower case, is not declared fails: GenericWriter rejects it before WriteFFmpeg sees it. A row
+whose muxer is not built, or not in the Format menu, is skipped; if every row of the table is skipped, the test is
+skipped (exit status 77).
 
 `test-readffmpeg-destroy-closes-file` (issue #290) runs `ofx_render_test OUT --destroy-closes-file`: a ReadFFmpeg
 instance renders a frame of a movie, which must then be open, and is destroyed: the movie must be closed before
@@ -1407,7 +1419,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
 
 ## Notes / limitations
 

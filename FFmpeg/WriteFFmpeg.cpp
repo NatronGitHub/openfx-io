@@ -76,6 +76,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavformat/avio.h>
+#include <libavutil/avstring.h> // av_match_name
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
@@ -6085,6 +6086,35 @@ WriteFFmpegPlugin::beginEdit()
     checkCodec();
 }
 
+// The index in the Format menu of the muxer for filename, or -1 if none is in the menu (keep the Format).
+// av_guess_format() guesses it from the extension, as the ffmpeg CLI does for an output file without -f
+// (avformat_alloc_output_context2() at fftools/ffmpeg_mux_init.c:3335, libavformat/mux.c:114 in n9.0.2), or from the
+// extension as a muxer name, since load() declares the muxer names as extensions too. GenericWriter rejects the
+// extensions that load() does not declare before onOutputFileChanged(); a declared extension whose muxer is not built
+// in this FFmpeg (one of load()'s hard-coded extensions) gives no muxer, and keeps the Format. If the muxer is not in
+// the menu (webm), this is the first menu entry that is a name of the demuxer of the same name ("matroska,webm").
+static int
+guessFormatIndex(const string& filename)
+{
+    const vector<string>& formatsShortNames = FFmpegSingleton::Instance().getFormatsShortNames();
+    const string suffix = extension(filename);
+    const AVOutputFormat* oformat = av_guess_format(suffix.empty() ? nullptr : suffix.c_str(), filename.c_str(), nullptr);
+    if (!oformat) {
+        return -1;
+    }
+    const auto it = std::find(formatsShortNames.begin() + 1, formatsShortNames.end(), oformat->name); // entry 0 is "default"
+    if (it != formatsShortNames.end()) {
+        return static_cast<int>(it - formatsShortNames.begin());
+    }
+    const AVInputFormat* iformat = av_find_input_format(oformat->name);
+    for (size_t i = 1; iformat && i < formatsShortNames.size(); ++i) {
+        if (av_match_name(formatsShortNames[i].c_str(), iformat->name)) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 void
 WriteFFmpegPlugin::onOutputFileChanged(const string& filename,
                                        bool setColorSpace)
@@ -6116,62 +6146,30 @@ WriteFFmpegPlugin::onOutputFileChanged(const string& filename,
         }
 #endif
     }
-    // Switch the 'format' knob based on the new filename suffix
-    string suffix = filename.substr(filename.find_last_of(".") + 1);
-    if (!suffix.empty()) {
-        // downcase the suffix
-        std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::tolower);
-        // Compare found suffix to known formats
-        const vector<string>& formatsShortNames = FFmpegSingleton::Instance().getFormatsShortNames();
-        for (size_t i = 0; i < formatsShortNames.size(); ++i) {
-            bool setFormat = false;
-            if (suffix.compare(formatsShortNames[i]) == 0) {
-                setFormat = true;
-                ;
-            } else if (formatsShortNames[i] == "matroska") {
-                if ((suffix.compare("mkv") == 0) || (suffix.compare("mk3d") == 0) || (suffix.compare("webm") == 0)) {
-                    setFormat = true;
-                }
-            } else if (formatsShortNames[i] == "mpeg") {
-                if (suffix.compare("mpg") == 0) {
-                    setFormat = true;
-                }
-            } else if (formatsShortNames[i] == "mpegts") {
-                if ((suffix.compare("m2ts") == 0) || (suffix.compare("mts") == 0) || (suffix.compare("ts") == 0)) {
-                    setFormat = true;
-                }
-            } else if (formatsShortNames[i] == "mp4") {
-                if ((suffix.compare("mov") == 0) || (suffix.compare("3gp") == 0) || (suffix.compare("3g2") == 0) || (suffix.compare("mj2") == 0)) {
-                    setFormat = true;
+    // Switch the Format menu to the muxer of the new filename
+    const int formatIndex = guessFormatIndex(filename);
+    if (formatIndex >= 0) {
+        _format->setValue(formatIndex);
+        const AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[formatIndex].c_str(), nullptr, nullptr);
+        const vector<AVCodecID>& codecs = FFmpegSingleton::Instance().getCodecsIds();
+        // is the current codec compatible with this format ?
+        if (!codecCompatible(fmt, codecs[_codec->getValue()])) {
+            // set the default codec for this format, or the first compatible codec
+            enum AVCodecID default_video_codec = fmt->video_codec;
+            bool codecSet = false;
+            int compatible_codec = -1;
+            for (size_t c = 0; !codecSet && c < codecs.size(); ++c) {
+                if (codecs[c] == default_video_codec) {
+                    _codec->setValue(c);
+                    // exit loop
+                    codecSet = true;
+                } else if ((compatible_codec == -1) && codecCompatible(fmt, codecs[c])) {
+                    compatible_codec = c;
                 }
             }
-            if (setFormat) {
-                _format->setValue(i);
-                const AVOutputFormat* fmt = av_guess_format(FFmpegSingleton::Instance().getFormatsShortNames()[i].c_str(), nullptr, nullptr);
-                const vector<AVCodecID>& codecs = FFmpegSingleton::Instance().getCodecsIds();
-                // is the current codec compatible with this format ?
-                if (!codecCompatible(fmt, codecs[_codec->getValue()])) {
-                    // set the default codec for this format, or the first compatible codec
-                    enum AVCodecID default_video_codec = fmt->video_codec;
-                    bool codecSet = false;
-                    int compatible_codec = -1;
-                    for (size_t c = 0; !codecSet && c < codecs.size(); ++c) {
-                        if (codecs[c] == default_video_codec) {
-                            _codec->setValue(c);
-                            // exit loop
-                            codecSet = true;
-                        } else if ((compatible_codec == -1) && codecCompatible(fmt, codecs[c])) {
-                            compatible_codec = c;
-                        }
-                    }
-                    // if the default codec was not available, use the first compatible codec
-                    if (!codecSet && (compatible_codec != -1)) {
-                        _codec->setValue(compatible_codec);
-                    }
-                }
-                // exit loop
-                break;
-                ;
+            // if the default codec was not available, use the first compatible codec
+            if (!codecSet && (compatible_codec != -1)) {
+                _codec->setValue(compatible_codec);
             }
         }
     }

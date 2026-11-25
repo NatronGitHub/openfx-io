@@ -192,6 +192,12 @@
  *       that encoder may log (the default encoder of the codec ID must not be opened); a pair is not checkable unless
  *       the default encoder is in the menu and logs when it is selected (positive control); fails if the menu is
  *       empty, skipped (exit status 77) if no pair is checkable
+ *   WriteFFmpeg sets the Format menu from the output filename (issue #382), with the option --format-from-filename
+ *   (only this test):
+ *     - for each extension that WriteFFmpeg declares, and those of the test's table: the container that the file
+ *       is written in (the Format menu entry, or with "guess from filename", the muxer that av_guess_format() guesses)
+ *       must be the expected one (the guessed muxer, or a matroska, mpeg, mpegts, mov, mp4, 3gp, 3g2, avi, flv or ogv
+ *       menu entry)
  *
  *   WriteFFmpeg, a Codec menu encoder missing from the FFmpeg build (issue #388), with the option --missing-encoder
  *   (only this test), run with OFX_IO_TEST_HIDE_ENCODERS=prores_ks (see avcodec_find_encoder_by_name(), below):
@@ -216,6 +222,7 @@
 #include "ofx_test_host.h"
 #include "GenericWriter.h" // the test writer of #251
 #include "ofxsFileOpen.h" // fopen_utf8()
+#include "tuttle/ofxReadWrite.h" // kTuttleOfxImageEffectPropSupportedExtensions
 
 #include <OpenImageIO/imageio.h>
 
@@ -5158,6 +5165,98 @@ int testWriteFFmpegMissingEncoder(const std::string& outFile)
     return failures;
 }
 
+// Issue #382: WriteFFmpeg sets the Format menu from the output filename with av_guess_format() instead of its own
+// suffix table. The container that a file is written in is the Format menu entry, or with "guess from filename"
+// (entry 0), the muxer that av_guess_format() guesses from the filename (avOutputFormat()). For each extension that
+// WriteFFmpeg declares, that container must not change: it must be the muxer that av_guess_format() guesses, except for
+// the extensions of the table below, which the plug-in maps to an entry of the menu. A row whose muxer is not in this
+// FFmpeg build's menu is skipped.
+int testWriteFFmpegFormatFromFilename(const std::string& outFile)
+{
+    std::printf("==== WriteFFmpeg: the Format menu entry chosen from the output filename (issue #382) ====\n");
+    const struct { const char* ext; const char* format; } table[] = {
+        { "mkv", "matroska" }, { "MKV", "matroska" }, { "matroska", "matroska" }, { "webm", "matroska" }, // webm: no webm muxer in the menu
+        { "WebM", "matroska" },
+        { "mpg", "mpeg" }, { "mpeg", "mpeg" }, { "ts", "mpegts" }, { "m2t", "mpegts" }, { "m2ts", "mpegts" },
+        { "mts", "mpegts" }, { "mov", "mov" }, { "mp4", "mp4" }, { "3gp", "3gp" }, { "3g2", "3g2" }, // 3gp, 3g2: mp4 before #382
+        { "avi", "avi" }, { "flv", "flv" }, { "ogv", "ogv" },
+    };
+    av_log_set_level(AV_LOG_ERROR);
+    std::vector<std::string> exts;
+    {
+        WriterSession s;
+        if (s.create(outFile + ".mov", 64, 48, 1, WriterParams())) { return 1; }
+        const auto it = s.context().props.props.find(kTuttleOfxImageEffectPropSupportedExtensions);
+        if (it != s.context().props.props.end()) { exts = it->second.s; }
+    }
+    if (exts.empty()) { std::printf("  FAIL: WriteFFmpeg declares no extension\n"); return 1; }
+    int failures = 0, checked = 0, skipped = 0, tableChecked = 0;
+    const std::vector<std::string> declared = exts;
+    for (const auto& row : table) {
+        if (!av_guess_format(row.format, nullptr, nullptr)) {
+            std::printf("  SKIP: %s: the %s muxer is not in this FFmpeg build\n", row.ext, row.format);
+            ++skipped;
+            continue;
+        }
+        std::string lower = row.ext;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        // GenericWriter rejects an extension that is not declared, before onOutputFileChanged()
+        if (std::find(declared.begin(), declared.end(), lower) == declared.end()) {
+            std::printf("  FAIL: %s: WriteFFmpeg does not declare %s\n", row.ext, lower.c_str());
+            ++failures;
+        } else if (std::find(exts.begin(), exts.end(), row.ext) == exts.end()) {
+            exts.push_back(row.ext);
+        }
+    }
+    for (const std::string& ext : exts) {
+        const std::string file = outFile + "." + ext;
+        const AVOutputFormat* guessed = av_guess_format(nullptr, file.c_str(), nullptr);
+        std::string expected = guessed ? guessed->name : "(none)";
+        bool inTable = false;
+        for (const auto& row : table) {
+            if (ext == row.ext) { expected = row.format; inTable = true; }
+        }
+        WriterSession s;
+        if (s.create(file, 64, 48, 1, WriterParams())) { ++failures; continue; }
+        Effect& ctx = s.context();
+        const auto fp = ctx.params.find("format");
+        if (fp == ctx.params.end()) { std::printf("  FAIL: no param format\n"); return failures + 1; }
+        const auto opt = fp->second.props->props.find(kOfxParamPropChoiceOption);
+        const std::vector<std::string> none;
+        const std::vector<std::string>& labels = (opt != fp->second.props->props.end()) ? opt->second.s : none;
+        // the muxer name of a menu entry is in brackets at the end of its label, "Matroska [matroska]"
+        auto entryName = [](const std::string& label) {
+            const size_t open = label.rfind('['), close = label.rfind(']');
+            return ((open != std::string::npos) && (close != std::string::npos) && (open < close)) ? label.substr(open + 1, close - open - 1) : label;
+        };
+        if (inTable && (std::find_if(labels.begin(), labels.end(), [&](const std::string& l) { return entryName(l) == expected; }) == labels.end())) {
+            std::printf("  SKIP: %s: no %s entry in the Format menu of this FFmpeg build\n", ext.c_str(), expected.c_str());
+            ++skipped;
+            continue;
+        }
+        const int index = paramInt(&fp->second, 0);
+        if ((index < 0) || (index >= (int)labels.size())) { std::printf("  FAIL: %s: Format index %d out of range\n", ext.c_str(), index); ++failures; continue; }
+        const std::string container = (index == 0) ? (guessed ? guessed->name : "(none)") : entryName(labels[(size_t)index]);
+        ++checked;
+        if (container != expected) {
+            std::printf("  FAIL: %s: Format \"%s\", written as %s, expected %s\n", ext.c_str(), labels[(size_t)index].c_str(), container.c_str(), expected.c_str());
+            ++failures;
+        } else if (inTable) {
+            std::printf("  %s: %s\n", ext.c_str(), container.c_str());
+        }
+        tableChecked += inTable ? 1 : 0;
+    }
+    if (failures) {
+        return failures;
+    }
+    if (!tableChecked) {
+        std::printf("  SKIPPED: no row of the table is checkable in this FFmpeg build (%d extensions checked)\n", checked);
+        std::exit(77); // as testWriteFFmpegSelectedEncoder(): main() returns 1 for any non-zero result
+    }
+    std::printf("  PASS (%d extensions, %d skipped)\n", checked, skipped);
+    return 0;
+}
+
 // Issue #291: the renders of the views of a stereo movie (one video stream per view) share the FFmpegFile of the
 // instance, and ReadFFmpeg is kOfxImageEffectRenderFullySafe. ReadFFmpeg selected the stream of the view, then decoded
 // it in a separate call: a concurrent render of the other view could select its own stream in between, and the render
@@ -5367,6 +5466,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegSelectedEncoder(outFile);
         } else if (mode == "--missing-encoder") {
             failures = testWriteFFmpegMissingEncoder(outFile);
+        } else if (mode == "--format-from-filename") {
+            failures = testWriteFFmpegFormatFromFilename(outFile);
         } else if (mode == "--destroy-closes-file") {
             failures = testReadFFmpegDestroyClosesFile(outFile);
         } else if (mode == "--pfm-write-errors") {
@@ -5544,7 +5645,6 @@ main(int argc, char** argv)
     {
         // issue #110: the 255 fps limit only applies when a tmcd track is written (mov and mp4 by
         // default, or write_tmcd=1 in the Format Options)
-        // (onOutputFileChanged() selects the mp4 format for a .3gp file: select the 3gp format)
         WriterParams mpeg4, mp4, noTmcd, gp3, gp3Tmcd;
         mpeg4.strings = { { "codecShortName", "mpeg4" } };
         mp4 = mpeg4;

@@ -320,6 +320,11 @@ if(TARGET io_tests_ofx)
   # entry is missing from the FFmpeg build (prores_ks, hidden by OFX_IO_TEST_HIDE_ENCODERS; needs a shared libavcodec)
   io_test(test-writeffmpeg-missing-encoder ENV "${_io_ocio_env}" "OFX_IO_TEST_HIDE_ENCODERS=prores_ks"
           COMMAND ofx_render_test "${B}/.render_out.i388" --missing-encoder)
+  # test-writeffmpeg-format-from-filename (#382): WriteFFmpeg sets the Format menu from the output filename with
+  # av_guess_format(); for each extension it declares, the file is written in the expected container
+  # skipped (exit status 77) if no row of its table is checkable in this FFmpeg build
+  io_test(test-writeffmpeg-format-from-filename ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i382" --format-from-filename)
+  set_tests_properties(test-writeffmpeg-format-from-filename PROPERTIES SKIP_RETURN_CODE 77)
 
   # test-layers: ReadOIIO's EXR channel name -> view/layer mapping (the test includes ReadOIIO.cpp)
   set(_io_srcs ${_io_plugin_srcs})
