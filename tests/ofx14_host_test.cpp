@@ -20,7 +20,15 @@
  *     WriteEXR -> ReadEXR, WritePFM -> ReadPFM, WriteOIIO (TIFF) -> ReadOIIO, WriteFFmpeg (MOV) -> ReadFFmpeg;
  *   - a reader's image must be the writer's input (a constant colour), within a tolerance;
  *   - the filters that are an identity with their default parameters (OCIOColorSpace, OCIOCDLTransform,
- *     OCIOFileTransform with an identity LUT, with the identity colour spaces of test.ocio) must output their input.
+ *     OCIOFileTransform with an identity LUT, with the identity colour spaces of test.ocio) must output their input;
+ *   - host quirks (openfx-misc's README-hosts.txt), in every context: every XY or XYAbsolute param with a non-zero
+ *     default sets kOfxParamPropDefaultCoordinateSystem (Nuke defaults it to normalised), every int param sets its
+ *     range and display range (Resolve clamps it to 0..0 otherwise), a plug-in whose descriptor sets
+ *     kOfxImageEffectInstancePropSequentialRender sets it on its instance too (Resolve and Nuke ignore it on the
+ *     descriptor), and in a host named DaVinciResolve* with the OpenGL render suite (which Resolve never uses), the
+ *     enableGPU param is disabled. The host honours normalised defaults (gHonourNormalisedDefaults), except at
+ *     OFX 1.1 and in the Resolve host, which reject kOfxParamPropDefaultCoordinateSystem: there, the default transform
+ *     center must still be the project centre, and not count as a user edit.
  * Each writer also gets an InstanceChanged on its filename, its time domain must be its input's frame range (1..3:
  * the default frame range is the time line's, and the host never has the optional TimeLine suite), and its RoD the
  * input's, also with the input format (formatType 0, without Natron's kOfxImageClipPropFormat).
@@ -48,11 +56,13 @@
 
 #include <IlmThreadPool.h>
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <sys/stat.h>
@@ -300,6 +310,52 @@ paramChanged(OfxPlugin* p, Effect& inst, const std::string& name, double t)
     if (!ok(st)) fail("EndInstanceChanged = %d", st);
 }
 
+// The params of a context descriptor must not depend on the host's defaults (see the comment at the top).
+void
+checkHostQuirkParams(const std::string& c,
+                     const Effect& ctx)
+{
+    auto props = [&ctx](const char* name) -> const std::map<std::string, Value>* {
+        auto it = ctx.params.find(name);
+        return (it != ctx.params.end()) ? &it->second.props->props : nullptr;
+    };
+    for (const auto& kv : ctx.params) {
+        const std::map<std::string, Value>& pr = kv.second.props->props;
+        const char* name = kv.first.c_str();
+        if (kv.second.type == kOfxParamTypeDouble2D) {
+            auto dt = pr.find(kOfxParamPropDoubleType);
+            const bool xy = (dt != pr.end()) && !dt->second.s.empty()
+                            && ((dt->second.s[0] == kOfxParamDoubleTypeXY) || (dt->second.s[0] == kOfxParamDoubleTypeXYAbsolute));
+            // a default of (0, 0) (also the default default) is the origin in both coordinate systems
+            auto def = pr.find(kOfxParamPropDefault);
+            const bool zero = (def == pr.end())
+                              || std::all_of(def->second.d.begin(), def->second.d.end(), [](double d) { return d == 0.; });
+            // kOfxParamPropDefaultCoordinateSystem is OFX 1.2: an older host (and Resolve) rejects it
+            if (xy && !zero && (unknownProp(kOfxParamPropDefaultCoordinateSystem) == kOfxStatOK)
+                && !pr.count(kOfxParamPropDefaultCoordinateSystem)) {
+                fail("[%s] the XY param %s has no kOfxParamPropDefaultCoordinateSystem", c.c_str(), name);
+            }
+        } else if (kv.second.type == kOfxParamTypeInteger) {
+            if (!pr.count(kOfxParamPropMin) || !pr.count(kOfxParamPropMax) || !pr.count(kOfxParamPropDisplayMin)
+                || !pr.count(kOfxParamPropDisplayMax)) {
+                fail("[%s] the int param %s has no range or display range", c.c_str(), name);
+            }
+        }
+    }
+    // Resolve: "even though OfxImageEffectOpenGLRenderSuite exists, the render action is never called with OpenGL
+    // enabled"
+    const char* hostName = nullptr;
+    pGetString(PH(&gHostProps), kOfxPropName, 0, &hostName);
+    if (gOpenGLRender && hostName && !std::strncmp(hostName, "DaVinciResolve", 14)) {
+        if (const std::map<std::string, Value>* pr = props("enableGPU")) {
+            auto it = pr->find(kOfxParamPropEnabled);
+            if ((it == pr->end()) || it->second.i.empty() || it->second.i[0]) {
+                fail("[%s] the enableGPU param is enabled in %s", c.c_str(), hostName);
+            }
+        }
+    }
+}
+
 const char* gSkipParams = std::getenv("OFX14_SKIPPARAMS"); // comma list
 // Every context: describe, instantiate, InstanceChanged on every param, clip preferences, destroy.
 void
@@ -424,6 +480,7 @@ testPlugin(OfxPlugin* p,
         pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, c.c_str());
         st = p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ce), PH(&inArgs), nullptr);
         if (!ok(st)) fail("DescribeInContext(%s) = %d", c.c_str(), st);
+        checkHostQuirkParams(c, ce);
         if (c == wanted) context = c;
         if (!std::getenv("OFX14_NOCTX")) exerciseContext(p, c, file.empty() ? std::string() : (s.kind == eWriter ? file + ".ctx." + c + file.substr(file.rfind('.')) : file));
     }
@@ -490,6 +547,29 @@ testPlugin(OfxPlugin* p,
         fail("CreateInstance = %d", st);
         p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
         return;
+    }
+    {
+        // kOfxImageEffectInstancePropSequentialRender: "plugin descriptor (read/write) or plugin instance (read/write)"
+        auto sequential = [](const PropSet& ps) {
+            auto it = ps.props.find(kOfxImageEffectInstancePropSequentialRender);
+            return (it != ps.props.end()) && !it->second.i.empty() ? it->second.i[0] : 0;
+        };
+        if (sequential(desc.props) && !sequential(inst.props)) {
+            fail("kOfxImageEffectInstancePropSequentialRender is %d on the descriptor, but not set on the instance", sequential(desc.props));
+        }
+    }
+    if (ctx.params.count("transformCenter") && ctx.params.count("transformCenterChanged")) {
+        // ofxsTransformDescribeParams(): the default center (0.5, 0.5) is normalised. In every host, including those
+        // that ignore normalised defaults (OFX 1.1, Resolve: the plug-in converts it), it is the project centre, and
+        // not a user edit.
+        ParamRec* c = &ctx.params["transformCenter"];
+        const double x = paramDouble(c, 0), y = paramDouble(c, 1);
+        if ((x != kW / 2.) || (y != kH / 2.)) {
+            fail("the default transformCenter is (%g, %g), not the project centre (%g, %g)", x, y, kW / 2., kH / 2.);
+        }
+        if (paramInt(&ctx.params["transformCenterChanged"], 0)) {
+            fail("transformCenterChanged is set after CreateInstance");
+        }
     }
     if (overlay) {
         testOverlay(overlay, &inst);
@@ -775,6 +855,7 @@ main(int argc,
     mkdir(gWork.c_str(), 0777);
 #endif
     std::printf("host: %s\n", gOfx14Only ? "OFX 1.4 only (no newer suite or property, no extension)" : "full");
+    gHonourNormalisedDefaults = true; // as Natron and Nuke do (kOfxParamPropDefaultCoordinateSystem)
     initHost();
     gReqScale = gRS;
     std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d, opengl=%d, seqstatus=%s\n", gOfxLevel, std::getenv("OFX14_NOSUITE") ? std::getenv("OFX14_NOSUITE") : "-", std::getenv("OFX14_DEPTHS") ? std::getenv("OFX14_DEPTHS") : "all", std::getenv("OFX14_COMPS") ? std::getenv("OFX14_COMPS") : "default", !std::getenv("OFX14_NOTILES"), !std::getenv("OFX14_NOMULTIRES"), gRS, !std::getenv("OFX14_NOOVERLAYS"), (int)gOpenGLRender, std::getenv("OFX14_SEQSTATUS") ? std::getenv("OFX14_SEQSTATUS") : "1");

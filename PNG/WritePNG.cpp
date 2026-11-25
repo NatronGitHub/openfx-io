@@ -936,6 +936,7 @@ WritePNGPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setLabel(kWritePNGParamCompressionLevelLabel);
         param->setHint(kWritePNGParamCompressionLevelHint);
         param->setRange(0, 9);
+        param->setDisplayRange(0, 9); // Resolve requires range and display range or values are clamped to (0,0)
         param->setDefault(6);
         if (page) {
             page->addChild(*param);

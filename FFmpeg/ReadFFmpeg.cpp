@@ -41,6 +41,7 @@
 #endif
 
 #include <algorithm>
+#include <climits> // INT_MIN, INT_MAX
 #include <cmath>
 #include <sstream>
 #ifdef DEBUG
@@ -80,7 +81,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.ReadFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 0
 
 // Deprecated parameter, for backward compatibility
@@ -188,6 +189,8 @@ ReadFFmpegPlugin::ReadFFmpegPlugin(FFmpegFileManager& manager,
     , _colorMatrix(NULL)
     , _colorRange(NULL)
 {
+    // also on the instance: Resolve and Nuke ignore it on the descriptor (see describe)
+    getPropertySet().propSetInt(kOfxImageEffectInstancePropSequentialRender, 2, false);
     _firstTrackOnly = fetchBooleanParam(kParamFirstTrackOnly);
     assert(_firstTrackOnly);
     _colorMatrix = fetchChoiceParam(kParamColorMatrix);
@@ -1016,6 +1019,8 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     {
         // deprecated parameter, for backward compatibility only
         IntParamDescriptor* param = desc.defineIntParam(kParamMaxRetries);
+        param->setRange(INT_MIN, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
+        param->setDisplayRange(0, 10);
         param->setIsSecretAndDisabled(true);
         if (page) {
             page->addChild(*param);

@@ -26,7 +26,7 @@
 
 #include <algorithm>
 #include <cfloat> // DBL_MAX
-#include <climits> // INT_MAX
+#include <climits> // INT_MIN, INT_MAX
 #include <cstdint> // uint64_t
 #include <cstring> // memset
 #include <locale>
@@ -3053,6 +3053,8 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamFirstFrame);
         param->setLabel(kParamFirstFrameLabel);
+        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
+        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setAnimates(true);
         if (page) {
@@ -3064,6 +3066,8 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamLastFrame);
         param->setLabel(kParamLastFrameLabel);
+        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
+        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setAnimates(true);
         if (page) {

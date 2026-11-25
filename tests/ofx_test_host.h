@@ -119,6 +119,12 @@ bool gOfx14Only = false;
 int gOfxLevel = 14;                  // OFX14_LEVEL: 10, 11, 12, 13 or 14
 std::set<std::string> gNoSuites;     // OFX14_NOSUITE: "name Vn" or "name", comma-separated
 std::set<std::string> gExtraUnknown; // names added after gOfxLevel
+// Honour kOfxParamPropDefaultCoordinateSystem: the value of a param with a normalised default, never set, is its
+// default in canonical coordinates (project size * default, plus the project offset for an absolute position), as
+// in Natron and Nuke. Off by default: the other tests read the defaults as described.
+bool gHonourNormalisedDefaults = false;
+double gProjectSize[2] = { 0., 0. };   // of the last setInstanceProps()
+double gProjectOffset[2] = { 0., 0. };
 double gRS = 1.;                     // OFX14_SCALE
 bool gOpenGLRender = false;          // OFX14_GL: the host has the OpenGL render suite (optional in OFX 1.4)
 // Is the property name defined by OFX 1.4 (or by the older version of OFX14_LEVEL)?
@@ -353,7 +359,19 @@ OfxStatus prmGetPropertySet(OfxParamHandle p, OfxPropertySetHandle* ps) { *ps = 
 
 double paramDouble(ParamRec* r, int idx)
 { if (r->hasOv && (int)r->ov.d.size() > idx) return r->ov.d[idx];
-  double v = 0; pGetDouble(PH(r->props), kOfxParamPropDefault, idx, &v); return v; }
+  double v = 0; pGetDouble(PH(r->props), kOfxParamPropDefault, idx, &v);
+  const char* cs = nullptr; const char* dt = nullptr;
+  if (gHonourNormalisedDefaults && (pGetString(PH(r->props), kOfxParamPropDefaultCoordinateSystem, 0, &cs) == kOfxStatOK) && cs
+      && !std::strcmp(cs, kOfxParamCoordinatesNormalised) && (pGetString(PH(r->props), kOfxParamPropDoubleType, 0, &dt) == kOfxStatOK) && dt) {
+      // "you use the project size and offset" (ofxParam.h, spatial parameters)
+      const std::string t = dt;
+      const int axis = (t == kOfxParamDoubleTypeY || t == kOfxParamDoubleTypeYAbsolute) ? 1 : idx;
+      const bool absolute = (t == kOfxParamDoubleTypeXAbsolute || t == kOfxParamDoubleTypeYAbsolute || t == kOfxParamDoubleTypeXYAbsolute);
+      if (axis < 2 && (t == kOfxParamDoubleTypeX || t == kOfxParamDoubleTypeY || t == kOfxParamDoubleTypeXY || absolute)) {
+          v = v * gProjectSize[axis] + (absolute ? gProjectOffset[axis] : 0.);
+      }
+  }
+  return v; }
 int paramInt(ParamRec* r, int idx)
 { if (r->hasOv && (int)r->ov.i.size() > idx) return r->ov.i[idx];
   int v = 0; pGetInt(PH(r->props), kOfxParamPropDefault, idx, &v); return v; }
@@ -561,7 +579,14 @@ void initHost()
         if (gOfxLevel < 14) for (auto x : a14) gExtraUnknown.insert(x);
     }
     OfxPropertySetHandle h = PH(&gHostProps);
-    pSetString(h, kOfxPropName, 0, "org.openfx-io.tests.renderhost");
+    // OFX14_HOSTNAME: the host name, for the plug-ins that work around a host's quirks (e.g. DaVinciResolve)
+    const char* hostName = std::getenv("OFX14_HOSTNAME");
+    pSetString(h, kOfxPropName, 0, hostName ? hostName : "org.openfx-io.tests.renderhost");
+    if (hostName && !std::strncmp(hostName, "DaVinciResolve", 14)) {
+        // Resolve (openfx-misc's README-hosts.txt): "kOfxParamPropDefaultCoordinateSystem ... is not present on double
+        // parameters (although API version 1.3 is claimed)"
+        gExtraUnknown.insert(kOfxParamPropDefaultCoordinateSystem);
+    }
     pSetString(h, kOfxPropLabel, 0, "openfx-io render test host");
     pSetInt(h, kOfxImageEffectHostPropIsBackground, 0, 1);
     pSetInt(h, kOfxImageEffectPropSupportsMultipleClipDepths, 0, 1);
@@ -676,6 +701,8 @@ void setInstanceProps(Effect& inst, int w, int h, int nFrames, const char* conte
     pSetDoubleN(ep, kOfxImageEffectPropProjectExtent, 2, sz);
     double off[2] = { 0., 0. };
     pSetDoubleN(ep, kOfxImageEffectPropProjectOffset, 2, off);
+    gProjectSize[0] = sz[0]; gProjectSize[1] = sz[1];
+    gProjectOffset[0] = off[0]; gProjectOffset[1] = off[1];
     pSetDouble(ep, kOfxImageEffectPropProjectPixelAspectRatio, 0, 1.);
     pSetDouble(ep, kOfxImageEffectPropFrameRate, 0, 25.);
     pSetDouble(ep, kOfxImageEffectInstancePropEffectDuration, 0, (double)nFrames);

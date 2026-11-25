@@ -10,7 +10,7 @@ with the compiler, C++ standard (`OFX_CXX_STANDARD`) and FFmpeg (`FFMPEG_PKG_CON
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ...   # from the repository root
 cmake --build build -j4
 ctest --test-dir build --output-on-failure          # everything (with io-load, io-icons, io-hostdemo: ../README.md)
-ctest --test-dir build -R '^test-ofx14(-11|-gl|-full)?$'   # the runs of `make test-ofx14`
+ctest --test-dir build -R '^test-ofx14(-11|-gl|-resolve|-full)?$'   # the runs of `make test-ofx14`
 ```
 
 They are the programs of `tests/Makefile`, with the same sources, defines and flags (`-O0 -g` for those that link the
@@ -18,7 +18,7 @@ plug-ins, `-O2 -g -Wall` for the others, and `assert()` enabled, whatever the bu
 each ctest test is one run of a `make` target, named after it (`test-<target>`, plus a suffix when the target runs
 the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `make test-ofx`; `test-ocio-anim`,
 `test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
-`test-ofx14-11`, `test-ofx14-gl` and `test-ofx14-full` are `make test-ofx14`; `test-ofx14-scan` and
+`test-ofx14-11`, `test-ofx14-gl`, `test-ofx14-resolve` and `test-ofx14-full` are `make test-ofx14`; `test-ofx14-scan` and
 `test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32` (MS Windows only), `test-runscript-output`
 and `test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
 it links (e.g. `test-seexpr`, with the SeExpr of the build). The programs run in `build/tests`, where they write their
@@ -823,14 +823,27 @@ PFM, TIFF, MOV), whose images must be the writer's input; the writers' time doma
 (1..3: the default frame range is the time line's, and the host has no TimeLine suite, which is optional), and their
 RoD the input's, also with the input format (`formatType` 0: the host has no `kOfxImageClipPropFormat`); the OCIO
 plug-ins that are an identity with `test.ocio` must output their input. A plug-in of the binary without a test fails.
+It also checks some host quirks of
+[openfx-misc's README-hosts.txt](https://github.com/NatronGitHub/openfx-misc/blob/master/README-hosts.txt), for every
+plug-in and context: every XY or XYAbsolute param with a non-zero default sets `kOfxParamPropDefaultCoordinateSystem`
+(Nuke defaults it to normalised), every int param sets a range and a display range (Resolve clamps it to 0..0
+otherwise), and a plug-in whose descriptor
+sets `kOfxImageEffectInstancePropSequentialRender` also sets it on its instance (Resolve and Nuke ignore it on the
+descriptor). The host honours normalised defaults (a never-set param with a normalised default is its default times
+the project size, plus the project offset for a position), except where it rejects
+`kOfxParamPropDefaultCoordinateSystem` (OFX 1.1, Resolve); in every host, the default transform center of SeNoise must
+be the project centre, without setting its "center changed" flag.
 
-`make test-ofx14` runs it in four hosts:
+`make test-ofx14` runs it in five hosts:
 
 * OFX 1.4 only;
 * OFX 1.1 (`OFX14_LEVEL=11`): also without the properties of OFX 1.2 to 1.4 (e.g.
   `kOfxImageEffectPropSequentialRenderStatus`, `kOfxPropAPIVersion`), the Message suite V2 and RGB images;
 * OFX 1.4 with the optional OpenGL render suite (`OFX14_GL=1`, which renders on the CPU), and a sequential render
   status of 0 (`OFX14_SEQSTATUS=0`);
+* the same OpenGL render suite in a host named `DaVinciResolve` (`OFX14_HOSTNAME`), which never renders with it, and
+  which rejects `kOfxParamPropDefaultCoordinateSystem`, as Resolve does: the OCIO plug-ins must disable their
+  `enableGPU` param there, and SeNoise's default transform center must still be the project centre;
 * the full host (`--full`), where an OverlayInteractV2 also requires an OverlayInteractV1.
 
 Other variants, from environment variables (see `ofx_test_host.h` and `ofx14_host_test.cpp`): `OFX14_NOSUITE` (suites
