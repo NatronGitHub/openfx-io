@@ -55,8 +55,8 @@ to checkout a given tag.
 - On Linux, GCC 9 or later (`std::filesystem` without `-lstdc++fs`;
   [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/main/INSTALL.md) 3.x needs 9.3 or later)
 - [OpenColorIO](https://opencolorio.org) 2.x
-- [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
-  [LibRaw](https://www.libraw.org) for the RAW formats
+- [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.4 or later (the build stops with an
+  older one), with [LibRaw](https://www.libraw.org) for the RAW formats
 - [OpenEXR](https://openexr.com) and [Imath](https://github.com/AcademySoftwareFoundation/Imath)
 - [FFmpeg](https://ffmpeg.org) 8.0.1 to 9 (the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)'s
   libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100 and libswscale 9.1.100, or later), but not 8.0 itself,

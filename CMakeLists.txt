@@ -180,14 +180,27 @@ if(NOT CMAKE_DISABLE_FIND_PACKAGE_OpenEXR AND NOT TARGET OpenEXR::OpenEXR AND PK
 endif()
 
 # OpenImageIO: OpenImageIO::OpenImageIO
+# (OpenImageIO 2.4 or later, as checked in OIIO/OIIOGlobal.cpp; an older one fails, rather than silently building
+# without the OpenImageIO plug-ins)
 if(OFX_IO_WITH_OIIO)
-  find_package(OpenImageIO CONFIG QUIET)
+  find_package(OpenImageIO CONFIG QUIET) # (no version: its version file accepts only its own major)
+  if(OpenImageIO_FOUND AND OpenImageIO_VERSION VERSION_LESS 2.4)
+    message(FATAL_ERROR "The OpenImageIO plug-ins require OpenImageIO 2.4 or later, but CMake found OpenImageIO "
+            "${OpenImageIO_VERSION} (in ${OpenImageIO_DIR}). Build without them with -DOFX_IO_WITH_OIIO=OFF.")
+  endif()
 endif()
 if(OFX_IO_WITH_OIIO AND NOT CMAKE_DISABLE_FIND_PACKAGE_OpenImageIO AND NOT TARGET OpenImageIO::OpenImageIO AND PKG_CONFIG_FOUND)
-  pkg_check_modules(OIIO_PC QUIET IMPORTED_TARGET OpenImageIO)
+  pkg_check_modules(OIIO_PC QUIET IMPORTED_TARGET "OpenImageIO>=2.4")
   if(OIIO_PC_FOUND)
     add_library(OpenImageIO::OpenImageIO INTERFACE IMPORTED)
     target_link_libraries(OpenImageIO::OpenImageIO INTERFACE PkgConfig::OIIO_PC)
+  else()
+    pkg_check_modules(_IO_OIIO_ANY QUIET OpenImageIO)
+    if(_IO_OIIO_ANY_FOUND)
+      message(FATAL_ERROR "The OpenImageIO plug-ins require OpenImageIO 2.4 or later, but pkg-config found "
+              "OpenImageIO ${_IO_OIIO_ANY_VERSION} (in ${_IO_OIIO_ANY_PREFIX}). Build without them with "
+              "-DOFX_IO_WITH_OIIO=OFF.")
+    endif()
   endif()
 endif()
 

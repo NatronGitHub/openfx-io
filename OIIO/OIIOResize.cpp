@@ -542,7 +542,6 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
                 Filter2D::get_filterdesc(filter, &fd);
             }
         }
-        // older versions of OIIO 1.2 don't have ImageBufAlgo::resize(dstBuf, srcBuf, fd.name, fd.width)
         float w = fd.width * (std::max)(1.0f, wratio);
         float h = fd.width * (std::max)(1.0f, hratio);
         auto_ptr<Filter2D> filter(Filter2D::create(fd.name, w, h));

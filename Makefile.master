@@ -94,6 +94,14 @@ ifeq ($(OS),Linux)
 # libraw_r may be in a separate directory for licence reasons (eg in the Natron SDK)
 OIIO_LINKFLAGS += -Wl,-rpath,`pkg-config --variable=prefix OpenImageIO`/lib -Wl,-rpath,`pkg-config --variable=libdir libraw_r`
 endif
+# OpenImageIO 2.4 or later (as checked in OIIO/OIIOGlobal.cpp): fail with a message if pkg-config finds an older one
+# (only for the plugins that link OpenImageIO, and not for "make clean")
+ifneq ($(and $(filter IO OIIO,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes)),)
+OIIO_TOO_OLD := $(shell pkg-config --exists OpenImageIO 2>/dev/null && ! pkg-config --exists 'OpenImageIO >= 2.4' 2>/dev/null && pkg-config --modversion OpenImageIO)
+ifneq ($(strip $(OIIO_TOO_OLD)),)
+$(error The OpenImageIO plugins require OpenImageIO 2.4 or later, but pkg-config found OpenImageIO $(strip $(OIIO_TOO_OLD)))
+endif
+endif
 
 #SeExpr
 SEEXPR_HOME ?=/usr
