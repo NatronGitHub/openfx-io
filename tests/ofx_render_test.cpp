@@ -95,8 +95,16 @@
  *       NUT, Matroska and AVI, check the codec, tag, pixel format and range that libavformat reads back, and that
  *       ReadFFmpeg decodes the pattern exactly (RGB formats) or within the Y'CbCr conversion tolerance
  *     - same, with values on no grid (float, 10-bit and 16-bit), and with an odd width (63x47): RGB in QuickTime is
- *       written as ARGB, and v210 fails with an error
+ *       written as ARGB, and v210 fails with an error that says it may need an even width (#208)
  *     - a project saved with the v308 or v410 encoder, which FFmpeg 9 removed, writes rawvideo with the same tag
+ *
+ *   WriteFFmpeg, an odd size with chroma subsampling (issue #208):
+ *     - 257x121 with MPEG-4 (4:2:0), DNxHR HQ (4:2:2) and libx264 4:4:4, and 259x121 with ProRes 422 HQ: the stream
+ *       has that size and pixel format, and ReadFFmpeg decodes every pixel (ProRes at a width of 16n+1 has a green
+ *       last column)
+ *     - libx264 in 4:2:0 (257x121 and 258x121) and 4:2:2 (257x121), which refuses these sizes: beginSequenceRender
+ *       fails without writing a file, and the error says that the encoder may need a width and/or a height that is
+ *       a multiple of 2 with this pixel format
  *
  *   WriteFFmpeg DNxHR 444 on binary RGB noise (issue #267), with the option --dnxhr444-noise (only this test):
  *     - FFmpeg's dnxhd encoder must not abort (qscale above 255 in its 8-bit mb_qscale): the frames encode, or
@@ -1863,6 +1871,7 @@ int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H, bo
 struct StreamInfo {
     std::string codec = "none", pixFmt = "none", tag;
     int bitsPerRawSample = 0;
+    int width = 0, height = 0; // of the stream (codecpar)
     AVColorSpace space = AVCOL_SPC_UNSPECIFIED;
     AVColorRange range = AVCOL_RANGE_UNSPECIFIED;
     AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
@@ -1919,6 +1928,8 @@ int probeStream(const std::string& file, StreamInfo* info)
         char tag[AV_FOURCC_MAX_STRING_SIZE] = { 0 };
         info->tag = av_fourcc_make_string(tag, par->codec_tag);
         info->bitsPerRawSample = par->bits_per_raw_sample;
+        info->width = par->width;
+        info->height = par->height;
         info->space = par->color_space;
         info->range = par->color_range;
         info->primaries = par->color_primaries;
@@ -4621,6 +4632,76 @@ std::string encoderOfShortName(const std::string& shortName)
     return (shortName.rfind("prores_ks", 0) == 0) ? std::string("prores_ks") : shortName;
 }
 
+// #208: an odd image size with a chroma-subsampled pixel format. The encoders that accept it must write a stream of
+// that size and pixel format (not padded, nor 4:4:4), whose every pixel ReadFFmpeg decodes to the gray of its frame,
+// the last column and row included. One that refuses it (libx264 in 4:2:0 or 4:2:2) must fail in
+// beginSequenceRender, without writing a file, with an error that gives the reason (it was "Generic error in an
+// external library").
+struct OddSizeCase {
+    const char* label;
+    const char* codec;   // codecShortName
+    int W, H;
+    int prefPixelCoding; // 0: YUV420, 1: YUV422, 2: YUV444
+    int dnxhdProfile;    // DNxHDCodecProfile, or -1
+    const char* pixFmt;  // the pixel format of the stream (if error is nullptr)
+    const char* error;   // nullptr: the movie must be written; else beginSequenceRender fails with this text
+};
+
+int testWriteOddSize(const std::string& outFile, const OddSizeCase& c)
+{
+    const int N = 2;
+    if (!avcodec_find_encoder_by_name(encoderOfShortName(c.codec).c_str())) {
+        std::printf("  SKIP: no %s encoder\n", c.codec);
+        return 0;
+    }
+    WriterParams wp;
+    wp.strings = { { "codecShortName", c.codec } };
+    wp.ints = { { "prefPixelCoding", c.prefPixelCoding } };
+    if (c.dnxhdProfile >= 0) wp.ints.push_back({ "DNxHDCodecProfile", c.dnxhdProfile });
+    wp.frameValues = { 0.25f, 0.75f };
+    wp.expectBeginFailure = (c.error != nullptr);
+    wp.expectNoFile = (c.error != nullptr);
+    {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        gMessages.clear();
+    }
+    if (testWriteFFmpeg(outFile, c.W, c.H, N, wp)) return 1;
+    if (c.error) {
+        std::lock_guard<std::mutex> lock(gMessagesMutex);
+        if (gMessages.find(c.error) == std::string::npos) {
+            std::printf("  FAIL: no \"%s\" in the messages:\n%s", c.error, gMessages.c_str());
+            return 1;
+        }
+        std::printf("  PASS (%s)\n", c.label);
+        return 0;
+    }
+    bool bad = false;
+    StreamInfo si;
+    if (probeStream(outFile, &si)) {
+        std::remove(outFile.c_str());
+        return 1;
+    }
+    if ((si.width != c.W) || (si.height != c.H)) {
+        std::printf("  FAIL: the stream is %dx%d, expected %dx%d\n", si.width, si.height, c.W, c.H);
+        bad = true;
+    }
+    if (si.pixFmt != c.pixFmt) { std::printf("  FAIL: the stream is %s, expected %s\n", si.pixFmt.c_str(), c.pixFmt); bad = true; }
+    std::vector<std::vector<float>> frames;
+    const int rf = readFFmpegFrames(outFile, c.W, c.H, N, false, "Auto", &frames);
+    std::remove(outFile.c_str());
+    if (rf || (frames.size() != (size_t)N)) { std::printf("  FAIL: %zu frames read back\n", frames.size()); return 1; }
+    const double tolerance = 3.; // x 255: lossy codecs, on a constant gray
+    size_t nBad = 0;             // the pixel components out of tolerance (an unwritten one keeps the sentinel, -1)
+    for (int t = 0; t < N; ++t) {
+        for (float v : frames[(size_t)t]) {
+            if (!(std::fabs(v - wp.frameValues[(size_t)t]) * 255. <= tolerance)) ++nBad;
+        }
+    }
+    if (nBad) { std::printf("  FAIL: %zu components differ from the gray by more than %.1f/255\n", nBad, tolerance); bad = true; }
+    std::printf(bad ? "  FAIL (%s)\n" : "  PASS (%s)\n", c.label);
+    return bad ? 1 : 0;
+}
+
 // The codecShortName of each entry of WriteFFmpeg's Codec menu, in menu order (empty if there is none, or on error).
 std::vector<std::string> codecMenuShortNames(const std::string& outFile)
 {
@@ -5803,7 +5884,7 @@ main(int argc, char** argv)
                 { "rawvideo 2vuy in QuickTime, odd width", "mov", "rawvideo", 1, 0, false, "rawvideo", "2vuy", "uyvy422", yuv422Tol },
                 // the v210 encoder needs an even width
                 { "v210 in QuickTime, odd width: error", "mov", "v210", 1, 1, false, "v210", "v210", "yuv422p10le", yuv422p10Tol,
-                  "The v210 codec needs an even width, and the image is 63 pixels wide" },
+                  "the v210 encoder may need a width that is a multiple of 2 with the yuv422p10le pixel format" },
                 { "rawvideo RGB 16-bit in NUT, odd width", "nut", "rawvideo", 3, 3, false, "rawvideo", "RGB0", "rgb48le", rgbTol },
                 { "rawvideo YUV422 8-bit in NUT, odd width", "nut", "rawvideo", 1, 0, false, "rawvideo", "Y42B", "yuv422p", yuv422Tol },
                 { "rawvideo YUVA444 10-bit in NUT, odd width", "nut", "rawvideo", 2, 1, true, "rawvideo", "Y4[0][10]", "yuva444p10le", yuv10Tol },
@@ -5871,6 +5952,29 @@ main(int argc, char** argv)
             wp.inputPar = 1e300;
             failures += testWriteFFmpeg(outFile + ".bitrate.mp4", W, H, 3, wp);
             std::remove((outFile + ".bitrate.mp4").c_str());
+        }
+    }
+
+    {
+        // #208: odd sizes with chroma subsampling (257x121: DNxHR needs at least 256x120)
+        const OddSizeCase cases[] = {
+            { "libx264 4:2:0, odd width and height", "libx264", 257, 121, 0, -1, nullptr,
+              "the libx264 encoder may need a width and a height that are multiples of 2" },
+            { "libx264 4:2:0, odd height", "libx264", 258, 121, 0, -1, nullptr, "the libx264 encoder may need a height that is a multiple of 2" },
+            { "libx264 4:2:2, odd width", "libx264", 257, 121, 1, -1, nullptr, "the libx264 encoder may need a width that is a multiple of 2" },
+            { "libx264 4:4:4", "libx264", 257, 121, 2, -1, "yuv444p", nullptr },
+            { "MPEG-4 4:2:0", "mpeg4", 257, 121, 0, -1, "yuv420p", nullptr },
+            // 259, not 257: prores_ks rounds the chroma width down ("pwidth = avctx->width >> 1", FFmpeg n9.0.2
+            // libavcodec/proresenc_kostya.c:363,593; n8.0.1 :581,812; n9.1 :367,601). get_slice_data() then repeats
+            // the neighbour of the missing chroma sample (n9.0.2 :84-90), exact on flat content, except when the
+            // missing column starts a new 8-sample chroma macroblock, i.e. width % 16 == 1 (257): that macroblock is
+            // zeroed (:67-70), and the last pixel of each row decodes green.
+            { "ProRes 422 HQ, odd width", "prores_ksapch", 259, 121, 1, -1, "yuv422p10le", nullptr },
+            { "DNxHR HQ", "dnxhd", 257, 121, 1, 2, "yuv422p", nullptr },
+        };
+        for (const OddSizeCase& c : cases) {
+            std::printf("==== WriteFFmpeg %s at %dx%d, read back by ReadFFmpeg (issue #208) ====\n", c.label, c.W, c.H);
+            failures += testWriteOddSize(outFile + ".i208.mov", c);
         }
     }
 
