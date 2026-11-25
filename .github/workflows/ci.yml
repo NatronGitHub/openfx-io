@@ -363,19 +363,32 @@ jobs:
           cp LICENSE "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr/"
       - name: Build (release, C++17, CMake)
         run: |
-          # IO_HOSTDEMO_TESTS: builds openfx's hostDemo and io_verify_plugin_loads, for the checks below (the tests
-          # are not run: see the "linux" job)
+          # IO_HOSTDEMO_TESTS: builds openfx's hostDemo and io_verify_plugin_loads, for the checks below (only the
+          # load checks of ctest are run: the other tests are the "linux" job's)
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild \
             -DFFMPEG_PKG_CONFIG_PATH="$PWD/FFmpegBuild/lib/pkgconfig" -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle \
             -DIO_HOSTDEMO_TESTS=ON
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build
+      - name: Load the build-tree and installed IO.ofx (ctest io-load, io-icons, io-load-installed)
+        # Without LD_LIBRARY_PATH: the DT_RPATH of IO.ofx must have the in-tree FFmpegBuild/lib and SeExprBuild/lib,
+        # for IO.ofx and FFmpeg's own dependencies (#273)
+        run: |
+          n=0
+          for f in $(find build Bundle -path '*/Contents/Linux-x86-64/IO.ofx' -type f); do
+            n=$((n + 1))
+            readelf -d "$f" | grep -E 'R(UN)?PATH'
+            readelf -d "$f" | grep -q '(RPATH).*FFmpegBuild/lib' || { echo "$f: no DT_RPATH with FFmpegBuild/lib"; exit 1; }
+          done
+          [ "$n" -ge 2 ] || { echo "found $n IO.ofx, expected the build-tree and installed ones"; exit 1; }
+          unset LD_LIBRARY_PATH
+          ctest --test-dir build --output-on-failure -R '^io-(load|icons|load-installed)$'
       - name: Generate testing bundle
         run: |
           # The libraries of Ubuntu 24.04 (including the OpenCL ICD loader libOpenCL.so.1, which Ubuntu's libavutil.so.58
-          # needs, #270) and FFmpeg 9.0.2 (FFmpegBuild, in the source tree, so not in the installed IO.ofx's rpath:
-          # LD_LIBRARY_PATH for ldd), but no system libraries (see find_and_copy_deps.py). Ubuntu's
+          # needs, #270) and FFmpeg 9.0.2 (FFmpegBuild, which ldd finds through IO.ofx's DT_RPATH, #273), but no system
+          # libraries (see find_and_copy_deps.py). Ubuntu's
           # OpenImageIO links Ubuntu's FFmpeg 6.1 (libavcodec.so.60), which is bundled too: the plug-ins' FFmpeg has
           # other sonames (libavcodec.so.63) and versioned symbols, so that both load in the same process.
           cp -r Bundle TestingBundle
@@ -390,7 +403,7 @@ jobs:
             "package of each library). Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
-          LD_LIBRARY_PATH="$PWD/FFmpegBuild/lib" python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
+          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
             --json=bundle-deps.json ${BINARY_PATH}/IO.ofx ${BINARY_PATH} FFmpegBuild/lib SeExprBuild/lib /usr/lib \
             /usr/lib/x86_64-linux-gnu
           for l in avformat avcodec avutil swscale; do

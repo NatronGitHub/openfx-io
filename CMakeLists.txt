@@ -327,21 +327,41 @@ ofx_target_filter_missing_includes(OpenColorIO::OpenColorIO OpenEXR::OpenEXR Ope
 # ---------------------------------------------------------------------------------------------------------------
 # The IO.ofx bundle (IO/Makefile)
 
-# Install rpath (Linux, FreeBSD): add_ofx_plugin's $ORIGIN/../../Libraries, then the directories of the linked
-# libraries (INSTALL_RPATH_USE_LINK_PATH), which skips system directories and the libraries of the source and build
-# trees, e.g. CI's SeExprBuild: add SeExpr's directory explicitly when it's in one of those trees. (Other
-# dependencies installed in the source or build tree need OFX_PLUGIN_RPATH.) Not on macOS, where the libraries have
-# absolute install names (and ofx_deploy_bundle rewrites them).
+# Install rpath (Linux, FreeBSD), which the build-tree IO.ofx has too (OFX_PLUGIN_BUILD_WITH_INSTALL_RPATH):
+# add_ofx_plugin's $ORIGIN/../../Libraries, then the directories of the linked libraries
+# (INSTALL_RPATH_USE_LINK_PATH), which skips system directories and the libraries of the source and build trees, e.g.
+# CI's SeExprBuild and linux-natron's FFmpegBuild: add SeExpr's and FFmpeg's directories explicitly when they are in
+# one of those trees. (Other dependencies installed in the source or build tree need OFX_PLUGIN_RPATH.) Not on
+# macOS, where the libraries have absolute install names (and ofx_deploy_bundle rewrites them).
 set(_io_extra_rpath "")
-if(UNIX AND NOT APPLE AND OFX_IO_WITH_SEEXPR AND TARGET SeExpr::SeExpr)
-  get_filename_component(_d "${SEEXPR_LIBRARY}" DIRECTORY)
-  string(FIND "${_d}/" "${CMAKE_SOURCE_DIR}/" _in_src)
-  string(FIND "${_d}/" "${CMAKE_BINARY_DIR}/" _in_bin)
-  if(_in_src EQUAL 0 OR _in_bin EQUAL 0)
-    set(_io_extra_rpath "${_d}")
+if(UNIX AND NOT APPLE)
+  set(_io_lib_dirs "")
+  if(OFX_IO_WITH_SEEXPR AND TARGET SeExpr::SeExpr)
+    get_filename_component(_d "${SEEXPR_LIBRARY}" DIRECTORY)
+    list(APPEND _io_lib_dirs "${_d}")
   endif()
+  if(OFX_IO_WITH_FFMPEG AND TARGET PkgConfig::FFMPEG)
+    # the -L directories of the FFmpeg modules (pkg-config leaves out the system ones)
+    list(APPEND _io_lib_dirs ${FFMPEG_LIBRARY_DIRS})
+  endif()
+  foreach(_d IN LISTS _io_lib_dirs)
+    string(FIND "${_d}/" "${PROJECT_SOURCE_DIR}/" _in_src)
+    string(FIND "${_d}/" "${PROJECT_BINARY_DIR}/" _in_bin)
+    if(_in_src EQUAL 0 OR _in_bin EQUAL 0)
+      list(APPEND _io_extra_rpath "${_d}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _io_extra_rpath)
 endif()
 add_ofx_plugin(IO INFO_PLIST IO/Info.plist RPATH ${_io_extra_rpath})
+if(_io_extra_rpath)
+  # DT_RPATH instead of DT_RUNPATH: a DT_RUNPATH only applies to IO.ofx's own (direct) dependencies, not to theirs
+  # (ld.so(8)), and an in-tree FFmpeg's libraries have no rpath of their own, e.g. libavformat needs
+  # libswresample, which is in FFmpegBuild/lib too. The DT_RPATH of IO.ofx also applies to them, as in the testing
+  # bundle (patchelf --force-rpath). The side effect, a DT_RPATH taking precedence over LD_LIBRARY_PATH, only
+  # applies to these builds with an in-tree SeExpr or FFmpeg.
+  target_link_options(IO PRIVATE "LINKER:--disable-new-dtags")
+endif()
 # (add_ofx_plugin links openfx::Api only)
 target_link_libraries(IO PRIVATE openfx::Support)
 # no IO_EXPORTS define, which CMake adds to modules (the Makefiles have none; OfxExport does the exporting)
