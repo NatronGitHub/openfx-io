@@ -4661,6 +4661,18 @@ std::string videoStreamPixelFormat(const std::string& file)
     return name ? name : "none";
 }
 
+// The duration in seconds of the video stream of a movie (its duration, else the container's), or -1.
+double videoStreamDuration(const std::string& file)
+{
+    AvSession s;
+    if (avformat_open_input(&s.fmt, file.c_str(), nullptr, nullptr) < 0) return -1.;
+    const int si = (avformat_find_stream_info(s.fmt, nullptr) >= 0) ? av_find_best_stream(s.fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) : -1;
+    if (si < 0) return -1.;
+    const AVStream* st = s.fmt->streams[si];
+    if (st->duration != AV_NOPTS_VALUE) return st->duration * av_q2d(st->time_base);
+    return (s.fmt->duration != AV_NOPTS_VALUE) ? s.fmt->duration / (double)AV_TIME_BASE : -1.;
+}
+
 // Whether the encoder lists a pixel format that fits a Pref. Pixel Coding of Y'CbCr 4:2:2 or 4:4:4: a color format
 // without vertical chroma subsampling, and at most 2 to 1 horizontally (4:2:2, 4:4:4, RGB). False if it lists none.
 bool encoderHasFormatFor422(const AVCodec* c)
@@ -5245,6 +5257,35 @@ main(int argc, char** argv)
         wp.fps = 24.;
         std::printf("==== WriteFFmpeg + ReadFFmpeg, Matroska at 24 fps: every frame is decoded ====\n");
         failures += testWriteFFmpeg(outFile + ".24fps.mkv", W, H, N, wp) || testReadFFmpeg(outFile + ".24fps.mkv", W, H, N);
+    }
+    // issue #247: libaom-av1 gives each packet a duration of one frame in the codec time base, which was written as
+    // is: the last frame lasted one tick of the stream time base (1 ms in Matroska, where ReadFFmpeg then lost it).
+    // The movie must last N frames, and ReadFFmpeg must read all of them.
+    for (const char* ext : { "mkv", "mp4" }) {
+        const AVCodec* c = avcodec_find_encoder_by_name("libaom-av1");
+        if (!c || !muxerTakesEncoder(ext, c)) {
+            std::printf("==== WriteFFmpeg + ReadFFmpeg, libaom-av1 in %s at 24 fps: SKIP, no encoder or not in this container (issue #247) ====\n", ext);
+            continue;
+        }
+        WriterParams wp;
+        wp.fps = 24.;
+        wp.strings = { { "codecShortName", "libaom-av1" } };
+        std::printf("==== WriteFFmpeg + ReadFFmpeg, libaom-av1 in %s at 24 fps: the movie lasts %d frames, and every frame is decoded (issue #247) ====\n", ext, N);
+        const std::string file = outFile + ".i247." + ext;
+        if (testWriteFFmpeg(file, W, H, N, wp)) {
+            ++failures;
+        } else {
+            const double duration = videoStreamDuration(file);
+            const double expected = N / wp.fps;
+            if (std::fabs(duration - expected) > 0.5 / wp.fps) {
+                std::printf("  FAIL: the movie lasts %g s, expected %g s\n", duration, expected);
+                ++failures;
+            } else {
+                std::printf("  PASS (the movie lasts %g s)\n", duration);
+            }
+            failures += testReadFFmpeg(file, W, H, N);
+        }
+        std::remove(file.c_str());
     }
     {
         // #116: a movie has a single view, view 0, whatever the order in which the host renders the views
