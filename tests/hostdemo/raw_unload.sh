@@ -42,7 +42,7 @@ if ! ls -d "$PLUGINS"/*.ofx.bundle > /dev/null 2>&1; then
         echo "FAIL: no .ofx.bundle in $PLUGINS (IO_HOSTDEMO_STRICT=1)"
         exit 1
     fi
-    echo "skip: no .ofx.bundle in $PLUGINS"
+    echo "SKIP: no .ofx.bundle in $PLUGINS"
     exit 77
 fi
 

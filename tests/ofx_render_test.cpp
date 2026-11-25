@@ -5509,7 +5509,7 @@ main(int argc, char** argv)
     // issue #339: H.264 and MPEG-2 with B-frames in AVI, which has no PTS, are written and read back
     for (const char* codec : { "libx264", "mpeg2video" }) {
         if (!avcodec_find_encoder_by_name(codec)) {
-            std::printf("==== WriteFFmpeg avi, %s: SKIP, no encoder (issue #339) ====\n", codec);
+            std::printf("SKIP: WriteFFmpeg avi, %s: no encoder (issue #339)\n", codec);
             continue;
         }
         WriterParams wp;
@@ -5533,7 +5533,7 @@ main(int argc, char** argv)
     for (const char* ext : { "mkv", "mp4" }) {
         const AVCodec* c = avcodec_find_encoder_by_name("libaom-av1");
         if (!c || !muxerTakesEncoder(ext, c)) {
-            std::printf("==== WriteFFmpeg + ReadFFmpeg, libaom-av1 in %s at 24 fps: SKIP, no encoder or not in this container (issue #247) ====\n", ext);
+            std::printf("SKIP: WriteFFmpeg + ReadFFmpeg, libaom-av1 in %s at 24 fps: no encoder or not in this container (issue #247)\n", ext);
             continue;
         }
         WriterParams wp;

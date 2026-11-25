@@ -36,7 +36,7 @@ skipall() {
         echo "FAIL: $1 (IO_HOSTDEMO_STRICT=1)"
         exit 1
     fi
-    echo "skip: $1"
+    echo "SKIP: $1"
     exit 77
 }
 ls -d "$PLUGINS"/*.ofx.bundle > /dev/null 2>&1 || skipall "no .ofx.bundle in $PLUGINS"

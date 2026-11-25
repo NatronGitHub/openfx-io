@@ -11,7 +11,8 @@
  * ("flood"), or prints "\r"-only progress output ("cr"), to test abort and the line splitting (#111), or prints the
  * DACL of a directory ("acl"). PowerShell scripts, wsl, CR line endings and the private temporary directory (#126).
  *
- * On other systems, it does nothing (RunScript uses RunScriptPosix.h there).
+ * MS Windows only (RunScript uses RunScriptPosix.h elsewhere): it does not compile on other systems, where tests/Makefile
+ * and tests/CMakeLists.txt do not build it (#309).
  */
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
@@ -765,14 +766,6 @@ main()
 
 #else // !_WIN32
 
-#include <cstdio>
-
-int
-main()
-{
-    std::printf("runscript_win32_test: skipped (MS Windows only)\n");
-
-    return 0;
-}
+#error "MS Windows only (RunScript uses RunScriptPosix.h elsewhere): tests/Makefile and tests/CMakeLists.txt build it there only (#309)"
 
 #endif

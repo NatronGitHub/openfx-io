@@ -306,7 +306,7 @@ while IFS=: read -r w size windows rod; do
             echo "FAIL ReadEXR-$w: oiiotool not found (set OIIOTOOL; IO_HOSTDEMO_STRICT=1)"
             NFAIL=$((NFAIL + 1)); fail=1
         else
-            echo "skip ReadEXR-$w, ReadOIIO-$w: oiiotool not found (set OIIOTOOL)"
+            echo "SKIP: ReadEXR-$w, ReadOIIO-$w: oiiotool not found (set OIIOTOOL)"
         fi
         continue
     fi
@@ -325,7 +325,7 @@ done <<< "$EXRWIN"
 FRAMES="1 2" read_ ReadFFmpeg $P.ReadFFmpeg movie.mov WriteFFmpeg "$LOSSY --movie" --frames 1,2
 # Not tested: ReadOIIO's RAW support (LibRaw). No writer makes a camera RAW file that LibRaw reads, so none can be
 # generated at test time, and real camera RAW or DNG files are far larger than the few KB a test file may take.
-echo "skip ReadOIIO-raw: no RAW input (none can be generated at test time, and real RAW files are too large to commit)"
+echo "SKIP: ReadOIIO-raw: no RAW input (none can be generated at test time, and real RAW files are too large to commit)"
 
 # filters, with default parameters, on hostDemo's default input (OCIO: the config in $OCIO)
 WRITTEN=""
@@ -377,7 +377,7 @@ for id in $PLUGINS; do
     case " $COVERED " in *" $id "*) continue ;; esac
     reason=$(printf '%s\n' "$SKIPS" | sed -n "s/^$id|//p")
     if [ -n "$reason" ]; then
-        echo "skip $id: $reason"
+        echo "SKIP: $id: $reason"
         NSKIP=$((NSKIP + 1))
     else
         echo "FAIL $id: no test and no skip in $0"
