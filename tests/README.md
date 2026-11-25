@@ -1101,7 +1101,18 @@ frame), 70, 47, 23, 95, 72, 46, 22, in reverse order and in a random order, with
 threads. The MP4 index is on the DTS, so a seek for a leading picture finds the keyframe displayed
 after it: every frame must be the sequential one, decoded from the keyframe before, with at most 2
 seeks per request and none to the start of the file. Open-GOP H.264 in MPEG-TS, whose index is not
-used for this, must not seek more than twice per request either. The script first checks with
+used for this, must not seek more than twice per request either. Open-GOP H.264 and HEVC in
+MPEG-TS and MPEG-2 in MPEG-PS (`-f vob`, FFmpeg's own `mpeg2video` encoder, whose GOPs are open
+without `-flags +cgop`), all with a GOP of 24 frames and 7 B-frames, decoded in reverse order from
+frame 96 to 70 and in the order 90, 75, 95, 72, 80, must not seek to the start of the file either,
+with at most 2 seeks per request ([#334](https://github.com/NatronGitHub/openfx-io/issues/334)): a
+request whose seek lands after it, or after the last keyframe (no frame up to the end of the
+file), decodes from a timestamp earlier by twice the largest keyframe interval seen (at least 2 s
+in all, at most 20 s), which also covers the leading pictures. The range stops at frame 70
+because a request within twice that interval of the start (about 56 frames here: the keyframe
+packets are up to 28 packets apart in decoding order) still decodes from the start, which costs
+the same. The checks bound the seeks, not the bytes decoded per request (up to the two
+intervals). The script first checks with
 `ffprobe` that each clip has leading pictures (a keyframe packet followed by a lower PTS).
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames

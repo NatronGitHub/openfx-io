@@ -1180,9 +1180,11 @@ check_forward_open_gop() {
 # sequential one, with the harness checks CHECKS (#328). In MP4, whose index is on the DTS, a seek for a leading
 # picture finds the keyframe after it, and the decoder drops the leading pictures after a seek: the request must
 # decode from the keyframe before, not from the start of the file (--order-no-start-seek), with at most 2 seeks. In
-# MPEG-TS, whose index cannot be trusted, the requests must not seek more than 2 times either.
+# MPEG-TS, whose index cannot be trusted, the requests must not seek more than 2 times either. CHECK_OPEN_GOP_ORDERS:
+# other orders (space-separated).
 check_open_gop_seek() {
     local name="$1" desc="$2" encoder="$3" checks="$4" order threads
+    local orders=${CHECK_OPEN_GOP_ORDERS:-"10,23,26,47,50,70 70,47,23,95,72,46,22 $(seq 96 -1 1 | paste -sd, -) 94,78,1,21,32,92,46,14,89,39,70,74,55,50,12,30,93,19,20,87,80,36,88,61,29,96,64,68,18,4,3,49"}
     shift 4
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
@@ -1204,8 +1206,7 @@ check_open_gop_seek() {
         rc=1
         return
     fi
-    for order in 10,23,26,47,50,70 70,47,23,95,72,46,22 "$(seq 96 -1 1 | paste -sd, -)" \
-        94,78,1,21,32,92,46,14,89,39,70,74,55,50,12,30,93,19,20,87,80,36,88,61,29,96,64,68,18,4,3,49; do
+    for order in $orders; do
         for threads in 1 8; do
             # shellcheck disable=SC2086
             if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --order "$order" $checks --tol 1 --frames 96 \
@@ -1360,6 +1361,19 @@ check_open_gop_seek open_gop_seek_h264.mp4 "MP4 (H.264, open GOPs): seeks for le
     "--order-no-start-seek --order-max-seeks 2" -c:v libx264 -g 24 -keyint_min 24 -bf 3 -x264-params open-gop=1:scenecut=0
 check_open_gop_seek open_gop_seek_h264.ts "MPEG-TS (H.264, open GOPs): at most 2 seeks per request (no index to trust)" libx264 \
     "--order-max-seeks 2" -c:v libx264 -g 24 -keyint_min 24 -bf 3 -x264-params open-gop=1:scenecut=0 -f mpegts
+# Backward requests in an open-GOP MPEG-TS (GOP 24, 7 B-frames), further from the start than twice the largest keyframe
+# interval (frames 70-96), decode from an earlier timestamp, not from the start of the file, with at most 2 seeks
+# (issue #334: every backward request decoded from the start).
+CHECK_OPEN_GOP_ORDERS="$(seq 96 -1 70 | paste -sd, -) 90,75,95,72,80" check_open_gop_seek open_gop_back_h264.ts \
+    "MPEG-TS (H.264, open GOPs): backward requests do not decode from the start" libx264 "--order-no-start-seek --order-max-seeks 2" \
+    -c:v libx264 -g 24 -keyint_min 24 -bf 7 -x264-params open-gop=1:scenecut=0 -f mpegts
+CHECK_OPEN_GOP_ORDERS="$(seq 96 -1 70 | paste -sd, -) 90,75,95,72,80" check_open_gop_seek open_gop_back_hevc.ts \
+    "MPEG-TS (HEVC, open GOPs): backward requests do not decode from the start" libx265 "--order-no-start-seek --order-max-seeks 2" \
+    -c:v libx265 -x265-params "keyint=24:min-keyint=24:scenecut=0:open-gop=1:bframes=7:log-level=error" -f mpegts
+# The same in MPEG-PS (-f vob, as on DVDs), with FFmpeg's own MPEG-2 encoder, whose GOPs are open without -flags +cgop.
+CHECK_OPEN_GOP_ORDERS="$(seq 96 -1 70 | paste -sd, -) 90,75,95,72,80" check_open_gop_seek open_gop_back_mpeg2.mpg \
+    "MPEG-PS (MPEG-2, open GOPs): backward requests do not decode from the start" mpeg2video "--order-no-start-seek --order-max-seeks 2" \
+    -c:v mpeg2video -g 24 -bf 7 -f vob
 # Damaged packets (GOP 8: I0 P3 B1 B2 P6 B4 B5 P7 in decoding order, without scene cuts): the damaged
 # frame is a gap, and the frames of its GOP (and the last ones of the previous GOP, which the decoder
 # outputs after the next reference frame) show what the decoder conceals.
