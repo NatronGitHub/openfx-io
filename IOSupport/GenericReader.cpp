@@ -34,6 +34,7 @@
 #include <iterator> // std::advance
 #include <memory>
 #include <sstream>
+#include <vector>
 #if defined(DEBUG) && defined(DEBUG_READER)
 #include <cstdio>
 #define DBG(x) x
@@ -1008,6 +1009,92 @@ clampProxyFrameBounds(int downscaleLevels,
     bounds->y2 = (std::min)(bounds->y2, kOfxFlagInfiniteMax - 1);
 }
 
+// Render scales that are not the same power of two in x and y (#194). "To map between the two [spatial coordinate
+// systems] the pixel aspect ratio and the render scale need to be known, and it is a simple case of multiplication and
+// rounding" (ofxCoordSystem.rst, "Mapping Between The Spatial Coordinate Systems"): pixel (x, y) at the render scale s
+// covers [x / s.x, (x + 1) / s.x) x [y / s.y, (y + 1) / s.y) at scale 1, whatever the PAR.
+
+// the smallest rectangle at the render scale that encloses r (in pixels at scale 1): pixels at scale 1 are canonical
+// coordinates with a PAR of 1
+static OfxRectI
+scaleSmallestEnclosing(const OfxRectI& r,
+                       const OfxPointD& renderScale)
+{
+    const OfxRectD rd = { (double)r.x1, (double)r.y1, (double)r.x2, (double)r.y2 };
+    OfxRectI ret;
+    Coords::toPixelEnclosing(rd, renderScale, 1., &ret);
+
+    return ret;
+}
+
+// the smallest rectangle at scale 1 that encloses r (in pixels at the render scale). It divides by the render scale,
+// as resampleWindow() does for each pixel, so that the footprints of the pixels of r are in it: x * (1 / s) may be
+// rounded differently from x / s.
+static OfxRectI
+unscaleSmallestEnclosing(const OfxRectI& r,
+                         const OfxPointD& renderScale)
+{
+    OfxRectI ret;
+    ret.x1 = Coords::pixelToIntClamped(std::floor(r.x1 / renderScale.x), kOfxFlagInfiniteMin);
+    ret.y1 = Coords::pixelToIntClamped(std::floor(r.y1 / renderScale.y), kOfxFlagInfiniteMin);
+    ret.x2 = Coords::pixelToIntClamped(std::ceil(r.x2 / renderScale.x), kOfxFlagInfiniteMax);
+    ret.y2 = Coords::pixelToIntClamped(std::ceil(r.y2 / renderScale.y), kOfxFlagInfiniteMax);
+
+    return ret;
+}
+
+// Update the window of dst (at the render scale) from src (at scale 1): each pixel is the mean of the pixels of
+// srcWindow that it covers, weighted by the covered area. As in halveWindow(), the pixels out of srcWindow (the
+// frame bounds) are not counted; a pixel that covers none of srcWindow is transparent black. Each pixel depends only
+// on its own position, so that a render window gives the pixels of the render of the whole RoD.
+static void
+resampleWindow(const OfxRectI& window,
+               const OfxPointD& renderScale,
+               const float* srcPixels,
+               const OfxRectI& srcBounds,
+               int srcRowBytes,
+               const OfxRectI& srcWindow,
+               float* dstPixels,
+               const OfxRectI& dstBounds,
+               int dstRowBytes,
+               int nComponents)
+{
+    assert(renderScale.x > 0. && renderScale.y > 0.);
+    assert(srcBounds.x1 <= srcWindow.x1 && srcWindow.x2 <= srcBounds.x2 && srcBounds.y1 <= srcWindow.y1 && srcWindow.y2 <= srcBounds.y2);
+    const std::ptrdiff_t srcRowSize = srcRowBytes / (std::ptrdiff_t)sizeof(float);
+    const std::ptrdiff_t dstRowSize = dstRowBytes / (std::ptrdiff_t)sizeof(float);
+    std::vector<double> sum(nComponents);
+    for (int y = window.y1; y < window.y2; ++y) {
+        // the rows that pixel y covers, in srcWindow
+        const double y1 = (std::max)(y / renderScale.y, (double)srcWindow.y1);
+        const double y2 = (std::min)((y + 1.) / renderScale.y, (double)srcWindow.y2);
+        float* dst = dstPixels + ((std::ptrdiff_t)y - dstBounds.y1) * dstRowSize + ((std::ptrdiff_t)window.x1 - dstBounds.x1) * nComponents;
+        for (int x = window.x1; x < window.x2; ++x, dst += nComponents) {
+            const double x1 = (std::max)(x / renderScale.x, (double)srcWindow.x1);
+            const double x2 = (std::min)((x + 1.) / renderScale.x, (double)srcWindow.x2);
+            std::fill(sum.begin(), sum.end(), 0.);
+            double weight = 0.;
+            if ((y1 < y2) && (x1 < x2)) {
+                for (std::ptrdiff_t j = (std::ptrdiff_t)std::floor(y1); j < y2; ++j) {
+                    const double wy = (std::min)(j + 1., y2) - (std::max)((double)j, y1);
+                    const float* srcRow = srcPixels + (j - srcBounds.y1) * srcRowSize;
+                    for (std::ptrdiff_t i = (std::ptrdiff_t)std::floor(x1); i < x2; ++i) {
+                        const double w = wy * ((std::min)(i + 1., x2) - (std::max)((double)i, x1));
+                        const float* src = srcRow + (i - srcBounds.x1) * nComponents;
+                        for (int k = 0; k < nComponents; ++k) {
+                            sum[k] += w * src[k];
+                        }
+                        weight += w;
+                    }
+                }
+            }
+            for (int k = 0; k < nComponents; ++k) {
+                dst[k] = (weight > 0.) ? (float)(sum[k] / weight) : 0.f;
+            }
+        }
+    }
+}
+
 template <typename PIX>
 static void
 buildMipMapLevelGeneric(ImageEffect* instance,
@@ -1754,12 +1841,19 @@ GenericReaderPlugin::render(const RenderArguments& args)
     OfxPointD proxyOriginalScale;
     _originalProxyScale->getValue(proxyOriginalScale.x, proxyOriginalScale.y);
 
-    /// We only support downscaling at a power of two.
+    // At a render scale that is the same power of two in x and y (as in Natron), GenericReader halves the
+    // full-resolution image renderMipmapLevel times, or reads a proxy file. Nothing in OFX restricts the render scale
+    // to powers of two (kOfxImageEffectPropRenderScale: "The proxy render scale currently being applied"): at any
+    // other one (e.g. 0.75, 1/3, or 1 in x and 1/2 in y), it resamples the full-resolution image (#194), unless it is
+    // the scale of the proxy file (detectProxyScale(), e.g. 1/3), whose pixels are then used as they are.
     unsigned int renderMipmapLevel = getLevelFromScale((std::min)(args.renderScale.x, args.renderScale.y));
+    const bool notPowerOfTwo = (args.renderScale.x > 0.) && (args.renderScale.y > 0.)
+                               && ((args.renderScale.x != args.renderScale.y) || (args.renderScale.x != Coords::scaleFromMipmapLevel(renderMipmapLevel)));
+    const bool atProxyScale = (args.renderScale.x == proxyOriginalScale.x) && (args.renderScale.y == proxyOriginalScale.y);
     unsigned int proxyMipMapThresholdLevel = (proxyScaleThreshold.x == 0 || proxyScaleThreshold.y == 0) ? renderMipmapLevel : getLevelFromScale((std::min)(proxyScaleThreshold.x, proxyScaleThreshold.y));
     unsigned int originalProxyMipMapLevel = (proxyOriginalScale.x == 0 || proxyOriginalScale.y == 0) ? renderMipmapLevel : getLevelFromScale((std::min)(proxyOriginalScale.x, proxyOriginalScale.y));
 
-    if (kSupportsRenderScale && (renderMipmapLevel >= proxyMipMapThresholdLevel)) {
+    if (kSupportsRenderScale && (!notPowerOfTwo || atProxyScale) && (renderMipmapLevel >= proxyMipMapThresholdLevel)) {
         useProxy = true;
     }
 
@@ -1800,6 +1894,12 @@ GenericReaderPlugin::render(const RenderArguments& args)
     // upscaled to a scale of (1,1). On the other hand if the filename IS a proxy we have to determine the actual RoD
     // of the proxy file and adjust the scale so it fits the given scale.
     // When in proxy mode renderWindowFullRes is the render window at the proxy mip map level
+    // At a scale that is not a power of two, the proxy file is only read at its own scale (atProxyScale), and
+    // downscaleLevels is then 0; otherwise the full-resolution file is resampled.
+    const bool resample = notPowerOfTwo && !(useProxy && !proxyFile.empty());
+    if (resample) {
+        renderMipmapLevel = 0;
+    }
     int downscaleLevels = renderMipmapLevel; // the number of mipmap levels from the actual file (proxy or not) to the renderWindow
 
     if (useProxy && !proxyFile.empty()) {
@@ -1807,6 +1907,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
         downscaleLevels -= originalProxyMipMapLevel;
     }
     assert(downscaleLevels >= 0);
+    assert(!notPowerOfTwo || resample || (downscaleLevels == 0));
 
     if (filename.empty() || !checkIfFileExists(filename)) {
         for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -1838,7 +1939,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
     // the file, e.g. ReadEXR): the part of the render window out of the new frame bounds is black.
     OfxRectI renderWindow = args.renderWindow;
     {
-        OfxRectI frameWindow = Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        OfxRectI frameWindow = resample ? scaleSmallestEnclosing(frameBounds, args.renderScale) : Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
         // The part of the render window in the RoD that the host got: if it is out of the frame bounds, the reader's
         // cached frame bounds may be older than the file (e.g. the file reverted to the header that the host got the
         // RoD from), and the reader may read them again. A render window larger than an up-to-date RoD (e.g. the
@@ -1872,7 +1973,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 return;
             }
             clampProxyFrameBounds(downscaleLevels, &frameBounds);
-            frameWindow = Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+            frameWindow = resample ? scaleSmallestEnclosing(frameBounds, args.renderScale) : Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
         }
         if ((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2)) {
             for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -1884,18 +1985,22 @@ GenericReaderPlugin::render(const RenderArguments& args)
         }
     }
 
-    renderWindowFullRes = upscalePowerOfTwo(renderWindow, downscaleLevels); // works even if downscaleLevels == 0
-
-    // Intersect the full res renderwindow to the real rod,
-    // because we may have gone a few pixels too far (but never more than 2^downscaleLevels-1 pixels)
-    assert(renderWindowFullRes.x1 >= frameBounds.x1 - std::pow(2., (double)downscaleLevels) + 1 && renderWindowFullRes.x2 <= frameBounds.x2 + std::pow(2., (double)downscaleLevels) - 1 && renderWindowFullRes.y1 >= frameBounds.y1 - std::pow(2., (double)downscaleLevels) + 1 && renderWindowFullRes.y2 <= frameBounds.y2 + std::pow(2., (double)downscaleLevels) - 1);
+    if (resample) {
+        renderWindowFullRes = unscaleSmallestEnclosing(renderWindow, args.renderScale);
+    } else {
+        renderWindowFullRes = upscalePowerOfTwo(renderWindow, downscaleLevels); // works even if downscaleLevels == 0
+        // we may have gone a few pixels too far (but never more than 2^downscaleLevels-1 pixels)
+        assert(renderWindowFullRes.x1 >= frameBounds.x1 - std::pow(2., (double)downscaleLevels) + 1 && renderWindowFullRes.x2 <= frameBounds.x2 + std::pow(2., (double)downscaleLevels) - 1 && renderWindowFullRes.y1 >= frameBounds.y1 - std::pow(2., (double)downscaleLevels) + 1 && renderWindowFullRes.y2 <= frameBounds.y2 + std::pow(2., (double)downscaleLevels) - 1);
+    }
+    // Intersect the full res renderwindow to the real rod
     intersect(renderWindowFullRes, frameBounds, &renderWindowFullRes);
 
     // See below: we round the render window to the tile size
     renderWindowNotRounded = renderWindowFullRes;
 
     // decode() and decodePlane() get a window in the pixel coordinates of the file, at full resolution (the
-    // downscaling to the render scale, if any, is done below by scalePixelData()): their render scale is 1.
+    // scaling to the render scale, if any, is done below by scalePixelData() or resampleWindow()): their render scale
+    // is 1.
     const OfxPointD fileScale = { 1., 1. };
 
     try {
@@ -1962,7 +2067,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 mustPremult = false;
             }
 
-            if (!mustPremult && isOCIOIdentity && (!kSupportsRenderScale || (renderMipmapLevel == 0))) {
+            if (!mustPremult && isOCIOIdentity && (!kSupportsRenderScale || (!resample && (renderMipmapLevel == 0)))) {
                 // no colorspace conversion, no premultiplication, no proxy, just read file
                 DBG(std::printf("decode (to dst)\n"));
 
@@ -2071,14 +2176,20 @@ GenericReaderPlugin::render(const RenderArguments& args)
                     setOpaqueAlpha(decodedWindow, tmpPixelData, renderWindowFullRes, it->numChans, tmpRowBytes);
                 }
 
-                if (kSupportsRenderScale && (downscaleLevels > 0)) {
+                if (kSupportsRenderScale && (resample || (downscaleLevels > 0))) {
                     if (!mustPremult) {
                         // we can write directly to dstPixelData
                         /// adjust the scale to match the given output image
                         DBG(std::printf("scale (no premult, tmp to dst)\n"));
-                        scalePixelData(renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
-                                       it->numChans, firstDepth, renderWindowFullRes, tmpRowBytes, it->pixelData,
-                                       remappedComponents, it->numChans, firstDepth, firstBounds, it->rowBytes);
+                        if (resample) {
+                            assert(firstDepth == eBitDepthFloat); // (checked above)
+                            resampleWindow(renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, tmpRowBytes, renderWindowNotRounded,
+                                           it->pixelData, firstBounds, it->rowBytes, it->numChans);
+                        } else {
+                            scalePixelData(renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData, remappedComponents,
+                                           it->numChans, firstDepth, renderWindowFullRes, tmpRowBytes, it->pixelData,
+                                           remappedComponents, it->numChans, firstDepth, firstBounds, it->rowBytes);
+                        }
                     } else {
                         // allocate a temporary image (we must avoid reading from dstPixelData, in case several threads are rendering the same area)
                         int mem2RowBytes = (firstBounds.x2 - firstBounds.x1) * pixelBytes;
@@ -2088,11 +2199,17 @@ GenericReaderPlugin::render(const RenderArguments& args)
 
                         /// adjust the scale to match the given output image
                         DBG(std::printf("scale (tmp to scaled)\n"));
-                        scalePixelData(renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
-                                       remappedComponents, it->numChans, firstDepth,
-                                       renderWindowFullRes, tmpRowBytes, scaledPixelData,
-                                       remappedComponents, it->numChans, firstDepth,
-                                       firstBounds, mem2RowBytes);
+                        if (resample) {
+                            assert(firstDepth == eBitDepthFloat); // (checked above)
+                            resampleWindow(renderWindow, args.renderScale, tmpPixelData, renderWindowFullRes, tmpRowBytes, renderWindowNotRounded,
+                                           scaledPixelData, firstBounds, mem2RowBytes, it->numChans);
+                        } else {
+                            scalePixelData(renderWindow, args.renderScale, renderWindowNotRounded, (unsigned int)downscaleLevels, tmpPixelData,
+                                           remappedComponents, it->numChans, firstDepth,
+                                           renderWindowFullRes, tmpRowBytes, scaledPixelData,
+                                           remappedComponents, it->numChans, firstDepth,
+                                           firstBounds, mem2RowBytes);
+                        }
 
                         if (abort()) {
                             return;

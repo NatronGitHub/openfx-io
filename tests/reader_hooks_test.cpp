@@ -23,7 +23,8 @@
  *
  * And that render() reads the file param once (#373): renders on several threads while the main thread switches the
  * file param between two files of different sizes give one of the two files (a debug build used to abort), and a
- * proxy file is read at render scale 1/2, the full-resolution file at scale 1.
+ * proxy file is read at render scale 1/2, the full-resolution file at scale 1; a proxy file at scale 1/3 is read at
+ * render scale 1/3 (#194).
  *
  * And that a render into an output image without pixel data (a NULL kOfxImagePropData, #278) fails with an error
  * message, without calling decode().
@@ -95,6 +96,9 @@ const int kHeight = 4;
 // the size of the "big" files (whose name ends with ".big.tst"), for the file switch test (#373)
 const int kBigWidth = 16; // twice the size of the others (the proxy test)
 const int kBigHeight = 8;
+// the size of the "big3" files (whose name ends with ".big3.tst"), for the proxy test at scale 1/3 (#194)
+const int kBig3Width = 3 * kWidth;
+const int kBig3Height = 3 * kHeight;
 const OfxRangeI kVideoRange = { 1, 10 }; // the frame range of "video" files
 
 // the value decode() writes to R, G and B at render time t
@@ -134,7 +138,8 @@ ClipContent gClipContent;
 // A reader of fake files: "video" files (whose name contains "video") have kVideoRange frames,
 // others are still images or image sequences. The file only needs to exist. Files whose name
 // contains "par2" have a pixel aspect ratio of 2, and those whose name contains "par0" an invalid pixel aspect ratio of 0.
-// Files whose name ends with ".big.tst" are kBigWidth x kBigHeight, and their R, G and B are 1 more.
+// Files whose name ends with ".big.tst" are kBigWidth x kBigHeight, and their R, G and B are 1 more. Files whose name
+// ends with ".big3.tst" are kBig3Width x kBig3Height, and their R, G and B are 2 more.
 class TestReaderPlugin
     : public GenericReaderPlugin {
 public:
@@ -167,12 +172,12 @@ public:
     // getRenderTime() is protected
     static double renderTime() { return getRenderTime(); }
 
-    static bool isBig(const std::string& filename)
+    static bool endsWith(const std::string& filename, const std::string& suffix)
     {
-        const std::string suffix = ".big.tst";
-
         return filename.size() >= suffix.size() && filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
+    static bool isBig(const std::string& filename) { return endsWith(filename, ".big.tst"); }
+    static bool isBig3(const std::string& filename) { return endsWith(filename, ".big3.tst"); }
 
 private:
     virtual bool isVideoStream(const std::string& filename) OVERRIDE FINAL
@@ -248,7 +253,7 @@ private:
             throwSuiteStatusException(kOfxStatFailed);
         }
         // the output depends on the render time, like a reader with an animated param evaluated at getRenderTime()
-        const float v = pixelValue(t) + (isBig(filename) ? 1.f : 0.f);
+        const float v = pixelValue(t) + (isBig(filename) ? 1.f : (isBig3(filename) ? 2.f : 0.f));
         for (int y = renderWindow.y1; y < renderWindow.y2; ++y) {
             float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes) + (ptrdiff_t)(renderWindow.x1 - bounds.x1) * pixelComponentCount;
             for (int x = renderWindow.x1; x < renderWindow.x2; ++x, pix += pixelComponentCount) {
@@ -268,6 +273,10 @@ private:
             bounds->x1 = bounds->y1 = 0;
             bounds->x2 = kBigWidth;
             bounds->y2 = kBigHeight;
+        } else if (isBig3(filename)) {
+            bounds->x1 = bounds->y1 = 0;
+            bounds->x2 = kBig3Width;
+            bounds->y2 = kBig3Height;
         } else {
             bounds->x1 = bounds->y1 = 0;
             bounds->x2 = kWidth;
@@ -640,7 +649,15 @@ struct Reader {
                             const char* plane = kFnOfxImagePlaneColour, const OfxRectI* image = nullptr)
     {
         const double s = 1. / (1 << level);
-        double rs[2] = { s, s };
+
+        return renderAtScale(t, OfxPointD { s, s }, renderWindow, fill, rod, bounds, plane, image);
+    }
+
+    // the same, at any render scale
+    OfxStatus renderAtScale(double t, const OfxPointD& scale, const OfxRectI& renderWindow, float fill, OfxRectD* rod, OfxRectI* bounds,
+                            const char* plane = kFnOfxImagePlaneColour, const OfxRectI* image = nullptr)
+    {
+        double rs[2] = { scale.x, scale.y };
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, t);
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
@@ -656,7 +673,7 @@ struct Reader {
         *rod = { r[0], r[1], r[2], r[3] };
         // The output image: its bounds and RoD are in pixel coordinates, X = X' * SX / PAR (PAR = 1),
         // and cover the RoD (the smallest enclosing rectangle).
-        *bounds = image ? *image : OfxRectI { (int)std::floor(r[0] * s), (int)std::floor(r[1] * s), (int)std::ceil(r[2] * s), (int)std::ceil(r[3] * s) };
+        *bounds = image ? *image : OfxRectI { (int)std::floor(r[0] * scale.x), (int)std::floor(r[1] * scale.y), (int)std::ceil(r[2] * scale.x), (int)std::ceil(r[3] * scale.y) };
         const int w = bounds->x2 - bounds->x1;
         const int h = bounds->y2 - bounds->y1;
         const int rowBytes = w * 4 * (int)sizeof(float);
@@ -1432,6 +1449,52 @@ testProxyFile(OfxPlugin* pDefault, const std::string& still, const std::string& 
     }
 }
 
+// 2f. a proxy file at a scale that is not a power of two (#194): the big3 file (24x12) with the still file (8x4) as
+// its proxy, whose scale is 1/3. A render at scale 1/3 reads the proxy and writes its pixels as they are; at 0.75 (not
+// the proxy's scale) GenericReader resamples the full-resolution file; at 1, it reads the full-resolution file.
+void
+testProxyFileThird(OfxPlugin* pDefault, const std::string& still, const std::string& big3)
+{
+    std::printf("==== proxy file at scale 1/3, render scale 1/3, 0.75 and 1 ====\n");
+    Reader r;
+    if (!r.create(pDefault, big3)) {
+        ++gFailures;
+
+        return;
+    }
+    setOverrideString(&r.ctx, kOfxImageEffectProxyParamName, still);
+    check(r.changed(kOfxImageEffectProxyParamName, kOfxChangeUserEdited), "instanceChanged(proxy)");
+    ParamRec& original = r.ctx.params["originalProxyScale"];
+    check(paramDouble(&original, 0) == 1. / 3 && paramDouble(&original, 1) == 1. / 3, "originalProxyScale = %g %g (1/3 1/3)",
+          paramDouble(&original, 0), paramDouble(&original, 1));
+    const float vStill = pixelValue(1.), vBig3 = vStill + 2.f;
+    struct Case {
+        OfxPointD scale;
+        const char* name;
+        bool proxy;
+    };
+    const Case cases[] = { { { 1. / 3, 1. / 3 }, "1/3", true }, { { 0.75, 0.75 }, "0.75", false }, { { 1., 1. }, "1", false } };
+    for (const Case& k : cases) {
+        // the whole image at that scale
+        const OfxRectI window = { 0, 0, (int)std::ceil(kBig3Width * k.scale.x), (int)std::ceil(kBig3Height * k.scale.y) };
+        OfxRectD rod;
+        OfxRectI bounds;
+        const OfxStatus st = r.renderAtScale(1., k.scale, window, -1.f, &rod, &bounds);
+        int wrong = 0;
+        for (int y = window.y1; y < window.y2; ++y) {
+            for (int x = window.x1; x < window.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float expected = (c == 3) ? 1.f : (k.proxy ? vStill : vBig3);
+                    wrong += (r.outputPixel(bounds, x, y, c) != expected);
+                }
+            }
+        }
+        check(ok(st) && wrong == 0 && r.plugin->frameBoundsCalls.back().first == (k.proxy ? still : big3),
+              "scale %s: render = %d, %d wrong values, read %s (the %s file)", k.name, st, wrong,
+              r.plugin->frameBoundsCalls.back().first.c_str(), k.proxy ? "proxy" : "full-resolution");
+    }
+}
+
 // 4. refreshFrameBounds() (#163): only when the part of the render window in the host's RoD is out of the frame
 // bounds (the reader's cached frame bounds may be older than the file), not for a render window larger than an
 // up-to-date RoD (e.g. the display window of a cropped image), which would read the file again for each render
@@ -1929,7 +1992,8 @@ main(int argc, char** argv)
     const std::string still = prefix + ".still.tst";
     const std::string video = prefix + ".video.tst";
     const std::string big = prefix + ".big.tst";
-    for (const std::string& f : { still, video, big }) {
+    const std::string big3 = prefix + ".big3.tst";
+    for (const std::string& f : { still, video, big, big3 }) {
         std::FILE* fp = std::fopen(f.c_str(), "wb");
         if (!fp) {
             std::printf("FAIL: cannot create %s\n", f.c_str());
@@ -1964,6 +2028,7 @@ main(int argc, char** argv)
     testThreads(pFrameVarying, still);
     testFileSwitch(pDefault, still, big);
     testProxyFile(pDefault, still, big);
+    testProxyFileThird(pDefault, still, big3);
     testDecodePlane(pMultiPlanar, still, video);
     testOpaquePlanes(pMultiPlanar, still);
     testMipmap(pMipmap, still);
@@ -1982,6 +2047,7 @@ main(int argc, char** argv)
     std::remove(still.c_str());
     std::remove(video.c_str());
     std::remove(big.c_str());
+    std::remove(big3.c_str());
 
     std::printf("Result: failures=%d\n", gFailures);
     std::printf(gFailures == 0 ? "PASS\n" : "FAIL\n");

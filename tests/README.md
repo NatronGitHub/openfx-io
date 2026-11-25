@@ -80,7 +80,7 @@ make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP),
 make test-sequence-parsing # SequenceParsing: its own test (patterns, views, UTF-8, negative frames, %d, padding, int limits) and UTF-8 cases (UBSan)
 make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
 make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders, layers, views
-make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales 1/2 and 1/4, rewritten files (ASan, UBSan, guard pages)
+make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales (1/2, 1/4, 0.75, 1/3, 0.5 x 0.75, 1 x 0.5, 2), rewritten files (ASan, UBSan, guard pages)
 make test-oiio-layer-menu # ReadOIIO: the output-layer menu rebuilt by a file change while renders and isIdentity run on other threads (#298)
 make test-oiio-layer-menu-tsan # the same with ThreadSanitizer (not in make test)
 make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, UBSan, no leak)
@@ -447,6 +447,8 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   a second time to look up the proxy file, and a debug build aborted on `assert(proxyFile == filename)`.
 * **A proxy file** (#373): a 16x8 file with an 8x4 proxy: setting the proxy param sets `proxyThreshold` to 1/2, a
   render at scale 1/2 reads the proxy, and a render at scale 1 the full-resolution file.
+* **A proxy file at scale 1/3** (#194): a 24x12 file with an 8x4 proxy: a render at scale 1/3 reads the proxy and
+  writes its pixels as they are; at 0.75 and 1, the full-resolution file is read (and resampled at 0.75).
 * The same through `decodePlane()`, with a multi-planar test reader (the host
   then declares `kFnOfxImageEffectPropMultiPlanar`).
 * **`clipToFile()`** (#232), called directly: float RGBA and 8-bit RGB images, with padded and negative row bytes,
@@ -812,7 +814,7 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
-### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #232, #234, #242)
+### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #194, #232, #234, #242)
 
 `reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
@@ -839,6 +841,14 @@ buffer, which it then premultiplies (UnPreMultiplied files):
 * **PNG offsets near the limits of an int** (oFFs: x1 = -2^31 + 4 and y1 = 2^24, and x2, y2 just below `INT_MAX`), at
   scales 1/2 and 1/4: the RoD and the pixels are those of the same file without an offset, translated. GenericReader
   computed the windows at the render scale and the pixel offsets in `int`, which overflowed (#371).
+* **render scales that are not a power of two** (0.75, 1/3), **not the same in x and y** (0.5 x 0.75, 1 x 0.5), **or
+  above 1** (2), for an RGB TIFF, an RGBA EXR with a data window, an RGB tiled EXR, an RGB PFM and an RGBA PNG: each
+  pixel of the render of the whole RoD is the mean of the file's pixels that it covers, weighted by the covered area
+  (`areaMean()`, from the file's values), and the windows are checked as above. The files are read Opaque or
+  PreMultiplied (GenericReader resamples into the output image), and the RGBA ones also UnPreMultiplied (GenericReader
+  resamples, then premultiplies: the mean colour times the mean alpha). The tolerance is 1e-6 relative: the reader
+  computes in float. GenericReader used the nearest power of two (#194). Scale 1/2 checks that reference on the
+  power-of-two path. The PNG offsets near the limits of an int are also rendered at scale 0.75.
 * **a rewritten file**: smaller or larger, rendered with the RoD the host got before: only the window is written; for
   an Opaque RGB file (also a tiled EXR with a smaller data window, and an interlaced PNG), alpha is 1 in the new image
   and the rest of the window is transparent black.
@@ -1291,7 +1301,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `ocio_processor_cache_test.cpp` | The OCIO plug-ins' processor caches: concurrent renders with an animated param, a changed config or context, Reload and purge caches (`test-ocio-processor-cache`, `test-ocio-processor-cache-tsan`). |
 | `ocio_filetransform_test.cpp` | OCIOFileTransform's CCC Id param, shown only for .cdl/.cc/.ccc files, with AddressSanitizer (`test-ocio-filetransform`). |
 | `exr_read_test.cpp`         | ReadEXR (`test-exr`, `test-exr-tsan`, `test-exr-ubsan`, `test-exr-tsan-debug`, `bench-exr`; ctest also `test-exr-multiplanar`, `-tsan`, `-ubsan`): pixels, windows, UINT, luminance/chroma, a truncated file, concurrent renders, layers and views (the same planes as ReadOIIO, `--multiplanar`), and timings. |
-| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, PNG offsets near the int limits at scales 1/2 and 1/4, rewritten files, with ASan, UBSan (signed-integer-overflow) and guard pages. |
+| `reader_window_test.cpp`    | ReadOIIO, ReadPFM and ReadPNG (`test-reader-window`): narrow render windows, windows out of the RoD, render scale 1/2, scales that are not a power of two (#194), PNG offsets near the int limits at scales 1/2 and 1/4, rewritten files, with ASan, UBSan (signed-integer-overflow) and guard pages. |
 | `oiio_layer_menu_test.cpp`  | ReadOIIO's output-layer menu, rebuilt by file changes on the main thread while 4 threads render one instance and call isIdentity, in a Natron-like host (`test-oiio-layer-menu`, `test-oiio-layer-menu-tsan`, #298). |
 | `png_corrupt_test.cpp`      | ReadPNG and WritePNG on libpng errors (`test-png-corrupt`): corrupt and truncated PNG files, an image too wide for libpng, an oFFs offset out of range, text chunk labels, an 8 TB image, with ASan, UBSan (signed overflow) and a leak check. |
 | `hostdemo/reader_window.cpp`, `hostdemo/reader_window.sh` | The readers' render windows in a host built on HostSupport (`test-reader-window-host`, ctest `io-reader-window`). |
