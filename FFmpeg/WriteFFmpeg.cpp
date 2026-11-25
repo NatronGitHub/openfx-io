@@ -129,8 +129,8 @@ using std::vector;
 OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 // The pixel formats supported by an encoder, terminated by AV_PIX_FMT_NONE, or nullptr if unknown.
-// AVCodec::pix_fmts is deprecated since FFmpeg 7.1 (libavcodec 61.13) and removed in FFmpeg 9:
-// use avcodec_get_supported_config().
+// AVCodec::pix_fmts is deprecated (n8.0 libavcodec/codec.h:200: "use avcodec_get_supported_config()") and removed in
+// FFmpeg 9.
 static const AVPixelFormat*
 codecPixelFormats(const AVCodec* codec)
 {
@@ -152,7 +152,7 @@ codecPixelFormats(const AVCodec* codec)
 // Pixel Coding, Bit Depth and Alpha params, as for the other encoders; when two have the same coding, depth and alpha,
 // the first one is selected.
 // - QuickTime: only the pixel formats of the mov muxer's rawvideo tag table (mov_pix_fmt_tags, FFmpeg n9.0
-//   libavformat/movenc.c:2052-2075, n8.0 movenc.c:1955-1978, n4.4 movenc.c:1598-1618), which the demuxer maps back to
+//   libavformat/movenc.c:2052-2075, n8.0 movenc.c:1955-1978), which the demuxer maps back to
 //   rawvideo (libavformat/isom_tags.c:32-38 in n9.0): 2vuy (UYVY422, 8-bit 4:2:2), 'raw ' (RGB24, and ARGB for RGBA:
 //   it is QuickTime's k32ARGBPixelFormat, the RGBA, BGRA and ABGR tags are not as widely read), and
 //   v308 (VYU444), v408 (UYVA) and v410 (V30XLE), which give the same files as the v308, v408 and v410 encoders that
@@ -163,7 +163,7 @@ codecPixelFormats(const AVCodec* codec)
 //   Any other pixel format would get the 'raw ' tag and be unreadable (movenc.c:2101-2108 in n9.0).
 //   'raw ' RGB24 rows are padded to an even number of bytes by the muxer (is_unaligned_qt_rgb, movenc.c:8503-8516 and
 //   7686-7692 in n9.0, libavformat/rawutils.c:27-67), but the rawvideo decoder only realigns RGB24 rows to 4 bytes
-//   (rawdec.c:172 and 382-392 in n9.0, 178 and 407-417 in n4.4; the mov demuxer only gives it the depth, from which it
+//   (rawdec.c:172 and 382-392 in n8.0 and n9.0; the mov demuxer only gives it the depth, from which it
 //   gets the pixel format, mov.c:2871, rawdec.c:77-80), so that with an odd width FFmpeg reads sheared images when
 //   the width is 3 modulo 4, and QuickTime reads none. With an odd width, ARGB (whose rows are never padded) is
 //   written instead (see rawvideoPixelFormatForWidth()).
@@ -171,7 +171,7 @@ codecPixelFormats(const AVCodec* codec)
 //   avcodec_pix_fmt_to_codec_tag() (libavcodec/rawenc.c:42-43, libavcodec/raw_pix_fmt_tags.h in n9.0), which the
 //   NUT muxer keeps (its default rawvideo tag is not 0, libavformat/nut.c:44-50, so mux.c:304-313 does not reset
 //   them), and which the demuxer gives back to the rawvideo decoder.
-//   All the formats of these lists were checked to round-trip exactly with FFmpeg 4.4 and 9.
+//   All the formats of these lists were checked to round-trip exactly with FFmpeg 9.
 // - AVI: BI_RGB (BGR24, BGRA, whose rows the muxer writes bottom-up, libavformat/avienc.c:791-797 in n9.0) and the
 //   Y'CbCr FourCCs of the RIFF table (I420 and UYVY, libavformat/riff.c:221-255 in n9.0): the muxer resets any other
 //   rawvideo tag to BI_RGB (libavformat/mux.c:304-313 in n9.0), which would make the file unreadable. (Y42B, yuv422p,
@@ -331,9 +331,9 @@ codecReplacedMessage(const string& oldCodec,
     const bool ayuv = (oldCodec == "ayuv");
     const bool alpha = ayuv || (oldCodec == "v408");
     // v308, v408 and v410: FFmpeg n8.0 libavcodec/allcodecs.c:354-359 lists them, n9.0 does not.
-    // ayuv: FFmpeg n6.1 libavcodec/allcodecs.c:65-66 lists it, n7.0 does not.
+    // ayuv: n8.0 libavcodec/allcodecs.c does not list it.
     string msg = string("The ") + oldCodec + " encoder of this project is not available in this version of FFmpeg (FFmpeg "
-        + (ayuv ? "7" : "9") + " removed it): the codec was replaced by rawvideo, with Pref. Pixel Coding YUV444, Bit Depth "
+        + (ayuv ? "8.0 and later do not have it" : "9 removed it") + "): the codec was replaced by rawvideo, with Pref. Pixel Coding YUV444, Bit Depth "
         + (oldCodec == "v410" ? "10" : "8") + " and Alpha " + (alpha ? "checked" : "unchecked") + ".";
     const char* name = av_get_pix_fmt_name(target);
     if (fmt && fmt->name && name) {
@@ -2613,8 +2613,8 @@ WriteFFmpegPlugin::getColorInfo(AVColorPrimaries* color_primaries,
 } // WriteFFmpegPlugin::getColorInfo
 
 // Does the output format write the start timecode as a timecode (tmcd) track?
-// In libavformat/movenc.c (mov_init(), from FFmpeg 3.4 to 8.1), the write_tmcd muxer option is -1
-// (auto) by default, which writes a tmcd track only in the mov and mp4 formats ("mov->write_tmcd == -1
+// In libavformat/movenc.c (mov_init(), n8.0 movenc.c:7999-8000, n9.0.2 movenc.c:8341-8342), the write_tmcd muxer
+// option is -1 (auto) by default, which writes a tmcd track only in the mov and mp4 formats ("mov->write_tmcd == -1
 // && (mov->mode == MODE_MOV || mov->mode == MODE_MP4) || mov->write_tmcd == 1"), and the user may set
 // it in the Format Options: write_tmcd=0 writes no tmcd track, and write_tmcd=1 writes one in every
 // format of the mov family (e.g. 3gp).
@@ -3755,11 +3755,10 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     // With the reduced 40999/342, a 119.88 fps non-drop-frame timecode would be written at 120/1 fps.
     // FFmpeg < 9.1 copies the video track's timescale (c5f7919a2c, also new in 9.1, had kept that for video
     // timescales up to 100000), which gives the video frame rate (40999/342) in both cases.
-    avStream->avg_frame_rate = frame_rate; // see ffmpeg.c:2894 from ffmpeg 3.2.2 - may be set before avformat_write_header
+    // set before avformat_write_header(), as the ffmpeg CLI does (n8.0 fftools/ffmpeg_mux.c:623)
+    avStream->avg_frame_rate = frame_rate;
 
-    // Although it is marked as deprecated, if we don't don't set time_base in the codec context if fails
-    // with message "The encoder timebase is not set". See ffmpeg-4.0/libavcodec/utils.c:758
-    // [mov @ 0x1042d7600] Using AVStream.codec.time_base as a timebase hint to the muxer is deprecated. Set AVStream.time_base instead.
+    // the encoder fails to open without it: "The encoder timebase is not set." (n8.0 libavcodec/encode.c:728-731)
     avCodecContext->time_base = avStream->time_base;
 
     int gopSize = -1;
@@ -3800,13 +3799,8 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     }
     // Set this field so that an 'fiel' atom is inserted
     // into the QuickTime 'moov' atom.
-    // [note: interlaced flags, see ffmpeg.c:1191 in ffmpeg 3.2.2
-    // if (in_picture->interlaced_frame) {
-    //    if (enc->codec->id == AV_CODEC_ID_MJPEG)
-    //        mux_par->field_order = in_picture->top_field_first ? AV_FIELD_TT:AV_FIELD_BB;
-    //    else
-    //        mux_par->field_order = in_picture->top_field_first ? AV_FIELD_TB:AV_FIELD_BT;
-    //} else
+    // Interlaced frames would get AV_FIELD_TT/BB (MJPEG) or AV_FIELD_TB/BT, as in the ffmpeg CLI (n8.0
+    // fftools/ffmpeg_enc.c:274-293), but only progressive video is written.
     avCodecContext->field_order = AV_FIELD_PROGRESSIVE;
 
     // the following was moved here from openCodec()
@@ -4073,7 +4067,7 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
         // Timecode codecs.
     }
 
-    // see ffmpeg.c:3042 from ffmpeg 3.2.2
+    // as the ffmpeg CLI does (n8.0 fftools/ffmpeg_mux.c:626)
     int ret = avcodec_parameters_from_context(myAVStream->stream->codecpar, avCodecContext);
     if (ret < 0) {
         setPersistentMessage(Message::eMessageError, "", string("Error initializing the output stream codec context."));
@@ -5185,22 +5179,10 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
             sendMessage(Message::eMessageWarning, "", unrecognizedOptions + "These options were ignored.");
         }
 
-        // Special behaviour.
-        // Valid on Aug 2014 for ffmpeg v2.1.4
-        //
-        // R.e. libavformat/movenc.c::mov_write_udta_tag
-        // R.e. libavformat/movenc.c::mov_write_string_metadata
-        //
-        // Remove all ffmpeg references from the QuickTime movie.
-        // The 'encoder' key in the AVFormatContext metadata will
-        // result in the writer adding @swr with libavformat
-        // version information in the 'udta' atom.
-        //
-        // Prevent the @swr libavformat reference from appearing
-        // in the 'udta' atom by setting the 'encoder' key in the
-        // metadata to null. From movenc.c a zero length value
-        // will not be written to the 'udta' atom.
-        //
+        // The mov muxer writes the 'encoder' metadata (the libavformat version) as the \251swr atom of 'udta'
+        // (mov_write_udta_tag(), n8.0 libavformat/movenc.c:4926, n9.0.2 movenc.c:5093). Replace it with the name of
+        // the video codec. (An empty value would not be written: mov_write_string_tag(), n8.0 movenc.c:4479, n9.0.2
+        // movenc.c:4606.)
         AVDictionaryEntry* tag = av_dict_get(_formatContext->metadata, "encoder", nullptr, AV_DICT_IGNORE_SUFFIX);
         if (tag) {
             av_dict_set(&_formatContext->metadata, "encoder", videoCodec->name, 0);
@@ -5791,8 +5773,8 @@ WriteFFmpegPlugin::setCodecReplaced(const string& codecShortName)
 }
 
 // A project saved with the v308, v408, v410 or ayuv encoder, which this FFmpeg does not have (FFmpeg 9 removed them:
-// n8.0 libavcodec/allcodecs.c:354-359 lists v308, v408 and v410, n9.0 does not; FFmpeg 7 removed ayuv, which n6.1
-// allcodecs.c:65-66 lists): select rawvideo, with the Pref. params that give the same pixel layout
+// n8.0 libavcodec/allcodecs.c:354-359 lists v308, v408 and v410, n9.0 does not; n8.0 has no ayuv encoder
+// either): select rawvideo, with the Pref. params that give the same pixel layout
 // (rawvideoPixelFormats()): in QuickTime, the mov muxer writes it with the same v308, v408 or v410 tag
 // (n8.0 libavformat/movenc.c:1963-1965), which the decoders of all versions read. In the other containers, rawvideo
 // writes the closest pixel format that the container has (e.g. UYVY for v308 in Matroska, BGRA for v408 in AVI).
@@ -6331,6 +6313,7 @@ split(const string& s,
 void
 WriteFFmpegPluginFactory::load()
 {
+    requireSupportedFFmpegRuntime(kPluginIdentifier);
     _extensions.clear();
     {
         std::list<string> extensionsl;

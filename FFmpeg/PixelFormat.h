@@ -70,8 +70,8 @@ namespace FFmpeg {
     // for a Y'CbCr matrix (AVColorSpace, libavutil/pixfmt.h), or -1 if swscale has no table for it (unspecified,
     // RGB, YCgCo, ICtCp...).
     // The SWS_CS_* values are the AVColorSpace values, which index ff_yuv2rgb_coeffs[] in libswscale/yuv2rgb.c
-    // (FFmpeg n9.0 libswscale/swscale.h:458-465, libswscale/yuv2rgb.c:47-59; the same in n4.0). That table has
-    // BT.2020 NCL and CL (entries 9 and 10, the same coefficients: swscale does not implement the constant
+    // (FFmpeg n9.0 libswscale/swscale.h:458-465, libswscale/yuv2rgb.c:47-59; the same in n8.0, swscale.h:369-376).
+    // That table has BT.2020 NCL and CL (entries 9 and 10, the same coefficients: swscale does not implement the constant
     // luminance system, so a BT.2020 CL stream is converted as NCL), FCC (4, Kr = 0.30, Kb = 0.11, which differ from
     // BT.601's) and SMPTE 240M (7); BT.470BG and SMPTE 170M are both BT.601 (5 and 6). Entry 8 (YCgCo) is empty:
     // sws_getCoefficients() gives the default (BT.601) table for it, which would be wrong.

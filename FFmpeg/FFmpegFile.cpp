@@ -111,6 +111,26 @@ video_decoding_threads()
 
 #endif
 
+static_assert(ffmpegIsRelease80("8.0") && ffmpegIsRelease80("n8.0") && ffmpegIsRelease80("8.0-1ubuntu1")
+                  && ffmpegIsRelease80("n8.0-12-g0123456") && !ffmpegIsRelease80("8.0.1") && !ffmpegIsRelease80("n8.0.1")
+                  && !ffmpegIsRelease80("8.0.1-3ubuntu2") && !ffmpegIsRelease80("8.1") && !ffmpegIsRelease80("9.0.2")
+                  && !ffmpegIsRelease80("80") && !ffmpegIsRelease80("N-121000-g0123456") && !ffmpegIsRelease80("")
+                  && !ffmpegIsRelease80("n"),
+              "ffmpegIsRelease80");
+
+std::string
+ffmpegRuntimeVersionError()
+{
+    const char* const version = av_version_info();
+    if (!version || !ffmpegIsRelease80(version)) {
+        return std::string();
+    }
+
+    return std::string("the FFmpeg libraries are FFmpeg ") + version
+        + ", but this plug-in requires FFmpeg 8.0.1 or later (it was built with " FFMPEG_VERSION
+          "): FFmpeg 8.0's libswscale truncates in its range conversions. The plug-in is not loaded.";
+}
+
 // A file with an extension of the image2 muxer (FFmpeg n9.1 libavformat/img2enc.c:398-400, n8.0 img2enc.c:294-296) holds
 // one image, unless a demuxer declares that extension: it may then hold several frames (the mov demuxer for AVIF, which
 // may be an image sequence, n9.1 libavformat/mov.c:13313; jpegxl_anim for animated JPEG XL, jpegxl_anim_dec.c:201).
@@ -183,7 +203,7 @@ const FilterEntry kCodecAllowlist[] = {
     { "aic", true, false }, // Apple Intermediate Codec (no encoder)
     { "av1", true, false }, // Alliance for Open Media AV1 (encoders: libaom-av1 librav1e)
     { "avrp", true, UNSAFEQT0&& UNSAFEVLC }, // Avid 1:1 10-bit RGB Packer - write not supported as not official qt readable with relevant 3rd party codec.
-    { "avui", true, false }, // Avid Meridien Uncompressed - write not supported as this is an SD only codec. Only 720x486 and 720x576 are supported. experimental in ffmpeg 2.6.1.
+    { "avui", true, false }, // Avid Meridien Uncompressed - write not supported as this is an SD only codec. Only 720x486 and 720x576 are supported. Experimental (AV_CODEC_CAP_EXPERIMENTAL, n8.0 libavcodec/avuienc.c:100).
     { "ayuv", true, UNSAFEQT0&& UNSAFEVLC }, // Uncompressed packed MS 4:4:4:4 - write not supported as not official qt readable.
     { "cfhd", true, true }, // GoPro Cineform HD.
     { "cinepak", true, true }, // Cinepak.
@@ -241,8 +261,8 @@ const FilterEntry kCodecAllowlist[] = {
     // v210: Uncompressed 4:2:2 10-bit. It was disabled because of QuickTime "colourshifts", which came from the missing
     // colour tags: WriteFFmpeg tags v210 with the Y'CbCr matrix, primaries and transfer function of the usual video
     // formats (IsYUVFromShortName()) and with video range, and always sets the write_colr movflag, so that the mov muxer
-    // writes the 'colr' atom (FFmpeg n9.0 libavformat/movenc.c:2948-2953, n4.4 movenc.c:2247). The muxer also writes
-    // the version 2 sample description, lossless spatial quality and 'clap' atom that Apple's TN2162 asks for
+    // writes the 'colr' atom (FFmpeg n9.0 libavformat/movenc.c:2948-2953, n8.0 movenc.c:2847-2852). The muxer also
+    // writes the version 2 sample description, lossless spatial quality and 'clap' atom that Apple's TN2162 asks for
     // uncompressed Y'CbCr (n9.0 movenc.c:2804-2831, 3040-3041), and the encoder pads each row to 48 pixels (128 bytes),
     // as TN2162 requires (n9.0 libavcodec/v210enc.c:72-73).
     { "v210", true, true },
@@ -342,7 +362,7 @@ FFmpegFile::isCodecAllowedForWriting(const char* codecName)
 //   VUI, the ProRes frame header or the DNxHD frame header, which is BT.709 when FFmpeg wrote it, FFmpeg n9.0.2
 //   libavcodec/dnxhddec.c:237-242 and libavcodec/dnxhdenc.c:544, whatever the container says), or else the one of the codec context, which avcodec_parameters_to_context()
 //   copied from the container, e.g. the MOV 'colr' atom or the Matroska Colour element: fill_frame_props() in FFmpeg
-//   n9.0 libavcodec/decode.c:575-585, n4.0 libavcodec/decode.c:1717-1724), else the one of the stream
+//   n9.0 libavcodec/decode.c:575-585, n8.0 libavcodec/decode.c:556-566), else the one of the stream
 //   (AVCodecParameters.color_space), else, if neither is a matrix that swscale has (see
 //   FFmpeg::swsColorspaceFromAVColorSpace()), the usual one for the picture size (Rec. 709 from 720 lines, else
 //   Rec. 601; JPEG is always Rec. 601: isRec709Format()), as before the tags were used.
@@ -1537,10 +1557,10 @@ FFmpegFile::getStreamFrames(Stream& stream)
                 }
             }
         } else if (isMov) {
-            // MOV/MP4: the duration is counted from the start (lavf 58, FFmpeg 4, counted it from 0 with an initial
-            // empty edit). Count it from 0 only if that gives the number of samples of the stream (minus the ones
-            // that are not displayed) and counting it from the start does not (with B-frames and no edit list, e.g.
-            // in fragmented MP4, the start time is the B-frame delay, and both may).
+            // MOV/MP4: the duration is counted from the start. Count it from 0 only if that gives the number of
+            // samples of the stream (minus the ones that are not displayed) and counting it from the start does not
+            // (with B-frames and no edit list, e.g. in fragmented MP4, the start time is the B-frame delay, and both
+            // may).
             const int64_t streamFrames = (stream._avstream->nb_frames > 0) ? (stream._avstream->nb_frames - getDiscardedFrames(stream)) : 0;
             const int64_t fromStart = _context->start_time + _context->duration;
             const int64_t fromZero = _context->duration;

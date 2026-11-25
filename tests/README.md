@@ -1308,19 +1308,21 @@ files), and real camera RAW or DNG files are much larger than the few KB a test 
 
 ### 5. FFmpeg version compile check
 
-The FFmpeg plug-ins support [FFmpeg](https://ffmpeg.org) 8.0 and later (libavcodec 62.11.100, libavformat 62.3.100,
-libavutil 60.8.100 and libswscale 9.1.100, the versions of the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)):
-`FFmpeg/FFmpegFile.h` stops with an `#error` with an older FFmpeg, and the CMake configuration and the Makefiles with
-an error message. CI builds with FFmpeg 8.0 (Linux, [Ubuntu 26.04](https://packages.ubuntu.com/resolute/libavcodec-dev))
-and 9 (macOS and Windows). `ffmpeg_syntax_check.sh` compiles `WriteFFmpeg.cpp`, `ReadFFmpeg.cpp`, `FFmpegFile.cpp` and
-`PixelFormat.cpp` with `-fsyntax-only` against the FFmpeg found by `pkg-config`, e.g. to check a given FFmpeg version
+The FFmpeg plug-ins support [FFmpeg](https://ffmpeg.org) 8.0.1 and later (libavcodec 62.11.100, libavformat 62.3.100,
+libavutil 60.8.100 and libswscale 9.1.100, the versions of the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges),
+which 8.0.1 keeps): `FFmpeg/FFmpegFile.h` stops with an `#error` with older libraries, and the CMake configuration and
+the Makefiles with an error message. 8.0 itself has the same library versions as 8.0.1, so `FFmpegFile.h` rejects it by
+its release name (`FFMPEG_VERSION`, a `static_assert`), and the plug-ins' load action fails if `av_version_info()` is
+8.0 at run time. CI builds with FFmpeg 8.0.1 (Linux, [Ubuntu 26.04](https://packages.ubuntu.com/resolute/libavcodec-dev)),
+8.x (macOS, MacPorts' `ffmpeg8`) and 9 (Windows). `ffmpeg_syntax_check.sh` compiles `WriteFFmpeg.cpp`, `ReadFFmpeg.cpp`,
+`FFmpegFile.cpp` and `PixelFormat.cpp` with `-fsyntax-only` against the FFmpeg found by `pkg-config`, e.g. to check a given FFmpeg version
 after changing the FFmpeg plug-ins. Run it from the repository root (with the submodules), with `PKG_CONFIG_PATH` set
 to the FFmpeg to check, or in a container, e.g. with [podman](https://podman.io) (or docker):
 
 ```sh
 # a local FFmpeg build, installed in $prefix
 PKG_CONFIG_PATH=$prefix/lib/pkgconfig sh tests/ffmpeg_syntax_check.sh c++
-# FFmpeg 8.0 on Ubuntu 26.04
+# FFmpeg 8.0.1 on Ubuntu 26.04
 podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
   apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends g++ pkg-config \
     libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev &&
