@@ -24,6 +24,14 @@
  *    rewritten with a slope of 3, and the Reload button is pressed: the next render must use the new slope. Before the
  *    fix, Reload cleared OCIO's file caches (OCIO::ClearAllCaches()) but not the processor cache of the config, which
  *    returned the processor of the old file contents.
+ * 4. Purging the caches re-reads a modified LUT file of a colorspace (#402): OCIOColorSpace, OCIODisplay and
+ *    OCIOLookTransform render the colorspace "lut", whose transform is the file purge.cc (a CDL slope of 2), the file is
+ *    rewritten with a slope of 3, and the host purges the caches (kOfxActionPurgeCaches): the next render must use the
+ *    new slope. Before the fix, none of them handled the action, and GenericOCIO::purgeCaches() (the readers and
+ *    writers) cleared OCIO's file caches but not the processor caches of its config and its instance. Then the main
+ *    thread purges the caches while 3 threads render (make test-ocio-processor-cache-tsan checks the data races).
+ * 5. An OCIO 2 view (#354): the display "none" of the configs has the shared view Film, whose view transform scales by
+ *    4. OCIODisplay must render it. (Its View menu is only built in Natron, which this host is not.)
  *
  * The test writes its OCIO configs and CDL files in <dir> and sets $OCIO to the first config.
  * The plug-ins are linked directly and driven through the OFX actions by the in-process host of ofx_test_host.h.
@@ -85,7 +93,8 @@ writeFile(const std::string& path,
 }
 
 // xN is N times the reference x1 (x2: kX2 times); "ctx" is the file scale${S}.cc, S = 2 by default (a context
-// variable); the look "double" multiplies by 2
+// variable); "lut" is the file purge.cc; the look "double" multiplies by 2; the shared view Film of the display
+// "none" is the view transform "film" (x4, an OCIO 2 view, #354) to the display colorspace "disp"
 std::string
 configText(int kX2)
 {
@@ -99,15 +108,23 @@ configText(int kX2)
            "displays:\n"
            "  none:\n"
            "    - !<View> {name: Raw, colorspace: x1}\n"
+           "    - !<Views> [Film]\n"
            "active_displays: [none]\n"
-           "active_views: [Raw]\n"
+           "active_views: [Raw, Film]\n"
+           "shared_views:\n"
+           "  - !<View> {name: Film, view_transform: film, display_colorspace: disp}\n"
+           "view_transforms:\n"
+           "  - !<ViewTransform> {name: film, from_scene_reference: !<MatrixTransform> {matrix: [4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1]}}\n"
+           "display_colorspaces:\n"
+           "  - !<ColorSpace> {name: disp, family: display, bitdepth: 32f, isdata: false}\n"
            "looks:\n"
            "  - !<Look> {name: double, process_space: x1, transform: !<MatrixTransform> {matrix: [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1]}}\n"
            "colorspaces:\n"
            "  - !<ColorSpace> {name: x1, family: scale, bitdepth: 32f, isdata: false}\n"
            "  - !<ColorSpace> {name: x2, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<MatrixTransform> {matrix: ["
         + x2 + ", 0, 0, 0, 0, " + x2 + ", 0, 0, 0, 0, " + x2 + ", 0, 0, 0, 0, 1]}}\n"
-           "  - !<ColorSpace> {name: ctx, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<FileTransform> {src: \"scale${S}.cc\"}}\n";
+           "  - !<ColorSpace> {name: ctx, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<FileTransform> {src: \"scale${S}.cc\"}}\n"
+           "  - !<ColorSpace> {name: lut, family: scale, bitdepth: 32f, isdata: false, to_scene_reference: !<FileTransform> {src: \"purge.cc\"}}\n";
 }
 
 std::string
@@ -234,6 +251,9 @@ struct Instance {
         return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
     }
 
+    // the host purges its caches (kOfxActionPurgeCaches)
+    OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, H(inst), nullptr, nullptr); }
+
     // render row y of the output at time t; true if it succeeded and the row is kInput * f (RGB) for one f of factors
     bool renderRowAnyOf(double t,
                         int y,
@@ -305,6 +325,45 @@ testConcurrentRenders(const char* what,
     }
     check(bad == 0, std::string(what) + ": " + std::to_string(kThreads) + " threads x " + std::to_string(kRendersPerThread)
                         + " renders at alternating frames: every row has the value of its frame (" + std::to_string(bad.load()) + " wrong)");
+}
+
+// The host purges the caches of in (what) kPurges times on the main thread while kThreads - 1 threads render, with
+// a factor of f (the LUT file doesn't change meanwhile): no data race (purgeCaches() swaps in a copy of the config
+// under the lock, and each render uses one config), and every row is f.
+void
+testPurgeDuringRenders(const std::string& what,
+                       Instance& in,
+                       double f)
+{
+    const int kPurges = 40;
+    std::atomic<bool> stop { false };
+    std::atomic<int> bad { 0 };
+    std::atomic<int> renders { 0 };
+    std::vector<std::thread> threads;
+    for (int k = 1; k < kThreads; ++k) {
+        threads.emplace_back([&in, &stop, &bad, &renders, k, f] {
+            while (!stop) {
+                if (!in.renderRow(1., k, f)) {
+                    ++bad;
+                }
+                ++renders;
+            }
+        });
+    }
+    int failedPurges = 0;
+    for (int i = 0; i < kPurges; ++i) {
+        if (!ok(in.purgeCaches())) {
+            ++failedPurges;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    stop = true;
+    for (std::thread& t : threads) {
+        t.join();
+    }
+    check(failedPurges == 0, what + ": " + std::to_string(kPurges) + " purges of the caches during renders succeed");
+    check(renders > 0, what + ": renders ran during the purges (" + std::to_string(renders.load()) + ")");
+    check(bad == 0, what + ": " + std::to_string(renders.load()) + " renders during the purges: every row has the new slope (" + std::to_string(bad.load()) + " wrong)");
 }
 
 // The OCIO config file param of in (what) is set to the other config (kToggles times) by the main thread while
@@ -619,6 +678,51 @@ main(int argc,
             in.changed("reload");
             v = in.render1();
             check(v == 0.75f, "OCIOFileTransform, after Reload: the new slope, 0.25 * 3 = 0.75 (got " + str(v) + ")");
+        }
+    }
+
+    std::printf("==== 4. purging the caches re-reads a modified LUT file of a colorspace (#402) ====\n");
+    for (const char* id : { "fr.inria.openfx.OCIOColorSpace", "fr.inria.openfx.OCIODisplay", "fr.inria.openfx.OCIOLookTransform" }) {
+        const std::string name(id);
+        const std::string lut = dir + "/purge.cc";
+        check(writeFile(lut, ccText(2)), "write purge.cc with a slope of 2");
+        OCIO_NAMESPACE::ClearAllCaches(); // (OCIO's file cache has the slope of 3 of the previous plug-in)
+        Instance in;
+        if (in.load(id)) {
+            setString(in.ctx, "ocioInputSpace", "lut");
+            double look = 1.; // (OCIOLookTransform: the look "double")
+            if (name == "fr.inria.openfx.OCIODisplay") {
+                setString(in.ctx, "display", "none");
+                setString(in.ctx, "view", "Raw");
+            } else {
+                setString(in.ctx, "ocioOutputSpace", "x1");
+            }
+            if (name == "fr.inria.openfx.OCIOLookTransform") {
+                setInt(in.ctx, "singleLook", 1);
+                setInt(in.ctx, "lookChoice", 0); // "double"
+                look = 2.;
+            }
+            check(in.create(), name + ": create instance");
+            float v = in.render1();
+            check(v == static_cast<float>(kInput * 2. * look), name + ", colorspace lut, purge.cc with a slope of 2: 0.25 * 2 * " + str(look) + " (got " + str(v) + ")");
+            check(writeFile(lut, ccText(3)), "rewrite purge.cc with a slope of 3");
+            check(ok(in.purgeCaches()), name + ": purge caches");
+            v = in.render1();
+            check(v == static_cast<float>(kInput * 3. * look), name + ", after purging the caches: the new slope, 0.25 * 3 * " + str(look) + " (got " + str(v) + ")");
+            testPurgeDuringRenders(name, in, 3. * look);
+        }
+    }
+
+    std::printf("==== 5. an OCIO 2 shared view with a view transform (#354) ====\n");
+    {
+        Instance in;
+        if (in.load("fr.inria.openfx.OCIODisplay")) {
+            setString(in.ctx, "display", "none");
+            setString(in.ctx, "view", "Film");
+            setString(in.ctx, "ocioInputSpace", "x1");
+            check(in.create(), "OCIODisplay: create instance");
+            const float v = in.render1();
+            check(v == 1.f, "OCIODisplay, view Film (the view transform film): 0.25 * 4 = 1 (got " + str(v) + ")");
         }
     }
 

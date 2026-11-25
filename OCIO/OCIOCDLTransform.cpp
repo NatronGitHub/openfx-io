@@ -24,7 +24,6 @@
 
 #ifdef OFX_IO_USING_OCIO
 
-#include <algorithm> // std::copy
 #include <array>
 #include <cerrno>
 #include <cstdio> // fopen...
@@ -188,13 +187,7 @@ readCDLFile(const string& file,
         // OCIO caches the file (OCIO::ClearAllCaches() clears its cache)
         const OCIO::ConstCDLTransformRcPtr transform = OCIO::CDLTransform::CreateFromFile(file.c_str(), cccid.c_str());
         CDLGrade grade;
-#if OCIO_VERSION_HEX >= 0x02000000
         transform->getSOP(grade.sop.data());
-#else
-        std::array<float, 9> sop;
-        transform->getSOP(sop.data());
-        std::copy(sop.begin(), sop.end(), grade.sop.begin());
-#endif
         grade.saturation = transform->getSat();
         result.grade = grade;
     } catch (const std::exception& e) { // OCIO::Exception is a std::runtime_error
@@ -210,17 +203,8 @@ createCDLTransform(const CDLGrade& grade,
                    int direction)
 {
     OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
-#if OCIO_VERSION_HEX >= 0x02000000
     cc->setSOP(grade.sop.data());
     cc->setSat(grade.saturation); // a double in OCIO 2 (an exported file has 0.7, not 0.699999988079071)
-#else
-    std::array<float, 9> sop;
-    for (std::size_t i = 0; i < sop.size(); ++i) {
-        sop[i] = static_cast<float>(grade.sop[i]);
-    }
-    cc->setSOP(sop.data());
-    cc->setSat(static_cast<float>(grade.saturation));
-#endif
     cc->setDirection((direction == 0) ? OCIO::TRANSFORM_DIR_FORWARD : OCIO::TRANSFORM_DIR_INVERSE);
 
     return cc;
@@ -1145,7 +1129,6 @@ OCIOCDLTransformPlugin::exportCDL(double time,
             throw std::runtime_error("OCIO: no current config");
         }
         const OCIO::CDLTransformRcPtr cc = createCDLTransform(*result.grade, 0); // forward
-#if OCIO_VERSION_HEX >= 0x02000000
         // the same ColorCorrection XML (.cc) as OCIO 1's CDLTransform::getXML()
         OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
         g->appendTransform(cc);
@@ -1153,9 +1136,6 @@ OCIOCDLTransformPlugin::exportCDL(double time,
         os.imbue(std::locale::classic());
         g->write(config, "ColorCorrection", os);
         xml = os.str();
-#else
-        xml = cc->getXML();
-#endif
     } catch (const std::exception& e) {
         sendMessage(Message::eMessageError, "", string("Cannot export the grade: ") + e.what());
 

@@ -1289,17 +1289,12 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     try {
         AutoSetAndRestoreThreadLocale locale;
         if (_proc) {
-#if OCIO_VERSION_HEX >= 0x02000000
             OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels,
                                       OCIO::BIT_DEPTH_F32, // For now, only float
                                       sizeof(float), pixelBytes, _dstRowBytes);
             OCIO::ConstCPUProcessorRcPtr cpuproc = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32,
                                                                                    OCIO::OPTIMIZATION_DEFAULT);
             cpuproc->apply(img);
-#else
-            OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, sizeof(float), pixelBytes, _dstRowBytes);
-            _proc->apply(img);
-#endif
         }
     } catch (OCIO::Exception& e) {
         _instance->setPersistentMessage(Message::eMessageError, "", string("OpenColorIO error: ") + e.what());
@@ -2137,11 +2132,35 @@ GenericOCIO::describeInContextInverseAndSwap(ImageEffectDescriptor& desc,
 #endif
 }
 
+// (the purge caches action is called on the main thread: it is not one of the render thread actions, OFX
+// ofxThreadSafety.rst)
 void
 GenericOCIO::purgeCaches()
 {
 #ifdef OFX_IO_USING_OCIO
-    OCIO::ClearAllCaches();
+    OCIO::ClearAllCaches(); // OCIO's file caches: the LUT files are read again
+    // ClearAllCaches() "does not apply to instance-specific caches such as the Processor cache in a Config instance"
+    // (OpenColorIO 2.6 OpenColorIO.h:130-136), whose key is the transform, not the contents of its files, and the
+    // shared config is const: swap in an editable copy, whose processor cache starts empty (Config.cpp:472,
+    // Config::Impl::operator=), as OCIOFileTransform's Reload does (#361). Its address also changes the key of
+    // _procCache, and of the processor caches of the plug-ins that use getConfig() (OCIOConfigContextKey). Renders keep
+    // the copy of the old config that they took.
+    // Limitations: the copy keeps the context of the config, with its cache of resolved file paths (Context.cpp:59-76,
+    // Context::Impl::operator=), so a LUT file moved to another directory of the search path is still read from its
+    // old path (unless a context variable is set: getLocalContext() then makes a new context); and the .ocio file
+    // itself is not read again.
+    OCIO::ConstConfigRcPtr config = getConfig();
+    if (!config) {
+        return;
+    }
+    OCIO::ConstConfigRcPtr copy = config->createEditableCopy();
+    {
+        AutoMutex guard(_configMutex);
+        if (_config == config) { // (not if another config was loaded meanwhile)
+            _config.swap(copy);
+        }
+    }
+    copy.reset(); // (the old config, or the unused copy: released without the lock)
 #endif
 }
 

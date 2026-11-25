@@ -2327,21 +2327,14 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
         }
         // Colorspace parsed from filename overrides the file colorspace,
         // following recommendations from http://opencolorio.org/configurations/spi_pipeline.html
-        // However, as discussed in https://groups.google.com/forum/#!topic/ocio-dev/dfOxq8Nanl8
-        // the OpenColorIO 1.0.9 implementation fails too often.
-        // We should wait for the next version, where pull request
-        // https://github.com/imageworks/OpenColorIO/pull/381 or
-        // https://github.com/imageworks/OpenColorIO/pull/413 may be merged.
+        // (OCIO Config::getColorSpaceFromFilepath(), then only if that colorspace name is right before the extension,
+        // see below)
         AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr ocioConfig = _ocio->getConfig();
         if (setColorSpace && ocioConfig) {
             string name = filename;
             (void)SequenceParsing::removePath(name); // only use the file NAME
-#if OCIO_VERSION_HEX >= 0x02000000
             const char* colorSpaceStr = ocioConfig->getColorSpaceFromFilepath(name.c_str());
-#else
-            const char* colorSpaceStr = ocioConfig->parseColorSpaceFromString(name.c_str());
-#endif
             size_t colorSpaceStrLen = colorSpaceStr ? std::strlen(colorSpaceStr) : 0;
             if (colorSpaceStrLen == 0) {
                 colorSpaceStr = NULL;
@@ -2363,7 +2356,7 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
                 }
             }
             if (colorSpaceStr && colorSpaceStrLen > 0) {
-                assert(_ocio->hasColorspace(colorSpaceStr)); // parseColorSpaceFromString always returns an existing colorspace
+                assert(_ocio->hasColorspace(colorSpaceStr)); // getColorSpaceFromFilepath() always returns an existing colorspace
                 // we're lucky
                 _ocio->setInputColorspace(colorSpaceStr);
                 setColorSpace = false;

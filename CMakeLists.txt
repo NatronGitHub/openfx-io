@@ -128,14 +128,23 @@ macro(_io_pkg_config_path prefix path)
 endmacro()
 
 # OpenColorIO: OpenColorIO::OpenColorIO
+# (OpenColorIO 2.0 or later, as checked in IOSupport/GenericOCIO.h)
 if(OFX_IO_WITH_OCIO)
-  find_package(OpenColorIO CONFIG QUIET)
+  find_package(OpenColorIO 2.0 CONFIG QUIET) # (OCIO 2.x: its version file accepts only its own major)
 endif()
 if(OFX_IO_WITH_OCIO AND NOT CMAKE_DISABLE_FIND_PACKAGE_OpenColorIO AND NOT TARGET OpenColorIO::OpenColorIO AND PKG_CONFIG_FOUND)
-  pkg_check_modules(OCIO_PC QUIET IMPORTED_TARGET OpenColorIO)
+  pkg_check_modules(OCIO_PC QUIET IMPORTED_TARGET "OpenColorIO>=2.0")
   if(OCIO_PC_FOUND)
     add_library(OpenColorIO::OpenColorIO INTERFACE IMPORTED)
     target_link_libraries(OpenColorIO::OpenColorIO INTERFACE PkgConfig::OCIO_PC)
+  else()
+    # an older OpenColorIO: fail, rather than silently building without the OpenColorIO plug-ins
+    pkg_check_modules(_IO_OCIO_ANY QUIET OpenColorIO)
+    if(_IO_OCIO_ANY_FOUND)
+      message(FATAL_ERROR "The OpenColorIO plug-ins require OpenColorIO 2.0 or later, but pkg-config found "
+              "OpenColorIO ${_IO_OCIO_ANY_VERSION} (in ${_IO_OCIO_ANY_PREFIX}). Build without them with "
+              "-DOFX_IO_WITH_OCIO=OFF.")
+    endif()
   endif()
 endif()
 

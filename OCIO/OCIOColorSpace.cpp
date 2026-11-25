@@ -80,6 +80,9 @@ private:
     /* override changed clip */
     virtual void changedClip(const InstanceChangedArgs& args, const string& clipName) OVERRIDE FINAL;
 
+    // the host purges its caches: read the LUT files of the config again (#402)
+    virtual void purgeCaches() OVERRIDE FINAL { _ocio->purgeCaches(); }
+
     // override the rod call
     // virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments &args, OfxRectD &rod) OVERRIDE FINAL;
 
