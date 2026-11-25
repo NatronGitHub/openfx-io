@@ -9,6 +9,9 @@
  *
  *   - load and describe ReadOIIO, WriteOIIO and OIIOResize, create an OIIOResize instance: the pool has
  *     hardware_concurrency() - 1 threads
+ *   - WriteOIIO's load creates an ImageOutput for each extension, and OpenImageIO's OpenEXR writer starts
+ *     OpenEXR's pool then, outside of any instance (checked except on MS Windows); on MS Windows it is stopped at the end of the
+ *     load (#256), and the instance (ExrThreadsUser) starts it again
  *   - unload ReadOIIO: the pool keeps its threads, and OIIOResize renders (ImageBufAlgo::resize(), with the
  *     host's 4 CPUs, uses the pool)
  *   - reload and unload ReadOIIO (as during a plug-in scan), load and unload OIIOResize v1 (another plug-in):
@@ -27,8 +30,10 @@
  */
 #include "ofx_test_host.h"
 
+#include "ExrThreads.h"
 #include "OIIOGlobal.h"
 
+#include <OpenImageIO/imageio.h>
 #include <OpenImageIO/oiioversion.h>
 #include <OpenImageIO/sysutil.h>
 #include <OpenImageIO/thread.h>
@@ -191,12 +196,29 @@ int main()
     Effect readCtx, writeCtx;
     check(loadAndDescribe(read, readCtx, readCtx, kOfxImageEffectContextReader) == 0, "ReadOIIO load/describe");
     check(loadAndDescribe(write, writeCtx, writeCtx, kOfxImageEffectContextWriter) == 0, "WriteOIIO load/describe");
+    std::printf("  OpenEXR's pool: %d threads, %d live users\n", exrPoolThreads(), liveExrThreadsUsers());
+    if (exrPoolThreads() >= 0) {
+        // OpenEXROutput's constructor (ImageOutput::create("x.exr"), in WriteOIIO's load) starts OpenEXR's pool,
+        // which a host that exits without kOfxActionUnload would leave to OpenEXR's static destructors (#256)
+#if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+        check(exrPoolThreads() == 0, "no instance: OpenEXR's pool is stopped after WriteOIIO's load (#256)");
+#else
+        check(exrPoolThreads() > 0, "WriteOIIO's load starts OpenEXR's pool (OpenEXROutput, #256 precondition)");
+#endif
+    } else {
+        // -1: built without OpenEXR's headers, so the #256 checks cannot run; that is only expected if OpenImageIO
+        // has no EXR writer either (this creates an OpenEXROutput, but the pool state is not checked any more)
+        check(!OIIO::ImageOutput::create("x.exr"), "built without OpenEXR's headers: OpenImageIO has no EXR writer");
+    }
     {
         ResizeInstance r(resize);
         check(loadAndDescribe(resize, r.ctx, r.ctx, kOfxImageEffectContextFilter) == 0, "OIIOResize load/describe");
         check(r.create(), "OIIOResize CreateInstance");
         std::printf("  pool size: %d\n", poolSize());
         check(poolSize() == expected, "the pool has hardware_concurrency() - 1 threads");
+        if (exrPoolThreads() >= 0) { // (-1: built without OpenEXR)
+            check(exrPoolThreads() > 0, "an instance: OpenEXR's pool runs");
+        }
         check(r.render(), "OIIOResize renders"); // (OIIO runs the work inline if the pool is stopped: only poolSize() detects #118)
 
         std::printf("== unload ReadOIIO (OIIOResize and WriteOIIO are still loaded)\n");

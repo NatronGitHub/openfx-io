@@ -73,7 +73,7 @@ set(_io_ofx_support
   ${S}/openfx/Support/Library/ofxsDrawContextOpenGL.cpp)
 
 # the libraries of the OFX tests (tests/Makefile's OFX_CXXFLAGS and OFX_LIBS): OpenColorIO, OpenImageIO, FFmpeg (and
-# OpenEXR: OIIOGlobal.cpp includes <IlmThreadPool.h>), the plug-ins' defines and in-repo include paths
+# OpenEXR: IOSupport/ExrThreads.cpp includes <IlmThreadPool.h>), the plug-ins' defines and in-repo include paths
 if(_io_t_ocio AND _io_t_oiio AND _io_t_ffmpeg)
   add_library(io_tests_ofx INTERFACE)
   target_compile_definitions(io_tests_ofx INTERFACE OFX_EXTENSIONS_VEGAS OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_TUTTLE
