@@ -111,7 +111,8 @@
 #     ya16be (MOV) and FFV1 ya8 (NUT) must give RGBA with the alpha of the clip; GIF and PNG rgba are controls, and opaque
 #     PNG gray and rgb24 give RGB. Opaque pal8 (PNG in MOV, raw in MOV and AVI) must give its colors with an
 #     alpha of 255, also after seeks (AVI and MOV give the palette only with the first packet).
-# Clips whose encoder is not available in the ffmpeg CLI are skipped.
+# Clips whose encoder is not available in the ffmpeg CLI are skipped (a "SKIPPED: " line; the last line gives their
+# number).
 #
 # Environment:
 #   FFMPEG_READ_TEST_KEEP=dir  generate the clips in dir and keep them
@@ -140,6 +141,15 @@ else
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
 fi
+
+# skip REASON: the current section is not run (the harness prints the same "SKIPPED: " line when it exits with
+# status 77); the last line gives their number. ctest hides the output of a passing test: in CI, tests/ctest_skips.sh
+# lists these lines (#309).
+nskipped=0
+skip() {
+    echo "SKIPPED: $*"
+    nskipped=$((nskipped + 1))
+}
 
 NFRAMES=40
 ramp() {
@@ -175,7 +185,7 @@ generate() {
     shift 4
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return 1
     fi
     local outargs=() inargs=()
@@ -242,7 +252,7 @@ check_vfr() {
     shift 8
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     local positions="" i pos
@@ -281,7 +291,7 @@ check_audio() {
     shift 5
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     local positions="" i
@@ -310,7 +320,7 @@ check_large_nut() {
     shift 4
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     local outargs=() harnessargs=()
@@ -358,7 +368,7 @@ check_corrupt() {
     local name="$1" desc="$2" n="$3" jump="$4" spacing="$5" audio="$6" maxseeks="$7"
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     local audioin=() audioout=()
@@ -377,7 +387,7 @@ check_corrupt() {
     # milliseconds: it is at 500 ms), in the slice data: the frame still decodes, with errors
     # (the bitstream filter noise may instead make the packet undecodable).
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     local pos size
@@ -412,11 +422,11 @@ check_mkv_length() {
     shift 2
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v perl >/dev/null 2>&1; then
-        echo "SKIPPED: no perl"
+        skip "no perl"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" -c:v libx264 -bf 2 -pix_fmt yuv420p "$@" -output_ts_offset 0.5 -cluster_time_limit 100 "$tmp/clean_$name"; then
@@ -445,7 +455,7 @@ check_flv_overhang() {
     local name="$1" desc="$2"
     echo "== $desc =="
     if ! have_encoder libx264 || ! have_encoder aac; then
-        echo "SKIPPED: no libx264 or aac encoder in the ffmpeg CLI"
+        skip "no libx264 or aac encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" $X264 "$tmp/video_$name.mkv" ||
@@ -480,7 +490,7 @@ check_ss_copy() {
     shift 4
     echo "== $desc =="
     if ! have_encoder libx264 || ! have_encoder aac; then
-        echo "SKIPPED: no libx264 or aac encoder in the ffmpeg CLI"
+        skip "no libx264 or aac encoder in the ffmpeg CLI"
         return
     fi
     if [ ! -f "$tmp/ss_source.mp4" ] && ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=size=160x120:rate=25 -f lavfi -i sine=sample_rate=48000 \
@@ -522,11 +532,11 @@ check_damaged() {
     shift 8
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     local vf=()
@@ -598,17 +608,17 @@ check_damaged_av1() {
     shift 3
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     local decoders
     decoders="$(ffmpeg -hide_banner -decoders 2>/dev/null || true)"
     if ! echo "$decoders" | grep -q " libdav1d "; then
-        echo "SKIPPED: no libdav1d decoder"
+        skip "no libdav1d decoder"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1 || ! command -v perl >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI or no perl"
+        skip "no ffprobe CLI or no perl"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v "$NFRAMES" "$@" "$tmp/clean_$name" 2>/dev/null; then
@@ -659,11 +669,11 @@ check_truncated_intra() {
     shift 5
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     local audioin=()
@@ -701,11 +711,11 @@ check_ts_cc() {
     local name="$1" desc="$2"
     echo "== $desc =="
     if ! have_encoder libx264 || ! have_encoder mp2; then
-        echo "SKIPPED: no libx264 or mp2 encoder in the ffmpeg CLI"
+        skip "no libx264 or mp2 encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v perl >/dev/null 2>&1; then
-        echo "SKIPPED: no perl"
+        skip "no perl"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25 -frames:v 72 -c:v libx264 -g 12 -bf 2 -pix_fmt yuv420p "$tmp/video_$name.mkv" ||
@@ -764,7 +774,7 @@ check_damaged_long() {
     local name="$1" desc="$2" amount="$3" from="$4" to="$5" fresh="$6" factor="$7" order="${8:-}"
     echo "== $desc =="
     if ! have_encoder prores_ks; then
-        echo "SKIPPED: no prores_ks encoder in the ffmpeg CLI"
+        skip "no prores_ks encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25:d=12 -c:v prores_ks -profile:v 2 "$tmp/clean_$name" ||
@@ -801,7 +811,7 @@ check_damaged_gop() {
     shift 7
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=160x120:r=25 -frames:v "$frames" -c:v libx264 -pix_fmt yuv420p "$@" "$tmp/clean_$name" ||
@@ -846,11 +856,11 @@ check_damaged_mkv_run() {
     local name="$1" desc="$2" from="$3" to="$4" frames="$5" container="${6:-mkv}" damage="${7:-data}" clean
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v perl >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no perl or ffprobe"
+        skip "no perl or ffprobe"
         return
     fi
     if [ ! -f "$tmp/clean_g100.mkv" ] &&
@@ -923,7 +933,7 @@ check_damaged_ref() {
     shift 6
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v "$frames" -c:v "$encoder" -pix_fmt yuv420p "$@" "$tmp/clean_$name" ||
@@ -970,7 +980,7 @@ check_frame_threads() {
     fi
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     # 48 frames from the source duration (d=2), not -frames:v 48, so that the test does not depend on how the ffmpeg
@@ -979,11 +989,11 @@ check_frame_threads() {
     local src="testsrc=s=256x160:r=24:d=2,format=yuv420p,geq=lum='lum(X,Y)+2*N':cb='cb(X,Y)':cr='cr(X,Y)',format=$pixfmt"
     if ! ffmpeg -y -loglevel error -f lavfi -i "$src" -c:v "$encoder" -g 12 "$@" -pass 1 -passlogfile "$tmp/$name.pass" -f null - ||
         ! ffmpeg -y -loglevel error -f lavfi -i "$src" -c:v "$encoder" -g 12 "$@" -pass 2 -passlogfile "$tmp/$name.pass" "$tmp/$name"; then
-        echo "SKIPPED: the ffmpeg CLI could not encode $name with $encoder in 2 passes"
+        skip "the ffmpeg CLI could not encode $name with $encoder in 2 passes"
         return
     fi
     if ! ffmpeg -y -loglevel error -threads 1 -i "$tmp/$name" "${refargs[@]}" "$ref"; then
-        echo "SKIPPED: the ffmpeg CLI could not make the lossless copy of $name (${refargs[*]})"
+        skip "the ffmpeg CLI could not make the lossless copy of $name (${refargs[*]})"
         return
     fi
     if [ "$encoder" = libvpx-vp9 ]; then
@@ -1018,11 +1028,11 @@ check_ts_wrap() {
     shift 4
     echo "== $desc =="
     if ! have_encoder libx264 || ! have_encoder ac3; then
-        echo "SKIPPED: no libx264 or ac3 encoder in the ffmpeg CLI"
+        skip "no libx264 or ac3 encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "testsrc2=s=320x240:r=$rate" -f lavfi -i sine=r=48000 -frames:v 150 \
@@ -1066,7 +1076,7 @@ check_swapped() {
     local name="$1" desc="$2"
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v 24 $X264 -video_track_timescale 24 "$tmp/clean_$name"; then
@@ -1076,7 +1086,7 @@ check_swapped() {
     fi
     if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -video_track_timescale 24 \
         -bsf:v "setts=pts=if(eq(PTS\,10)\,11\,if(eq(PTS\,11)\,10\,PTS))" "$tmp/$name" 2>/dev/null; then
-        echo "SKIPPED: no setts bitstream filter"
+        skip "no setts bitstream filter"
         return
     fi
     # shellcheck disable=SC2086
@@ -1117,7 +1127,7 @@ check_forward() {
     shift 2
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=128x128:r=25,format=gray,geq=lum='16+2*N':cb=128:cr=128,format=yuv420p" \
@@ -1138,7 +1148,7 @@ check_forward_ts_jump() {
     local name="$1" desc="$2"
     echo "== $desc =="
     if ! have_encoder libx264; then
-        echo "SKIPPED: no libx264 encoder in the ffmpeg CLI"
+        skip "no libx264 encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=25 -frames:v 400 -vf "setpts=if(lte(N\,100)\,N\,N+500)/(25*TB)" \
@@ -1158,11 +1168,11 @@ check_forward_asf_noindex() {
     local name="$1" desc="$2"
     echo "== $desc =="
     if ! have_encoder mpeg4; then
-        echo "SKIPPED: no mpeg4 encoder in the ffmpeg CLI"
+        skip "no mpeg4 encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v perl >/dev/null 2>&1; then
-        echo "SKIPPED: no perl"
+        skip "no perl"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=25 -frames:v 600 -c:v mpeg4 -g 25 -q:v 5 "$tmp/clean_$name"; then
@@ -1192,7 +1202,7 @@ check_forward_open_gop() {
     local name="$1" desc="$2"
     echo "== $desc =="
     if ! have_encoder libx265; then
-        echo "SKIPPED: no libx265 encoder in the ffmpeg CLI"
+        skip "no libx265 encoder in the ffmpeg CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=24 -frames:v 96 -c:v libx265 \
@@ -1220,11 +1230,11 @@ check_open_gop_seek() {
     shift 4
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=24 -frames:v 96 "$@" -pix_fmt yuv420p "$tmp/$name"; then
@@ -1367,7 +1377,7 @@ check ramp_mpeg1.avi "AVI (MPEG-1 without B-frames, no PTS)" mpeg1video 24 -c:v 
 # and in a random order, every frame must be the sequential one, with 1 and 8 decoder threads.
 echo "== APNG (testsrc2 in RGBA, opaque: partial frames blended over the previous ones) =="
 if ! have_encoder apng; then
-    echo "SKIPPED: no apng encoder in the ffmpeg CLI"
+    skip "no apng encoder in the ffmpeg CLI"
 elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=128x96:r=24 -frames:v 48 -pix_fmt rgba -c:v apng -f apng "$tmp/blend.apng"; then
     echo "FAIL: could not generate blend.apng"
     rc=1
@@ -1481,7 +1491,7 @@ CHECK_DAMAGED_ARGS="--fresh 14,15,28,29" check_damaged ramp_damaged_cfhd.mov "MO
 # thread; with frame threads, each request also reads ahead by the decoder delay).
 echo "== MOV (MPEG-4 Part 2 and MPEG-2, no sync-sample table: undamaged, and with a damaged first keyframe) =="
 if ! have_encoder mpeg4 || ! command -v perl >/dev/null 2>&1; then
-    echo "SKIPPED: no mpeg4 encoder in the ffmpeg CLI, or no perl"
+    skip "no mpeg4 encoder in the ffmpeg CLI, or no perl"
 elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg4 -threads 1 -g 12 -bf 0 -q:v 3 \
     -movflags faststart "$tmp/clean_mpeg4.mov" ||
     ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg4.mov" > "$tmp/mpeg4_nostss.mov" ||
@@ -1498,7 +1508,7 @@ elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 4
 else
     nostss_names="mpeg4 mpeg4_bf"
     if ! have_encoder mpeg2video; then
-        echo "SKIPPED: MPEG-2: no mpeg2video encoder in the ffmpeg CLI"
+        skip "MPEG-2: no mpeg2video encoder in the ffmpeg CLI"
     elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg2video -threads 1 -g 12 \
         -bf 2 -q:v 3 -movflags faststart "$tmp/clean_mpeg2.mov" ||
         ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg2.mov" > "$tmp/mpeg2_nostss.mov"; then
@@ -1675,7 +1685,7 @@ check_packets() {
     shift 2
     echo "== $desc =="
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     local packets
@@ -1698,7 +1708,7 @@ check_ps_cuts() {
     shift 2
     if ! command -v ffprobe >/dev/null 2>&1; then
         echo "== $desc =="
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     for offset in "$@"; do
@@ -1746,7 +1756,7 @@ if have_encoder mpeg2video && have_encoder s302m; then
         rc=1
     fi
 else
-    echo "SKIPPED: no mpeg2video or s302m encoder in the ffmpeg CLI"
+    skip "no mpeg2video or s302m encoder in the ffmpeg CLI"
 fi
 # A stream copy from a non-keyframe: fewer samples than frame times.
 check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6
@@ -1806,7 +1816,7 @@ check_color() {
     *) encargs=(-c:v "$codec") ;;
     esac
     if ! have_encoder "$codec"; then
-        echo "SKIPPED: no $codec encoder in the ffmpeg CLI"
+        skip "no $codec encoder in the ffmpeg CLI"
         return
     fi
     constant_yuv "$w" "$h" 3 "$bits" "$y" "$cb" "$cr" >"$tmp/$name.yuv"
@@ -1889,30 +1899,30 @@ check_bitdepth() {
     esac
     chroma=$((1 << (bits - 1)))
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     local input=(-f lavfi -i "nullsrc=s=876x64:r=24,format=$pixfmt,geq=lum='$lum':cb=$chroma:cr=$chroma")
     if [[ "$pixfmt" == bayer_* ]]; then
         if ! ffmpeg -y -loglevel error -f lavfi -i "nullsrc=s=876x64:r=24,format=gray16le,geq=lum='$lum'" -frames:v 3 \
             -f rawvideo "$tmp/$name.raw" 2>"$tmp/$name.log"; then
-            echo "SKIPPED: the ffmpeg CLI could not make the gray16le ramp: $(head -1 "$tmp/$name.log")"
+            skip "the ffmpeg CLI could not make the gray16le ramp: $(head -1 "$tmp/$name.log")"
             return
         fi
         input=(-f rawvideo -pix_fmt "$pixfmt" -s 876x64 -r 24 -i "$tmp/$name.raw")
     fi
     if ! ffmpeg -y -loglevel error "${input[@]}" -frames:v 3 -c:v "$encoder" "$@" -pix_fmt "$pixfmt" "$tmp/$name" \
         2>"$tmp/$name.log"; then
-        echo "SKIPPED: the ffmpeg CLI could not encode $pixfmt with $encoder: $(head -1 "$tmp/$name.log")"
+        skip "the ffmpeg CLI could not encode $pixfmt with $encoder: $(head -1 "$tmp/$name.log")"
         return
     fi
     got="$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "$tmp/$name")"
     if [ "$got" != "$pixfmt" ]; then
-        echo "SKIPPED: $encoder wrote $got, not $pixfmt"
+        skip "$encoder wrote $got, not $pixfmt"
         return
     fi
     local args=(--open-only --skip-without-decoder --bit-depth "$bits")
@@ -1922,7 +1932,9 @@ check_bitdepth() {
     status=0
     # shellcheck disable=SC2086
     "$bin" "$tmp/$name" "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} || status=$?
-    if [ "$status" -ne 0 ] && [ "$status" -ne 77 ]; then
+    if [ "$status" -eq 77 ]; then
+        nskipped=$((nskipped + 1))
+    elif [ "$status" -ne 0 ]; then
         rc=1
     fi
     rm -f "$tmp/$name.raw"
@@ -1972,11 +1984,11 @@ check_alpha() {
     fi
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
-        echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
+        skip "no $encoder encoder in the ffmpeg CLI"
         return
     fi
     if ! command -v ffprobe >/dev/null 2>&1; then
-        echo "SKIPPED: no ffprobe CLI"
+        skip "no ffprobe CLI"
         return
     fi
     case "$source" in
@@ -1994,12 +2006,12 @@ check_alpha() {
     fi
     if ! ffmpeg -y -loglevel error -f lavfi -i "$filter" -c:v "$encoder" ${outputArgs[@]+"${outputArgs[@]}"} -pix_fmt "$pixfmt" "$tmp/$name" \
         2>"$tmp/$name.log"; then
-        echo "SKIPPED: the ffmpeg CLI could not encode $pixfmt with $encoder: $(head -1 "$tmp/$name.log")"
+        skip "the ffmpeg CLI could not encode $pixfmt with $encoder: $(head -1 "$tmp/$name.log")"
         return
     fi
     got="$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "$tmp/$name")"
     if [ "$got" != "$decoded" ]; then
-        echo "SKIPPED: $name decodes to $got, not $decoded"
+        skip "$name decodes to $got, not $decoded"
         return
     fi
     status=0
@@ -2039,8 +2051,8 @@ check_alpha palette_raw.avi "Palette: raw pal8 (DIB) in AVI (palette in the firs
     --alpha 255 --rgb 48,128,192,0.1 --order 6,1,4,2,5,3,1
 
 if [ "$rc" -eq 0 ]; then
-    echo "ALL READ-PATH TESTS PASSED"
+    echo "ALL READ-PATH TESTS PASSED ($nskipped sections not run)"
 else
-    echo "READ-PATH TESTS FAILED"
+    echo "READ-PATH TESTS FAILED ($nskipped sections not run)"
 fi
 exit "$rc"

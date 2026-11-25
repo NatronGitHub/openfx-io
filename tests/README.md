@@ -19,8 +19,8 @@ each ctest test is one run of a `make` target, named after it (`test-<target>`, 
 the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `make test-ofx`; `test-ocio-anim`,
 `test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
 `test-ofx14-11`, `test-ofx14-gl` and `test-ofx14-full` are `make test-ofx14`; `test-ofx14-scan` and
-`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32`, `test-runscript-output` and
-`test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
+`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32` (MS Windows only), `test-runscript-output`
+and `test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
 it links (e.g. `test-seexpr`, with the SeExpr of the build). The programs run in `build/tests`, where they write their
 files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 
@@ -32,6 +32,12 @@ files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
   `test-exr-multiplanar-tsan`, `test-exr-multiplanar-ubsan`, `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`,
   `test-reader-hooks-tsan-debug`, `test-readffmpeg-views-concurrent-tsan` and
   `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test` doesn't run either.
+
+`ctest --output-on-failure` shows the output of the failing tests only: `tests/ctest_skips.sh build` lists what all
+tests of the last run skipped (e.g. the sections of `test-ffmpeg` whose encoder is missing; CI runs it after ctest,
+and adds one warning per test with skips). A test reports each part it does not run with a line that starts with
+`SKIP: ` or `SKIPPED: ` (after optional blanks), followed by what is not run and why; only those lines are counted, not
+summaries such as "3 plug-ins skipped". A test that can never run on a platform is not registered there.
 
 `make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
 with `pkg-config`:
@@ -866,7 +872,7 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
-### 1g. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #194, #232, #234, #242)
+### 1h. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #194, #232, #234, #242)
 
 `reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
@@ -923,7 +929,7 @@ buffer, which it then premultiplies (UnPreMultiplied files):
 of the whole RoD of each test to `dir` (raw RGBA float), to compare two builds bit by bit. `test-render` also renders
 narrow windows of ReadFFmpeg, at scale 1 and 1/2. It sets `OCIO=test.ocio`.
 
-### 1f4. `test-sequence-parsing` — SequenceParsing, the file sequence parser (#357)
+### 1i. `test-sequence-parsing` — SequenceParsing, the file sequence parser (#357)
 
 `sequence_parsing_test` is SequenceParsing's own test (`IOSupport/SequenceParsing/tests/SequenceParsingTest.cpp`):
 `####`, `%0Nd`, `%d`, `%v` and `%V` patterns, file name generation, sequence detection (`FileNameContent`,
@@ -937,7 +943,7 @@ runtime), for SequenceParsing's own arithmetic (INT_MIN, negation, `stringToInt`
 bytes, negative `char`s, passed to the `<cctype>` functions): those preconditions are not core-language undefined
 behaviour, and the glibc and UCRT tables accept -128..255; the tests check the results instead.
 
-### 1g1. `test-png-corrupt` — ReadPNG and WritePNG on libpng errors (#235, #276, #297)
+### 1j. `test-png-corrupt` — ReadPNG and WritePNG on libpng errors (#235, #276, #297)
 
 libpng reports an error by `longjmp()`ing to `png_jmpbuf(png)`, which must be set with `setjmp()` in the function that
 makes the libpng call ([libpng-manual.txt](https://github.com/pnggroup/libpng/blob/libpng16/libpng-manual.txt),
@@ -961,7 +967,7 @@ more times, and checks that the memory allocated (`__sanitizer_get_current_alloc
 descriptor are the same as before (without AddressSanitizer, e.g. on MS Windows, only the file descriptors are checked).
 It sets `OCIO=test.ocio`.
 
-### 1g2. `test-reader-window-host` — the readers in a host built on HostSupport (#232)
+### 1k. `test-reader-window-host` — the readers in a host built on HostSupport (#232)
 
 `hostdemo/reader_window.cpp` (adapted from openfx-arena's `tests/readerwindow/reader_window.cpp`) is a host built on
 openfx's HostSupport and hostDemo's host classes (`openfx/HostSupport/examples`; hostDemo itself renders the whole RoD
@@ -984,7 +990,7 @@ It is skipped without `oiiotool`, and ReadFFmpeg without `ffmpeg`. ctest runs it
 build has HostSupport (`-DIO_HOSTDEMO_TESTS=ON`, as in CI), and `io-reader-window` runs the same script on the
 installed `IO.ofx` bundle. The 2-part EXR run of `test-reader-window` is `test-reader-window-multiplane`.
 
-### 1g. `test-seexpr` — SeExpr, SeNoise and SeGrain
+### 1l. `test-seexpr` — SeExpr, SeNoise and SeGrain
 
 `seexpr_test.cpp` links `SeExpr.cpp`, `SeNoise.cpp` and `SeGrain.cpp` with SeExpr 2.11 (the SeExpr 1 API, found in
 `SEEXPR_HOME`, as for the plug-ins; the test is skipped if it is not there; ctest runs it as `test-seexpr`
@@ -1283,7 +1289,9 @@ Matroska and WebM store timestamps in milliseconds: at 24 fps the third frame is
 83 ms, which `Stream::ptsToFrame()` must round to frame 2 (it used to truncate it to
 frame 1, so that every third frame could not be decoded), and the movie duration
 (1667 ms for 40 frames) must not count a 41st frame. Clips whose encoder is missing
-from the `ffmpeg` CLI are skipped. `FFMPEG_READ_TEST_KEEP=dir` keeps the clips.
+from the `ffmpeg` CLI are skipped, each with a `SKIPPED: ` line (also printed by the harness when it exits with status 77),
+and the last line gives their number: `ALL READ-PATH TESTS PASSED (N sections not run)`, or
+`READ-PATH TESTS FAILED (N sections not run)`. `FFMPEG_READ_TEST_KEEP=dir` keeps the clips.
 Y'CbCr matrix and range (`check_color`): clips of a constant Y'CbCr color (Y' 120, Cb 80,
 Cr 200, written as raw yuv444p bytes with `perl`, in lossless H.264 with the tags in the
 VUI, and in 10-bit FFV1 in Matroska with the tags in the container only), tagged bt709,
@@ -1426,6 +1434,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
+| `ctest_skips.sh`            | Lists the `SKIP: `/`SKIPPED: ` lines of all tests of the last ctest run (`ctest_skips.sh build`), which `ctest --output-on-failure` hides, e.g. the sections of `test-ffmpeg` without their encoder; CI runs it after ctest (#309). |
 | `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
 
 ## Notes / limitations

@@ -49,7 +49,7 @@ skipall() {
         echo "FAIL: $1 (IO_HOSTDEMO_STRICT=1)"
         exit 1
     fi
-    echo "skip: $1"
+    echo "SKIP: $1"
     exit 77
 }
 if ! ls -d "$PLUGINS"/*.ofx.bundle > /dev/null 2>&1; then
@@ -76,7 +76,7 @@ GRADIENT="fill:topleft=0.9,0.1,0.2,1:topright=0.1,0.8,0.3,0.5:bottomleft=0.2,0.3
 # skip <file> <reason>: the file could not be written, its tests are skipped
 skipped=""
 skip() {
-    echo "skip $1: $2"
+    echo "SKIP: $1: $2"
     skipped="$skipped $1"
 }
 mk() { # <file> <channels> <oiiotool options...>

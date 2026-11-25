@@ -647,14 +647,13 @@ endif()
 # ---- test-runscript: RunScript on MS Windows (argument quoting, running a program, a batch file and a shebang script);
 # on all systems: splitting the script's stderr into lines, with bounded memory; on POSIX: aborting the script
 if(_io_t_runscript)
-  set(_io_libs "")
   if(WIN32)
-    # CommandLineToArgvW is in shell32
-    set(_io_libs shell32 advapi32)
+    # test-runscript-win32: MS Windows only (elsewhere, it would pass without testing anything, #309); CommandLineToArgvW
+    # is in shell32
+    io_test_program(runscript_win32_test SOURCES ${T}/runscript_win32_test.cpp ${S}/RunScript/RunScriptWin32.cpp
+                    INCLUDES ${S}/RunScript LIBS shell32 advapi32)
+    io_test(test-runscript-win32 COMMAND runscript_win32_test)
   endif()
-  io_test_program(runscript_win32_test SOURCES ${T}/runscript_win32_test.cpp ${S}/RunScript/RunScriptWin32.cpp
-                  INCLUDES ${S}/RunScript LIBS ${_io_libs})
-  io_test(test-runscript-win32 COMMAND runscript_win32_test)
   io_test_program(runscript_output_test SOURCES ${T}/runscript_output_test.cpp INCLUDES ${S}/RunScript)
   io_test(test-runscript-output TIMEOUT 300 COMMAND runscript_output_test)
   if(NOT WIN32)

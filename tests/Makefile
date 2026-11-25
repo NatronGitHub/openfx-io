@@ -16,9 +16,9 @@ FFMPEG_PKGS := libavcodec libavformat libavutil libswscale
 
 # C++17 by default (OpenImageIO 3.x, the Support library), unless CXX already has a -std option. CXXSTD is a bare
 # standard name or the whole flag, as in openfx's Support/Plugins/Makefile.master: e.g. `make test CXXSTD=c++20`,
-# `make test CXXSTD=-std=c++20` or `make test CXX="clang++ -std=c++20"` to test C++20
+# `make test CXXSTD=-std=c++20` (or `--std=c++20`) or `make test CXX="clang++ -std=c++20"` to test C++20
 CXXSTD   ?= $(if $(findstring -std=,$(CXX)),,c++17)
-override CXXSTD := $(if $(filter -std=% /std:%,$(CXXSTD)),$(strip $(CXXSTD)),$(if $(strip $(CXXSTD)),-std=$(strip $(CXXSTD))))
+override CXXSTD := $(if $(filter -std=% --std=% /std:%,$(CXXSTD)),$(strip $(CXXSTD)),$(if $(strip $(CXXSTD)),-std=$(strip $(CXXSTD))))
 
 CXXFLAGS += $(CXXSTD) -O2 -g -Wall
 
@@ -104,14 +104,16 @@ EXPECTED_PLUGINS := fr.inria.openfx.ReadFFmpeg fr.inria.openfx.WriteFFmpeg \
                     fr.inria.openfx.ReadOIIO fr.inria.openfx.WriteOIIO \
                     fr.inria.openfx.RunScript
 
-# ---- (3) RunScript's MS Windows process launching (a no-op elsewhere) ------------
+# ---- (3) RunScript's MS Windows process launching (MS Windows only) ------------
 # CommandLineToArgvW is in shell32 (MSYS2/MinGW: $(OS) is Windows_NT, from the environment)
 RUNSCRIPT_LIBS := $(if $(filter Windows_NT,$(OS)),-lshell32 -ladvapi32,)
 # runscript_render_test: RunScript's render on POSIX only (runscript_win32_test tests abort on MS Windows)
 RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
+# runscript_win32_test: MS Windows only (elsewhere, it would pass without testing anything, #309)
+RUNSCRIPT_WIN32_TEST := $(if $(filter Windows_NT,$(OS)),runscript_win32_test,)
 
 .PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
-all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
+all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz $(RUNSCRIPT_WIN32_TEST) runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
 ffmpeg_read_test: $(READ_SRCS) ../FFmpeg/FFmpegFile.h ../FFmpeg/PixelFormat.h
@@ -504,7 +506,7 @@ test: test-raw-unload
 clean: clean-raw-unload
 test-raw-unload: raw_unload $(RW_BUNDLE_BINARY)
 	OCIO=$(CURDIR)/test.ocio bash hostdemo/raw_unload.sh ./raw_unload .reader_window_host/plugins .raw_unload; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-raw-unload: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-raw-unload"; else exit $$st; fi
 clean-raw-unload:
 	rm -rf raw_unload raw_unload.dSYM .raw_unload
 
@@ -513,7 +515,7 @@ test: test-exit-without-unload
 clean: clean-exit-without-unload
 test-exit-without-unload: exit_without_unload $(RW_BUNDLE_BINARY)
 	OCIO=$(CURDIR)/test.ocio bash hostdemo/exit_without_unload.sh ./exit_without_unload .reader_window_host/plugins .exit_without_unload; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-exit-without-unload: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-exit-without-unload"; else exit $$st; fi
 clean-exit-without-unload:
 	rm -rf exit_without_unload exit_without_unload.dSYM .exit_without_unload
 
@@ -522,7 +524,7 @@ test: test-reader-window-host
 clean: clean-reader-window-host
 test-reader-window-host: reader_window_host $(RW_BUNDLE_BINARY)
 	OCIO=$(CURDIR)/test.ocio bash hostdemo/reader_window.sh ./reader_window_host .reader_window_host/plugins .reader_window_host/work; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-reader-window-host: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-reader-window-host"; else exit $$st; fi
 clean-reader-window-host:
 	rm -rf reader_window_host reader_window_host.dSYM .reader_window_host
 
@@ -582,7 +584,7 @@ test-seexpr: seexpr_test
 	./seexpr_test
 else
 test-seexpr:
-	@echo "test-seexpr: SKIPPED: SeExpr 2.11 (include/SeExpression.h and libSeExpr) not found in SEEXPR_HOME=$(SEEXPR_HOME) (set SEEXPR_HOME)"
+	@echo "SKIPPED: test-seexpr: SeExpr 2.11 (include/SeExpression.h and libSeExpr) not found in SEEXPR_HOME=$(SEEXPR_HOME) (set SEEXPR_HOME)"
 	@test "$(SEEXPR_REQUIRED)" != 1 || { echo "test-seexpr: SEEXPR_REQUIRED=1: failing"; exit 1; }
 endif
 
@@ -655,13 +657,13 @@ test-writeffmpeg-encode-failure: ofx_render_test
 # #288: the same, frame 1 fails to be written (RLIMIT_FSIZE, as on a full disk). Skipped (exit status 77) on MS Windows.
 test-writeffmpeg-encode-failure-disk-full: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288-disk-full.mov --encode-failure-disk-full; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeffmpeg-encode-failure-disk-full: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-writeffmpeg-encode-failure-disk-full"; else exit $$st; fi
 
 # #292, #362: WriteOIIO, EXR, TIFF, DPX, PNG and JPEG files can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
 # disk): the render fails, and the process survives. Skipped (exit status 77) on MS Windows.
 test-writeoiio-disk-full: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i292 --writeoiio-disk-full; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeoiio-disk-full: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-writeoiio-disk-full"; else exit $$st; fi
 # #251: a failed or aborted render of an image file leaves no partial file (a test writer; WritePNG and RLIMIT_FSIZE,
 # as on a full disk, except on MS Windows and without libpng), and a render that fails before the file is written
 # keeps the previous one.
@@ -699,7 +701,7 @@ test-writeffmpeg-pixfmt-choice: ofx_render_test
 # 77) on MS Windows.
 test-pfm-write-errors: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --pfm-write-errors; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-pfm-write-errors: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-pfm-write-errors"; else exit $$st; fi
 
 # #296: ReadPFM's getRegionOfDefinition fails on a header with an empty, negative or huge size
 test-pfm-read-errors: ofx_render_test
@@ -709,7 +711,7 @@ test-pfm-read-errors: ofx_render_test
 # (e.g. libx264rgb, libopenh264, libxvid, libopenjpeg); skipped if the FFmpeg build has no such encoder
 test-writeffmpeg-selected-encoder: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i348 --selected-encoder; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeffmpeg-selected-encoder: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-writeffmpeg-selected-encoder"; else exit $$st; fi
 
 # #388: WriteFFmpeg fails the render when the encoder of the selected Codec menu entry is missing from the FFmpeg build
 # (prores_ks, hidden from avcodec_find_encoder_by_name() by OFX_IO_TEST_HIDE_ENCODERS; needs a shared libavcodec)
@@ -720,12 +722,12 @@ test-writeffmpeg-missing-encoder: ofx_render_test
 # declares, the file is written in the same container as before (except 3gp and 3g2, see tests/README.md)
 test-writeffmpeg-format-from-filename: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i382 --format-from-filename; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "test-writeffmpeg-format-from-filename: SKIPPED"; else exit $$st; fi
+	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-writeffmpeg-format-from-filename"; else exit $$st; fi
 
 # RunScript on MS Windows: argument quoting, running a program, a batch file and a shebang script (#70);
 # on all systems: splitting the script's stderr into lines, with bounded memory (#111)
-test-runscript: runscript_win32_test runscript_output_test $(RUNSCRIPT_RENDER_TEST)
-	./runscript_win32_test
+test-runscript: $(RUNSCRIPT_WIN32_TEST) runscript_output_test $(RUNSCRIPT_RENDER_TEST)
+	$(if $(RUNSCRIPT_WIN32_TEST),./runscript_win32_test)
 	./runscript_output_test
 	$(if $(RUNSCRIPT_RENDER_TEST),./runscript_render_test)
 

@@ -194,8 +194,10 @@ jobs:
         if: env.EXTRA_VARIANTS == 'true'
         run: |
           cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DOFX_CXX_STANDARD=20 -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild \
-            -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH"
+            -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DCMAKE_INSTALL_PREFIX=$PWD/build-debug-install -DPLUGIN_INSTALLDIR=Bundle
           cmake --build build-debug -j4
+          # installs build-debug-install/Bundle/IO.ofx.bundle, for io-load-installed (#309)
+          cmake --install build-debug
       - name: Tests
         # the tests of tests/ (tests/CMakeLists.txt), io-load, io-icons, and io-hostdemo (on the installed bundle), run
         # by ctest
@@ -213,10 +215,14 @@ jobs:
             build/hostdemo-ofx14/out
           if-no-files-found: ignore
       - name: Tests (debug, C++20)
-        # the same, built with C++20 (the bundle of the Debug build: io-load, io-icons; it is not installed, so no
-        # io-hostdemo, and io-load-installed is skipped)
+        # the same, built with C++20 (the bundle of the Debug build: io-load, io-icons, io-load-installed; no
+        # io-hostdemo)
         if: env.EXTRA_VARIANTS == 'true'
         run: ctest --test-dir build-debug --output-on-failure
+      - name: Skips inside the tests
+        # ctest --output-on-failure hides the output of the passing tests: list what they skipped (#309)
+        if: ${{ !cancelled() }}
+        run: bash tests/ctest_skips.sh build build-debug
       - name: Build (release, Makefiles)
         # The Makefiles are not CI's build, but Natron's RB-2.6 build-plugins.sh still uses them: check that they build
         # the plug-ins (only, without the tests), with the compiler's default C++ standard (no -std= in CXX), and
@@ -589,6 +595,10 @@ jobs:
         run: |
           export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           ctest --test-dir build-debug --output-on-failure
+      - name: Skips inside the tests
+        # ctest --output-on-failure hides the output of the passing tests: list what they skipped (#309)
+        if: ${{ !cancelled() }}
+        run: bash tests/ctest_skips.sh build build-debug
       - name: Verify the plugin loads
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
@@ -690,6 +700,10 @@ jobs:
         run: |
           set -eo pipefail
           ctest --test-dir build-debug --output-on-failure
+      - name: Skips inside the tests
+        # ctest --output-on-failure hides the output of the passing tests: list what they skipped (#309)
+        if: ${{ !cancelled() }}
+        run: bash tests/ctest_skips.sh build build-debug
       - name: Generate testing bundle
         run: |
           set -eo pipefail
