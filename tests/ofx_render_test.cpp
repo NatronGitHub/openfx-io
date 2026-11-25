@@ -80,6 +80,10 @@
  *     - same, with a source image whose bounds do not intersect the render window:
  *       a black image must be written, and the output image must be black
  *
+ *   WriteOIIO, no pending OpenImageIO error (issue #228):
+ *     - an instance with no file name, or an extension that OpenImageIO cannot write: after CreateInstance and
+ *       GetClipPreferences, OIIO::geterror() must be empty
+ *
  *   WriteFFmpeg uncompressed codecs (issue #170):
  *     - write a color pattern (with an alpha ramp if the format has alpha) with v210 and with rawvideo in QuickTime,
  *       NUT, Matroska and AVI, check the codec, tag, pixel format and range that libavformat reads back, and that
@@ -1594,6 +1598,34 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     for (unsigned char v : pix) maxv = std::max(maxv, (int)v);
     std::printf("  wrote %s: %dx%d, %d channels, max value %d\n", outFile.c_str(), spec.width, spec.height, spec.nchannels, maxv);
     if (!rd || spec.width != W || spec.height != H || maxv > 2) { std::printf("  FAIL (expected a black %dx%d image)\n", W, H); return 1; }
+    std::printf("  PASS\n");
+    return 0;
+}
+
+// Issue #228: a failed ImageOutput::create() leaves an error in OpenImageIO, which it prints at exit if it is never
+// retrieved ("OpenImageIO exited with a pending error message that was never retrieved via OIIO::geterror()").
+// WriteOIIO called create() with the file name at instance creation and in getClipPreferences, also when it is empty
+// (no file yet) or has an extension that OpenImageIO cannot write. Expected: no pending error after these actions.
+int testWriteOIIONoPendingError(const std::string& filename)
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteOIIO");
+    if (!p) { std::printf("  FAIL: WriteOIIO not found\n"); return 1; }
+    (void)OIIO::geterror(); // start with no pending error
+
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, 64, 64, 1, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+
+    const std::string pending = OIIO::geterror();
+    std::printf("  file \"%s\": OpenImageIO pending error \"%s\"\n", filename.c_str(), pending.c_str());
+    if (!pending.empty()) { std::printf("  FAIL (expected none)\n"); return 1; }
     std::printf("  PASS\n");
     return 0;
 }
@@ -5428,6 +5460,9 @@ main(int argc, char** argv)
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/true);
     std::printf("==== WriteOIIO, no input image, render aborted: nothing written ====\n");
     failures += testWriteOIIONoInputImage(outFile + ".i79.jpg", 72, 128, /*channelCheckboxes=*/true, /*overlappingRoD=*/false, /*outputConnected=*/false, /*aborted=*/true);
+    std::printf("==== WriteOIIO, no file name or an unwritable extension: no pending OpenImageIO error (issue #228) ====\n");
+    failures += testWriteOIIONoPendingError("");
+    failures += testWriteOIIONoPendingError(outFile + ".i228.notanimageformat");
 
     {
         // #90: G,B,A of an RGB source: the output is G, B, and the missing alpha, which is opaque
