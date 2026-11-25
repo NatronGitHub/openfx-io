@@ -509,7 +509,11 @@ check_ss_copy() {
 #     (--positions), and a frame in a gap must be identical to the frame displayed at that time.
 #   * If FAIL (1-based, e.g. "1,2") is not empty, these frames cannot be decoded at all (e.g. the
 #     first GOP is damaged), and must fail with an error (--fail).
-# CHECK_DAMAGED_ARGS are extra harness arguments (e.g. --fresh F1,F2,...).
+# CHECK_DAMAGED_ARGS are extra harness arguments (e.g. --fresh F1,F2,...). CHECK_DAMAGED_NOISE (default 1: every byte)
+# is the noise amount of the damaged packets: e.g. 60 modifies about one byte in 60, which damages slices of a ProRes
+# frame that the decoder still outputs, with decode_error_flags. With CHECK_DAMAGED_NOISE, the ffmpeg CLI must decode
+# every frame, and warn "corrupt decoded frame" once per damaged packet, with 1 thread: otherwise the damage did not
+# give the frames that the check is about (e.g. another FFmpeg version encodes other bytes), and the check fails.
 check_damaged() {
     local name="$1" desc="$2" encoder="$3" setpts="$4" packets="$5" gaps="$6" concealed="$7" fail="$8"
     shift 8
@@ -535,10 +539,21 @@ check_damaged() {
     for n in $packets; do
         expr="$expr+eq(n\,$n)"
     done
-    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if($expr\,1\,0)" "$tmp/$name"; then
+    if ! ffmpeg -y -loglevel error -i "$tmp/clean_$name" -c copy -bsf:v "noise=amount=if($expr\,${CHECK_DAMAGED_NOISE:-1}\,0)" "$tmp/$name"; then
         echo "FAIL: could not damage clean_$name"
         rc=1
         return
+    fi
+    if [ -n "${CHECK_DAMAGED_NOISE:-}" ]; then
+        local decoded corrupt want
+        want=$(echo "$packets" | wc -w | tr -d ' ')
+        decoded=$(ffmpeg -v warning -threads 1 -i "$tmp/$name" -f framecrc - 2>"$tmp/$name.cli" | grep -c '^0,') || true
+        corrupt=$(grep -c 'corrupt decoded frame' "$tmp/$name.cli") || true
+        if [ "$decoded" != "$NFRAMES" ] || [ "$corrupt" != "$want" ]; then
+            echo "FAIL: the ffmpeg CLI decoded $decoded frames of $name, with $corrupt corrupt decoded frames (expected $NFRAMES frames, $want corrupt): pick other packets or another CHECK_DAMAGED_NOISE"
+            rc=1
+            return
+        fi
     fi
     local args=()
     if [ -n "$fail" ]; then
@@ -1401,6 +1416,17 @@ RAMP_PIX_FMT=yuvj420p CHECK_DAMAGED_ARGS="--fresh 22,24,21,23,24,23,22,21" check
 check_damaged ramp_damaged_prores.mov "MOV (ProRes, 24 fps, two damaged frames)" prores_ks N "13 27" 14,28 "" "" -c:v prores_ks
 RAMP_PIX_FMT=yuvj420p check_damaged ramp_damaged_mjpeg.avi "AVI (MJPEG, 24 fps, two damaged frames)" mjpeg N "13 27" 14,28 "" "" \
     -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+# Intra-only codecs: a frame that the decoder outputs with damaged slices (decode_error_flags, which the ffmpeg CLI
+# reports as "corrupt decoded frame"), whose undecoded slices keep the contents of the decoder buffer, i.e. depend on
+# the read order and the threads, is a gap too (issue #219), also decoded first in a newly opened file (--fresh), where
+# the buffer is new and zero-filled. Packets 2 and 18 at amount 60 give such frames with FFmpeg 8.0 and 9.0, whose
+# mean is far from that of the previous frame.
+CHECK_DAMAGED_NOISE=60 CHECK_DAMAGED_ARGS="--fresh 3,19,4" check_damaged ramp_damaged_slices_prores.mov \
+    "MOV (ProRes, 24 fps, two frames with damaged slices)" prores_ks N "2 18" 3,19 "" "" -c:v prores_ks
+# The first frame with damaged slices has no previous frame to show: it fails with an error, as a first packet that
+# the decoder rejects (packet 0 at amount 65 gives such a frame with FFmpeg 8.0 and 9.0).
+CHECK_DAMAGED_NOISE=65 CHECK_DAMAGED_ARGS="--fresh 1,2" check_damaged ramp_damaged_slices_first_prores.mov \
+    "MOV (ProRes, 24 fps, first frame with damaged slices)" prores_ks N "0" "" "" 1 -c:v prores_ks
 # CineForm (CFHD, MOV, every packet a keyframe packet): the decoder flags no frame as a keyframe, and the descriptor
 # does not make it intra-only, so the reader restarts the decoder at the next packet after each damaged one (issue
 # #312: every frame after the first damaged packet failed). Also decoded first in a newly opened file (--fresh).
