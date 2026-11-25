@@ -630,8 +630,9 @@ jobs:
           msystem: UCRT64
           update: true
           cache: true
+          # (perl: tests/run_ffmpeg_read_test.sh edits clips with it, and fails without it in CI)
           install: >-
-            git base-devel unzip
+            git base-devel unzip perl
           # pacboy's "name:p" is ${MINGW_PACKAGE_PREFIX}-name for the msystem above: no hard-coded environment
           # (gdb: tests/hostdemo/hang.sh dumps the stacks of a hung hostDemo or reader_window, #244)
           pacboy: >-

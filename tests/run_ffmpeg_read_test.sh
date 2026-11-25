@@ -74,7 +74,9 @@
 #     CineForm in MOV (its decoder flags no frame as a keyframe, issue #312) with two damaged
 #     frames: the frames after each one must decode. MPEG-4 Part 2 in MOV without a sync-sample
 #     table (every packet has the keyframe flag) with a damaged first keyframe: the P-frames up
-#     to the next keyframe must fail (not decode from a gray frame), the later frames must decode.
+#     to the next keyframe must fail (not decode from a gray frame), the later frames must decode,
+#     in every order; and without damage, every frame must decode in every order, also with B-frames
+#     and in MPEG-2 (issue #366: a seek landed on a P-frame, decoded from a gray frame).
 #   * Truncated ProRes, MJPEG and v210 in MOV (faststart): the missing frames fail with an error,
 #     sequentially and after a seek.
 #   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
@@ -155,6 +157,12 @@ have_encoder() {
 X264="-c:v libx264 -g 8 -bf 2 -pix_fmt yuv420p"
 
 rc=0
+# Several clips are edited with perl (e.g. a MOV without a sync-sample table), and their checks are skipped without
+# it. CI (where GitHub sets CI) hides the SKIPPED lines: there, a missing perl fails instead.
+if [ -n "${CI:-}" ] && ! command -v perl >/dev/null 2>&1; then
+    echo "FAIL: no perl (CI is set): the checks of the clips edited with perl would be skipped"
+    rc=1
+fi
 # generate NAME DESCRIPTION ENCODER LAVFI_SOURCE FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
 # Prints the header of a check and makes $tmp/NAME from $NFRAMES frames of LAVFI_SOURCE. Fails (SKIPPED) without
 # the ENCODER, or (FAIL, rc=1) if ffmpeg fails. FFMPEG_INPUT_ARGS, after "--", are extra ffmpeg inputs, before
@@ -1401,29 +1409,67 @@ CHECK_DAMAGED_ARGS="--fresh 14,15,28,29" check_damaged ramp_damaged_cfhd.mov "MO
 # MPEG-4 Part 2 (GOP 12, no B-frames, 1 encoder thread for the same bitstream everywhere) in MOV without a
 # sync-sample table ("stss" renamed to "free", in the moov of a faststart file; the clean file keeps it): the demuxer
 # flags every packet as a keyframe. With the first keyframe damaged, the decoder restarted at the next packet decodes
-# a P-frame from a gray frame, without an error: frames 1-12 must fail, sequentially, and the frames from the next
-# keyframe on must be those of the clean file (only sequentially: in such a file, a seek lands on a P-frame, also
-# without damage).
-echo "== MOV (MPEG-4 Part 2, GOP 12, no sync-sample table, damaged first keyframe) =="
+# a P-frame from a gray frame, without an error: frames 1-12 must fail, and the frames from the next keyframe on must
+# be those of the clean file, in every order. A seek in such a file lands on a P-frame, also without damage: every
+# frame of the undamaged file must be that of the clean file, in every order (issue #366), also with 2 B-frames, and
+# in MPEG-2 with 2 B-frames (its decoder skips the P-frames until it has a reference). The reader stops decoding at
+# the first predicted frame after the requested one, rather than at the next intra frame: in a 48-frame GOP, decoding
+# every frame in reverse order reads about 29 times the file with that stop, and 49 times without it (1 decoder
+# thread; with frame threads, each request also reads ahead by the decoder delay).
+echo "== MOV (MPEG-4 Part 2 and MPEG-2, no sync-sample table: undamaged, and with a damaged first keyframe) =="
 if ! have_encoder mpeg4 || ! command -v perl >/dev/null 2>&1; then
     echo "SKIPPED: no mpeg4 encoder in the ffmpeg CLI, or no perl"
 elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg4 -threads 1 -g 12 -bf 0 -q:v 3 \
     -movflags faststart "$tmp/clean_mpeg4.mov" ||
     ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg4.mov" > "$tmp/mpeg4_nostss.mov" ||
     ! ffmpeg -y -loglevel error -i "$tmp/mpeg4_nostss.mov" -c copy -bsf:v "noise=amount='if(eq(n,0),1,0)'" \
-        "$tmp/damaged_mpeg4_nostss.mov"; then
-    echo "FAIL: could not generate damaged_mpeg4_nostss.mov"
+        "$tmp/damaged_mpeg4_nostss.mov" ||
+    ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg4 -threads 1 -g 12 -bf 2 -q:v 3 \
+        -movflags faststart "$tmp/clean_mpeg4_bf.mov" ||
+    ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg4_bf.mov" > "$tmp/mpeg4_bf_nostss.mov" ||
+    ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg4 -threads 1 -g 48 -bf 0 -q:v 3 \
+        -movflags faststart "$tmp/clean_mpeg4_g48.mov" ||
+    ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg4_g48.mov" > "$tmp/mpeg4_g48_nostss.mov"; then
+    echo "FAIL: could not generate damaged_mpeg4_nostss.mov, mpeg4_bf_nostss.mov or mpeg4_g48_nostss.mov"
     rc=1
 else
+    nostss_names="mpeg4 mpeg4_bf"
+    if ! have_encoder mpeg2video; then
+        echo "SKIPPED: MPEG-2: no mpeg2video encoder in the ffmpeg CLI"
+    elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v mpeg2video -threads 1 -g 12 \
+        -bf 2 -q:v 3 -movflags faststart "$tmp/clean_mpeg2.mov" ||
+        ! perl -0777 -pe 's/stss/free/' "$tmp/clean_mpeg2.mov" > "$tmp/mpeg2_nostss.mov"; then
+        echo "FAIL: could not generate mpeg2_nostss.mov"
+        rc=1
+    else
+        nostss_names="$nostss_names mpeg2"
+    fi
+    size=$(wc -c < "$tmp/mpeg4_g48_nostss.mov")
+    # shellcheck disable=SC2086
+    if ! FFMPEG_READ_TEST_THREADS=1 "$bin" "$tmp/mpeg4_g48_nostss.mov" --max-reverse-bytes $((38 * size)) \
+        ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/mpeg4_g48_nostss.out" 2>&1; then
+        grep -E '^ *(FAIL|REVERSE-BYTES)' "$tmp/mpeg4_g48_nostss.out" || echo "FAIL"
+        echo "(mpeg4_g48_nostss.mov: decoding in reverse order must stop at the first predicted frame after each request)"
+        rc=1
+    fi
     for threads in 1 8; do
         # shellcheck disable=SC2086
         if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/damaged_mpeg4_nostss.mov" --reference "$tmp/clean_mpeg4.mov" \
-            --reference-frames "$(seq -s, 13 48)" --fail "$(seq -s, 1 12)" --reference-sequential ${FFMPEG_READ_TEST_ARGS:-} \
+            --reference-frames "$(seq -s, 13 48)" --fail "$(seq -s, 1 12)" ${FFMPEG_READ_TEST_ARGS:-} \
             2>"$tmp/damaged_mpeg4_nostss.err"; then
             grep '^FAIL' "$tmp/damaged_mpeg4_nostss.err" || echo "FAIL"
-            echo "(with $threads decoder threads)"
+            echo "(damaged_mpeg4_nostss.mov, with $threads decoder threads)"
             rc=1
         fi
+        for name in $nostss_names; do
+            # shellcheck disable=SC2086
+            if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/${name}_nostss.mov" --reference "$tmp/clean_$name.mov" \
+                --reference-frames "$(seq -s, 1 48)" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/${name}_nostss.err"; then
+                grep '^FAIL' "$tmp/${name}_nostss.err" || echo "FAIL"
+                echo "(${name}_nostss.mov, with $threads decoder threads)"
+                rc=1
+            fi
+        done
     done
 fi
 check_ts_cc ramp_cc_error.ts "MPEG-TS (H.264 and MP2, a continuity counter error in frame 18, not a truncated file)"
