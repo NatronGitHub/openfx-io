@@ -165,7 +165,14 @@ the real render pipeline, linked directly (no host binary):
 * **WriteFFmpeg views** (issue #116): render views 1 and 0 of each frame (view
   1 is the negative of the ramp), view 1 first, then view 0 first. The movie
   holds a single view, view 0, whatever the order: ReadFFmpeg must decode the
-  ramp.
+  ramp. With beginSequenceRender for view 1
+  ([#129](https://github.com/NatronGitHub/openfx-io/issues/129)), the movie
+  holds view 1 (the negative ramp), also when only view 1 is rendered, and when
+  an interactive beginSequenceRender for view 0, which must fail, comes during
+  the render; without a view in beginSequenceRender (an OFX 1.4 host), view 0.
+  With beginSequenceRender for view 0 and only view 1 rendered, nothing is
+  encoded: endSequenceRender must fail ("No frame was written to the file");
+  but not when nothing is rendered, or when every render is aborted.
 * **WriteFFmpeg Codec Options / Format Options** (issue #71), in an MP4: encode
   MPEG-4 part 2 with Keyframe Interval = 5 (some P frames), then with the codec
   option `g=1`, which must override it (every frame decoded by libavcodec in

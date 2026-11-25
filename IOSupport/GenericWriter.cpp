@@ -875,7 +875,16 @@ GenericWriterPlugin::render(const RenderArguments& args)
     string filename;
     _fileParam->getValueAtTime(args.time, filename);
     if (!isImageFile(extension(filename))) {
-        renderFile(args);
+        _sequenceRenderRan = true;
+        try {
+            renderFile(args);
+        } catch (...) {
+            _sequenceRenderFailed = true;
+            throw;
+        }
+        if (abort()) {
+            _sequenceRenderFailed = true;
+        }
 
         return;
     }
@@ -1190,8 +1199,9 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
         if (abort()) {
             return;
         }
-        // a file that holds a single view (a movie) only encodes view 0, whatever the order of the renders (#116)
-        if (encodesMainViewOnly() && (viewIndex != 0)) {
+        // a file that holds a single view (a movie) only encodes the view of the sequence render, whatever the
+        // order of the renders (#116, #129)
+        if (encodesSequenceViewOnly() && (viewIndex != _sequenceView)) {
             return;
         }
         encode(filename, time, viewNames.begin()->second, data.srcPixelData, args.renderWindow, pixelAspectRatio, data.pixelComponentsCount, dstNCompsStartIndex, dstNComps, data.rowBytes);
@@ -1823,6 +1833,11 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& arg
     Coords::toPixelEnclosing(rod, args.renderScale, par, &rodPixel);
 
     beginEncode(filename, rodPixel, par, args);
+    // only once a sequence render has started: a beginSequenceRender that beginEncode() rejects (e.g. an
+    // interactive one, or one while another render is active) must not change the view of the active render
+    _sequenceView = args.view;
+    _sequenceRenderRan = false;
+    _sequenceRenderFailed = false;
 }
 
 void

@@ -28,8 +28,14 @@
  *     - an unknown key must produce a warning naming it, and the file must still be written
  *     - a syntax error must make beginSequenceRender fail with an error message
  *
- *   WriteFFmpeg views (issue #116):
+ *   WriteFFmpeg views (issues #116, #129):
  *     - render views 1 and 0 of each frame (view 1 first, then view 0 first): the movie must be view 0
+ *     - the same, with beginSequenceRender for view 1: the movie must be view 1; without
+ *       kFnOfxImageEffectPropView in beginSequenceRender (an OFX 1.4 host): view 0
+ *     - beginSequenceRender for view 1, only view 1 rendered: the movie must be view 1
+ *     - beginSequenceRender for view 1, then an interactive one for view 0, which must fail: the movie must be view 1
+ *     - beginSequenceRender for view 0, only view 1 rendered: endSequenceRender must fail ("No frame was written")
+ *     - nothing rendered, or every render aborted: endSequenceRender must succeed
  *
  *   WriteFFmpeg start timecode test (issue #78):
  *     - write a short .mov/.mp4 with the "startTimecode" param set, and read the
@@ -292,6 +298,13 @@ struct WriterParams {
     double fps = 0.;                 // if > 0, the value of the "fps" param
     std::vector<int> views = { 0 };  // the views rendered for each frame, in this order: view 0 is the ramp, the
                                      // others its negative (1 - v)
+    int sequenceView = 0;            // the view in beginSequenceRender (kFnOfxImageEffectPropView); -1: none
+    // if >= 0: after beginSequenceRender, an interactive beginSequenceRender for this view, which must fail (and
+    // not change the view that the movie holds)
+    int interactiveBeginView = -1;
+    // if not empty: endSequenceRender must fail, with a persistent error that contains this (and the test stops there)
+    std::string endErrorText;
+    bool abortRenders = false;       // the host aborts every render (gAbort): nothing is encoded, without an error
     // choice params set after the instance is created (which sets e.g. the format from the file
     // extension), as the param and the text of the label of the option
     std::vector<std::pair<std::string, std::string>> choicesAfterCreate;
@@ -442,7 +455,9 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
-        pSetInt(ap, kFnOfxImageEffectPropView, 0, 0);
+        if (wp.sequenceView >= 0) {
+            pSetInt(ap, kFnOfxImageEffectPropView, 0, wp.sequenceView);
+        }
         const bool began = ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr));
         if (wp.expectBeginFailure) {
             p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
@@ -457,11 +472,29 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         }
         if (!began) { std::printf("  FAIL: beginSequenceRender\n"); return 1; }
     }
+    if (wp.interactiveBeginView >= 0) {
+        // a host may call beginSequenceRender for an interactive render, even of a single frame
+        // (kOfxImageEffectActionBeginSequenceRender in ofxImageEffect.h), during the sequence render
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        double fr[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
+        pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
+        pSetInt(ap, kOfxPropIsInteractive, 0, 1);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 0);
+        pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 1);
+        pSetInt(ap, kFnOfxImageEffectPropView, 0, wp.interactiveBeginView);
+        if (ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr))) {
+            std::printf("  FAIL: the interactive beginSequenceRender succeeded during a sequence render\n");
+            return 1;
+        }
+        std::printf("  the interactive beginSequenceRender for view %d failed, as expected\n", wp.interactiveBeginView);
+    }
 
     float* fp = reinterpret_cast<float*>(src->buffer.data());
     size_t npix = (size_t)W * H;
     int rw = W, rh = H; // the render window
     int rfail = 0;
+    gAbort = wp.abortRenders ? 1 : 0;
     for (int t = 1; t <= nFrames; ++t) {
         if ((t == 2) && !wp.renderFile.empty()) {
             setOverrideString(&ctx, kOfxImageEffectFileParamName, wp.renderFile);
@@ -513,6 +546,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             }
         }
     }
+    gAbort = 0;
 
     {
         PropSet a; OfxPropertySetHandle ap = PH(&a);
@@ -523,6 +557,21 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
         OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        if (!wp.endErrorText.empty()) {
+            std::string error;
+            {
+                std::lock_guard<std::mutex> lock(gMessagesMutex);
+                error = gPersistentError;
+            }
+            p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            if (ok(st) || rfail || (error.find(wp.endErrorText) == std::string::npos)) {
+                std::printf("  FAIL: endSequenceRender = %d, render failures=%d, error \"%s\" (expected a failure, \"%s\")\n", st, rfail, error.c_str(), wp.endErrorText.c_str());
+                return 1;
+            }
+            std::printf("  PASS (endSequenceRender failed as expected: %s)\n", error.c_str());
+            return 0;
+        }
         if (!ok(st) && !(wp.allowEncodeFailure && rfail)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
         std::lock_guard<std::mutex> lock(gMessagesMutex);
         gWarningAfterRender = gPersistentWarning;
@@ -1219,7 +1268,8 @@ int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFr
     return 0;
 }
 
-int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
+// negative: the movie must be the negative of the ramp (view 1 of testWriteFFmpeg()), 1 - t / (nFrames + 1)
+int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool negative = false)
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
     if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
@@ -1277,11 +1327,13 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames)
         double sum = 0;
         for (size_t i = 0; i < npix; ++i) sum += fp[i * outComps + 0];
         double mean = sum / (double)npix;
-        const double expected = (double)t / (double)(nFrames + 1);
+        const double ramp = (double)t / (double)(nFrames + 1);
+        const double expected = negative ? 1. - ramp : ramp;
         std::printf("  frame %d decoded mean(R)=%.4f (expected ~%.4f)\n", t, mean, expected);
-        // The decoded gray level must both ramp up and match the encoded source value
+        // The decoded gray level must both ramp up (down if negative) and match the encoded source value
         // (N/(N+1)) within tolerance, so a monotonic-but-wrong transform can't pass.
-        if (mean <= prev || std::fabs(mean - expected) > 0.02) ++vfail;
+        const bool monotonic = (prev < 0.) || (negative ? (mean < prev) : (mean > prev));
+        if (!monotonic || std::fabs(mean - expected) > 0.02) ++vfail;
         prev = mean;
     }
 
@@ -5331,6 +5383,46 @@ main(int argc, char** argv)
         wp.views = { 0, 1 };
         std::printf("==== WriteFFmpeg, views rendered in order: view 0 is encoded (issue #116) ====\n");
         failures += testWriteFFmpeg(outFile + ".i116.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i116.mov", W, H, N);
+        // #129: the movie holds the view that beginSequenceRender names, whatever the order of the renders
+        for (const std::vector<int>& views : { std::vector<int> { 0, 1 }, std::vector<int> { 1, 0 } }) {
+            wp.views = views;
+            wp.sequenceView = 1;
+            std::printf("==== WriteFFmpeg, beginSequenceRender for view 1, views %d then %d rendered: view 1 is encoded (issue #129) ====\n", views[0], views[1]);
+            failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i129.mov", W, H, N, /*negative=*/true);
+            wp.sequenceView = -1;
+            std::printf("==== WriteFFmpeg, beginSequenceRender without a view (OFX 1.4), views %d then %d rendered: view 0 is encoded (issue #129) ====\n", views[0], views[1]);
+            failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i129.mov", W, H, N);
+        }
+        // #129: a host that renders only view 1 of a stereo project
+        wp.views = { 1 };
+        wp.sequenceView = 1;
+        std::printf("==== WriteFFmpeg, beginSequenceRender for view 1, only view 1 rendered: view 1 is encoded (issue #129) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i129.mov", W, H, N, /*negative=*/true);
+        // #129: a beginSequenceRender that fails (here an interactive one, for view 0) does not change the view of
+        // the active sequence render
+        wp.views = { 0, 1 };
+        wp.interactiveBeginView = 0;
+        std::printf("==== WriteFFmpeg, beginSequenceRender for view 1, then an interactive one for view 0: view 1 is encoded (issue #129) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp) || testReadFFmpeg(outFile + ".i129.mov", W, H, N, /*negative=*/true);
+        // #129: a host that renders only a view other than the one of beginSequenceRender: nothing is encoded, and
+        // endSequenceRender must fail instead of leaving a movie without a video stream
+        wp.views = { 1 };
+        wp.sequenceView = 0;
+        wp.interactiveBeginView = -1;
+        wp.endErrorText = "No frame was written to the file";
+        std::printf("==== WriteFFmpeg, beginSequenceRender for view 0, only view 1 rendered: endSequenceRender fails (issue #129) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp);
+        // #129: no error when nothing was rendered (e.g. the render was cancelled before its first frame), or when
+        // the renders were aborted
+        wp.endErrorText.clear();
+        wp.views = {};
+        std::printf("==== WriteFFmpeg, nothing rendered between beginSequenceRender and endSequenceRender: no error (issue #129) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp);
+        wp.views = { 0 };
+        wp.abortRenders = true;
+        std::printf("==== WriteFFmpeg, every render aborted: no error (issue #129) ====\n");
+        failures += testWriteFFmpeg(outFile + ".i129.mov", W, H, N, wp);
+        std::remove((outFile + ".i129.mov").c_str());
     }
     std::printf("==== WriteFFmpeg mov, start timecode (issue #78) ====\n");
     failures += testStartTimecode(outFile + ".i78.mov", "1:02:03:04", 0., "01:02:03:04");
