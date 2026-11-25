@@ -1139,7 +1139,9 @@ before it, as players display it (and, with `--ramp`, hold its content).
 (`FFmpegFile::getSeekCount()`), and `--order-seek F1,F2,...` and `--order-no-seek
 F1,F2,...` that the requests of these `--order` frames seek, or do not;
 `--order-no-start-seek` that no `--order` request seeks to the start of the file
-(`FFmpegFile::getStartSeekCount()`), and `--order-max-seeks N` that none seeks more than N times. `--matrix N` and `--range N` set the Y'CbCr matrix
+(`FFmpegFile::getStartSeekCount()`), and `--order-max-seeks N` that none seeks more than N times.
+`--max-random-bytes N` checks that decoding every frame in a fixed random order (the one of `--reference`), in a newly
+opened file, reads at most N bytes, as `--max-reverse-bytes N` does in reverse order. `--matrix N` and `--range N` set the Y'CbCr matrix
 (0 = Auto, 1 = Rec. 601, 2 = Rec. 709, 3 = Rec. 2020) and range (0 = Auto, 1 = Video,
 2 = Full) of the conversion to RGB (`FFmpegFile::setColorOverrides()`, the ReadFFmpeg
 "YCbCr Matrix" and "YCbCr Range" params), and `--rgb R,G,B[,TOL]` checks the mean RGB
@@ -1214,7 +1216,11 @@ count and rate in MPEG-PS), and so must a 1920x1080 MPEG-1 elementary stream, wh
 bit rate is wrong; B-frames with a negative first DTS (MPEG-4 in an elementary stream and Matroska,
 MPEG-2 in MXF) must decode their first frames;
 MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
-display the first 2 (negative timestamps), must not count these frames; a 150-frame MPEG-TS and
+display the first 2 (negative timestamps), must not count these frames; in the one that does not display the first 3,
+and in a MOV stream-copied from 0.6 s (`ramp_ss_copy.mov`), the frames of the first GOP, decoded after far frames
+(`--order`), must not decode from the start of the file (`--order-no-start-seek`): the first packet of the edit list
+has AV_PKT_FLAG_DISCARD, libavcodec drops its frame, and the reader must not take that for a seek that did not land on a
+restart point (issue [#442](https://github.com/NatronGitHub/openfx-io/issues/442)); a 150-frame MPEG-TS and
 M2TS (H.264 with B-frames, AC3 audio) stream-copied with `-output_ts_offset 95440` and `95441`, so
 that their 33-bit timestamps wrap during the clip (libavformat then gives the frames before the wrap
 negative timestamps), must count all 150 frames and give exactly the images of the clean clip in
@@ -1263,6 +1269,16 @@ intervals). The script first checks with
 HEVC in MP4 with a CRA every 2 frames ([#162](https://github.com/NatronGitHub/openfx-io/issues/162)) has a leading
 picture before each CRA, which the decoder drops after a seek to that CRA. In the same orders, every frame must be
 the sequential one, with at most 2 seeks per request and none to the start of the file.
+H.264 with intra refresh in MP4 (libx264 `-intra-refresh 1`, 240 frames, 320x240, GOP 24, no B-frames; issue
+[#442](https://github.com/NatronGitHub/openfx-io/issues/442)): after the first IDR frame, the keyframes are recovery points with a recovery frame count, which the
+MP4 muxer flags as sync samples, and whose frames the decoder only outputs from the recovery point on. After a seek to
+the ones whose frame_num is 0 (frames 97 and 193), the decoder lacks references, and the next 24 frames differed from
+the sequential ones. The script first checks that the `ffmpeg` CLI shows this (`-ss` at each keyframe compared with the
+sequential decode by pts, `-f framemd5`); otherwise it reports a SKIPPED line that names #442 (FFmpeg may have fixed its
+decoder), and still runs the other checks, which hold either way. Every frame must be the sequential one, in every
+order, with 1 and 8 decoder threads: a request whose seek lands on a keyframe whose frame the decoder does not output
+decodes from two keyframes before. Decoding every frame in reverse order must read at most 120 times the file (about
+85 measured; 54 before).
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a
@@ -1308,7 +1324,21 @@ from a gray frame after the seek; it now decodes from the start of the file when
 packet that a seek landed on is a predicted frame). In such a file with a single 48-frame GOP,
 decoding every frame in reverse order, with 1 decoder thread, must read at most 38 times the file
 (`--max-reverse-bytes`): the reader stops at the first predicted frame after the requested one
-(about 29 times the file), rather than at the end of the file (about 49 times). In CI (`CI` set),
+(about 29 times the file), rather than at the end of the file (about 49 times). Longer MOVs without a sync-sample table
+(480 frames, 160x120, GOP 12: MPEG-4 Part 2, and H.264 and MPEG-2 with 2 B-frames), decoded in reverse order with 1
+decoder thread, must read at most 100 times the file (`--max-reverse-bytes`; about 49, 62 and 62 times, and 209, 226
+and 266 times before), and every frame must be that of the clean file, in every order, with 1 and 8 decoder threads
+(issue [#440](https://github.com/NatronGitHub/openfx-io/issues/440)). Every sample is in the index as a keyframe, so the reader does not trust that index, and a
+backward request whose seek lands on a P-frame (decoded from a gray frame by the MPEG-4 Part 2 decoder; the H.264 and
+MPEG-2 decoders output nothing until the next intra frame) decodes from twice the keyframe interval seen before it
+(here 2 s, since every packet has the keyframe flag), then 4, 8, ... times, rather than from the start of the file.
+H.264 with a 5 s GOP (`-g 120`, 2 B-frames, 480 frames) in such a MOV needs the 4 s and 8 s retries: the requests 470,
+400, 399, 300, 250 and 239, in a newly opened file, must not decode from the start of the file
+(`--order-no-start-seek`), and every frame must be that of the clean file, in every order. HEVC (GOP 24, B-frames) in such a MOV, with its first packet (the first IDR picture) damaged
+(issue [#441](https://github.com/NatronGitHub/openfx-io/issues/441)): frames 1-24 must fail and frames 25-48 must be those of the clean file (as the `ffmpeg` CLI
+decodes them), in every order, with 1 and 8 decoder threads. The decoder restarts at the packet after the damaged one,
+and the next packets, which all have the keyframe flag, must not restart it again before the frame of that restart
+keyframe, or a clean keyframe (the next IDR picture), comes. In CI (`CI` set),
 a missing `perl` fails the script, since the checks of the clips that it edits would be skipped. Truncated ProRes and MJPEG in MOV (faststart, cut
 in frame 16, a packet that the demuxer flags as corrupt) must fail for the missing frames, with an
 error, sequentially and after a seek, as for issue #134. A run of 4 damaged ProRes and MJPEG frames
@@ -1333,6 +1363,12 @@ decode, sequentially and decoded first in a newly opened file, with 1 and 8 thre
 from its 7th packet on, decoding every frame sequentially, and in reverse order in a newly opened
 file, must read at most 12 times the file (`--max-seq-bytes`, `--max-reverse-bytes`: the reader
 remembers the damaged ranges, instead of reading the damaged packets again for each frame).
+The same run of 100 frames with damaged slices instead (3 times 128 random bytes at 30, 50 and 70 % of each packet,
+with `perl`; the script first checks that the `ffmpeg` CLI decodes every frame, with 100 "corrupt decoded frame"
+warnings), which the decoder conceals, must fail in the same way, and decoding every frame sequentially, in reverse
+order and in a random order (`--max-random-bytes`) must read at most 12 times the file (issue [#434](https://github.com/NatronGitHub/openfx-io/issues/434): a frame
+that conceals damage counts as a damaged packet; in a random order, each request in the run decoded the whole run
+again, 115 to 130 times the file).
 In one with packets 100-179 and 181-183 damaged, decoding frames 101, 184, 181 and 182 in that
 order in a newly opened file (`--order`) must fail for 101, and give frame 181 for the other
 three: with frame threads, the error of a damaged packet comes with a later packet, and the good

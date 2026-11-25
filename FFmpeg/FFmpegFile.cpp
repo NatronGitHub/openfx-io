@@ -1754,6 +1754,9 @@ maxComponentDepth(const AVPixFmtDescriptor& desc)
     return depth;
 }
 
+// Whether the codec only has keyframes (see below)
+static bool IsIntraOnly(const AVCodecContext* ctx);
+
 // constructor
 FFmpegFile::FFmpegFile(const string& filename)
     : _filename(filename)
@@ -1930,6 +1933,7 @@ FFmpegFile::FFmpegFile(const string& filename)
         stream->_avstream = avstream;
         stream->_codecContext = codecCtx;
         stream->_videoCodec = videoCodec;
+        stream->_intraOnlyCodec = IsIntraOnly(codecCtx);
         stream->_avFrame = av_frame_alloc(); // avcodec_alloc_frame();
         stream->_avIntermediateFrame = av_frame_alloc();
         stream->_avHeldFrame = av_frame_alloc();
@@ -2328,7 +2332,7 @@ FFmpegFile::Stream::decodeForwardIsCheaper(int frame,
                                            int held) const
 {
     assert(frame > held + 1);
-    if (_tainted || IsIntraOnly(_codecContext) || allKeyframesAfterDamage()) {
+    if (_tainted || decodesAsIntraOnly()) {
         return false;
     }
     if (_maxReadTs == int64_t(AV_NOPTS_VALUE)) {
@@ -2366,8 +2370,9 @@ FFmpegFile::Stream::indexKeyframeAtOrBefore(int64_t ts) const
     return (i >= 0) ? avformat_index_get_entry(_avstream, i) : nullptr;
 }
 
-// The timestamp from which decode() decodes again when a backward seek to the 0-based frame landed after it, or
-// AV_NOPTS_VALUE if there is none (decode() then decodes from the start of the file).
+// The timestamp from which decode() decodes again, at its retry-th retry, when a backward seek to the 0-based frame
+// landed after it, or not on a restart point (Stream::_seekLanding, see checkSeekFrame()), or AV_NOPTS_VALUE if
+// there is none (decode() then decodes from the start of the file).
 // With an index to trust (Stream::_indexReliable), the keyframe of the index before the one that the seek finds.
 // mov_seek_stream() does the same for an open-GOP HEVC key sample marked in an sgpd box (mov.c:12017-12035), but
 // FFmpeg's mov muxer only writes sgpd boxes for audio roll groups (movenc.c:3305-3330), and H.264 has none.
@@ -2380,29 +2385,62 @@ FFmpegFile::Stream::indexKeyframeAtOrBefore(int64_t ts) const
 // pictures decoded from the previous IRAP picture on. For H.264, this depends on the encoder: the standard allows
 // leading B-frames to reference pictures two GOPs back, for which FFmpeg would substitute its default reference without
 // flagging the frame (libavcodec/h264_refs.c:392-407); x264 does not do this.
+// Only at the first retry (retry 1): a later retry would decode from the start of the file (AV_NOPTS_VALUE).
 // Without an index to trust (e.g. in MPEG-TS and MPEG-PS, whose index entries are the points of the timestamp
 // searches, flagged as keyframes, mpegts.c:3805 and mpeg.c:472 in FFmpeg 9.0.2, and whose seeks search the file, so
-// that a seek to one of them does not land one GOP earlier), the timestamp two forward windows before the frame
+// that a seek to one of them does not land one GOP earlier), the timestamp 2^retry forward windows before the frame
 // (Stream::forwardWindow(): the largest keyframe interval seen, at least 1 s and at most 10 s), or AV_NOPTS_VALUE if
 // that is at or before the first frame. A backward seek there (a binary search on the timestamps,
 // ff_seek_frame_binary(), libavformat/seek.c:290-358) lands at or before it, and the decoder starts at the next
 // keyframe, which is then at or before the requested frame, also if the requested frame is a leading picture of the
 // keyframe after it: decoding from there gives it, instead of decoding from the start of the file (issue #334). The
 // second window covers the decoding delay (the keyframe interval is counted in decoding order) and a seek that lands
-// a little after the timestamp.
+// a little after the timestamp. The window doubles at each retry (4, 8, ... windows), for a keyframe interval that
+// the stream does not tell: e.g. in a MOV without a sync-sample table, every packet has the keyframe flag
+// (libavformat/mov.c:4947 in FFmpeg 9.0.2), so that the interval seen is one packet, and each seek lands on any
+// sample (see demuxAndDecode()); a GOP longer than 2 windows then takes more than one retry, rather than decoding from
+// the start of the file for each backward request (issue #440).
 int64_t
-FFmpegFile::Stream::earlierRestartTs(int frame) const
+FFmpegFile::Stream::earlierRestartTs(int frame, int retry, bool twoKeyframesBack) const
 {
     if (!_indexReliable) {
-        const int from = frame - 2 * forwardWindow();
-        return (from > firstFrame()) ? frameToPts(from) : int64_t(AV_NOPTS_VALUE);
+        const int64_t from = int64_t(frame) - (int64_t(forwardWindow()) << (std::min)(retry, 30));
+        return (from > firstFrame()) ? frameToPts(int(from)) : int64_t(AV_NOPTS_VALUE);
+    }
+    if (retry > 1) {
+        return AV_NOPTS_VALUE;
     }
     const AVIndexEntry* keyframe = indexKeyframeAtOrBefore(frameToPts(frame));
     if (!keyframe || (keyframe->timestamp == int64_t(AV_NOPTS_VALUE))) {
         return AV_NOPTS_VALUE;
     }
     const AVIndexEntry* before = indexKeyframeAtOrBefore(keyframe->timestamp - 1);
+    // Two keyframes back after a seek whose keyframe frame the decoder held back (see checkSeekFrame()), or the
+    // first one. This assumes that a gradual refresh ends before the next keyframe (an H.264 recovery_frame_cnt less
+    // than the keyframe interval, as libx264 writes): decoding from the keyframe before the one that the seek found
+    // then decodes the whole refresh of that keyframe with its real references.
+    if (before && twoKeyframesBack) {
+        const AVIndexEntry* earlier = indexKeyframeAtOrBefore(before->timestamp - 1);
+        if (earlier) {
+            before = earlier;
+        }
+    }
     return before ? before->timestamp : int64_t(AV_NOPTS_VALUE);
+}
+
+// In a MOV without a sync-sample table, every sample is a keyframe (libavformat/mov.c:4947 in FFmpeg 9.0.2), and so is
+// every entry of the index: seeks land on any sample. In a stream that is not decoded as intra-only, that index tells
+// nothing about the restart points (decode() then does not trust it, Stream::_indexReliable). The frames are
+// compared, not the timestamps (e.g. 29.97 fps in a time base of 1/600: the samples are 20 or 21 ticks apart).
+bool
+FFmpegFile::Stream::indexKeyframesEveryFrame(int64_t ts) const
+{
+    const AVIndexEntry* keyframe = indexKeyframeAtOrBefore(ts);
+    if (!keyframe || (keyframe->timestamp == int64_t(AV_NOPTS_VALUE))) {
+        return false;
+    }
+    const AVIndexEntry* before = indexKeyframeAtOrBefore(keyframe->timestamp - 1);
+    return before && (ptsToFrame(keyframe->timestamp) - ptsToFrame(before->timestamp) <= 1);
 }
 
 // decode a single frame into the buffer thread safe
@@ -2429,6 +2467,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     // The error message of the previous frame, if any (unless the file is invalid)
     clearDecodeError();
+    // Fail with _errorMsg (set by the caller)
+    auto failWithError = [this, errorMsg]() -> bool {
+        if (errorMsg) {
+            *errorMsg = _errorMsg;
+        }
+        return false;
+    };
 
     // Translate from the 1-based frames expected to 0-based frame offsets for use in the rest of this code.
     frame = frame - 1;
@@ -2456,15 +2501,9 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     bool hasPicture = false;
     AVFrame* avFrameOut = stream->_avFrame;
 
-    // An intra-only codec (see IsIntraOnly()): each frame is decoded from its own packet.
-    bool isIntraOnly = IsIntraOnly(stream->_codecContext);
-
-    // A stream whose frames decoded so far without an error are all keyframes (e.g. all-intra H.264, -g 1) is decoded
-    // as an intra-only one once damage was found: each frame is then decoded from the previous keyframes (the back-off below,
-    // bounded), instead of restarting the decoder at each keyframe and decoding from the start of the file.
-    if (stream->allKeyframesAfterDamage()) {
-        isIntraOnly = true;
-    }
+    // Each frame is decoded from its own packet: an intra-only codec, or a stream of keyframes after damage (see
+    // Stream::decodesAsIntraOnly()).
+    const bool decodeAsIntraOnly = stream->decodesAsIntraOnly();
 
     // The decoder outputs frames in presentation order (libavcodec decoders reorder frames
     // internally, e.g. B-frames in H.264, HEVC and MPEG-4), each with its timestamp: the frame
@@ -2478,7 +2517,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // The demuxer is shared by the streams (the views), and drops the packets of the other streams: after a decode of
     // another stream, this one must seek (#291).
     if (!stream->isSequential(frame) || stream->_restartSingleThread || (stream != _demuxedStream)) {
-        seekToFrame(stream, stream->frameToPts(frame), AVSEEK_FLAG_BACKWARD);
+        seekToTimestamp(stream, stream->frameToPts(frame));
     }
     _demuxedStream = stream;
 
@@ -2491,10 +2530,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     if ((res = av_image_fill_linesizes(avFrameOut->linesize, stream->_outputPixelFormat, stream->_width)) < 0) {
         setDecodeError(res, "FFmpeg Reader Failed to fill image linesizes: ");
-        if (errorMsg) {
-            *errorMsg = _errorMsg;
-        }
-        return false;
+        return failWithError();
     }
 
     res = av_image_fill_pointers(
@@ -2506,32 +2542,37 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     if (res < 0) {
         setDecodeError(res, "FFmpeg Reader Failed to fill image pointers: ");
-        if (errorMsg) {
-            *errorMsg = _errorMsg;
-        }
-        return false;
+        return failWithError();
     }
 
     // Frames known to fail, without reading the file again: from the truncated packet of a truncated file
     // on, and the frames of a persistently damaged range, found by a previous request.
     if ((stream->_truncatedFrame >= 0) && (frame >= stream->_truncatedFrame)) {
         setDecodeError("the file is truncated", "FFmpeg Reader: ");
-        if (errorMsg) {
-            *errorMsg = _errorMsg;
-        }
-        return false;
+        return failWithError();
     }
     if (stream->inDamagedRange(frame)) {
         setDecodeError(stream->_damagedRangeError, "FFmpeg Reader Failed to decode packet (damaged range): ");
-        if (errorMsg) {
-            *errorMsg = _errorMsg;
-        }
-        return false;
+        return failWithError();
     }
 
-    bool retriedSeek = false;
-    bool retriedDecode = false;
-    int64_t retryTs = AV_NOPTS_VALUE; // the timestamp of the retry from an earlier point, if any (earlierRestartTs(), below)
+    // The attempts of this request (see Attempt), in that order
+    Attempt attempt = Attempt::eAtFrame;
+    int64_t retryTs = AV_NOPTS_VALUE; // eEarlier: the timestamp of the retry (earlierRestartTs(), below)
+    int earlierRetries = 0; // the retries from an earlier point so far
+    // Seek for the current attempt (again, e.g. to decode it again with 1 thread)
+    auto seekForAttempt = [&]() -> bool {
+        switch (attempt) {
+        case Attempt::eAtFrame:
+            return seekToTimestamp(stream, stream->frameToPts(frame));
+        case Attempt::eEarlier:
+            return seekToTimestamp(stream, retryTs);
+        case Attempt::eFromStart:
+            return seekToStart(stream);
+        }
+        return false;
+    };
+    bool twoKeyframesBack = false; // the first attempt's seek landed on a keyframe whose frame was held back
     bool fromStartFailed = false; // the attempt from the start of the file gave no frame up to the requested one
     int requestDamageError = 0; // a damaged packet was dropped by an attempt of this request
     stream->_invalidDataSkipped = 0;
@@ -2539,39 +2580,35 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     stream->_tooManyDroppedPackets = false;
     stream->_lastDamagedFrame = -1;
     stream->_requestDroppedPackets = 0;
+    stream->_lastDamageConcealed = false;
     stream->_noTimestamps = false;
     stream->_sawFrameWithoutTimestamp = false;
 
-    while (!retriedDecode) {
-
-        retriedDecode = retriedSeek ? true : false;
-
+    for (;;) {
         // A frame decoded after a seek may be corrupt (e.g. a reference frame is missing): it is
         // only used for a timestamp gap when decoding from the start (Stream::_decodingFromStart), or for a
         // stream decoded as intra-only that is not of an intra-only codec (all keyframes after damage), see
         // demuxAndDecode(). For an intra-only codec, a frame that conceals damage is a gap.
-        hasPicture = demuxAndDecode(stream, avFrameOut, frame, /*decodeAsIntraOnly=*/isIntraOnly);
+        hasPicture = demuxAndDecode(stream, avFrameOut, frame, decodeAsIntraOnly, attempt);
         if (stream->_invalidDataSkipped) {
             requestDamageError = stream->_invalidDataSkipped;
         }
         if (!hasPicture && stream->_restartSingleThread) {
-            // damage found with frame threads: decode again with 1 thread (see skipInvalidData in demuxAndDecode()),
-            // in the same way (from the start of the file if this attempt was, e.g. after a seek that landed after
-            // the requested frame)
+            // damage found with frame threads: decode again with 1 thread (see noteDamage in demuxAndDecode()),
+            // in the same way (e.g. from the start of the file, after a seek that landed after the requested frame)
             clearDecodeError();
-            const bool fromStart = retriedSeek && stream->_decodingFromStart;
-            const int64_t restartTs = ((retryTs != int64_t(AV_NOPTS_VALUE)) && !retriedSeek) ? retryTs : stream->frameToPts(frame);
-            if (fromStart ? seekToFrame(stream, 0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD) : seekToFrame(stream, restartTs, AVSEEK_FLAG_BACKWARD)) {
-                stream->_decodingFromStart = fromStart;
-                retriedDecode = false; // (this attempt again)
-                continue;
+            if (seekForAttempt()) {
+                continue; // (this attempt again)
             }
             break;
         }
-        if (!hasPicture && retriedSeek && stream->_decodingFromStart && !stream->_tooManyDroppedPackets &&
-            ((stream->_firstOutputFrame < 0) || (stream->_firstOutputFrame > frame)) &&
-            (stream->_reachedEnd || (stream->_firstFrameAfter > frame))) {
-            fromStartFailed = true;
+        if (hasPicture || (attempt == Attempt::eFromStart)) {
+            if (!hasPicture && stream->_decodingFromStart && !stream->_tooManyDroppedPackets &&
+                ((stream->_firstOutputFrame < 0) || (stream->_firstOutputFrame > frame)) &&
+                (stream->_reachedEnd || (stream->_firstFrameAfter > frame))) {
+                fromStartFailed = true;
+            }
+            break;
         }
 
         // The seek landed after the requested frame: no frame is held, and the first decoded frame is after it (or no
@@ -2584,13 +2621,31 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         // it, and the decoder drops its leading pictures after a seek. Decode from the keyframe before that one
         // first, which decodes the leading pictures (once), rather than from the start of the file. Without an index
         // to trust (e.g. MPEG-TS, MPEG-PS), decode from an earlier timestamp (see earlierRestartTs()).
-        if (!hasPicture && !isIntraOnly && !retriedSeek && (retryTs == int64_t(AV_NOPTS_VALUE)) &&
-            !Stream::hasFrame(stream->_avHeldFrame) &&
-            ((stream->_firstOutputFrame > frame) || ((stream->_firstOutputFrame < 0) && stream->_reachedEnd)) &&
+        // The same if the seek did not land on a restart point (Stream::_seekLanding, see checkSeekFrame()): the frame
+        // of its first packet was a predicted frame, or the decoder did not output it (e.g. an H.264 recovery point with
+        // a recovery frame count, issue #442: decode from two keyframes before).
+        // An index whose keyframes are one frame apart (every sample, e.g. in a MOV without a sync-sample table, see
+        // Stream::indexKeyframesEveryFrame()) is not trusted from then on, as after a seek that lands on a predicted
+        // frame (issue #440): whether the decoder outputs that predicted frame (MPEG-4 Part 2) or nothing until the
+        // next intra frame (H.264, MPEG-2).
+        // Without an index to trust, the retries go back further and further (earlierRestartTs()), until the start of
+        // the file.
+        if (!decodeAsIntraOnly && !Stream::hasFrame(stream->_avHeldFrame) &&
+            ((stream->_seekLanding != Stream::SeekLanding::eRestartPoint) || (stream->_firstOutputFrame > frame) ||
+             ((stream->_firstOutputFrame < 0) && stream->_reachedEnd)) &&
             !stream->_invalidDataSkipped && !stream->_tooManyDroppedPackets && !stream->_noTimestamps && _errorMsg.empty()) {
-            retryTs = stream->earlierRestartTs(frame);
-            if ((retryTs != int64_t(AV_NOPTS_VALUE)) && seekToFrame(stream, retryTs, AVSEEK_FLAG_BACKWARD)) {
-                continue;
+            if (stream->_indexReliable && stream->indexKeyframesEveryFrame(stream->frameToPts(frame))) {
+                stream->_indexReliable = false;
+            }
+            if (attempt == Attempt::eAtFrame) {
+                twoKeyframesBack = (stream->_seekLanding == Stream::SeekLanding::eHeldBack);
+            }
+            retryTs = stream->earlierRestartTs(frame, ++earlierRetries, twoKeyframesBack);
+            if (retryTs != int64_t(AV_NOPTS_VALUE)) {
+                attempt = Attempt::eEarlier;
+                if (seekForAttempt()) {
+                    continue;
+                }
             }
             clearDecodeError(); // (a failed seek: from the start of the file, below)
         }
@@ -2599,17 +2654,11 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
         // This will perform a seek to the start of the file. which is
         // the only reliable way to get frame accurate seeking in a
         // stream with B-frames.
-        if (!hasPicture && !isIntraOnly && !retriedSeek && !stream->_tooManyDroppedPackets && !stream->_noTimestamps) {
-            retriedSeek = true;
-            if (seekToFrame(stream, 0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)) {
-                // Until the next seek (which resets it), including the next sequential requests:
-                // otherwise each of them would refuse the same corrupt frame and decode from the
-                // start again.
-                stream->_decodingFromStart = true;
-            }
-        } else {
+        if (decodeAsIntraOnly || stream->_tooManyDroppedPackets || stream->_noTimestamps) {
             break;
         }
+        attempt = Attempt::eFromStart;
+        (void)seekForAttempt(); // (if it fails, this attempt decodes from where the demuxer is)
     }
 
     // Intra-only codecs: if decoding started after the requested frame and no frame is held, the
@@ -2623,20 +2672,20 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     int lastDamageError = stream->_invalidDataSkipped;
     // For intra-only codecs, an attempt that stopped on a damaged packet without decoding any frame shows that
     // every frame from its start to the requested one is damaged (with frame threads, the stop waits for the
-    // decoder delay, see skipInvalidData): the lowest such start.
-    int damagedFrom = (isIntraOnly && !hasPicture && stream->_stoppedOnDamagedPacket) ? frame : -1;
+    // decoder delay, see noteDamage in demuxAndDecode()): the lowest such start.
+    int damagedFrom = (decodeAsIntraOnly && !hasPicture && stream->_stoppedOnDamagedPacket) ? frame : -1;
     // Not into a known damaged range before the requested frame (it cannot give a frame to hold), and with a
     // bound on the packets dropped by all the attempts of this request.
     const int backLimit = stream->damagedRangeEndBefore(frame) + 1;
-    for (int back = 1; !hasPicture && isIntraOnly && !firstAttemptFailedHard && !stream->_tooManyDroppedPackets && (frame > backLimit) && (stream->_requestDroppedPackets <= 2 * kMaxDroppedPacketsPerDecode) && (back < (1 << 30)); back *= 2) {
+    for (int back = 1; !hasPicture && decodeAsIntraOnly && !firstAttemptFailedHard && !stream->_tooManyDroppedPackets && (frame > backLimit) && (stream->_requestDroppedPackets <= 2 * kMaxDroppedPacketsPerDecode) && (back < (1 << 30)); back *= 2) {
         const int from = (std::max)(backLimit, frame - back);
         clearDecodeError();
         stream->_stoppedOnDamagedPacket = false;
         stream->_invalidDataSkipped = 0;
-        if (!seekToFrame(stream, stream->frameToPts(from), AVSEEK_FLAG_BACKWARD)) {
+        if (!seekToTimestamp(stream, stream->frameToPts(from))) {
             break;
         }
-        hasPicture = demuxAndDecode(stream, avFrameOut, frame, /*decodeAsIntraOnly=*/isIntraOnly, damagedFrom);
+        hasPicture = demuxAndDecode(stream, avFrameOut, frame, decodeAsIntraOnly, Attempt::eEarlier, damagedFrom);
         if (stream->_invalidDataSkipped) {
             lastDamageError = stream->_invalidDataSkipped;
         }
@@ -2691,7 +2740,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
                 }
             }
         }
-        if (!isIntraOnly && stream->_endTainted && Stream::hasFrame(stream->_avHeldFrame)) {
+        if (!decodeAsIntraOnly && stream->_endTainted && Stream::hasFrame(stream->_avHeldFrame)) {
             // the stream ends in damage after the held frame (see demuxAndDecode())
             const int heldFrame = stream->ptsToFrame(stream->_avHeldFrame->pts);
             if (heldFrame < frame) {
@@ -2707,10 +2756,13 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
 
     if (!hasPicture) {
         // The decoder position is unknown: seek before the next decode.
-        stream->resetHeldFrames();
+        stream->resetSeekState();
         if (_errorMsg.empty()) {
             if (stream->_sawFrameWithoutTimestamp) {
                 setDecodeError("Video frames have no timestamp", "FFmpeg Reader: ");
+            } else if (stream->_invalidDataSkipped && stream->_lastDamageConcealed) {
+                // No frame could be decoded for the requested frame: the decoder output frames that conceal damage.
+                setDecodeError("the decoded frames conceal damage (damaged packets)", "FFmpeg Reader: ");
             } else if (stream->_invalidDataSkipped) {
                 // No frame could be decoded for the requested frame, and damaged packets were dropped.
                 setDecodeError(stream->_invalidDataSkipped, "FFmpeg Reader Failed to decode packet: ");
@@ -2718,12 +2770,10 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
                 setDecodeError("no frame could be decoded at or before this frame", "FFmpeg Reader: ");
             }
         }
-        if (errorMsg) {
-            *errorMsg = _errorMsg;
-        }
+        return failWithError();
     }
 
-    return hasPicture;
+    return true;
 } // FFmpegFile::decode
 
 // A frame that the decoder says conceals damage: AV_FRAME_FLAG_CORRUPT (in H.264 and HEVC, only set with
@@ -2790,6 +2840,101 @@ FFmpegFile::Stream::isCleanRestartFrame(const AVFrame* f) const
     return (_keyFrames == 0) && intraOrUnknown && !ConcealsDamage(f);
 }
 
+// The restart keyframe (Stream::_restartPts, after damage) is verified by its own frame (isCleanRestartFrame()). Until
+// then, the packets flagged as keyframes do not restart the decoder again (see demuxAndDecode()), and two other frames
+// settle it:
+// - a clean keyframe (IsCleanKeyframe()) displayed after it is a restart point by itself, whatever packet the decoder
+//   restarted at: e.g. in a MOV without a sync-sample table, every packet has the keyframe flag (libavformat/mov.c:4947
+//   in FFmpeg 9.0.2), the decoder restarted at a predicted frame, and the HEVC decoder outputs nothing until the next
+//   IRAP picture (issue #441);
+// - another frame displayed after it, that comes before it, shows that the decoder dropped it, or did not output it
+//   (e.g. an H.264 recovery point with a recovery frame count, whose frames are only output from the recovery point
+//   on, libavcodec/h264_slice.c:1372-1384 and 1649-1681 in FFmpeg 9.0.2, 1373-1385 and 1644-1676 in 8.0.1): no clean
+//   restart.
+void
+FFmpegFile::Stream::settleRestart(const AVFrame* f)
+{
+    if ((f->pts == AV_NOPTS_VALUE) || (_restartPts == int64_t(AV_NOPTS_VALUE))) {
+        return;
+    }
+    if (f->pts == _restartPts) {
+        verifyRestart(isCleanRestartFrame(f));
+    } else if (f->pts > _restartPts) {
+        if (IsCleanKeyframe(f)) {
+            _restartPts = f->pts;
+            verifyRestart(true);
+        } else {
+            verifyRestart(false);
+        }
+    }
+}
+
+// The check of the frame of the first packet sent after a seek (Stream::packetSent(), whatever its keyframe flag),
+// for the 0-based requested frame. That packet is normally one that the demuxer flags as a keyframe.
+// - If its frame is a predicted frame, the flag was wrong, and the decoder decoded it without its reference frames,
+//   often without an error: e.g. in a MOV without a sync-sample table, every packet has the keyframe flag
+//   (libavformat/mov.c:4947 in FFmpeg 9.0.2), and the MPEG-4 Part 2 decoder decodes a P-frame from a gray frame
+//   (ff_mpv_frame_start() calls ff_mpv_alloc_dummy_frames(), libavcodec/mpegvideo_dec.c:310-346 and 393). The frames
+//   up to the next one that is not predicted are not used (eSkip), and decoding stops at the first one after the
+//   requested frame (eStop, SeekLanding::ePredicted: decode() then decodes from an earlier point), rather than at the
+//   next intra frame or the end of the file; the index of the keyframes is not trusted any more (_indexReliable).
+//   Not checked: the frames output before that frame (leading B-frames: the MPEG-4 Part 2 decoder skips a B-frame
+//   whose timing is out of order after a seek, libavcodec/mpeg4videodec.c:3138-3142 in FFmpeg 9.0.2, 3280-3284 in
+//   8.0.1).
+// - If a frame displayed after it comes first, the decoder did not output it, e.g. P-frames that the H.264 or MPEG-2
+//   decoder does not output until it recovers (libavcodec/h264_slice.c:1372-1384 in FFmpeg 9.0.2, 1373-1385 in 8.0.1;
+//   mpeg12dec.c:2455-2463 in 9.0.2, 2458-2466 in 8.0.1), or an H.264 recovery point
+//   with a recovery frame count (gradual decoding refresh, as libx264 writes with -intra-refresh 1, which the MP4
+//   muxer flags as a sync sample), whose frames are only output from the recovery point on (h264_slice.c:1649-1681 in
+//   9.0.2, 1644-1676 in 8.0.1). That keyframe is not a restart point by itself (eStop, SeekLanding::eHeldBack). The
+//   frames from the recovery point on may still differ from those decoded from an earlier keyframe, whatever the
+//   reader does (the ffmpeg CLI with -ss gives the same frames): at a recovery point whose frame_num is 0, the H.264
+//   decoder sees no frame_num gap (h264_slice.c:1507-1508 in 9.0.2, 1506-1507 in 8.0.1; prev_frame_num is 0 in a new
+//   decoder, -1 after a flush, h264dec.c:459 in 9.0.2, 460 in 8.0.1), logs "Missing reference picture"
+//   (h264_refs.c:400 in 9.0.2, 395 in 8.0.1) instead of filling the gap, and the frames differ up to the end of the
+//   refresh of the next recovery point, also when decoding on from there (issue #442). decode() then decodes from two
+//   keyframes before (earlierRestartTs()). Only with an index to trust (otherwise a seek lands anywhere, and the
+//   decoder may well skip frames), on a packet flagged as a keyframe, before damage was found (the frame of a damaged
+//   packet does not come either: the restart keyframe is then checked instead, settleRestart()), not for streams
+//   decoded as intra-only, and only for the attempt at the requested frame (not from an earlier point or from the
+//   start, where that is the best restart point). In a MOV without a sync-sample table, a seek may also land on a
+//   B-frame, which the MPEG-4 Part 2 decoder skips without a reference frame (libavcodec/h263dec.c:545-547 in 9.0.2,
+//   532-534 in 8.0.1); that index is not trusted once decode() finds that its keyframes are one frame apart
+//   (indexKeyframesEveryFrame()), so this check does not flag it then.
+// - A packet that the demuxer flags with AV_PKT_FLAG_DISCARD (the edit-list pre-roll of a MOV/MP4, mov.c:11680-11681
+//   in FFmpeg 9.0.2) is decoded, but libavcodec drops its frame (libavcodec/decode.c:463-466): such a seek is not
+//   checked (see packetSent()), as before this check existed.
+FFmpegFile::Stream::SeekFrameVerdict
+FFmpegFile::Stream::checkSeekFrame(const AVFrame* f, int frame, bool decodeAsIntraOnly, Attempt attempt)
+{
+    if ((_seekFrameCheck == SeekFrameCheck::eAwaitFrame) && (f->pts != AV_NOPTS_VALUE) && (f->pts > _seekFramePts)) {
+        _seekFrameCheck = SeekFrameCheck::eNone;
+        if (_seekFrameKey && _indexReliable && !decodeAsIntraOnly && !_damageSeen && !_decodingFromStart && (attempt == Attempt::eAtFrame)) {
+            _seekLanding = SeekLanding::eHeldBack;
+            return SeekFrameVerdict::eStop;
+        }
+    }
+    if ((_seekFrameCheck == SeekFrameCheck::eAwaitFrame) && (f->pts == _seekFramePts)) {
+        _seekFrameCheck = SeekFrameCheck::eNone;
+        if (!_decodingFromStart && IsPredictedFrame(f)) {
+            _seekFrameCheck = SeekFrameCheck::eAwaitIntraFrame;
+            _indexReliable = false;
+        }
+    }
+    if (_seekFrameCheck == SeekFrameCheck::eAwaitIntraFrame) {
+        if (IsPredictedFrame(f)) {
+            const int64_t ts = f->best_effort_timestamp;
+            if ((ts != int64_t(AV_NOPTS_VALUE)) && (ptsToFrame(ts) > frame)) {
+                _seekLanding = SeekLanding::ePredicted;
+                return SeekFrameVerdict::eStop;
+            }
+            return SeekFrameVerdict::eSkip;
+        }
+        _seekFrameCheck = SeekFrameCheck::eNone;
+    }
+    return SeekFrameVerdict::eUse;
+}
+
 // After damage, the decoder is opened again instead of flushed: avcodec_flush_buffers() keeps the parameter sets
 // that the decoder parsed (in FFmpeg 9.0.2, h264_decode_flush(), libavcodec/h264dec.c:476-497, only resets the
 // pictures and the DPB; the H.264 SPS and PPS are only freed when the decoder is closed, h264dec.c:372, and parsed
@@ -2825,54 +2970,70 @@ FFmpegFile::flushDecoder(Stream* stream)
 }
 
 bool
-FFmpegFile::seekToFrame(Stream* stream, int64_t frame, int seekFlags)
+FFmpegFile::seekToTimestamp(Stream* stream, int64_t ts)
 {
-    stream->resetHeldFrames(); // also resets _decodingFromStart
+    return seek(stream, ts, AVSEEK_FLAG_BACKWARD);
+}
+
+// The start of the file: frame 0 with AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD. Timestamp 0 is at or before the first
+// packet, unless the stream starts at a negative timestamp that is not an edit-list pre-roll (see
+// NegativeStartIsPreroll()), e.g. an MPEG-TS whose timestamps wrap: timestamp 0 is then after the wrap, and the MPEG-TS
+// and MPEG-PS demuxers, which have no read_seek but a read_timestamp (mpegts.c:3878, mpeg.c:712 in FFmpeg 9.0), seek to
+// it by a binary search on the DTS (seek_frame_internal(), libavformat/seek.c:597-639, ff_seek_frame_binary(), with the
+// timestamps unwrapped as the packets, seek.c:281-288). Seek to the first DTS of the stream instead
+// (Stream::_startDTS, or its first PTS without B-frames), which is at or before its first packet.
+// The same if only the first DTS is negative (B-frames whose first frame is at 0): the index of a demuxer without
+// read_seek (AVFMT_GENERIC_INDEX, e.g. a raw MPEG-4 elementary stream) is keyed by the DTS of the keyframes (FFmpeg
+// n9.0.2 libavformat/demux.c:1670-1673), and seeking to 0 lands on the second keyframe, whose DTS is 0
+// (seek_frame_generic(), libavformat/seek.c:526-595): the first frames would never decode.
+// On success, the decoder decodes every frame from the start of the stream until the next seek
+// (Stream::_decodingFromStart), including for the next sequential requests: otherwise each of them would refuse the
+// same corrupt frame and decode from the start again.
+bool
+FFmpegFile::seekToStart(Stream* stream)
+{
+    ++_startSeekCount;
+    int64_t ts = 0;
+    int seekFlags = AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD;
+    const int64_t firstTimestamp = (std::min)(stream->_startPTS, stream->_startDTS);
+    if ((firstTimestamp < 0) && !NegativeStartIsPreroll(_context, stream->_avstream)) {
+        ts = firstTimestamp;
+        seekFlags = AVSEEK_FLAG_BACKWARD;
+    }
+    if (!seek(stream, ts, seekFlags)) {
+        return false;
+    }
+    stream->_decodingFromStart = true;
+    return true;
+}
+
+bool
+FFmpegFile::seek(Stream* stream, int64_t ts, int seekFlags)
+{
+    stream->resetSeekState(); // also resets _decodingFromStart
     flushDecoder(stream);
     stream->clearTaint();
     ++_seekCount;
-    const bool toStart = (seekFlags & AVSEEK_FLAG_FRAME) && (frame == 0);
-    if (toStart) {
-        ++_startSeekCount;
-    }
     int res = 0;
-
-    // The start of the file (seekToFrame(0, AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD)): timestamp 0 is at or before
-    // the first packet, unless the stream starts at a negative timestamp that is not an edit-list pre-roll (see
-    // NegativeStartIsPreroll()), e.g. an MPEG-TS whose timestamps wrap: timestamp 0 is then after the wrap, and the
-    // MPEG-TS and MPEG-PS demuxers, which have no read_seek but a read_timestamp (mpegts.c:3878, mpeg.c:712 in
-    // FFmpeg 9.0), seek to it by a binary search on the DTS (seek_frame_internal(), libavformat/seek.c:597-639,
-    // ff_seek_frame_binary(), with the timestamps unwrapped as the packets, seek.c:281-288). Seek to the first DTS
-    // of the stream instead (Stream::_startDTS, or its first PTS without B-frames), which is at or before its
-    // first packet.
-    // The same if only the first DTS is negative (B-frames whose first frame is at 0): the index of a demuxer
-    // without read_seek (AVFMT_GENERIC_INDEX, e.g. a raw MPEG-4 elementary stream) is keyed by the DTS of the
-    // keyframes (FFmpeg n9.0.2 libavformat/demux.c:1670-1673), and seeking to 0 lands on the second keyframe,
-    // whose DTS is 0 (seek_frame_generic(), libavformat/seek.c:526-595): the first frames would never decode.
-    const int64_t firstTimestamp = (std::min)(stream->_startPTS, stream->_startDTS);
-    if (toStart && (firstTimestamp < 0) && !NegativeStartIsPreroll(_context, stream->_avstream)) {
-        frame = firstTimestamp;
-        seekFlags = AVSEEK_FLAG_BACKWARD;
-    }
 
     // Once damage was found in the file (long-GOP codecs), a seek may land on a spurious keyframe: the Matroska
     // demuxer adds an index entry for each block whose header has the keyframe flag (libavformat/matroskadec.c:
     // 4319-4320 and 4329-4331 in FFmpeg 9.0.2), also in a damaged block. Skip the index entries of the keyframes
     // that did not decode cleanly (Stream::_suspectKeyPts), and decode as after a restart at a keyframe: the
     // frames are only used once the first packet read decodes as a clean keyframe (Stream::verifyRestart()).
-    if (stream->_damageSeen && !IsIntraOnly(stream->_codecContext) && !stream->allKeyframesAfterDamage()) {
+    if (stream->_damageSeen && !stream->decodesAsIntraOnly()) {
         if (seekFlags == AVSEEK_FLAG_BACKWARD) {
-            int i = av_index_search_timestamp(stream->_avstream, frame, AVSEEK_FLAG_BACKWARD);
+            int i = av_index_search_timestamp(stream->_avstream, ts, AVSEEK_FLAG_BACKWARD);
             while (i > 0) {
                 const AVIndexEntry* e = avformat_index_get_entry(stream->_avstream, i);
-                if (!e || !stream->isSuspectKeyPts(e->timestamp)) {
+                if (!e || !stream->_suspectKeyPts.contains(e->timestamp)) {
                     break;
                 }
                 --i;
             }
             const AVIndexEntry* e = (i >= 0) ? avformat_index_get_entry(stream->_avstream, i) : nullptr;
-            if (e && (e->timestamp < frame)) {
-                frame = e->timestamp;
+            if (e && (e->timestamp < ts)) {
+                ts = e->timestamp;
             }
         }
         stream->_tainted = true;
@@ -2882,7 +3043,7 @@ FFmpegFile::seekToFrame(Stream* stream, int64_t frame, int seekFlags)
             stream->_verifyNextPacket = true;
         }
     }
-    if ((res = av_seek_frame(_context, stream->_idx, frame, seekFlags)) < 0) {
+    if ((res = av_seek_frame(_context, stream->_idx, ts, seekFlags)) < 0) {
         setDecodeError(res, "FFmpeg Reader Failed to seek frame: ");
         return false;
     }
@@ -2926,7 +3087,7 @@ FFmpegFile::notePacketEnd(const Stream& stream, const AVPacket& pkt)
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
 
 bool
-FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool decodeAsIntraOnly, int damagedFrom)
+FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool decodeAsIntraOnly, Attempt attempt, int damagedFrom)
 {
     MyAVPacket avPacket;
 
@@ -2957,7 +3118,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
     // H.264): a frame decoded after a seek may lack a reference frame, so decode() will then retry from the
     // start. For an intra-only codec (IsIntraOnly()), a frame that conceals damage is never held (see
     // processDecodedFrame).
-    const bool intraOnlyCodec = IsIntraOnly(stream->_codecContext);
+    const bool intraOnlyCodec = stream->_intraOnlyCodec;
     auto canHoldFrame = [decodeAsIntraOnly, stream](const AVFrame* f) -> bool {
         return decodeAsIntraOnly || stream->_decodingFromStart || !ConcealsDamage(f);
     };
@@ -2968,7 +3129,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         assert(heldFrameIdx <= frame);
         if (heldFrameIdx > frame) {
             // Should not happen, but the held frames would give a wrong frame: seek, which resets them.
-            seekToFrame(stream, stream->frameToPts((int)frame), AVSEEK_FLAG_BACKWARD);
+            seekToTimestamp(stream, stream->frameToPts((int)frame));
         } else if (heldFrameIdx == frame) {
             return imageConvert(stream, held, avFrameOut);
         } else if (Stream::hasFrame(next) || stream->_heldFrameIsLast) {
@@ -2988,6 +3149,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
     stream->_firstOutputFrame = -1;
     stream->_firstFrameAfter = -1;
     stream->_reachedEnd = false;
+    stream->_seekLanding = Stream::SeekLanding::eRestartPoint;
     stream->_endTainted = false;
     bool decodedAny = false; // a frame was decoded since the start of this call
     // Intra-only codecs: this call dropped damaged packets, and neither decoded nor held any frame up to the
@@ -3000,12 +3162,101 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         }
     };
     int framesWithoutTimestamp = 0;
+    // Intra-only codecs: the frame from which the damaged packets stop decoding (see noteDamage, below).
+    const int stopFrame = (damagedFrom >= 0) ? damagedFrom : (int)frame + 1;
+    // A damaged packet that the decoder rejected (error r), or a frame of an intra-only codec that conceals damage (see
+    // concealedIntraFrame, below): the bookkeeping of both, at the PTS of the packet or of the frame (AV_NOPTS_VALUE if
+    // unknown).
+    enum class DamageSource {
+        ePacket, // a packet that the decoder rejected: its PTS is the one of the damaged frame
+        ePacketFrameThreads, // the same with frame threads: the error is that of a packet up to the decoder delay before
+        eConcealedFrame, // a frame that conceals damage: its PTS is exact
+    };
+    enum class DamageAction {
+        eSkip, // drop it and go on decoding
+        eStop, // intra-only: stop, as every frame from the start of this call to the requested one is damaged
+        eTooMany, // stop with this error: too many consecutive damaged packets
+    };
+    auto noteDamage = [&](int r, int64_t pts, DamageSource source) -> DamageAction {
+        const bool exact = source != DamageSource::ePacketFrameThreads;
+        const bool concealed = source == DamageSource::eConcealedFrame;
+        auto warnOnce = [&]() {
+            if (!_damagedPacketWarned) {
+                _damagedPacketWarned = true;
+                char errorBuf[256];
+                av_strerror(r, errorBuf, sizeof(errorBuf));
+                av_log(nullptr, AV_LOG_WARNING, "FFmpeg Reader: %s: skipping damaged %s (%s)\n", _filename.c_str(), concealed ? "frames" : "packets", errorBuf);
+            }
+        };
+        ++stream->_requestDroppedPackets;
+        stream->_damageSeen = true;
+        stream->_damagedSinceOpen = true;
+        stream->_lastDamageConcealed = concealed;
+        if (!decodeAsIntraOnly) {
+            stream->taint();
+            // Long-GOP codecs with frame threads: the error of a damaged packet comes with up to thread_count
+            // packets sent after it (frame threads decode several frames at once, libavcodec/pthread_frame.c, and
+            // a decoding error is returned when the frame of that thread is collected, which is the oldest one in
+            // flight), so the packet is unknown, and a keyframe sent after it may already be decoded by a decoder
+            // that saw the damage. Decode the rest of this file with 1 thread, from the keyframe before the
+            // requested frame (decode()): the packet of each error is then known, and the result does not
+            // depend on the threads.
+            if (((stream->_codecContext->active_thread_type & FF_THREAD_FRAME) || (stream->_codecContext->thread_count != 1)) && !stream->_singleThreaded) {
+                stream->_singleThreaded = true;
+                stream->_restartSingleThread = true;
+            }
+        }
+        if (++droppedPackets > kMaxDroppedPackets) {
+            stream->_tooManyDroppedPackets = true;
+            if (!decodedAny) {
+                stream->_invalidDataSkipped = r;
+                markOnlyDamaged();
+            }
+            return DamageAction::eTooMany;
+        }
+        stream->_invalidDataSkipped = r;
+        if (pts == int64_t(AV_NOPTS_VALUE)) {
+            warnOnce();
+            return DamageAction::eSkip;
+        }
+        const int damagedFrame = stream->ptsToFrame(pts) - (exact ? 0 : stream->getCodecDelay());
+        if (decodeAsIntraOnly && (damagedFrame >= stopFrame) && !Stream::hasFrame(held)) {
+            stream->_stoppedOnDamagedPacket = true;
+            // With frame threads, the frames after the requested one are not known to be damaged (the
+            // damaged packet is one of the last ones sent).
+            stream->_lastDamagedFrame = (std::max)(stream->_lastDamagedFrame, exact ? (std::max)((int)frame, damagedFrame) : (int)frame);
+            return DamageAction::eStop; // (decode() then decodes from earlier frames)
+        }
+        stream->_lastDamagedFrame = (std::max)(stream->_lastDamagedFrame, damagedFrame);
+        if (exact) {
+            stream->_damagedPts.add(pts);
+        }
+        warnOnce();
+        return DamageAction::eSkip;
+    };
+    // Intra-only codecs (IsIntraOnly()): a frame that conceals damage is not used (e.g. a ProRes frame with damaged
+    // slices, libavcodec/proresdec.c:754 in FFmpeg 9.0.2, 745 in 8.0, whose undecoded slices keep the contents of the
+    // decoder buffer, which depends on the read order and the threads): its frame time is a gap, and it counts as a
+    // damaged packet that the decoder rejected (noteDamage()), so that a long run of such frames is not decoded again
+    // for each request in a random order, and becomes a damaged range (issue #434). Its frame is known exactly, also
+    // with frame threads. The ffmpeg CLI keeps such a frame, with a "corrupt decoded frame" warning
+    // (fftools/ffmpeg_dec.c:767-772 in FFmpeg 9.0.2). This depends on the codec only, not on decodeAsIntraOnly, which
+    // also becomes true once damage was seen in a stream of keyframes (e.g. all-intra H.264, whose concealed frames are
+    // used, as before): the result then does not depend on the read order.
+    // Returns true if decoding stops (without a picture).
+    auto concealedIntraFrame = [&](const AVFrame* f) -> bool {
+        const int64_t ts = (f->best_effort_timestamp != int64_t(AV_NOPTS_VALUE)) ? f->best_effort_timestamp : f->pts;
+        return noteDamage(AVERROR_INVALIDDATA, ts, DamageSource::eConcealedFrame) != DamageAction::eSkip;
+    };
     auto processDecodedFrame = [&](AVFrame* decodedFrame) -> bool {
         // Fallback to using the DTS from the AVPacket that triggered returning this frame if no PTS is found
         // Original code, which doesn't work (AVI/m1v):
         // if (decodedFrame->pts == AV_NOPTS_VALUE) {
         //     decodedFrame->pts = decodedFrame->pkt_dts;
         // }
+        if (intraOnlyCodec && ConcealsDamage(decodedFrame)) {
+            return concealedIntraFrame(decodedFrame);
+        }
         droppedPackets = 0;
         decodedAny = true;
         // The damaged packets are known by their PTS: a frame whose timestamp is from its DTS is not compared.
@@ -3023,9 +3274,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
                 stream->_tainted = false;
             }
         }
-        if ((decodedFrame->pts != AV_NOPTS_VALUE) && (decodedFrame->pts == stream->_restartPts)) {
-            stream->verifyRestart(stream->isCleanRestartFrame(decodedFrame));
-        }
+        stream->settleRestart(decodedFrame);
         // While tainted, a frame that conceals errors (decode_error_flags, AV_FRAME_FLAG_CORRUPT) is not used either,
         // whatever its packet: e.g. a damaged IDR frame that the H.264 decoder decodes without an error, but with
         // FF_DECODE_ERROR_DECODE_SLICES (libavcodec/h264dec.c:752-764 in FFmpeg 9.0.2), output after the
@@ -3035,40 +3284,14 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         // (guess_correct_pts(), libavcodec/decode.c:296-320 and 694-696 in FFmpeg 9.0.2): the taint is checked at
         // both, and while tainted, a frame whose two timestamps differ is not used (e.g. a frame decoded before
         // the damage, but placed after it at the DTS of a damaged packet).
-        // The first packet sent after a seek (Stream::packetSent(), whatever its keyframe flag) is normally one that
-        // the demuxer flags as a keyframe. If its frame is a predicted frame, the flag was wrong, and the decoder
-        // decoded it without its reference frames, often without an error: e.g. in a MOV without a sync-sample table,
-        // every packet has the keyframe flag (libavformat/mov.c:4947 in FFmpeg 9.0.2), and the MPEG-4 Part 2 decoder
-        // decodes a P-frame from a gray frame (ff_mpv_frame_start() calls ff_mpv_alloc_dummy_frames(),
-        // libavcodec/mpegvideo_dec.c:310-346 and 393; the MPEG-2 decoder skips the P-frames until it has a reference,
-        // libavcodec/mpeg12dec.c:2455-2463). The frames up to the next one that is not predicted are not used, and
-        // decoding stops at the first one after the requested frame (decode() then decodes it from the start of the
-        // file), rather than at the next intra frame or the end of the file; the index of the keyframes is not
-        // trusted any more (Stream::_indexReliable). A decoder that only outputs the frames after a seek once they
-        // are recovered (e.g. H.264, libavcodec/h264_slice.c:1372-1384) never outputs that frame if it is not a
-        // keyframe: its frames are used.
-        // Two cases are not checked (MPEG-4 Part 2 with B-frames in a MOV without a sync-sample table still decodes
-        // right in every order, see tests/run_ffmpeg_read_test.sh; FFmpeg 9.0.2):
-        // - the frames output before that frame (leading B-frames) are not checked: the decoder skips a B-frame
-        //   whose timing is out of order, e.g. after a seek (libavcodec/mpeg4videodec.c:3138-3142);
-        // - if that packet is a B-frame, the decoder skips it without a reference frame (libavcodec/h263dec.c:
-        //   545-547): its frame never comes, and nothing is checked until the next seek.
-        if ((stream->_seekFrameCheck == Stream::SeekFrameCheck::eAwaitFrame) && (decodedFrame->pts == stream->_seekFramePts)) {
-            stream->_seekFrameCheck = Stream::SeekFrameCheck::eNone;
-            if (!stream->_decodingFromStart && IsPredictedFrame(decodedFrame)) {
-                stream->_seekFrameCheck = Stream::SeekFrameCheck::eAwaitIntraFrame;
-                stream->_indexReliable = false;
-            }
-        }
-        if (stream->_seekFrameCheck == Stream::SeekFrameCheck::eAwaitIntraFrame) {
-            if (IsPredictedFrame(decodedFrame)) {
-                const int64_t ts = decodedFrame->best_effort_timestamp;
-                if ((ts != int64_t(AV_NOPTS_VALUE)) && (stream->ptsToFrame(ts) > frame)) {
-                    return true; // stop without a picture
-                }
-                return false;
-            }
-            stream->_seekFrameCheck = Stream::SeekFrameCheck::eNone;
+        // The frame of the first packet sent after a seek (see Stream::checkSeekFrame())
+        switch (stream->checkSeekFrame(decodedFrame, (int)frame, decodeAsIntraOnly, attempt)) {
+        case Stream::SeekFrameVerdict::eUse:
+            break;
+        case Stream::SeekFrameVerdict::eSkip:
+            return false;
+        case Stream::SeekFrameVerdict::eStop:
+            return true; // stop without a picture
         }
         const bool concealsDamage = ConcealsDamage(decodedFrame);
         if (!concealsDamage) {
@@ -3080,20 +3303,13 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
             }
         }
         auto taintedAt = [stream](int64_t t) -> bool {
-            return (t != AV_NOPTS_VALUE) && (stream->isDamagedPts(t) || stream->isTaintedPts(t) || stream->isCandidatePts(t));
+            return (t != AV_NOPTS_VALUE) && (stream->_damagedPts.contains(t) || stream->_taintedPts.contains(t) || stream->isCandidatePts(t));
         };
-        // Intra-only codecs (IsIntraOnly()): a frame that conceals damage is not used either (e.g. a ProRes frame
-        // with damaged slices, libavcodec/proresdec.c:754 in FFmpeg 9.0.2, 745 in 8.0, whose undecoded slices keep the
-        // contents of the decoder buffer, which depends on the read order and the threads): its frame time is a gap,
-        // as for a damaged packet. The ffmpeg CLI keeps such a frame, with a "corrupt decoded frame" warning
-        // (fftools/ffmpeg_dec.c:767-772 in FFmpeg 9.0.2). This depends on the codec only, not on decodeAsIntraOnly,
-        // which also becomes true once damage was seen in a stream of keyframes (e.g. all-intra H.264, whose
-        // concealed frames are used, as before): the result then does not depend on the read order.
+        // (Intra-only codecs: a frame that conceals damage was handled above, see concealedIntraFrame.)
         const bool atDamagedTime = taintedAt(decodedFrame->pts) || taintedAt(decodedFrame->best_effort_timestamp);
-        const bool concealedIntra = intraOnlyCodec && concealsDamage;
         const bool taintedLongGop = !decodeAsIntraOnly && stream->_tainted &&
                                     (concealsDamage || stream->positionTaint() || (decodedFrame->best_effort_timestamp != decodedFrame->pts));
-        const bool damaged = atDamagedTime || concealedIntra || taintedLongGop;
+        const bool damaged = atDamagedTime || taintedLongGop;
         decodedFrame->pts = decodedFrame->best_effort_timestamp;
         if (decodedFrame->pts == AV_NOPTS_VALUE) {
             // A frame without a PTS, output after a packet without a DTS, e.g. a frame output when
@@ -3119,7 +3335,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         }
 
         if (damaged) {
-            // A frame at the time of a damaged packet, which was dropped (see skipInvalidData): not
+            // A frame at the time of a damaged packet, which was dropped (see noteDamage): not
             // a valid frame, the frame time is a gap.
             return false;
         }
@@ -3171,7 +3387,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         // presentation order. Stop without a picture: decode() retries from the start.
         // Intra-only codecs: if damaged packets were dropped, every frame from the start of this
         // attempt to the requested one is damaged (each good packet gives a frame, in presentation
-        // order), as when stopping on a damaged packet (see skipInvalidData).
+        // order), as when stopping on a damaged packet (see noteDamage).
         markOnlyDamaged();
         return true;
     };
@@ -3206,66 +3422,18 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
     // For intra-only codecs, decoding stops at the first damaged packet after the requested frame, without a
     // held frame: the following ones cannot give it (decode() then decodes from earlier frames). Or at the
     // first one in the frames up to the requested one already known to be damaged (damagedFrom), so that the
-    // attempts of decode() from earlier frames do not read these again.
-    const int stopFrame = (damagedFrom >= 0) ? damagedFrom : (int)frame + 1;
-    auto skipInvalidData = [this, stream, &droppedPackets, &decodedAny, &markOnlyDamaged, frame, stopFrame, decodeAsIntraOnly](int r, const AVPacket* pkt) -> bool {
+    // attempts of decode() from earlier frames do not read these again (stopFrame, above).
+    auto skipInvalidData = [&](int r, const AVPacket* pkt) -> bool {
         if ((r >= 0) || (r == AVERROR(EAGAIN)) || (r == AVERROR_EOF)) {
             return false;
-        }
-        ++stream->_requestDroppedPackets;
-        stream->_damageSeen = true;
-        stream->_damagedSinceOpen = true;
-        if (!decodeAsIntraOnly) {
-            stream->taint();
-            // Long-GOP codecs with frame threads: the error of a damaged packet comes with up to thread_count
-            // packets sent after it (frame threads decode several frames at once, libavcodec/pthread_frame.c, and
-            // a decoding error is returned when the frame of that thread is collected, which is the oldest one in
-            // flight), so the packet is unknown, and a keyframe sent after it may already be decoded by a decoder
-            // that saw the damage. Decode the rest of this file with 1 thread, from the keyframe before the
-            // requested frame (decode()): the packet of each error is then known, and the result does not
-            // depend on the threads.
-            if (((stream->_codecContext->active_thread_type & FF_THREAD_FRAME) || (stream->_codecContext->thread_count != 1)) && !stream->_singleThreaded) {
-                stream->_singleThreaded = true;
-                stream->_restartSingleThread = true;
-            }
-        }
-        if (++droppedPackets > kMaxDroppedPackets) {
-            stream->_tooManyDroppedPackets = true;
-            if (!decodedAny) {
-                stream->_invalidDataSkipped = r;
-                markOnlyDamaged();
-            }
-            return false; // fail with this error
         }
         // With frame threads (or the decoder's own threads, e.g. libdav1d), the error of a packet is
         // returned later, with another packet: it is unknown.
         const bool otherThreads = stream->_videoCodec && (stream->_videoCodec->capabilities & AV_CODEC_CAP_OTHER_THREADS) && (stream->_codecContext->thread_count != 1);
         const bool frameThreads = ((stream->_codecContext->active_thread_type & FF_THREAD_FRAME) != 0) || otherThreads;
-        // (With frame threads, the error is that of a packet up to the decoder delay before this one.)
-        if (decodeAsIntraOnly && pkt && (pkt->pts != int64_t(AV_NOPTS_VALUE)) && (stream->ptsToFrame(pkt->pts) - (frameThreads ? stream->getCodecDelay() : 0) >= stopFrame) && !Stream::hasFrame(stream->_avHeldFrame)) {
-            stream->_invalidDataSkipped = r;
-            stream->_stoppedOnDamagedPacket = true;
-            // With frame threads, the frames after the requested one are not known to be damaged (the
-            // damaged packet is one of the last ones sent).
-            stream->_lastDamagedFrame = (std::max)(stream->_lastDamagedFrame, frameThreads ? (int)frame : (std::max)((int)frame, stream->ptsToFrame(pkt->pts)));
-            return false; // intra-only: stop, with this error (decode() then decodes from earlier frames)
-        }
-        stream->_invalidDataSkipped = r;
-        if (pkt && (pkt->pts != int64_t(AV_NOPTS_VALUE))) {
-            const int damagedFrame = stream->ptsToFrame(pkt->pts) - (frameThreads ? stream->getCodecDelay() : 0);
-            stream->_lastDamagedFrame = (std::max)(stream->_lastDamagedFrame, damagedFrame);
-        }
-        if (pkt && !frameThreads && (pkt->pts != int64_t(AV_NOPTS_VALUE)) && !stream->isDamagedPts(pkt->pts)) {
-            if (stream->_damagedPts.size() >= 1024) {
-                stream->_damagedPts.erase(stream->_damagedPts.begin());
-            }
-            stream->_damagedPts.push_back(pkt->pts);
-        }
-        if (!_damagedPacketWarned) {
-            _damagedPacketWarned = true;
-            char errorBuf[256];
-            av_strerror(r, errorBuf, sizeof(errorBuf));
-            av_log(nullptr, AV_LOG_WARNING, "FFmpeg Reader: %s: skipping damaged packets (%s)\n", _filename.c_str(), errorBuf);
+        const int64_t pts = pkt ? pkt->pts : int64_t(AV_NOPTS_VALUE);
+        if (noteDamage(r, pts, frameThreads ? DamageSource::ePacketFrameThreads : DamageSource::ePacket) != DamageAction::eSkip) {
+            return false; // fail with this error (intra-only: decode() then decodes from earlier frames)
         }
 #if TRACE_DECODE_PROCESS
         std::cout << "FFmpeg Reader: skipping a damaged packet" << std::endl;
@@ -3392,7 +3560,13 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         // next packet with the keyframe flag. If draining gives
         // the requested frame, or stops decoding, the keyframe is not sent (nor the other frames of the drain
         // used): the next requests that need more frames seek (Stream::_drainedEarly).
-        if (!resending && !decodeAsIntraOnly && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket) {
+        // Not while the restart keyframe is not verified yet (Stream::_restartPts, see processDecodedFrame): with
+        // B-frames, its frame is output after the next packets, which may also have the keyframe flag (e.g. in a MOV
+        // without a sync-sample table, libavformat/mov.c:4947 in FFmpeg 9.0.2, or a Matroska block whose header is
+        // damaged): the drain would give its frame, and then lose the decoder state that the next frames need, so
+        // that the decoder restarted at a leading picture after the real keyframe (issue #441).
+        if (!resending && !decodeAsIntraOnly && stream->_tainted && (avPacket->flags & AV_PKT_FLAG_KEY) && !stream->_verifyNextPacket &&
+            (stream->_restartPts == int64_t(AV_NOPTS_VALUE))) {
             bool stop = false;
             (void)avcodec_send_packet(stream->_codecContext, nullptr);
             for (int i = 0; i < 4 * kMaxDroppedPackets; ++i) {
@@ -3407,12 +3581,6 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
                     stop = true;
                     break;
                 }
-            }
-            // The drain gave the frame of the previous restart keyframe, if any (with B-frames, a keyframe is
-            // output after the next packets, which may be another keyframe, e.g. when damaged blocks are lost):
-            // if it did not come, that restart gave no clean keyframe.
-            if (stream->_restartPts != int64_t(AV_NOPTS_VALUE)) {
-                stream->verifyRestart(false);
             }
             flushDecoder(stream);
             // The frames of the packets from here on are used once this keyframe decodes cleanly (see
@@ -3435,7 +3603,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         }
         res = avcodec_send_packet(stream->_codecContext, avPacket.pkt());
         if ((res >= 0) && !decodeAsIntraOnly) {
-            // Long-GOP codecs (decoded with 1 thread after damage, see skipInvalidData): an accepted packet ends a
+            // Long-GOP codecs (decoded with 1 thread after damage, see noteDamage): an accepted packet ends a
             // run of damaged packets, also if its frame is not output (e.g. the H.264 decoder only outputs the
             // frames after a restart once recovered, libavcodec/h264_slice.c:1374-1384), so that the bound
             // (kMaxDroppedPackets) does not depend on what the decoder outputs, which depends on the read order.
@@ -3454,7 +3622,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         if (drained == 1) {
             if (res == AVERROR(EAGAIN)) {
                 // The drain gave the requested frame, but the packet was not accepted: keep it for the next request,
-                // which sends it before reading the next one (a seek drops it, Stream::resetHeldFrames()). It was
+                // which sends it before reading the next one (a seek drops it, Stream::resetSeekState()). It was
                 // lost before, and the frames that reference it decoded wrong until the next keyframe (issue #159).
                 // E.g. VP9 with frame threads: the decoder splits a superframe (a hidden alt-ref frame and a shown
                 // frame) into two packets with its vp9_superframe_split bitstream filter (FFCodec.bsfs,
