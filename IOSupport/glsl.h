@@ -8,6 +8,10 @@
 
 #include <OpenColorIO/OpenColorIO.h>
 
+#if OCIO_VERSION_HEX < 0x02000000
+#error "The OpenColorIO plug-ins and readers/writers require OpenColorIO 2.0 or later"
+#endif
+
 namespace OCIO_NAMESPACE {
 
 class OpenGLBuilder;

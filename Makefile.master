@@ -16,14 +16,20 @@ VPATH += $(TOP_SRCDIR)/IOSupport $(TOP_SRCDIR)/IOSupport/SequenceParsing $(OFXSE
 
 # Comment the following two lines to disable OpenGL support in OpenColorIO plugins
 OCIO_OPENGL_CXXFLAGS += -DOFX_SUPPORTS_OPENGLRENDER
-# Comment the following three lines to disable OpenColorIO support
+# Comment the following lines (OCIO_CXXFLAGS, OCIO_LINKFLAGS) to disable OpenColorIO support (this also skips the
+# OpenColorIO version check below)
 OCIO_CXXFLAGS += `pkg-config --cflags OpenColorIO` -DOFX_IO_USING_OCIO $(OCIO_OPENGL_CXXFLAGS)
 OCIO_LINKFLAGS += `pkg-config --libs OpenColorIO` $(OCIO_OPENGL_LINKFLAGS)
 ifeq ($(OS),Linux)
 OCIO_LINKFLAGS += -Wl,-rpath,`pkg-config --variable=libdir OpenColorIO`
 endif
-ifeq ($(shell pkg-config --modversion OpenColorIO | sed -e 's/\..*//'),2)
-#OCIO_OPENGL_LINKFLAGS += -lOpenColorIOoglapphelpers
+# OpenColorIO 2.0 or later (as checked in IOSupport/GenericOCIO.h): fail with a message if pkg-config finds an older
+# one (only if OpenColorIO support is enabled, and not for "make clean")
+ifneq ($(and $(findstring OFX_IO_USING_OCIO,$(OCIO_CXXFLAGS)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes)),)
+OCIO_TOO_OLD := $(shell pkg-config --exists OpenColorIO 2>/dev/null && ! pkg-config --exists 'OpenColorIO >= 2.0' 2>/dev/null && pkg-config --modversion OpenColorIO)
+ifneq ($(strip $(OCIO_TOO_OLD)),)
+$(error The OpenColorIO plugins require OpenColorIO 2.0 or later, but pkg-config found OpenColorIO $(strip $(OCIO_TOO_OLD)))
+endif
 endif
 
 # OpenEXR

@@ -47,12 +47,14 @@
 #ifdef OFX_IO_USING_OCIO
 #include <OpenColorIO/OpenColorIO.h>
 
-#if OCIO_VERSION_HEX >= 0x02000000
+#if OCIO_VERSION_HEX < 0x02000000
+#error "The OpenColorIO plug-ins and readers/writers require OpenColorIO 2.0 or later"
+#endif
+
 namespace OCIO_NAMESPACE {
 class OpenGLBuilder;
 typedef OCIO_SHARED_PTR<OpenGLBuilder> OpenGLBuilderRcPtr;
 }
-#endif
 #endif
 
 #include "IOMutex.h"
@@ -114,17 +116,8 @@ NAMESPACE_OFX_IO_ENTER
 #if defined(OFX_IO_USING_OCIO)
 class OCIOOpenGLContextData {
 public:
-#if OCIO_VERSION_HEX >= 0x02000000
     std::string processorCacheID;
     OCIO_NAMESPACE::OpenGLBuilderRcPtr glBuilder;
-#else
-    std::vector<float> procLut3D; //!< storage for the LUT3D so that the allocation of the LUT only occurs once.
-    std::string procShaderCacheID; //!< pass a string that will be used as a key to cache the shader so that internally the function may determine if generating and compiling the shader again is required. If the shader cache ID did not change, the shader passed by shaderProgramIDParam will be used as-is.
-    std::string procLut3DCacheID; //!< a string that will be used as a key to cache the LUT3D so that internally the function may determine if computing the LUT again is required. If the cache ID did not change, no call to glTexSubImage3D will be made
-    unsigned int procLut3DID; //!< ID of the texture 3D that will contain the LUT3D so that its allocation occurs only once, and subsequent calls only have to call glTexSubImage3D
-    unsigned int procShaderProgramID; //!< the ID of the shader program that will be used to do the processing so that it is only compiled once. Note that to cache the shaderProgramID, you also need to set the procShaderCacheID parameter.
-    unsigned int procFragmentShaderID; //!< the ID of the fragment shader program that will be used by the OCIO shader program
-#endif
 
 public:
     OCIOOpenGLContextData();
@@ -312,9 +305,9 @@ private:
     // Thread safety: the render actions (and isIdentity) run on render threads, concurrently with each other and with
     // the main thread (OFX ofxThreadSafety.rst: "An instance must be able to handle simultaneous actions called on the
     // main and render threads"), whose instance changed action loads a new config (loadConfig()).
-    // - _configMutex guards _config. Only loadConfig(), on the main thread, assigns it, under the lock; the main thread
-    //   may thus read it without the lock. Other threads take a copy with getConfig(), and use only that copy in an
-    //   action: the config it points to is const and stays alive while they hold it.
+    // - _configMutex guards _config. Only loadConfig() and purgeCaches(), on the main thread, assign it, under the lock;
+    //   the main thread may thus read it without the lock. Other threads take a copy with getConfig(), and use only
+    //   that copy in an action: the config it points to is const and stays alive while they hold it.
     // - _procCache has its own mutex (see OCIOProcessorCache).
     // - Neither lock is held while taking the other one, or while calling out (lock order: none).
     mutable Mutex _configMutex;

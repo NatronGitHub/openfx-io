@@ -491,7 +491,6 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
             transform->setDirection(direction);
             transform->setInterpolation(interpolation);
 
-#if OCIO_VERSION_HEX >= 0x02000000
             // Bypass the processor cache of the config: its key is the transform's arguments, not the contents of
             // the file, and OCIO::ClearAllCaches() (Reload) "does not apply to instance-specific caches such as the
             // Processor cache in a Config instance" (OpenColorIO.h). The shared current config is const, and its
@@ -501,9 +500,6 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
             OCIO::ConfigRcPtr copy = config->createEditableCopy();
 
             return copy->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD);
-#else
-            return config->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD); // (OCIO 1 has no processor cache)
-#endif
         });
     } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
@@ -877,19 +873,11 @@ supportedFormats()
 {
     string s = "Supported formats:\n";
 
-#if OCIO_VERSION_HEX >= 0x02000000
     for (int i = 0; i < OCIO::FileTransform::GetNumFormats(); ++i) {
         const char* name = OCIO::FileTransform::GetFormatNameByIndex(i);
         const char* exten = OCIO::FileTransform::GetFormatExtensionByIndex(i);
         s += string("\n.") + exten + " (" + name + ")";
     }
-#else
-    for (int i = 0; i < OCIO::FileTransform::getNumFormats(); ++i) {
-        const char* name = OCIO::FileTransform::getFormatNameByIndex(i);
-        const char* exten = OCIO::FileTransform::getFormatExtensionByIndex(i);
-        s += string("\n.") + exten + " (" + name + ")";
-    }
-#endif
 
     return s;
 }

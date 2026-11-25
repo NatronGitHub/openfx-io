@@ -42,9 +42,7 @@
 #include "ofxsProcessing.H"
 #include "ofxsThreadSuite.h"
 
-#if OCIO_VERSION_HEX >= 0x02000000
 #include <OpenColorIO/OpenColorAppHelpers.h> // LegacyViewingPipeline
-#endif
 
 using namespace OFX;
 using namespace OFX::IO;
@@ -177,6 +175,9 @@ private:
 
     /* override changed clip */
     virtual void changedClip(const InstanceChangedArgs& args, const string& clipName) OVERRIDE FINAL;
+
+    // the host purges its caches: read the LUT files of the config again (#402)
+    virtual void purgeCaches() OVERRIDE FINAL { _ocio->purgeCaches(); }
 
     // override the rod call
     // virtual bool getRegionOfDefinition(const RegionOfDefinitionArguments &args, OfxRectD &rod) OVERRIDE FINAL;
@@ -584,7 +585,6 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
         const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, channel, display, view, gain, gamma };
 
         return _procCache.get(key, [&]() -> OCIO::ConstProcessorRcPtr {
-#if OCIO_VERSION_HEX >= 0x02000000
             auto displayViewTransform = OCIO::DisplayViewTransform::Create();
             displayViewTransform->setSrc(inputSpace.c_str());
 
@@ -668,86 +668,6 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
             }
 
             return transform->getProcessor(config, context);
-#else // OCIO_VERSION_HEX < 0x02000000
-            OCIO::DisplayTransformRcPtr transform = OCIO::DisplayTransform::Create();
-            transform->setInputColorSpaceName(inputSpace.c_str());
-
-            transform->setDisplay(display.c_str());
-
-            transform->setView(view.c_str());
-
-            // Specify an (optional) linear color correction
-            if (gain != 1.) {
-                float m44[16];
-                float offset4[4];
-                const float slope4f[] = { (float)gain, (float)gain, (float)gain, (float)gain };
-                OCIO::MatrixTransform::Scale(m44, offset4, slope4f);
-
-                OCIO::MatrixTransformRcPtr mtx = OCIO::MatrixTransform::Create();
-                mtx->setValue(m44, offset4);
-
-                transform->setLinearCC(mtx);
-            }
-
-            // Specify an (optional) post-display transform.
-            if (gamma != 1.) {
-                float exponent = 1.0f / (std::max)(1e-6f, (float)gamma);
-                const float exponent4f[] = { exponent, exponent, exponent, exponent };
-                OCIO::ExponentTransformRcPtr cc = OCIO::ExponentTransform::Create();
-                cc->setValue(exponent4f);
-                transform->setDisplayCC(cc);
-            }
-
-            // Add Channel swizzling
-            if (channel != eChannelSelectorRGB) {
-                int channelHot[4] = { 0, 0, 0, 0 };
-
-                switch (channel) {
-                case eChannelSelectorLuminance: // Luma
-                    channelHot[0] = 1;
-                    channelHot[1] = 1;
-                    channelHot[2] = 1;
-                    break;
-                // case eChannelSelectorMatteOverlay: //  Channel overlay mode. Do rgb, and then swizzle later
-                //     channelHot[0] = 1;
-                //     channelHot[1] = 1;
-                //     channelHot[2] = 1;
-                //     channelHot[3] = 1;
-                //     break;
-                case eChannelSelectorRGB: // RGB
-                    channelHot[0] = 1;
-                    channelHot[1] = 1;
-                    channelHot[2] = 1;
-                    channelHot[3] = 1;
-                    break;
-                case eChannelSelectorR: // R
-                    channelHot[0] = 1;
-                    break;
-                case eChannelSelectorG: // G
-                    channelHot[1] = 1;
-                    break;
-                case eChannelSelectorB: // B
-                    channelHot[2] = 1;
-                    break;
-                case eChannelSelectorA: // A
-                    channelHot[3] = 1;
-                    break;
-                default:
-                    break;
-                }
-
-                float lumacoef[3];
-                config->getDefaultLumaCoefs(lumacoef);
-                float m44[16];
-                float offset[4];
-                OCIO::MatrixTransform::View(m44, offset, channelHot, lumacoef);
-                OCIO::MatrixTransformRcPtr swizzle = OCIO::MatrixTransform::Create();
-                swizzle->setValue(m44, offset);
-                transform->setChannelView(swizzle);
-            }
-
-            return config->getProcessor(context, transform, OCIO::TRANSFORM_DIR_FORWARD);
-#endif // OCIO_VERSION_HEX < 0x02000000
         });
     } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
         setPersistentMessage(Message::eMessageError, "", e.what());
