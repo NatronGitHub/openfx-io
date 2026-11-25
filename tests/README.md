@@ -63,7 +63,7 @@ make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync p
 make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
 make test-writeffmpeg-codec-edit-during-begin # WriteFFmpeg: the Codec edited during beginSequenceRender (#319)
 make test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitizer: no data race (not in make test)
-make test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218)
+make test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218); pixel format codings (#403)
 make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
 make test-writeffmpeg-missing-encoder # WriteFFmpeg fails the render if the selected encoder is missing (#388)
 make test-writeffmpeg-format-from-filename # WriteFFmpeg: the Format menu entry chosen from the output filename (#382)
@@ -195,6 +195,34 @@ the real render pipeline, linked directly (no host binary):
   `g=1 =2`, an empty value, an unterminated single quote, double quotes) must
   make `beginSequenceRender` fail with an error that says what is wrong and at
   which character, and so must invalid values (`g=abc`, `write_tmcd=abc`).
+  Issue [#127](https://github.com/NatronGitHub/openfx-io/issues/127): the ffmpeg
+  command line (`-preset slow`, `preset slow`, `-bf`) gets a hint
+  (`write "preset=slow", not "-preset slow"`), positions count UTF-8
+  characters, not bytes, an empty quoted value or key (`g=''`, `a= ''`,
+  `''=x`) is a "missing value" or "missing key" with its position, and a
+  double quote is reported as such, also where it causes another error first
+  (`x264-params= "keyint=1:bframes=0"`, `a "b"=1`).
+* **WriteFFmpeg sets no param in beginSequenceRender** ([#398](https://github.com/NatronGitHub/openfx-io/issues/398)):
+  the `codecShortName` param is set after `kOfxActionCreateInstance` to mpeg4,
+  or to v308 when FFmpeg (9) has no v308 encoder, while the Codec param is
+  ProRes 4444, and no `kOfxActionInstanceChanged` comes before the render. The
+  test host counts the `paramSetValue` calls: `beginSequenceRender` must make
+  none, and neither must the frames and `endSequenceRender` (ofxParam.h
+  allows them only in `kOfxActionInstanceChanged` and interact actions); the
+  movie must be mpeg4, or rawvideo with the v308 tag (skipped, with a SKIP
+  line, when FFmpeg 8 has a v308 encoder). A project saved with v308 at the
+  Codec index of rawvideo: the first `kOfxActionInstanceChanged` must set
+  `codecShortName` to rawvideo and Pref. Pixel Coding to 4:4:4.
+* **WriteFFmpeg, the file of each frame** (issues [#137](https://github.com/NatronGitHub/openfx-io/issues/137), [#140](https://github.com/NatronGitHub/openfx-io/issues/140)):
+  from the second frame on, the file param names the open file through
+  another path (`.` and `..` components, a `file:` url, a symbolic link to the
+  directory, `/tmp` and `/private/tmp` on macOS, another case on Windows and
+  on a case-insensitive file system, a hard link made once the file is open):
+  the frames are encoded; another file is an error. Not on Windows: a symbolic link
+  in the path of the open file is retargeted after the first frame, and the
+  next frames, rendered through the directory where the file is, are encoded;
+  `dir/lnk/../file`, where `lnk` links to a directory elsewhere, is another
+  file (lexically, it is `dir/file`), and is an error.
 * **WriteFFmpeg start timecode** (issue #78): write short `.mov` and `.mp4`
   files with the `startTimecode` param set (including a drop-frame timecode at
   29.97 fps), and read them back with libavformat: the timecode (tmcd) track
@@ -243,6 +271,13 @@ the real render pipeline, linked directly (no host binary):
   the frame, and black elsewhere (ProRes, 16-bit buffer, and MPEG-4, 8-bit).
   WriteFFmpeg read the image as if it had the size of the movie: out of its
   buffer when it is smaller (a crash in NatronRenderer).
+* **WriteFFmpeg libx265 with 1 or 2 frames** (issues [#217](https://github.com/NatronGitHub/openfx-io/issues/217), [#352](https://github.com/NatronGitHub/openfx-io/issues/352)):
+  run first, 20 times each: libx265 leaves the dts of the first packets
+  uninitialized when fewer frames than its B-frame delay are encoded. Each
+  movie must have all its frames, and the dts of its packets must increase
+  and not be after their pts. WriteFFmpeg replaces that dts, and must not log
+  its garbage value as a warning (`invalid dts -4756802377372372607 for pts
+  0`): only at the verbose level.
 * **WriteFFmpeg uncompressed codecs** (issue #170): a color pattern (with an
   alpha ramp for the formats with alpha) is written with v210 and with
   rawvideo in QuickTime (2vuy, raw RGB and ARGB, v308, v408 and v410), Matroska, NUT and AVI. libavformat must read back the expected
@@ -406,8 +441,13 @@ the Codec edit clears, was not guarded, and ThreadSanitizer reported the data ra
 encoded in yuv440p with the default preferences. FFV1 is encoded at 720x576 and 720x480 with each Pref. Pixel Coding
 (4:2:0, 4:2:2, 4:4:4) and Bit Depth (8, 10, 12, 16; the source clip is float): the stream must have the format of that
 coding and depth, e.g. yuv422p with the defaults; with Alpha (at 720x576), a format with alpha, at least that depth, and
-the chroma subsampling of the coding, or RGB. Then, for every encoder of the Codec menu that lists a 4:2:2, 4:4:4 or RGB
-format, the Selected Pixel Coding must not be 4:4:0 with a 4:2:2 or 4:4:4 preference, with or without Alpha.
+the chroma subsampling of the coding, or RGB; a less subsampled format only where FFV1 has no format with alpha of that
+subsampling and depth (yuva422p12 for 4:2:0 at 12 bits: FFV1 has no yuva420p12). Then, for every encoder of
+the Codec menu that lists a 4:2:2, 4:4:4 or RGB format, the Selected Pixel Coding must not be 4:4:0 with a 4:2:2 or 4:4:4
+preference, with or without Alpha. First, the same option checks that the coding and bit depth of each pixel format come
+from its descriptor (issue [#403](https://github.com/NatronGitHub/openfx-io/issues/403)): formats of each kind by name,
+p210, nv24 and y210 included, which a list of names used to classify as "none" with a bit depth of 0, and every pixel
+format of the FFmpeg build, except the hardware ones, must have a coding and a bit depth.
 
 `test-writeffmpeg-selected-encoder` (issue [#348](https://github.com/NatronGitHub/openfx-io/issues/348)) runs
 `ofx_render_test OUT --selected-encoder`: for each encoder of the Codec menu that is not the default encoder of its codec

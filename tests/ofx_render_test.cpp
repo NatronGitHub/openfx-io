@@ -26,7 +26,8 @@
  *       there are P frames
  *     - Format Options "movflags=+faststart": the moov atom must precede the mdat atom
  *     - an unknown key must produce a warning naming it, and the file must still be written
- *     - a syntax error must make beginSequenceRender fail with an error message
+ *     - a syntax error must make beginSequenceRender fail with an error message; issue #127: a hint for the ffmpeg
+ *       command line ("-preset slow"), positions in UTF-8 characters, empty quoted values and keys, double quotes
  *
  *   WriteFFmpeg views (issues #116, #129):
  *     - render views 1 and 0 of each frame (view 1 first, then view 0 first): the movie must be view 0
@@ -79,6 +80,21 @@
  *   WriteFFmpeg libx265 MP4 with 1 or 2 frames (issue #217):
  *     - libx265 gives the first packets an uninitialized dts: each encode must have all its frames (or fail),
  *       and an error of the muxer in the encoder flush must fail endSequenceRender
+ *     - issue #352: the dts of the packets increase and are not after their pts, and WriteFFmpeg does not log the
+ *       dts that it replaces as a warning
+ *
+ *   WriteFFmpeg sets no param in beginSequenceRender (issue #398):
+ *     - the codecShortName param names mpeg4 (or v308, if FFmpeg has no v308 encoder), not the Codec param, and no
+ *       kOfxActionInstanceChanged comes before the render: beginSequenceRender sets no param, and the movie is mpeg4
+ *       (or rawvideo with the v308 tag); no param is set by the render and endSequenceRender either
+ *     - v308 at the Codec index of rawvideo: the first kOfxActionInstanceChanged sets codecShortName to rawvideo and
+ *       Pref. Pixel Coding to 4:4:4
+ *
+ *   WriteFFmpeg, the file param names the open file through another path (issues #137, #140):
+ *     - ".", "..", "file:", a symbolic link to the directory, a hard link (made once the file is open), another case
+ *       on a case-insensitive file system: encoded; another file: an error
+ *     - not on MS Windows: a symbolic link in the path of the open file retargeted during the render does not make it
+ *       another file; dir/lnk/../file (lnk links elsewhere), lexically dir/file, is another file
  *
  *   WriteOIIO test (issue #79):
  *     - render a JPEG while the host has no source image for the render window
@@ -182,7 +198,11 @@
  *   (only this test):
  *     - FFV1 at 720x576 and 720x480, with each Pref. Pixel Coding (4:2:0, 4:2:2, 4:4:4) and Bit Depth: the
  *       stream has the format of that coding and depth (yuv422p with the defaults, not yuv440p); with Alpha, a format
- *       with alpha and that chroma subsampling, or RGB
+ *       with alpha and that chroma subsampling (a less subsampled one if FFV1 has no format with alpha of that
+ *       subsampling and depth: yuva422p12 for 4:2:0 at 12 bits), or RGB
+ *   FFmpeg pixel formats (issue #403), with the same option, first:
+ *     - the coding and bit depth of each pixel format come from its descriptor: some formats of each kind by name
+ *       (p210, nv24 and y210 included), and every pixel format, except the hardware ones, has a coding and a bit depth
  *     - every encoder of the Codec menu that has a 4:2:2, 4:4:4 or RGB format: never 4:4:0 for a 4:2:2 or 4:4:4
  *       preference
  *   WriteFFmpeg encodes with the encoder selected in the Codec menu (issue #348), with the option --selected-encoder
@@ -222,6 +242,7 @@
 #include "ofx_test_host.h"
 #include "GenericWriter.h" // the test writer of #251
 #include "ofxsFileOpen.h" // fopen_utf8()
+#include "PixelFormat.h" // FFmpeg::pixelFormatCoding(), the test of #403
 #include "tuttle/ofxReadWrite.h" // kTuttleOfxImageEffectPropSupportedExtensions
 
 #include <OpenImageIO/imageio.h>
@@ -238,8 +259,10 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <cinttypes> // PRId64
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -327,6 +350,10 @@ struct WriterParams {
     // the file extension)
     std::vector<std::pair<std::string, std::string>> stringsAfterCreate;
     std::string renderFile;          // if not empty, the "filename" param from the second frame on (#137)
+    std::function<void()> beforeSecondFrame; // if set, called before the second frame is rendered (#140)
+    // beginSequenceRender, render and endSequenceRender must not set any param (#398: paramSetValue is only allowed
+    // in kOfxActionInstanceChanged and interact actions, ofxParam.h)
+    bool expectNoParamSetInRender = false;
     bool expectRenderFailure = false; // with renderFile or outputFetchFails: frames 2..N must fail to render
     // with expectRenderFailure: the persistent error after endSequenceRender must contain this
     std::string renderErrorText = "another active render";
@@ -403,6 +430,30 @@ int choiceIndex(Effect& ctx, const char* param, const char* text)
     return -1;
 }
 
+// The number of paramSetValue calls of each param (#398).
+std::map<std::string, int> paramSetCounts(const Effect& ctx)
+{
+    std::map<std::string, int> counts;
+    for (const auto& pr : ctx.params) {
+        counts[pr.first] = pr.second.nSet;
+    }
+    return counts;
+}
+
+// Whether a param was set since the counts before were taken: prints the params that the actions set.
+bool paramsSetSince(const Effect& ctx, const std::map<std::string, int>& before, const char* actions)
+{
+    bool set = false;
+    for (const auto& c : paramSetCounts(ctx)) {
+        const auto it = before.find(c.first);
+        if ((it == before.end()) || (it->second != c.second)) {
+            std::printf("  FAIL: %s set the param %s\n", actions, c.first.c_str());
+            set = true;
+        }
+    }
+    return set;
+}
+
 int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp = WriterParams())
 {
     OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
@@ -461,6 +512,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     }
 
     { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); std::printf("  getClipPreferences = %d\n", cp); }
+    const std::map<std::string, int> setBefore = paramSetCounts(ctx); // (#398)
 
     {
         PropSet a; OfxPropertySetHandle ap = PH(&a);
@@ -474,6 +526,11 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             pSetInt(ap, kFnOfxImageEffectPropView, 0, wp.sequenceView);
         }
         const bool began = ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr));
+        if (wp.expectNoParamSetInRender && paramsSetSince(ctx, setBefore, "beginSequenceRender")) {
+            p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            return 1;
+        }
         if (wp.expectBeginFailure) {
             p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
             p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
@@ -511,6 +568,9 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     int rfail = 0;
     gAbort = wp.abortRenders ? 1 : 0;
     for (int t = 1; t <= nFrames; ++t) {
+        if ((t == 2) && wp.beforeSecondFrame) {
+            wp.beforeSecondFrame();
+        }
         if ((t == 2) && !wp.renderFile.empty()) {
             setOverrideString(&ctx, kOfxImageEffectFileParamName, wp.renderFile);
         }
@@ -588,6 +648,9 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             return 0;
         }
         if (!ok(st) && !(wp.allowEncodeFailure && rfail)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
+        if (wp.expectNoParamSetInRender && paramsSetSince(ctx, setBefore, "the render actions")) {
+            return 1;
+        }
         std::lock_guard<std::mutex> lock(gMessagesMutex);
         gWarningAfterRender = gPersistentWarning;
     }
@@ -1183,6 +1246,20 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
     expectFailure("bogus_a=1 =2", nullptr, "missing key before '=' at character 11");
     // an unterminated single quote must not take the rest of the string
     expectFailure("bogus_q='x g=1", nullptr, "unterminated single quote at character 9");
+    // issue #127: the ffmpeg command line gets a hint
+    expectFailure("-preset slow", nullptr, "write \"preset=slow\", not \"-preset slow\"");
+    expectFailure("preset slow", nullptr, "write \"preset=slow\", not \"preset slow\"");
+    expectFailure("g=1 -bf", nullptr, "write \"bf=value\", not \"-bf\"");
+    // issue #127: positions count characters, not the bytes of UTF-8 (U+00E9 is 2 bytes)
+    expectFailure("bogus_\xC3\xA9=1 g", nullptr, "missing '=' after the key \"g\" at character 11,");
+    // issue #127: empty quoted values and keys
+    expectFailure("g=''", nullptr, "missing value after \"g=\" at character 1");
+    expectFailure("bogus_a= '' g=1", nullptr, "missing value after \"bogus_a=\" at character 1");
+    expectFailure("''=x", nullptr, "missing key before '=' at character 3");
+    expectFailure("'bogus=a'=''", nullptr, "missing value after \"'bogus=a'=\" at character 1");
+    // issue #127: a double quote is reported, whatever error it causes later
+    expectFailure(nullptr, "x264-params= \"keyint=1:bframes=0\"", "double quote at character 14: double quotes are not supported");
+    expectFailure("bogus_a \"b\"=1", nullptr, "double quote at character 9: double quotes are not supported");
     std::printf("  -- invalid values: avcodec_open2 and avformat_init_output fail\n");
     expectFailure("g=abc", nullptr, "Could not open video codec");
     expectFailure(nullptr, "write_tmcd=abc", "Unable to initialize output");
@@ -1892,10 +1969,49 @@ struct StreamInfo {
 // "Cannot write frame"), and WriteFFmpeg ignored the error of the flush: endSequenceRender succeeded and the file
 // had no frame (257 bytes). As the dts is uninitialized memory, this happened in 5 to 10 runs out of 40 (when run
 // first, on macOS): each size is encoded 20 times. Each file must succeed and have all its frames.
+// Issue #352: WriteFFmpeg replaces that dts, and logged the garbage value as a warning ("invalid dts
+// -4756802377372372607 for pts 0") at each such render. It is only logged at the verbose level: no "invalid dts" at
+// AV_LOG_WARNING or above, and the dts of the packets in the file increase and are not after their pts.
+std::atomic<int> gInvalidDtsWarnings(0);
+
+void countInvalidDtsWarnings(void* avcl, int level, const char* fmt, va_list vl)
+{
+    if ((level <= AV_LOG_WARNING) && fmt && std::strstr(fmt, "invalid dts")) {
+        ++gInvalidDtsWarnings;
+    }
+    av_log_default_callback(avcl, level, fmt, vl);
+}
+
+// The dts of the video packets of file increase, and none is after its pts (or unset). Returns the number of failures.
+int checkPacketDts(const std::string& file)
+{
+    AVFormatContext* fc = nullptr;
+    if (avformat_open_input(&fc, file.c_str(), nullptr, nullptr) < 0) { std::printf("  FAIL: cannot open %s\n", file.c_str()); return 1; }
+    int failures = 0;
+    const int si = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    AVPacket* pkt = av_packet_alloc();
+    int64_t last = AV_NOPTS_VALUE;
+    while ((si >= 0) && pkt && (av_read_frame(fc, pkt) >= 0)) {
+        if (pkt->stream_index == si) {
+            if ((pkt->dts == AV_NOPTS_VALUE) || ((pkt->pts != AV_NOPTS_VALUE) && (pkt->dts > pkt->pts)) || ((last != AV_NOPTS_VALUE) && (pkt->dts <= last))) {
+                std::printf("  FAIL: packet dts %" PRId64 ", pts %" PRId64 " after dts %" PRId64 "\n", (int64_t)pkt->dts, (int64_t)pkt->pts, (int64_t)last);
+                ++failures;
+            }
+            last = pkt->dts;
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    avformat_close_input(&fc);
+    return failures;
+}
+
 int testWriteFFmpegX265FewFrames(const std::string& outFile)
 {
     if (!avcodec_find_encoder_by_name("libx265")) { std::printf("  SKIP: no libx265 encoder\n"); return 0; }
     int failures = 0;
+    gInvalidDtsWarnings = 0;
+    av_log_set_callback(countInvalidDtsWarnings);
     for (int nFrames = 1; nFrames <= 2; ++nFrames) {
         for (int run = 0; run < 20; ++run) {
             WriterParams wp;
@@ -1904,8 +2020,14 @@ int testWriteFFmpegX265FewFrames(const std::string& outFile)
             int n = 0, nI = 0;
             if (!f) f = probeVideoFrames(outFile, &n, &nI);
             if (!f && (n != nFrames)) { std::printf("  FAIL: decoded %d frames, expected %d\n", n, nFrames); f = 1; }
+            if (!f) f = checkPacketDts(outFile);
             failures += f;
         }
+    }
+    av_log_set_callback(av_log_default_callback);
+    if (gInvalidDtsWarnings) {
+        std::printf("  FAIL: %d \"invalid dts\" warnings: the dts that libx265 leaves uninitialized must not be a warning (issue #352)\n", (int)gInvalidDtsWarnings);
+        ++failures;
     }
     std::remove(outFile.c_str());
     if (failures) std::printf("  FAIL (libx265 with 1 or 2 frames, %d failures)\n", failures);
@@ -2463,6 +2585,102 @@ int testWriterFormatPar0()
     return 0;
 }
 
+// #398: beginSequenceRender (which may be called on a render thread) must not set the params, even if the Codec param
+// does not name the codec of the codecShortName param (a host that sets the params after kOfxActionCreateInstance and
+// calls no kOfxActionInstanceChanged before the render, e.g. a command-line renderer): it encodes with the codec
+// that codecShortName names (mpeg4, while the Codec param is ProRes 4444), or the rawvideo that replaces a missing
+// encoder (a project saved with v308, if this FFmpeg has no v308 encoder: rawvideo, with the v308 tag in QuickTime).
+int testWriteFFmpegCodecNotSetInBegin(const std::string& outFile, int W, int H, int nFrames)
+{
+    int failures = 0;
+    struct Case {
+        const char* label;
+        const char* codecShortName;
+        const char* codec; // that the stream must have
+        const char* tag;   // if not null, that the stream must have
+    };
+    std::vector<Case> cases = { { "codecShortName mpeg4, Codec ProRes 4444", "mpeg4", "mpeg4", nullptr } };
+    if (!avcodec_find_encoder_by_name("v308")) {
+        cases.push_back({ "codecShortName v308 (missing encoder), Codec ProRes 4444", "v308", "rawvideo", "v308" });
+    } else {
+        std::printf("  SKIP: codecShortName v308: this FFmpeg has a v308 encoder (FFmpeg 9 removed it)\n");
+    }
+    for (const Case& c : cases) {
+        WriterParams wp;
+        wp.stringsAfterCreate = { { "codecShortName", c.codecShortName } };
+        wp.expectNoParamSetInRender = true;
+        std::printf("  -- %s\n", c.label);
+        if (testWriteFFmpeg(outFile, W, H, nFrames, wp)) {
+            ++failures;
+            continue;
+        }
+        StreamInfo info;
+        if (probeStream(outFile, &info)) {
+            ++failures;
+            continue;
+        }
+        if ((info.codec != c.codec) || (c.tag && (info.tag != c.tag))) {
+            std::printf("  FAIL: codec %s, tag %s; expected %s, %s\n", info.codec.c_str(), info.tag.c_str(), c.codec, c.tag ? c.tag : "any");
+            ++failures;
+        }
+    }
+    std::remove(outFile.c_str());
+    std::printf(failures ? "  FAIL (params set in beginSequenceRender)\n" : "  PASS (no param set in beginSequenceRender)\n");
+    return failures;
+}
+
+// #398: a project saved with the missing v308 encoder, whose Codec index is already the one of rawvideo (e.g. saved
+// by a build whose menu has rawvideo at that index). The first main thread action (kOfxActionInstanceChanged) must
+// replace the codec (codecShortName rawvideo, Pref. Pixel Coding 4:4:4), as for any other index: else the
+// replacement would stay pending, and the Pref. params that the user edits would have no effect.
+int testWriteFFmpegMissingCodecAtRawvideoIndex(const std::string& outFile)
+{
+    if (avcodec_find_encoder_by_name("v308")) {
+        std::printf("  SKIP: this FFmpeg has a v308 encoder (FFmpeg 9 removed it)\n");
+        return 0;
+    }
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+    Effect inst;
+    inst.delegate = &ctx;
+    setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    int failures = 0;
+    const int rawvideo = choiceIndex(ctx, "codec", "Uncompressed RGB or Y'CbCr");
+    if (rawvideo < 0) {
+        std::printf("  FAIL: no rawvideo in the Codec menu\n");
+        ++failures;
+    } else {
+        // the params of the project, set after kOfxActionCreateInstance (which checks the codec)
+        setOverrideInt(&ctx, "codec", rawvideo);
+        setOverrideString(&ctx, "codecShortName", "v308");
+        setOverrideInt(&ctx, "prefPixelCoding", 0); // 4:2:0
+        PropSet a; OfxPropertySetHandle ap = PH(&a);
+        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(ap, kOfxPropName, 0, "prefBitDepth");
+        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(ap, kOfxPropTime, 0, 1.);
+        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        const ParamRec& shortName = ctx.params["codecShortName"];
+        const ParamRec& coding = ctx.params["prefPixelCoding"];
+        const std::string name = shortName.ov.s.empty() ? std::string() : shortName.ov.s[0];
+        const int c = coding.ov.i.empty() ? -1 : coding.ov.i[0];
+        std::printf("  after kOfxActionInstanceChanged: codecShortName %s, prefPixelCoding %d\n", name.c_str(), c);
+        if ((name != "rawvideo") || (c != 2)) {
+            std::printf("  FAIL: expected codecShortName rawvideo and prefPixelCoding 2 (YUV444): the replacement of v308 was not set\n");
+            ++failures;
+        }
+    }
+    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    std::printf(failures ? "  FAIL (v308 at the rawvideo index)\n" : "  PASS (v308 at the rawvideo index: replaced on the main thread)\n");
+    return failures;
+}
+
 // #137: the file param at a frame may name the open file through another path (a symbolic link, as /tmp
 // and /private/tmp on macOS, "." components, a "file:" url, or another case on Windows): it is encoded.
 // Another file is still an error.
@@ -2519,6 +2737,44 @@ int testWriteFFmpegSameFile(const std::string& outFile, int W, int H, int nFrame
         std::printf("  -- %s: %s\n", a.first.c_str(), a.second.c_str());
         failures += testWriteFFmpeg(outFile, W, H, nFrames, wp) || testReadFFmpeg(outFile, W, H, nFrames);
     }
+    // #140: a hard link to the open file, made once it is open (beginSequenceRender replaces the file): the same file
+    // (std::filesystem::equivalent(), also on MS Windows)
+    {
+        const std::string hardLink = out.string() + ".hardlink.mov";
+        std::error_code ec2;
+        fs::remove(hardLink, ec2);
+        WriterParams wp;
+        wp.renderFile = hardLink;
+        wp.beforeSecondFrame = [&]() {
+            std::error_code e;
+            fs::create_hard_link(out, hardLink, e);
+            if (e) std::printf("  hard link %s: %s\n", hardLink.c_str(), e.message().c_str());
+        };
+        std::printf("  -- hard link: %s\n", hardLink.c_str());
+        failures += testWriteFFmpeg(outFile, W, H, nFrames, wp) || testReadFFmpeg(outFile, W, H, nFrames);
+        fs::remove(hardLink, ec2);
+    }
+#ifndef _WIN32
+    // #140: another case of the file name on a case-insensitive file system (macOS, by default): the same file
+    {
+        const std::string probe = out.string() + ".caseprobe";
+        std::string probeUpper = probe;
+        for (size_t i = probe.size() - std::strlen("caseprobe"); i < probe.size(); ++i) probeUpper[i] = (char)std::toupper((unsigned char)probe[i]);
+        std::FILE* f = std::fopen(probe.c_str(), "wb");
+        if (f) std::fclose(f);
+        std::error_code ec2;
+        const bool caseInsensitive = fs::exists(probeUpper, ec2);
+        fs::remove(probe, ec2);
+        if (caseInsensitive) {
+            std::string upper = base;
+            for (char& c : upper) c = (char)std::toupper((unsigned char)c);
+            WriterParams wp;
+            wp.renderFile = dir + "/" + upper;
+            std::printf("  -- other case, on a case-insensitive file system: %s\n", wp.renderFile.c_str());
+            failures += testWriteFFmpeg(outFile, W, H, nFrames, wp) || testReadFFmpeg(outFile, W, H, nFrames);
+        }
+    }
+#endif
     {
         WriterParams wp;
         wp.renderFile = out.string() + ".other.mov";
@@ -2529,6 +2785,55 @@ int testWriteFFmpegSameFile(const std::string& outFile, int W, int H, int nFrame
     }
 #ifndef _WIN32
     fs::remove(link, ec);
+    // #140: a symbolic link in the path of the open file is retargeted during the render: the frames rendered through
+    // the directory where the file is (the target of the link at beginSequenceRender) are still the same file
+    {
+        const fs::path d1 = out.string() + ".d1", d2 = out.string() + ".d2", dirLink = out.string() + ".dlnk";
+        fs::remove_all(d1, ec);
+        fs::remove_all(d2, ec);
+        fs::remove(dirLink, ec);
+        fs::create_directory(d1, ec);
+        fs::create_directory(d2, ec);
+        fs::create_directory_symlink(d1, dirLink, ec);
+        if (ec) { std::printf("  FAIL: symlink %s: %s\n", dirLink.string().c_str(), ec.message().c_str()); return 1; }
+        {
+            // testWriteFFmpeg() checks that the file that it was given (in d2 after the render) is not empty: another
+            // file there; testReadFFmpeg() then reads the movie in d1
+            std::FILE* f = std::fopen((d2 / base).string().c_str(), "wb");
+            if (f) {
+                std::fputs("not the movie", f);
+                std::fclose(f);
+            }
+        }
+        WriterParams wp;
+        wp.renderFile = (d1 / base).string();
+        wp.beforeSecondFrame = [&]() {
+            std::error_code e;
+            fs::remove(dirLink, e);
+            fs::create_directory_symlink(d2, dirLink, e);
+        };
+        std::printf("  -- %s, the link retargeted to %s after the first frame, then %s\n", (dirLink / base).string().c_str(), d2.string().c_str(), wp.renderFile.c_str());
+        failures += testWriteFFmpeg((dirLink / base).string(), W, H, nFrames, wp) || testReadFFmpeg(wp.renderFile, W, H, nFrames);
+        fs::remove(dirLink, ec);
+        fs::remove_all(d1, ec);
+        fs::remove_all(d2, ec);
+    }
+    // #140: dir/lnk/../file, where lnk is a link to a directory elsewhere, is lexically dir/file, but it is another file
+    {
+        const fs::path other = out.string() + ".d3", sub = other / "sub", subLink = out.string() + ".sublnk";
+        fs::remove_all(other, ec);
+        fs::remove(subLink, ec);
+        fs::create_directories(sub, ec);
+        fs::create_directory_symlink(sub, subLink, ec);
+        if (ec) { std::printf("  FAIL: symlink %s: %s\n", subLink.string().c_str(), ec.message().c_str()); return 1; }
+        WriterParams wp;
+        wp.renderFile = subLink.string() + "/../" + base;
+        wp.expectRenderFailure = true;
+        std::printf("  -- another file, lexically the same: %s\n", wp.renderFile.c_str());
+        failures += testWriteFFmpeg(outFile, W, H, nFrames, wp);
+        fs::remove(subLink, ec);
+        fs::remove_all(other, ec);
+    }
 #endif
     std::remove(outFile.c_str());
     return failures ? 1 : 0;
@@ -4865,6 +5170,23 @@ bool encoderHasFormatFor422(const AVCodec* c)
     }
     return false;
 }
+
+// Whether the encoder lists a pixel format with alpha, this chroma subsampling (log2) and this bit depth.
+bool encoderHasAlphaFormat(const AVCodec* c, int log2w, int log2h, int depth)
+{
+    const void* configs = nullptr;
+    int n = 0;
+    if ((avcodec_get_supported_config(nullptr, c, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, &n) < 0) || !configs) return false;
+    const AVPixelFormat* fmts = static_cast<const AVPixelFormat*>(configs);
+    for (int i = 0; i < n; ++i) {
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(fmts[i]);
+        if (d && (d->flags & AV_PIX_FMT_FLAG_ALPHA) && !(d->flags & AV_PIX_FMT_FLAG_RGB) && (d->log2_chroma_w == log2w)
+            && (d->log2_chroma_h == log2h) && (d->comp[0].depth == depth)) {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
 
 // #218: the pixel format that WriteFFmpeg selects must fit the Pref. Pixel Coding. 4:4:0 (one chroma sample per 1x2
@@ -4873,9 +5195,63 @@ bool encoderHasFormatFor422(const AVCodec* c)
 //  - FFV1 at 720x576 and 720x480, Pref. Pixel Coding 4:2:0, 4:2:2 and 4:4:4, Bit Depth 8, 10, 12 and 16 (the source
 //    clip is float, so the Bit Depth is what selects the depth): the stream must have the format of that coding and
 //    depth (FFV1 has them all); with Alpha (at 720x576), the format must have alpha, at least that depth, and the
-//    chroma subsampling of the coding (or be RGB);
+//    chroma subsampling of the coding (or be RGB), or a less subsampled one if FFV1 has no format with alpha of that
+//    subsampling and depth (it has yuva422p12, but no yuva420p12, #403);
 //  - every encoder of the Codec menu that lists a format for 4:2:2 (see encoderHasFormatFor422()): the selected
 //    format must not be 4:4:0 with a 4:2:2 or 4:4:4 preference, with or without alpha, at every bit depth.
+// #403: the coding and bit depth of a pixel format come from its descriptor, so that the formats that a list of names
+// did not have (e.g. p210, nv24, y210: "none", bit depth 0) are classified too: some formats of each kind are checked
+// by name, and every pixel format of this FFmpeg, except the hardware ones, must have a coding and a bit depth.
+int testPixelFormatCoding()
+{
+    std::printf("==== FFmpeg pixel formats: the coding and bit depth come from the descriptor (issue #403) ====\n");
+    using OFX::FFmpeg::PixelCodingEnum;
+    int failures = 0;
+    struct Case {
+        const char* name;
+        PixelCodingEnum coding;
+        int depth;
+    };
+    const Case cases[] = {
+        { "yuv420p", OFX::FFmpeg::ePixelCodingYUV420, 8 }, { "yuv440p", OFX::FFmpeg::ePixelCodingYUV440, 8 },
+        { "yuv422p10le", OFX::FFmpeg::ePixelCodingYUV422, 10 }, { "ayuv64le", OFX::FFmpeg::ePixelCodingYUV444, 16 },
+        { "p210le", OFX::FFmpeg::ePixelCodingYUV422, 10 }, { "nv24", OFX::FFmpeg::ePixelCodingYUV444, 8 },
+        { "y210le", OFX::FFmpeg::ePixelCodingYUV422, 10 }, { "p016le", OFX::FFmpeg::ePixelCodingYUV420, 16 },
+        { "yuv410p", OFX::FFmpeg::ePixelCodingYUV410, 8 }, { "uyyvyy411", OFX::FFmpeg::ePixelCodingYUV411, 8 },
+        { "gray", OFX::FFmpeg::ePixelCodingGray, 8 }, { "ya16le", OFX::FFmpeg::ePixelCodingGray, 16 },
+        { "grayf32le", OFX::FFmpeg::ePixelCodingGray, 32 }, { "pal8", OFX::FFmpeg::ePixelCodingPalette, 8 },
+        { "bayer_rggb8", OFX::FFmpeg::ePixelCodingBayer, 8 }, { "bayer_rggb16le", OFX::FFmpeg::ePixelCodingBayer, 16 },
+        { "xyz12le", OFX::FFmpeg::ePixelCodingXYZ, 12 }, { "gbrp", OFX::FFmpeg::ePixelCodingRGB, 8 },
+        { "rgb565le", OFX::FFmpeg::ePixelCodingRGB, 5 }, { "x2rgb10le", OFX::FFmpeg::ePixelCodingRGB, 10 },
+        { "gbrap14le", OFX::FFmpeg::ePixelCodingRGB, 14 }, { "videotoolbox_vld", OFX::FFmpeg::ePixelCodingNone, 0 },
+    };
+    for (const Case& c : cases) {
+        const AVPixelFormat f = av_get_pix_fmt(c.name);
+        if (f == AV_PIX_FMT_NONE) {
+            std::printf("  (no pixel format %s)\n", c.name);
+            continue;
+        }
+        const PixelCodingEnum coding = OFX::FFmpeg::pixelFormatCoding(f);
+        const int depth = OFX::FFmpeg::pixelFormatBitDepth(f);
+        if ((coding != c.coding) || (depth != c.depth)) {
+            std::printf("  FAIL: %s: coding %d, bit depth %d; expected %d, %d\n", c.name, (int)coding, depth, (int)c.coding, c.depth);
+            ++failures;
+        }
+    }
+    int formats = 0;
+    for (const AVPixFmtDescriptor* d = av_pix_fmt_desc_next(nullptr); d; d = av_pix_fmt_desc_next(d)) {
+        const AVPixelFormat f = av_pix_fmt_desc_get_id(d);
+        ++formats;
+        const PixelCodingEnum coding = OFX::FFmpeg::pixelFormatCoding(f);
+        if (!(d->flags & AV_PIX_FMT_FLAG_HWACCEL) && ((coding == OFX::FFmpeg::ePixelCodingNone) || (OFX::FFmpeg::pixelFormatBitDepth(f) <= 0))) {
+            std::printf("  FAIL: %s has no coding (%d) or bit depth (%d)\n", d->name, (int)coding, OFX::FFmpeg::pixelFormatBitDepth(f));
+            ++failures;
+        }
+    }
+    std::printf(failures ? "  FAIL (pixel format coding, %d formats)\n" : "  PASS (pixel format coding, %d formats)\n", formats);
+    return failures;
+}
+
 int testWriteFFmpegPixelFormatChoice(const std::string& outFile)
 {
     std::printf("==== WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding, not 4:4:0 for 4:2:2 (issue #218) ====\n");
@@ -4911,12 +5287,19 @@ int testWriteFFmpegPixelFormatChoice(const std::string& outFile)
                         expected = std::string("yuv") + codings[coding] + "p" + ((depths[depth] == 8) ? std::string() : std::to_string(depths[depth]));
                         pass = (av_get_pix_fmt(expected.c_str()) == av_get_pix_fmt(got.c_str()));
                     } else {
-                        // the log2 chroma subsampling of each coding (width, height), or RGB
+                        // the log2 chroma subsampling of each coding (width, height), or RGB; a less subsampled
+                        // format only if FFV1 has no format with alpha of that subsampling and depth (4:2:0 at 12
+                        // bits: yuva422p12, the smallest that fits, since FFV1 has no yuva420p12, #403)
                         const int log2w[] = { 1, 1, 0 };
                         const int log2h[] = { 1, 0, 0 };
-                        expected = std::string("with alpha, ") + codings[coding] + " or RGB, at least " + std::to_string(depths[depth]) + " bits";
+                        const bool exactListed = encoderHasAlphaFormat(avcodec_find_encoder_by_name("ffv1"), log2w[coding], log2h[coding], depths[depth]);
+                        expected = std::string("with alpha, ") + codings[coding] + (exactListed ? "" : " (or less subsampled)") + " or RGB, at least "
+                            + std::to_string(depths[depth]) + " bits";
+                        const bool chromaFits = d
+                            && (exactListed ? ((d->log2_chroma_w == log2w[coding]) && (d->log2_chroma_h == log2h[coding]))
+                                            : ((d->log2_chroma_w <= log2w[coding]) && (d->log2_chroma_h <= log2h[coding])));
                         pass = d && (d->flags & AV_PIX_FMT_FLAG_ALPHA) && (d->comp[0].depth >= depths[depth])
-                               && ((d->flags & AV_PIX_FMT_FLAG_RGB) || ((d->log2_chroma_w == log2w[coding]) && (d->log2_chroma_h == log2h[coding])));
+                               && ((d->flags & AV_PIX_FMT_FLAG_RGB) || chromaFits);
                     }
                     std::printf("  %sffv1 %dx%d %s/%d alpha %d: %s%s%s\n", pass ? "" : "FAIL: ", size.w, size.h, codings[coding], depths[depth], alpha,
                                 got.c_str(), pass ? "" : ", expected ", pass ? "" : expected.c_str());
@@ -5461,7 +5844,7 @@ main(int argc, char** argv)
         } else if (mode == "--codec-params") {
             failures = testWriteFFmpegCodecParams(outFile);
         } else if (mode == "--pixfmt-choice") {
-            failures = testWriteFFmpegPixelFormatChoice(outFile);
+            failures = testPixelFormatCoding() + testWriteFFmpegPixelFormatChoice(outFile);
         } else if (mode == "--selected-encoder") {
             failures = testWriteFFmpegSelectedEncoder(outFile);
         } else if (mode == "--missing-encoder") {
@@ -5879,6 +6262,10 @@ main(int argc, char** argv)
     std::printf("==== WriteFFmpeg, frame rate of 0: the minimum bitrate tolerance is bitrate / 4 ====\n");
     failures += testBitrateToleranceFps0();
 
+    std::printf("==== WriteFFmpeg, beginSequenceRender sets no param, the codecShortName param selects the codec (issue #398) ====\n");
+    failures += testWriteFFmpegCodecNotSetInBegin(outFile + ".i398.mov", W, H, N);
+    std::printf("==== WriteFFmpeg, a project saved with v308 at the Codec index of rawvideo: replaced on the main thread (issue #398) ====\n");
+    failures += testWriteFFmpegMissingCodecAtRawvideoIndex(outFile + ".i398b.mov");
     std::printf("==== WriteFFmpeg, the file param names the open file through another path (issue #137) ====\n");
     failures += testWriteFFmpegSameFile(outFile + ".i137.mov", W, H, N);
 
