@@ -1123,7 +1123,11 @@ still decode at its own frame.
 Any FFmpeg decoder is used ([#339](https://github.com/NatronGitHub/openfx-io/issues/339)): DV, UtVideo in AVI,
 and H.264 (with and without B-frames), MPEG-2 with B-frames and MPEG-1 in AVI must be read frame-accurately (with
 H.264 B-pyramids the decoded frames are 2 frames behind the DTS, and the frame count must not lose the last 2; with
-MPEG-1, only the first packet buffered at open has a PTS, and the reader probes again after a seek). `ffmpeg_read_test --image-files NAME=0|1...` checks which files
+MPEG-1, only the first packet buffered at open has a PTS, and the reader probes again after a seek).
+An APNG of `testsrc2` in RGBA (opaque, [#162](https://github.com/NatronGitHub/openfx-io/issues/162)) has partial
+frames blended over the previous ones (blend op OVER, dispose op PREVIOUS). After seeks, in reverse and in a random
+order, with 1 and 8 decoder threads, every frame must be the sequential one.
+`ffmpeg_read_test --image-files NAME=0|1...` checks which files
 `FFmpegFile::isImageFile()` takes for single images: the extensions of FFmpeg's image2 muxer, except those that a
 demuxer declares (AVIF, animated JPEG XL).
 Forward requests ([#311](https://github.com/NatronGitHub/openfx-io/issues/311)): a request
@@ -1156,6 +1160,9 @@ packets are up to 28 packets apart in decoding order) still decodes from the sta
 the same. The checks bound the seeks, not the bytes decoded per request (up to the two
 intervals). The script first checks with
 `ffprobe` that each clip has leading pictures (a keyframe packet followed by a lower PTS).
+HEVC in MP4 with a CRA every 2 frames ([#162](https://github.com/NatronGitHub/openfx-io/issues/162)) has a leading
+picture before each CRA, which the decoder drops after a seek to that CRA. In the same orders, every frame must be
+the sequential one, with at most 2 seeks per request and none to the start of the file.
 VFR clips with timestamp gaps (24 fps Matroska, MP4 and MOV, as in screen recordings
 or phone videos with dropped frames) have gaps after a B-frame (24 frames, 2 frames
 apart after frame 12), after the first GOP (frames 8-12 missing), and at the end (a
