@@ -23,6 +23,7 @@
  */
 
 #include <cfloat> // DBL_MAX
+#include <climits> // INT_MAX
 
 #include "ofxsMacros.h"
 
@@ -63,7 +64,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.OIIOText"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 
 #ifdef DEBUG
 #define kSupportsTiles 1
@@ -648,6 +649,8 @@ OIIOTextPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         IntParamDescriptor* param = desc.defineIntParam(kParamFontSize);
         param->setLabel(kParamFontSizeLabel);
         param->setHint(kParamFontSizeHint);
+        param->setRange(1, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
+        param->setDisplayRange(1, 500);
         param->setDefault(16);
         param->setAnimates(true);
         if (page) {

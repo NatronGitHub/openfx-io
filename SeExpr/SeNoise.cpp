@@ -124,8 +124,10 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginIdentifier "net.sf.openfx.SeNoise"
 // History:
 // version 1.0: initial version
+// version 1.1: the default of Size is in canonical coordinates in every host (Nuke defaults XY params to normalised);
+//              the default Center is the project centre in hosts that ignore normalised defaults (OFX 1.1, Resolve)
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -690,6 +692,17 @@ public:
         args.renderScale.x = args.renderScale.y = 0.;
         changedParam(args, kParamNoiseType);
         changedParam(args, kParamRampType);
+
+        // last: on a host that ignores normalised defaults (OFX 1.1 hosts, Resolve), the untouched default center
+        // (0.5, 0.5) becomes the project centre. Its setValue may come back as an instanceChanged, which is not a user
+        // edit: keep the "center changed" flag as it was. This only covers a host that sends instanceChanged
+        // synchronously from setValue; a host that queues the notice until after the instance is created still sets
+        // the flag.
+        const bool centerChanged = _centerChanged->getValue();
+        ofxsTransformDenormaliseDefaults(*this);
+        if (_centerChanged->getValue() != centerChanged) {
+            _centerChanged->setValue(centerChanged);
+        }
     }
 
 private:
@@ -1399,6 +1412,7 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setRange(0., 0., DBL_MAX, DBL_MAX);
         param->setDisplayRange(1., 1., 1000., 1000.);
         param->setDoubleType(eDoubleTypeXY);
+        param->setDefaultCoordinateSystem(eCoordinatesCanonical); // Nuke defaults to Normalized for XY and XYAbsolute!
         param->setDefault(kParamNoiseSizeDefault);
         if (page) {
             page->addChild(*param);

@@ -586,6 +586,8 @@ if(TARGET io_tests_ofx)
     io_test(test-ofx14-11 DIR "${B}/.ofx14-11" ENV "${_io_ocio_env}" OFX14_LEVEL=11 COMMAND ${_p} "${B}/.ofx14-11")
     io_test(test-ofx14-gl DIR "${B}/.ofx14-gl" ENV "${_io_ocio_env}" OFX14_GL=1 OFX14_SEQSTATUS=0
             COMMAND ${_p} "${B}/.ofx14-gl")
+    io_test(test-ofx14-resolve DIR "${B}/.ofx14-resolve" ENV "${_io_ocio_env}" OFX14_GL=1 OFX14_HOSTNAME=DaVinciResolve
+            COMMAND ${_p} "${B}/.ofx14-resolve")
     io_test(test-ofx14-full DIR "${B}/.ofx14full" ENV "${_io_ocio_env}" COMMAND ${_p} --full "${B}/.ofx14full")
     # after a plug-in scan (Load and Describe every plug-in, then Unload them all), in the OFX 1.4-only and full hosts
     io_test(test-ofx14-scan DIR "${B}/.ofx14scan" ENV "${_io_ocio_env}" COMMAND ${_p} --scan "${B}/.ofx14scan")

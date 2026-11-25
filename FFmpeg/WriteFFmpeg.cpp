@@ -2422,6 +2422,8 @@ WriteFFmpegPlugin::WriteFFmpegPlugin(OfxImageEffectHandle handle,
     , _codecOptions(nullptr)
     , _formatOptions(nullptr)
 {
+    // also on the instance: Resolve and Nuke ignore it on the descriptor; without throwing, as on the descriptor
+    getPropertySet().propSetInt(kOfxImageEffectInstancePropSequentialRender, 1, false);
     _rodPixel.x1 = _rodPixel.y1 = 0;
     _rodPixel.x2 = _rodPixel.y2 = -1;
     _format = fetchChoiceParam(kParamFormat);
@@ -7056,6 +7058,8 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamInfoBitDepth);
         param->setLabelAndHint(kParamInfoBitDepthLabel);
+        param->setRange(0, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
+        param->setDisplayRange(0, INT_MAX); // an info field: no slider in Natron (as before)
         param->setAnimates(false);
         param->setEnabled(false);
         param->setEvaluateOnChange(false);
@@ -7068,6 +7072,8 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamInfoBPP);
         param->setLabelAndHint(kParamInfoBPPLabel);
+        param->setRange(0, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
+        param->setDisplayRange(0, INT_MAX); // an info field: no slider in Natron (as before)
         param->setAnimates(false);
         param->setEnabled(false);
         param->setEvaluateOnChange(false);
@@ -7246,6 +7252,7 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             param->setLabel(kParamGopSizeLabel);
             param->setHint(kParamGopSizeHint);
             param->setRange(-1, 30);
+            param->setDisplayRange(-1, 30); // Resolve requires range and display range or values are clamped to (0,0)
             param->setDefault(-1);
             param->setAnimates(false);
             param->setParent(*group);
@@ -7264,6 +7271,7 @@ WriteFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             // #define FF_MAX_B_FRAMES 16
             // @deprecated there is no libavcodec-wide limit on the number of B-frames
             param->setRange(-1, 16);
+            param->setDisplayRange(-1, 16); // Resolve requires range and display range or values are clamped to (0,0)
             param->setDefault(-1); // default is -1, see x264_defaults in libavcodec/libx264.c
             param->setAnimates(false);
             param->setParent(*group);

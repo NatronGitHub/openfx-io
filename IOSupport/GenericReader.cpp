@@ -3396,6 +3396,8 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamFirstFrame);
         param->setLabelAndHint(kParamFirstFrameLabel, kParamFirstFrameHint);
+        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
+        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         param->setDefault(0);
         param->setAnimates(false);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
@@ -3429,6 +3431,8 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamLastFrame);
         param->setLabelAndHint(kParamLastFrameLabel, kParamLastFrameHint);
+        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
+        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         param->setDefault(0);
         param->setAnimates(false);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
@@ -3502,6 +3506,8 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
         IntParamDescriptor* param = desc.defineIntParam(kParamStartingTime);
         param->setLabel(kParamStartingTimeLabel);
         param->setHint(kParamStartingTimeHint);
+        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
+        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         param->setDefault(0);
         param->setAnimates(false);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
@@ -3515,6 +3521,8 @@ GenericReaderDescribeInContextBegin(ImageEffectDescriptor& desc,
         IntParamDescriptor* param = desc.defineIntParam(kParamTimeOffset);
         param->setLabel(kParamTimeOffsetLabel);
         param->setHint(kParamTimeOffsetHint);
+        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
+        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         param->setDefault(0);
         param->setAnimates(false);
         // param->setIsSecretAndDisabled(true); // done in the plugin constructor
