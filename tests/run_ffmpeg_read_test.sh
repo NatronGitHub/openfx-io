@@ -58,7 +58,8 @@
 #     must give the frame displayed at that time, i.e. the last frame at or before
 #     it (--positions). The gaps are after a B-frame (24 frames, 2 frames apart
 #     after frame 12), after the first GOP (frames 8-12 missing), and at the end
-#     (a longer audio track makes the movie last longer than the last frame).
+#     (a longer audio track, or in a video-only Matroska or MP4 a long last frame, makes the movie last longer than
+#     the last frame).
 #   * VFR Matroska with a corrupted frame before a gap (8 bytes of its slice data
 #     overwritten, so that it decodes with errors, concealed by the decoder): the
 #     frames in the gap must be identical to the corrupted frame, as decoded at its own
@@ -77,8 +78,8 @@
 #     to the next keyframe must fail (not decode from a gray frame), the later frames must decode,
 #     in every order; and without damage, every frame must decode in every order, also with B-frames
 #     and in MPEG-2 (issue #366: a seek landed on a P-frame, decoded from a gray frame).
-#   * Truncated ProRes, MJPEG and v210 in MOV (faststart): the missing frames fail with an error,
-#     sequentially and after a seek.
+#   * Truncated ProRes, MJPEG and v210 in MOV (faststart), and MJPEG and H.264 with B-frames (also with AAC) in
+#     Matroska (#189): the missing frames fail with an error, sequentially and after a seek.
 #   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
 #     Hap) with damaged packets: the other frames must give the images of the clean file in every order.
 #   * MPEG-TS with a continuity counter error (a packet flagged as corrupt, but not at the end
@@ -641,17 +642,19 @@ check_damaged_av1() {
     done
 }
 
-# check_truncated_intra NAME DESCRIPTION FIRST_FAIL ENCODER FFMPEG_OUTPUT_ARGS...
-# A 48-frame ramp of an intra-only codec in MOV with the index at the start (faststart), truncated in
-# the middle of the packet of frame 16, which the demuxer flags as corrupt: the frames 16 to 48 have no
-# data, and must fail with an error, as for issue #134, without making the file invalid, sequentially
-# and after a seek (in any render order: the seek reads no packet, and the reader decodes from earlier
-# frames), and the frames before must decode, with 1 and 8 decoder threads. With a long-GOP codec, the
-# frames fail from FIRST_FAIL on (the DTS of the truncated packet, found in the index at open, so that the
-# result does not depend on the render order).
+# check_truncated_intra NAME DESCRIPTION FIRST_FAIL ENCODER AUDIO_SECONDS FFMPEG_OUTPUT_ARGS...
+# A 48-frame ramp (with a silent audio track of AUDIO_SECONDS if it is not 0, interleaved with the video, whose codec
+# is in FFMPEG_OUTPUT_ARGS) truncated in the middle of its 16th video packet: in MOV with the index at the start (faststart,
+# in FFMPEG_OUTPUT_ARGS), whose demuxer flags that packet as corrupt, or in Matroska (#189), whose demuxer drops
+# it, and whose frame count comes from the duration in the header. The frames from FIRST_FAIL on have no data,
+# and must fail with an error, as for issue #134, without making the file invalid, sequentially and after a
+# seek (in any render order: the seek reads no packet, and the reader decodes from earlier frames), and the
+# frames before must decode, with 1 and 8 decoder threads. For an intra-only codec, FIRST_FAIL is 16. For a
+# long-GOP codec in MOV, it is the frame of the DTS of the truncated packet, found in the index at open, so that
+# the result does not depend on the render order; in Matroska, the frame after the end of the last packet.
 check_truncated_intra() {
-    local name="$1" desc="$2" first="$3" encoder="$4"
-    shift 4
+    local name="$1" desc="$2" first="$3" encoder="$4" audio="$5"
+    shift 5
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
@@ -661,7 +664,11 @@ check_truncated_intra() {
         echo "SKIPPED: no ffprobe CLI"
         return
     fi
-    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" -frames:v 48 "$@" -movflags +faststart "$tmp/clean_$name"; then
+    local audioin=()
+    if [ "$audio" != 0 ]; then
+        audioin=(-f lavfi -t "$audio" -i anullsrc=r=48000:cl=mono)
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "$(ramp 24)" ${audioin[@]+"${audioin[@]}"} -frames:v 48 "$@" "$tmp/clean_$name"; then
         echo "FAIL: could not generate clean_$name"
         rc=1
         return
@@ -1365,6 +1372,13 @@ for ext in mkv mp4 mov; do
 done
 check_vfr ramp_end_gap.mkv "VFR MKV (H.264, 24 fps, gaps and a gap at the end)" 20 12 2 2 1.3333 32 -c:a pcm_s16le
 check_vfr ramp_end_gap.mov "VFR MOV (H.264, 24 fps, gaps and a gap at the end)" 20 12 2 2 1.3333 32 -c:a pcm_s16le
+# Video only, with a last frame of 6 frames (BlockDuration in Matroska, stts in MP4): not a truncated file, the last
+# frame holds until the end of the movie (#189).
+for ext in mkv mp4; do
+    EXT="$(echo "$ext" | tr '[:lower:]' '[:upper:]')"
+    check_vfr "ramp_long_last.$ext" "VFR $EXT (H.264, 24 fps, gaps and a long last frame, no audio)" 20 12 2 2 0 32 \
+        -bf 0 -bsf:v "setts=duration=if(eq(N\,19)\,6*DURATION\,DURATION)"
+done
 check_corrupt ramp_corrupt_gap.mkv "VFR MKV (H.264, 24 fps, corrupted B-frame before a gap)" 24 2 2 0 0
 # Sequentially, a seek for frame 1, and one to decode from the start when the corrupted frame
 # is first held: the following frames in the gap must not seek.
@@ -1562,11 +1576,19 @@ for intra in "v210 mov -pix_fmt yuv422p10le" "rawvideo avi" "huffyuv avi -pix_fm
         "if(between(n,10,12)+eq(n,30),1,0)" "1-10,14-30,32-48" ${args:-}
 done
 # Truncated intra-only files: the missing frames fail, sequentially and after a seek.
-check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks -c:v prores_ks
-RAMP_PIX_FMT=yuvj420p check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
-check_truncated_intra ramp_truncated_v210.mov "MOV (v210, faststart, truncated in frame 16)" 16 v210 -c:v v210 -pix_fmt yuv422p10le
-check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 \
+check_truncated_intra ramp_truncated_prores.mov "MOV (ProRes, faststart, truncated in frame 16)" 16 prores_ks 0 -c:v prores_ks -movflags +faststart
+RAMP_PIX_FMT=yuvj420p check_truncated_intra ramp_truncated_mjpeg.mov "MOV (MJPEG, faststart, truncated in frame 16)" 16 mjpeg 0 -c:v mjpeg -q:v 2 -pix_fmt yuvj420p -movflags +faststart
+check_truncated_intra ramp_truncated_v210.mov "MOV (v210, faststart, truncated in frame 16)" 16 v210 0 -c:v v210 -pix_fmt yuv422p10le -movflags +faststart
+check_truncated_intra ramp_truncated_h264.mp4 "MP4 (H.264 with B-frames, faststart, truncated in the 16th packet)" 14 libx264 0 \
+    -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p -movflags +faststart
+RAMP_PIX_FMT=yuvj420p check_truncated_intra ramp_truncated_mjpeg.mkv "Matroska (MJPEG, truncated in frame 16)" 16 mjpeg 0 -c:v mjpeg -q:v 2 -pix_fmt yuvj420p
+# (I0 P3 B1 B2 P6 B4 B5 P7, I8 P11 B9 B10 P14 B12 B13, then P15, cut: frames 1-15 have their packets)
+check_truncated_intra ramp_truncated_h264.mkv "Matroska (H.264 with B-frames, truncated in the 16th packet)" 16 libx264 0 \
     -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p
+# With an AAC track interleaved: the audio packets before the cut end before the video packets (at 555 ms), and
+# frames 1-15 still have their packets.
+check_truncated_intra ramp_truncated_h264_aac.mkv "Matroska (H.264 with B-frames and AAC, truncated in the 16th video packet)" 16 libx264 1.9 \
+    -c:v libx264 -g 8 -bf 2 -x264-params b-adapt=0:scenecut=0 -pix_fmt yuv420p -c:a aac
 
 # Finding the end of the movie must not read the whole file: a 60 s Matroska with a start time (with
 # cues), and FLV files truncated by 7, 377 and 12345 bytes (their last tag is not valid: the duration is

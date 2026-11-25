@@ -1767,6 +1767,7 @@ FFmpegFile::FFmpegFile(const string& filename)
     , _bytesReadAtOpen(0)
     , _readAtOpen(false)
     , _damagedPacketWarned(false)
+    , _packetsEnd(AV_NOPTS_VALUE)
 #ifdef OFX_IO_MT_FFMPEG
     , _lock()
     , _invalidStateLock()
@@ -2889,6 +2890,37 @@ FFmpegFile::seekToFrame(Stream* stream, int64_t frame, int seekFlags)
     return true;
 }
 
+// The end of a packet read by demuxAndDecode() for stream: its PTS (or its DTS, plus the decoder delay of stream, if
+// it has none, e.g. AVI with B-frames), plus its duration, or one frame of stream without one, so that the frame of
+// the last packet is never taken as missing. _packetsEnd is the largest end, over all the streams (_lock held).
+void
+FFmpegFile::notePacketEnd(const Stream& stream, const AVPacket& pkt)
+{
+    if ((pkt.stream_index < 0) || (unsigned(pkt.stream_index) >= _context->nb_streams)) {
+        return;
+    }
+    int64_t ts = pkt.pts;
+    if (ts == int64_t(AV_NOPTS_VALUE)) {
+        ts = pkt.dts;
+        if (ts == int64_t(AV_NOPTS_VALUE)) {
+            return;
+        }
+        if (pkt.stream_index == stream._idx) {
+            ts += stream._startPTS - stream._startDTS;
+        }
+    }
+    const AVRational timeBase = _context->streams[pkt.stream_index]->time_base;
+    const int64_t start = av_rescale_q(ts, timeBase, AV_TIME_BASE_Q);
+    const int64_t duration = (pkt.duration > 0) ? av_rescale_q(pkt.duration, timeBase, AV_TIME_BASE_Q) : stream.frameDuration();
+    // Saturated: a damaged timestamp must not wrap around (ES.103)
+    const int64_t end = ((duration > 0) && (start > std::numeric_limits<int64_t>::max() - duration))
+        ? std::numeric_limits<int64_t>::max()
+        : (start + duration);
+    if ((_packetsEnd == int64_t(AV_NOPTS_VALUE)) || (end > _packetsEnd)) {
+        _packetsEnd = end;
+    }
+}
+
 // avcodec_send_packet() and avcodec_receive_frame() replace avcodec_decode_video2(), see
 // https://github.com/FFmpeg/FFmpeg/blob/9e30859cb60b915f237581e3ce91b0d31592edc0/libavcodec/decode.c#L748
 // Doc for the new AVCodec API: https://blogs.gentoo.org/lu_zero/2016/03/29/new-avcodec-api/
@@ -3323,6 +3355,9 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         if (stream->_restartSingleThread) {
             return hasPicture; // decode() decodes again with 1 thread
         }
+        if (!resending) {
+            notePacketEnd(*stream, *avPacket.pkt());
+        }
 
         if (avPacket->stream_index != stream->_idx) {
             continue;
@@ -3478,6 +3513,24 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         // The decoder is drained: the last decoded frame is displayed until the end of the
         // stream (which may be later than that frame, e.g. if the stream duration is longer).
         // But not at or after the truncated packet of a truncated file: the frames from there on fail.
+        // A demuxer may also drop the partial last packet of a truncated file without an error, e.g. Matroska (n8.0
+        // libavformat/matroskadec.c:1099-1104, 1534-1551, 901-902): if the packets of all the streams end more than one
+        // frame (a duration may be rounded up) before the end of the movie, the frames after them fail too. Not with an
+        // end estimated from the bit rate, or timestamp discontinuities (MPEG-TS flags the partial packet instead).
+        const int64_t lastFrame = stream->_frames - 1;
+        if ((_packetsEnd != int64_t(AV_NOPTS_VALUE)) && !HasTsDiscontinuities(_context) &&
+            (_context->duration_estimation_method != AVFMT_DURATION_FROM_BITRATE) && (lastFrame > 0) &&
+            (lastFrame <= std::numeric_limits<int>::max())) {
+            // Compared in int64, in the time base of stream, before narrowing to a frame (ES.46)
+            const int64_t endPts = av_rescale_q_rnd(_packetsEnd, AV_TIME_BASE_Q, stream->_avstream->time_base,
+                                                    AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+            if ((endPts >= stream->_startPTS) && (endPts < stream->frameToPts(int(lastFrame)))) {
+                const int missingFrom = stream->ptsToFrame(endPts); // in [0, lastFrame]
+                if ((missingFrom < lastFrame) && ((stream->_truncatedFrame < 0) || (missingFrom < stream->_truncatedFrame))) {
+                    stream->_truncatedFrame = missingFrom;
+                }
+            }
+        }
         if ((stream->_truncatedFrame >= 0) && (frame >= stream->_truncatedFrame)) {
             setDecodeError("the file is truncated", "FFmpeg Reader: ");
             return false;

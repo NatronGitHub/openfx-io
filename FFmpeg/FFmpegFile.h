@@ -934,10 +934,11 @@ private:
     int64_t _bytesReadAtOpen; // bytes read from the file by the constructor, for tests
     bool _readAtOpen; // the constructor read or sought in the file, after avformat_find_stream_info()
     bool _damagedPacketWarned; // a warning was logged for a damaged packet
+    int64_t _packetsEnd; // in AV_TIME_BASE units (AV_NOPTS_VALUE if none), guarded by _lock: see notePacketEnd()
 
 #ifdef OFX_IO_MT_FFMPEG
     // _lock guards the decoding state: _context (demuxing, seeking), _demuxedStream, the state of every Stream
-    // (codec context, held frames, conversion context, color overrides), _seekCount and _startSeekCount. decode()
+    // (codec context, held frames, conversion context, color overrides), _seekCount, _startSeekCount and _packetsEnd. decode()
     // holds it from the choice of the stream (the view) to the end of the decode, so that concurrent renders of
     // different views do not decode each other's stream (#291).
     // _invalidStateLock guards _invalidState. _errorMsg is written with both locks held (decode() holds _lock), and
@@ -1238,6 +1239,8 @@ private:
     // a held frame that conceals damage may be displayed in a timestamp gap, and decoding stops at damaged packets.
     // damagedFrom: intra-only, the first frame of the frames up to the requested one known to be damaged (-1 if none)
     bool demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool decodeAsIntraOnly, int damagedFrom = -1);
+    // Updates _packetsEnd with a packet read by demuxAndDecode() for stream (with _lock held).
+    void notePacketEnd(const Stream& stream, const AVPacket& pkt);
 
     bool imageConvert(Stream* stream, AVFrame* avFrameIn, AVFrame* avFrameOut);
 };
