@@ -764,6 +764,7 @@ tested by `io-hostdemo` (CMake, `IO_HOSTDEMO_TESTS`), whose hostDemo unloads it 
 and reads them with ReadEXR (linked with `GenericReader.cpp` and its dependencies) in
 the in-process host of `ofx_test_host.h`, in the Reader context:
 
+* **describe** (both runs): render thread safety FullySafe, version 1.1 (1.0 projects load as is, #386).
 * **pixels**: FLOAT and HALF files, with ZIP, PIZ or no compression, and the data and
   display windows of `hostdemo/run.sh` (offset, crop, overscan): the RoD, and every
   pixel and channel of the image, must be exact (the display window moved to (0,0), y
@@ -804,11 +805,11 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   `test-exr-tsan` and `test-exr-ubsan`; ctest: `test-exr-multiplanar`, and `test-exr-multiplanar-tsan` and
   `test-exr-multiplanar-ubsan` with `IO_TESTS_SANITIZERS`), in a Natron-like host (multiple planes, dynamic choices,
   the host's views by name):
-  * ReadEXR is multi-planar, version 2, and the planes of its getClipComponents, for the views 0 and 1, are those of
-    ReadOIIO (linked in) for the same files: `diffuse.RGBA`, `specular.RGB` and `depth.Z`; plain R, G, B, A with
-    `specular.RGB` and `Z`; Y, RY, BY; `P.X`, `P.Xa.R`, `P.Y`, `P.Z` (layer P's channels are not contiguous in the
-    file); multi-view files (views `left` and `right`, OpenEXR's `depth.right.Z` and Nuke's `right.depth.Z`, a layer in
-    the left view only, and a right view without alpha); and `right.RGBA` in a file without views.
+  * ReadEXR is multi-planar, and the planes of its getClipComponents, for the views 0 and 1, are those of ReadOIIO
+    (linked in) for the same files: `diffuse.RGBA`, `specular.RGB` and `depth.Z`; plain R, G, B, A with `specular.RGB`
+    and `Z`; Y, RY, BY; `P.X`, `P.Xa.R`, `P.Y`, `P.Z` (layer P's channels are not contiguous in the file); multi-view
+    files (views `left` and `right`, OpenEXR's `depth.right.Z` and Nuke's `right.depth.Z`, a layer in the left view
+    only, and a right view without alpha); and `right.RGBA` in a file without views.
   * Each plane of each view reads the file's channels: alpha 1 for a plane without one, in 4 components (a layer, or
     the color plane, e.g. the right view without `right.A`); black for a layer that the view doesn't have. The views
     are matched by name (the host's view 0 may be `right`), and the color plane is the view's plain R, G, B, A, else

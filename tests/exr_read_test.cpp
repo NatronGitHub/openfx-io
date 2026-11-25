@@ -1547,7 +1547,7 @@ main(int argc, char** argv)
     }
     std::printf("==== describe ====\n");
     check(!std::strcmp(safety, kOfxImageEffectRenderFullySafe), "render thread safety: %s", safety);
-    check(p->pluginVersionMajor == 2, "version %u.%u (2: planes and views, #386)", p->pluginVersionMajor, p->pluginVersionMinor);
+    check(p->pluginVersionMajor == 1 && p->pluginVersionMinor == 1, "version %u.%u (1.1: planes and views, #386, are compatible with 1.0)", p->pluginVersionMajor, p->pluginVersionMinor);
     if (multiPlanar) {
         int multiPlanarDesc = 0;
         pGetInt(PH(&desc.props), kFnOfxImageEffectPropMultiPlanar, 0, &multiPlanarDesc);
