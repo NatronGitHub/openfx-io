@@ -39,6 +39,9 @@
 #     non-zero start time and with a longer audio track, and a single GOP larger than that (H.264).
 #   * An MPEG-TS whose end probe fails (its last 4 MB are audio).
 #   * An MPEG-2 elementary stream with B-frames, which has no timestamps.
+#   * MPEG-1 video (B-frames) in MPEG-TS, MPEG-PS (frame count and rate only) and an elementary stream: its r_frame_rate is
+#     twice the frame rate (#353); a larger MPEG-1 elementary stream (frame count and rate only). MPEG-4 with B-frames, whose
+#     first DTS is negative, in an elementary stream and Matroska, and MPEG-2 with B-frames in MXF.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames, and MOV with one that does
 #     not display the first 2 (negative timestamps): they are counted in the stream's number of frames,
 #     but not displayed.
@@ -152,18 +155,17 @@ have_encoder() {
 X264="-c:v libx264 -g 8 -bf 2 -pix_fmt yuv420p"
 
 rc=0
-# check_frames NAME DESCRIPTION ENCODER RATE EXPECTED_FRAMES FIRST_FRAME FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
-# A gray ramp of $NFRAMES frames, of which the reader must report EXPECTED_FRAMES, the first one
-# being ramp frame FIRST_FRAME (0-based), e.g. if an edit list does not display the first frames.
-# FFMPEG_INPUT_ARGS, after "--", are extra ffmpeg inputs, before the ramp (e.g. an audio track:
-# the ramp is then input 1).
-check_frames() {
-    local name="$1" desc="$2" encoder="$3" rate="$4" expected="$5" first="$6"
-    shift 6
+# generate NAME DESCRIPTION ENCODER LAVFI_SOURCE FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
+# Prints the header of a check and makes $tmp/NAME from $NFRAMES frames of LAVFI_SOURCE. Fails (SKIPPED) without
+# the ENCODER, or (FAIL, rc=1) if ffmpeg fails. FFMPEG_INPUT_ARGS, after "--", are extra ffmpeg inputs, before
+# LAVFI_SOURCE (e.g. an audio track: LAVFI_SOURCE is then input 1).
+generate() {
+    local name="$1" desc="$2" encoder="$3" source="$4"
+    shift 4
     echo "== $desc =="
     if ! have_encoder "$encoder"; then
         echo "SKIPPED: no $encoder encoder in the ffmpeg CLI"
-        return
+        return 1
     fi
     local outargs=() inargs=()
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do
@@ -174,11 +176,21 @@ check_frames() {
         shift
         inargs=("$@")
     fi
-    if ! ffmpeg -y -loglevel error ${inargs[@]+"${inargs[@]}"} -f lavfi -i "$(ramp "$rate")" -frames:v "$NFRAMES" ${outargs[@]+"${outargs[@]}"} "$tmp/$name"; then
+    if ! ffmpeg -y -loglevel error ${inargs[@]+"${inargs[@]}"} -f lavfi -i "$source" -frames:v "$NFRAMES" ${outargs[@]+"${outargs[@]}"} "$tmp/$name"; then
         echo "FAIL: could not generate $name"
         rc=1
-        return
+        return 1
     fi
+}
+
+# check_frames NAME DESCRIPTION ENCODER RATE EXPECTED_FRAMES FIRST_FRAME FFMPEG_OUTPUT_ARGS... [-- FFMPEG_INPUT_ARGS...]
+# A gray ramp of $NFRAMES frames, of which the reader must report EXPECTED_FRAMES, the first one
+# being ramp frame FIRST_FRAME (0-based), e.g. if an edit list does not display the first frames.
+# FFMPEG_INPUT_ARGS: see generate().
+check_frames() {
+    local name="$1" desc="$2" encoder="$3" rate="$4" expected="$5" first="$6"
+    shift 6
+    generate "$name" "$desc" "$encoder" "$(ramp "$rate")" "$@" || return 0
     # shellcheck disable=SC2086
     "$bin" "$tmp/$name" --monotonic --tol 3 --ramp "$((16 + 4 * first)),4" --frames "$expected" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
@@ -188,6 +200,17 @@ check() {
     local name="$1" desc="$2" encoder="$3" rate="$4"
     shift 4
     check_frames "$name" "$desc" "$encoder" "$rate" "$NFRAMES" 0 "$@"
+}
+
+# check_count NAME DESCRIPTION ENCODER LAVFI_SOURCE FFMPEG_OUTPUT_ARGS...
+# Only the number of frames ($NFRAMES) and the frame rate (24 fps) of a 24 fps clip of LAVFI_SOURCE, without
+# decoding it. The open is not bounded (unlike check_open): it may read the whole file to count the frames.
+check_count() {
+    local name="$1" desc="$2" encoder="$3" source="$4"
+    shift 4
+    generate "$name" "$desc" "$encoder" "$source" "$@" || return 0
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --frames "$NFRAMES" --fps 24 --open-only ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 
 # The files that FFmpegFile::isImageFile() takes for single images (#339): the extensions of FFmpeg's image2 muxer, in
@@ -1269,6 +1292,22 @@ check_large_nut large_h264_gop_noidx.nut "Large NUT without an index (lossless H
     -c:v libx264 -qp 0 -g 1000 -x264-params scenecut=0 -pix_fmt yuv420p -write_index 0 -- --open-only
 # An elementary stream has no timestamps: the last frame is a reference frame without a PTS.
 check ramp_bframes.m2v "MPEG-2 elementary stream (B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
+# MPEG-1 video can code fields (AV_CODEC_PROP_FIELDS): r_frame_rate is twice its frame rate, 48 fps (#353). Its
+# elementary stream has no timestamps either, and the duration estimated from its bit rate (the VBR value) is 1 ms.
+check ramp_mpeg1.ts "MPEG-TS (MPEG-1 video, B-frames)" mpeg1video 24 -c:v mpeg1video -bf 2 -g 8 -q:v 2
+check ramp_mpeg1.m1v "MPEG-1 elementary stream (B-frames)" mpeg1video 24 -c:v mpeg1video -bf 2 -g 8 -q:v 2 -f mpeg1video
+# MPEG-PS: only the frame count. After a seek, some frames are read one frame late, also by ffmpeg -ss (#353).
+check_count ramp_mpeg1.mpg "MPEG-PS (MPEG-1 video, B-frames): frame count" mpeg1video "$(ramp 24)" \
+    -c:v mpeg1video -bf 2 -g 8 -q:v 2 -f mpeg
+# A larger MPEG-1 elementary stream, whose duration estimated from the bit rate is a few frames (not 40): the
+# stream duration has the same estimate.
+check_count testsrc_mpeg1.m1v "MPEG-1 elementary stream (1920x1080): frame count" mpeg1video testsrc2=size=1920x1080:rate=24 \
+    -c:v mpeg1video -f mpeg1video
+# B-frames whose first DTS is negative, and whose first frame is at 0 (#353): an MPEG-4 elementary stream (a generic
+# index, keyed by the DTS), Matroska and MXF.
+check ramp_bframes_mpeg4.m4v "MPEG-4 elementary stream (B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -f m4v
+check ramp_mpeg4_bf.mkv "Matroska (MPEG-4, B-frames)" mpeg4 24 -c:v mpeg4 -bf 2
+check ramp_mpeg2_bf.mxf "MXF (MPEG-2, B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
 # An edit list that starts after the first frames (negative timestamps): they are not displayed.
 check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed: negative timestamp)" libx264 24 39 1 \
     $X264 -output_ts_offset -0.041666666666666667

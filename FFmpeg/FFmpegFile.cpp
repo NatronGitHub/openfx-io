@@ -1341,8 +1341,17 @@ FFmpegFile::probeEnd(Stream& stream,
         const int64_t ts = (avPacket->pts != int64_t(AV_NOPTS_VALUE)) ? avPacket->pts : avPacket->dts;
         if ((ts != int64_t(AV_NOPTS_VALUE)) && !(avPacket->flags & AV_PKT_FLAG_DISCARD)) {
             int64_t duration = avPacket->duration;
-            if ((duration <= 0) && (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) && (st->r_frame_rate.num > 0) && (st->r_frame_rate.den > 0)) {
-                duration = av_rescale_q(1, av_inv_q(st->r_frame_rate), st->time_base);
+            // A video packet without a duration lasts one frame of its stream. The frame rate is
+            // av_guess_frame_rate()'s, as in FFmpegFile(), not r_frame_rate, which may be a field rate.
+            if ((duration <= 0) && (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)) {
+                if (avPacket->stream_index == stream._idx) {
+                    duration = av_rescale_q(frameDuration, AV_TIME_BASE_Q, st->time_base);
+                } else {
+                    const AVRational rate = av_guess_frame_rate(_context, _context->streams[avPacket->stream_index], nullptr);
+                    if ((rate.num > 0) && (rate.den > 0)) {
+                        duration = av_rescale_q(1, av_inv_q(rate), st->time_base);
+                    }
+                }
             }
             const int64_t e = av_rescale_q(ts + (std::max)(int64_t(0), duration), st->time_base, AV_TIME_BASE_Q);
             if ((end == int64_t(AV_NOPTS_VALUE)) || (e > end)) {
@@ -1420,7 +1429,13 @@ FFmpegFile::getStreamFrames(Stream& stream)
     // Obtain from movie duration if specified. This is preferred since mov/mp4 formats allow the media in
     // tracks (=streams) to be remapped in time to the final movie presentation without needing to recode the
     // underlying tracks content; the movie duration thus correctly describes the final presentation.
-    if (frames <= 0 && _context->duration > 0) {
+    // A format without timestamps (AVFMT_NOTIMESTAMPS, e.g. a raw elementary stream) whose duration libavformat
+    // estimated from the bit rate (FFmpeg n9.0.2 libavformat/demux.c:2054-2057, also the stream duration,
+    // demux.c:1845-1858) may be far off (e.g. 1 ms for 40 frames, with the VBR bit rate value of MPEG-1): neither
+    // duration is used, and its frames are counted from the timestamps of the packets (below), which the parser
+    // gives them.
+    const bool durationFromBitRateOnly = (_context->iformat->flags & AVFMT_NOTIMESTAMPS) && (_context->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE);
+    if (frames <= 0 && _context->duration > 0 && !durationFromBitRateOnly) {
         // Annoyingly, FFmpeg exposes the movie duration converted (with round-to-nearest semantics) to units of
         // AV_TIME_BASE (microseconds in practice) and does not expose the original rational number duration
         // from a mov/mp4 file's "mvhd" atom/box. Accuracy may be lost in this conversion; a duration that was
@@ -1589,7 +1604,7 @@ FFmpegFile::getStreamFrames(Stream& stream)
     }
 
     // If number of frames still unknown, attempt to calculate from stream's duration, fps and timebase.
-    if (frames <= 0 && stream._avstream->duration > 0) {
+    if (frames <= 0 && stream._avstream->duration > 0 && !durationFromBitRateOnly) {
 #if TRACE_FILE_OPEN
         std::cout << "        Not specified by AVStream::nb_frames, calculating from duration & framerate..." << std::endl;
 #endif
@@ -1750,9 +1765,16 @@ FFmpegFile::FFmpegFile(const string& filename)
     // enabling drefs to allow reading from external tracks
     // this enables quicktime reference files demuxing
     av_dict_set(&demuxerOptions, "enable_drefs", "1", 0);
+    // Scan all the program map tables, as ffmpeg, ffprobe and ffplay do (FFmpeg n9.0.2 fftools/ffmpeg_demux.c:
+    // 2163-2166, fftools/ffprobe.c:2574-2577, fftools/ffplay.c:2916-2919): otherwise avformat_find_stream_info()
+    // may leave the average frame rate unknown (e.g. MPEG-1 video in MPEG-TS), and av_guess_frame_rate() (see
+    // below) cannot tell a field rate from a frame rate. Like enable_drefs, the option is ignored by the demuxers
+    // that do not have it.
+    av_dict_set(&demuxerOptions, "scan_all_pmts", "1", 0);
     const int openError = avformat_open_input(&_context, _filename.c_str(), nullptr, &demuxerOptions);
     // On success, demuxerOptions is destroyed and replaced with a dict containing the options that were not found
-    // (this is OK: enable_drefs is a valid option only for mov/mp4/3gp, https://ffmpeg.org/ffmpeg-formats.html#Options-1).
+    // (this is OK: enable_drefs is a valid option only for mov/mp4/3gp, https://ffmpeg.org/ffmpeg-formats.html#Options-1,
+    // and scan_all_pmts only for MPEG-TS).
     // On failure, avformat_open_input leaves it as is (libavformat/demux.c, avformat_open_input(), "fail:" frees only
     // its copy). Free it in both cases.
     av_dict_free(&demuxerOptions);
@@ -1923,11 +1945,15 @@ FFmpegFile::FFmpegFile(const string& filename)
         // Indexes of formats with timestamp discontinuities cannot be trusted (see Stream::decodeForwardIsCheaper()).
         stream->_indexReliable = !(_context->iformat->flags & AVFMT_TS_DISCONT);
 
-        // If FPS is specified, record it.
-        // Otherwise assume 1 fps (default value).
-        if ((avstream->r_frame_rate.num != 0) && (avstream->r_frame_rate.den != 0)) {
-            stream->_fpsNum = avstream->r_frame_rate.num;
-            stream->_fpsDen = avstream->r_frame_rate.den;
+        // The frame rate is av_guess_frame_rate()'s (1 fps, the default value, if it is unknown), as in ffmpeg
+        // and ffplay (FFmpeg n9.0.2 fftools/ffmpeg_demux.c:1085, fftools/ffplay.c:1910): AVStream::r_frame_rate
+        // may be the field rate of a codec that can code fields (AV_CODEC_PROP_FIELDS), e.g. twice the frame rate
+        // of progressive MPEG-1 or H.264 (libavformat/demux.c:3061-3068), and av_guess_frame_rate() then gives
+        // the codec frame rate (libavformat/avformat.c:807-829). ffprobe shows r_frame_rate as is.
+        const AVRational frameRate = av_guess_frame_rate(_context, avstream, nullptr);
+        if ((frameRate.num > 0) && (frameRate.den > 0)) {
+            stream->_fpsNum = frameRate.num;
+            stream->_fpsDen = frameRate.den;
 #if TRACE_FILE_OPEN
             std::cout << "      Framerate=" << stream->_fpsNum << "/" << stream->_fpsDen << ", " << double(stream->_fpsNum) / double(stream->_fpsDen) << " fps" << std::endl;
 #endif
@@ -2763,8 +2789,13 @@ FFmpegFile::seekToFrame(Stream* stream, int64_t frame, int seekFlags)
     // ff_seek_frame_binary(), with the timestamps unwrapped as the packets, seek.c:281-288). Seek to the first DTS
     // of the stream instead (Stream::_startDTS, or its first PTS without B-frames), which is at or before its
     // first packet.
-    if (toStart && (stream->_startPTS < 0) && !NegativeStartIsPreroll(_context, stream->_avstream)) {
-        frame = (std::min)(stream->_startPTS, stream->_startDTS);
+    // The same if only the first DTS is negative (B-frames whose first frame is at 0): the index of a demuxer
+    // without read_seek (AVFMT_GENERIC_INDEX, e.g. a raw MPEG-4 elementary stream) is keyed by the DTS of the
+    // keyframes (FFmpeg n9.0.2 libavformat/demux.c:1670-1673), and seeking to 0 lands on the second keyframe,
+    // whose DTS is 0 (seek_frame_generic(), libavformat/seek.c:526-595): the first frames would never decode.
+    const int64_t firstTimestamp = (std::min)(stream->_startPTS, stream->_startDTS);
+    if (toStart && (firstTimestamp < 0) && !NegativeStartIsPreroll(_context, stream->_avstream)) {
+        frame = firstTimestamp;
         seekFlags = AVSEEK_FLAG_BACKWARD;
     }
 

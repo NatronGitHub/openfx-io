@@ -988,7 +988,8 @@ seek) and asserts frame-accuracy; `--monotonic` also checks the
 sequential signatures strictly increase. `--ramp OFFSET,STEP` checks that every
 decoded frame f, sequential or out of order, holds the content of that frame
 (OFFSET + STEP * (f - 1)), which catches a wrong frame as well as a missing one,
-`--frames N` checks the number of frames the reader reports, and `--positions
+`--frames N` checks the number of frames the reader reports, `--fps F` its frame
+rate (to 0.001 fps), and `--positions
 P0,P1,...` describes a variable frame rate clip with timestamp gaps: ramp frame i is
 at frame Pi, and a frame in a gap must be identical to the last ramp frame at or
 before it, as players display it (and, with `--ramp`, hold its content).
@@ -1065,6 +1066,11 @@ a longer audio track:
 
 An MPEG-TS with 1 s of video and 8 s of SMPTE 302M audio, whose end probe fails, must count 192
 frames. An MPEG-2 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
+MPEG-1 video at 24 fps (r_frame_rate 48 fps) with B-frames must count 40 frames in MPEG-TS, MPEG-PS
+and an elementary stream ([#353](https://github.com/NatronGitHub/openfx-io/issues/353); only the
+count and rate in MPEG-PS), and so must a 1920x1080 MPEG-1 elementary stream, whose duration estimated from the
+bit rate is wrong; B-frames with a negative first DTS (MPEG-4 in an elementary stream and Matroska,
+MPEG-2 in MXF) must decode their first frames;
 MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
 display the first 2 (negative timestamps), must not count these frames; a 150-frame MPEG-TS and
 M2TS (H.264 with B-frames, AC3 audio) stream-copied with `-output_ts_offset 95440` and `95441`, so
