@@ -78,9 +78,9 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginGrouping "Image/Readers"
 #define kPluginDescription "Read images using OpenEXR."
 #define kPluginIdentifier "fr.inria.openfx.ReadEXR"
-// 2: multi-planar (the layers of the file), and view-aware (the views of a multi-view file)
-#define kPluginVersionMajor 2 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+// 1.1: multi-planar (the layers of the file), and view-aware (the views of a multi-view file); 1.0 projects still load
+#define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug, made it faster, or added a compatible feature.
 #define kPluginEvaluation 10
 
 #ifndef OPENEXR_IMF_NAMESPACE
