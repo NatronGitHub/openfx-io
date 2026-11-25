@@ -158,6 +158,9 @@ jobs:
           cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           cmake --build build -j4
           cmake --install build
+          # its licence, for the testing bundle (copy_bundled_licenses.sh)
+          mkdir -p "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr"
+          cp LICENSE "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr/"
       - name: Build (release, C++17, CMake)
         run: |
           # IO_HOSTDEMO_TESTS: ctest renders every plug-in of the installed bundle with openfx's hostDemo (io-hostdemo)
@@ -236,14 +239,17 @@ jobs:
             "glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the desktop" \
             "libraries (libX11, libxcb...) come from the system, and those of Ubuntu 26.04 (glibc 2.43) or later are" \
             "needed. Ubuntu packages:" "$(.github/workflows/check_testing_bundle.sh --packages)" \
-            "The licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
+            "The licences of the bundled libraries are in IO.ofx.bundle/Contents/Resources/Licenses: the Debian" \
+            "copyright file of each package, and the licences they refer to in common-licenses (LIBRARIES.txt: the" \
+            "package of each library). Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
-          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} \
-            SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
-          # The licence (BSD-2-Clause) of the bundled OpenCL ICD loader: its Debian copyright file, in
-          # Contents/Resources/Licenses (see "Linux runtime requirements" in README.md)
-          bash .github/workflows/copy_bundled_licenses.sh ${BINARY_PATH} TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
+          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest --json=bundle-deps.json \
+            ${BINARY_PATH}/IO.ofx ${BINARY_PATH} SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
+          # The licences of the bundled libraries (their packages' Debian copyright files and the common licences they
+          # refer to, and SeExprBuild's), in Contents/Resources/Licenses (see "Linux runtime requirements" in README.md)
+          bash .github/workflows/copy_bundled_licenses.sh bundle-deps.json ${BINARY_PATH} \
+            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
           # No system library may be bundled (same limits as the Bundle check above; --no-needed: the copied
           # Ubuntu libraries find their dependencies in the system).
@@ -257,6 +263,9 @@ jobs:
           sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
           g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
           ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
+          # Every bundled library comes with its licence (#272)
+          bash .github/workflows/check_bundled_licenses.sh ${BINARY_PATH} \
+            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
       - name: Check the testing bundle on a clean Ubuntu 26.04 (docker)
         # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
         # check that the bundle needs no undocumented system library, and load IO.ofx (RTLD_NOW) in a clean ubuntu:26.04
@@ -317,8 +326,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: FFmpegBuild
-          # v2: the v1 entries have FFmpegSrc/../FFmpegBuild in their .pc files, which doesn't resolve on a cache hit
-          key: ffmpeg-v2-${{ env.FFMPEG_VERSION }}-ubuntu-24.04-${{ env.FFMPEG_CONFIGURE }}
+          # v2: the v1 entries have FFmpegSrc/../FFmpegBuild in their .pc files, which doesn't resolve on a cache hit;
+          # v3: FFmpeg's licences in FFmpegBuild/share/licenses/FFmpeg
+          key: ffmpeg-v3-${{ env.FFMPEG_VERSION }}-ubuntu-24.04-${{ env.FFMPEG_CONFIGURE }}
       - name: Build FFmpeg
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
@@ -330,6 +340,9 @@ jobs:
           ./configure --prefix="$GITHUB_WORKSPACE/FFmpegBuild" $FFMPEG_CONFIGURE
           make -j4
           make install
+          # its licences, for the testing bundle (copy_bundled_licenses.sh)
+          mkdir -p "$GITHUB_WORKSPACE/FFmpegBuild/share/licenses/FFmpeg"
+          cp LICENSE.md COPYING.* "$GITHUB_WORKSPACE/FFmpegBuild/share/licenses/FFmpeg/"
       - name: Cache SeExpr
         id: cache-seexpr
         uses: actions/cache@v4
@@ -345,6 +358,9 @@ jobs:
           cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           cmake --build build -j4
           cmake --install build
+          # its licence, for the testing bundle (copy_bundled_licenses.sh)
+          mkdir -p "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr"
+          cp LICENSE "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr/"
       - name: Build (release, C++17, CMake)
         run: |
           # IO_HOSTDEMO_TESTS: builds openfx's hostDemo and io_verify_plugin_loads, for the checks below (the tests
@@ -369,18 +385,23 @@ jobs:
             "glibc, libstdc++, libgcc_s, libgomp, libatomic, libGL (GLVND), libdrm, libselinux, libudev and the desktop" \
             "libraries (libX11, libxcb...) come from the system, and those of Ubuntu 24.04 (glibc 2.39) or later are" \
             "needed. Ubuntu packages:" "$(.github/workflows/check_testing_bundle.sh --packages)" \
-            "The licence of the OpenCL ICD loader is in Contents/Resources/Licenses. Release builds target Rocky Linux 9." \
+            "The licences of the bundled libraries are in IO.ofx.bundle/Contents/Resources/Licenses: the Debian" \
+            "copyright file of each package, and the licences they refer to in common-licenses (LIBRARIES.txt: the" \
+            "package of each library). Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
           LD_LIBRARY_PATH="$PWD/FFmpegBuild/lib" python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
-            ${BINARY_PATH}/IO.ofx ${BINARY_PATH} FFmpegBuild/lib SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
+            --json=bundle-deps.json ${BINARY_PATH}/IO.ofx ${BINARY_PATH} FFmpegBuild/lib SeExprBuild/lib /usr/lib \
+            /usr/lib/x86_64-linux-gnu
           for l in avformat avcodec avutil swscale; do
             ls ${BINARY_PATH}/lib${l}.so.* > /dev/null || { echo "lib${l} is not in the bundle"; exit 1; }
           done
           ls ${BINARY_PATH}
-          # The licence (BSD-2-Clause) of the bundled OpenCL ICD loader: its Debian copyright file, in
-          # Contents/Resources/Licenses (see "Linux runtime requirements" in README.md)
-          bash .github/workflows/copy_bundled_licenses.sh ${BINARY_PATH} TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
+          # The licences of the bundled libraries (their packages' Debian copyright files and the common licences they
+          # refer to, and those of FFmpegBuild and SeExprBuild), in Contents/Resources/Licenses (see "Linux runtime
+          # requirements" in README.md)
+          bash .github/workflows/copy_bundled_licenses.sh bundle-deps.json ${BINARY_PATH} \
+            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
           patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
           # No system library may be bundled (Ubuntu 24.04's libraries: no symbol version limit; --no-needed: the
           # copied Ubuntu libraries find their dependencies in the system)
@@ -390,6 +411,9 @@ jobs:
           OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
             OFX_ABI_ZLIB=99 OFX_ABI_SYSTEM_LIBS="$desktop" \
             "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
+          # Every bundled library comes with its licence (#272)
+          bash .github/workflows/check_bundled_licenses.sh ${BINARY_PATH} \
+            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
       - name: Check the testing bundle (verify_plugin_loads, hostDemo)
         env:
           IO_HOSTDEMO_STRICT: 1
@@ -662,8 +686,19 @@ jobs:
           # Self-contained bundle used for Natron's automated testing (the natron_testing asset
           # openfx-io-build-windows_ucrt64-testing.zip, see "Natron's testing bundles" in README.md).
           cp -r Bundle TestingBundle
+          printf '%s\n' "Windows (MSYS2 UCRT64) testing build, not a release." \
+            "openfx-io ${GITHUB_REF_NAME} (${GITHUB_SHA}), built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "The licences of the bundled DLLs are in IO.ofx.bundle/Contents/Resources/Licenses: the licence files and" \
+            "the pacman information (PACKAGE-INFO.txt) of each MSYS2 package, and in spdx, the licence texts of the" \
+            "packages that have no licence file (LIBRARIES.txt: the package of each DLL)." \
+            > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Win64
-          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest ${BINARY_PATH}/IO.ofx ${BINARY_PATH} "$MINGW_PREFIX/bin"
+          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest --json=bundle-deps.json \
+            ${BINARY_PATH}/IO.ofx ${BINARY_PATH} "$MINGW_PREFIX/bin"
+          # The licences of the bundled DLLs (their MSYS2 packages' share/licenses files and pacman -Qi, and SPDX's
+          # texts for the packages that have no licence file), in Contents/Resources/Licenses
+          bash .github/workflows/copy_bundled_licenses.sh bundle-deps.json ${BINARY_PATH} \
+            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
           # Use the newest installed Windows SDK's mt.exe (the SDK version on the runner changes over time).
           MT_EXE=`ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"10.*/x64/mt.exe | sort -V | tail -1`
           "${MT_EXE}" -manifest IO.manifest -outputresource:"${BINARY_PATH}/IO.ofx;2"
@@ -676,6 +711,9 @@ jobs:
             ( cd ${BINARY_PATH} && PATH=".:/c/Windows/System32" ../../../../load_each_dll *.dll ./IO.ofx )
             exit 1
           fi
+          # Every bundled DLL comes with its licence (#272)
+          bash .github/workflows/check_bundled_licenses.sh ${BINARY_PATH} \
+            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
       - name: Upload testing artifacts
         if: env.UPLOAD_BUNDLES == 'true'
         uses: actions/upload-artifact@v4.3.1

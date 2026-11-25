@@ -124,9 +124,9 @@ bundles](#natrons-testing-bundles)).
 #### The Linux testing bundles
 
 CI's Linux testing bundles (see [Natron's testing bundles](#natrons-testing-bundles)) follow the same rules, with
-Ubuntu's libraries. Their bundled OpenCL ICD loader comes with its licence (BSD-2-Clause): the Debian copyright file
-of its package, in `IO.ofx.bundle/Contents/Resources/Licenses`. The system libraries that they need today are provided
-by the Ubuntu (and Debian) packages
+Ubuntu's libraries. Each bundled library comes with its licence, in `IO.ofx.bundle/Contents/Resources/Licenses` (see
+[Natron's testing bundles](#natrons-testing-bundles)). The system libraries that they need today are provided by the
+Ubuntu (and Debian) packages
 `libc6 libstdc++6 libgcc-s1 libgomp1 libatomic1 libgl1 libdrm2 libselinux1 libudev1 libx11-6 libx11-xcb1 libxau6
 libxdmcp6 libxext6 libxfixes3 libxrender1 libxcb1 libxcb-dri3-0 libxcb-render0 libxcb-shm0`
 (`RUNTIME_PACKAGES` in [`check_testing_bundle.sh`](.github/workflows/check_testing_bundle.sh), also printed in the
@@ -291,10 +291,25 @@ on RB-2.6) tests Natron with the plug-ins of the assets of openfx-io's
 | `openfx-io-build-windows_ucrt64-testing.zip` | Windows, MSYS2 | `windows` (MSYS2 UCRT64), `openfx-io-build-windows_ucrt64-testing` |
 
 Natron unzips each asset into its `Plugins` directory: the zip holds `IO.ofx.bundle` (with its libraries) and a
-`README.txt` at its root. The other artifacts (`openfx-io-build-ubuntu_26-testing` of the `linux` job, which needs
-Ubuntu 26.04, and the macOS bundle) are not used by Natron. CI uploads the bundles only for tags and manual runs, and
-the assets are updated by hand, from a run of the commit to test (e.g. master, after a merge that Natron's tests
-need):
+`README.txt` at its root.
+
+Each testing bundle carries the licences of its libraries in `IO.ofx.bundle/Contents/Resources/Licenses`, where
+`LIBRARIES.txt` gives the package and version of each library (`copy_bundled_licenses.sh`, checked by
+`check_bundled_licenses.sh`, in [`.github/workflows`](.github/workflows)):
+- Ubuntu's libraries: the [Debian copyright file](https://www.debian.org/doc/debian-policy/ch-docs.html) of each
+  package, and in `common-licenses` the licences of `/usr/share/common-licenses` that these files refer to (GPL-2,
+  LGPL-2.1, Apache-2.0...);
+- the [FFmpeg](https://ffmpeg.org/legal.html) and [SeExpr](https://github.com/wdas/SeExpr) that CI builds: their
+  licence files;
+- Windows: the licence files (`share/licenses`) and the [`pacman -Qi`](https://man.archlinux.org/man/pacman.8)
+  information (`PACKAGE-INFO.txt`) of each [MSYS2](https://www.msys2.org/) package. Some MSYS2 packages (e.g. ffmpeg,
+  giflib) install no licence file: for those, when pacman reports SPDX ids (or legacy names that map to them), `spdx`
+  has the texts of these licences (from [SPDX's licence list](https://github.com/spdx/license-list-data)), but not the
+  projects' copyright notices.
+
+The other artifacts (`openfx-io-build-ubuntu_26-testing` of the `linux` job, which needs Ubuntu 26.04, and the macOS
+bundle) are not used by Natron. CI uploads the bundles only for tags and manual runs, and the assets are updated by
+hand, from a run of the commit to test (e.g. master, after a merge that Natron's tests need):
 
 ```sh
 gh workflow run ci.yml -R NatronGitHub/openfx-io --ref master   # then wait for the run: gh run watch
