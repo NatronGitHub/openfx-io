@@ -121,6 +121,28 @@ jobs:
           sudo apt-get install -y cmake bison flex libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
             libgl-dev libegl-dev liblcms2-dev libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf libexpat1-dev fonts-freefont-ttf
+      - name: Configure a source archive (no .git, no submodules)
+        # Like GitHub's source tarballs, git archive has no .git and empty submodule directories: the configure must
+        # stop and say how to get the submodules without git (#224), not "git submodule update", which needs .git.
+        run: |
+          src="$RUNNER_TEMP/io-archive"
+          log="$RUNNER_TEMP/io-archive.log"
+          mkdir "$src"
+          git archive HEAD | tar -x -C "$src"
+          if cmake -S "$src" -B "$RUNNER_TEMP/io-archive-build" > "$log" 2>&1; then
+            cat "$log"
+            echo "::error::configuring a source archive without its submodules succeeded"
+            exit 1
+          fi
+          cat "$log"
+          if ! grep -q 'git clone --recursive' "$log"; then
+            echo "::error::the error message doesn't say to use git clone --recursive"
+            exit 1
+          fi
+          if grep -q 'git submodule update' "$log"; then
+            echo "::error::the error message says to run git submodule update, which needs .git"
+            exit 1
+          fi
       - name: Cache SeExpr
         id: cache-seexpr
         uses: actions/cache@v4
