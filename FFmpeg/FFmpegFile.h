@@ -35,12 +35,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <iostream>
 #include <list>
 #include <locale>
 #include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 extern "C" {
 #include <errno.h>
@@ -49,21 +51,69 @@ extern "C" {
 #include <libavformat/avio.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
+#include <libavutil/ffversion.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 }
 
-// FFmpeg 8.0 or later: the versions of the libraries in the n8.0 release (their libavcodec/version.h,
+// FFmpeg 8.0.1 or later. First, the versions of the libraries in the n8.0 release (their libavcodec/version.h,
 // libavformat/version.h, libavutil/version.h and libswscale/version.h). CMakeLists.txt and Makefile.master check
 // the same versions with pkg-config.
 #if (LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)) || (LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(62, 3, 100)) \
     || (LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 8, 100)) || (LIBSWSCALE_VERSION_INT < AV_VERSION_INT(9, 1, 100))
-#error "The FFmpeg plug-ins require FFmpeg 8.0 or later (libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100, libswscale 9.1.100)"
+#error "The FFmpeg plug-ins require FFmpeg 8.0.1 or later (libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100, libswscale 9.1.100)"
 #endif
 
+// Then not 8.0 itself: n8.0's libswscale truncates in its range conversions (solve_range_convert(), n8.0
+// libswscale/swscale.c:574-585 has no rounding term), which n8.0.1 fixes (44bfe0da61, n8.0.1 swscale.c:583-585).
+// n8.0.1 has the same library versions as n8.0 (all the lib*/version.h and version_major.h are equal), so only the
+// release name tells them apart: FFMPEG_VERSION in libavutil/ffversion.h (installed with the headers; from VERSION,
+// RELEASE or git describe, plus --extra-version: ffbuild/version.sh) at build time, and av_version_info() at run
+// time (ffmpegRuntimeVersionError()). ffmpegIsRelease80() only rejects 8.0: "8.0" and "n8.0", alone or
+// followed by '-' (a distribution package of 8.0, or a git snapshot of the release/8.0 branch); other names (8.0.1,
+// 8.1, 9.0, git-..., N-...) are accepted. Not detected: unreleased N-... snapshots of master between the n8.0 branch
+// point and the master fix (4bee010844), and shallow, tagless clones of release/8.0 from before the fix (git-...).
+// Rejected although fixed: a distribution's 8.0 package with the fix backported (still named 8.0-...). Only
+// libavutil's release name is checked, while the bug is in libswscale (FFmpeg's libraries are released together).
+// FFmpegFile.cpp tests ffmpegIsRelease80() on sample names.
+
+constexpr bool
+ffmpegIsRelease80(std::string_view version)
+{
+    if (!version.empty() && version.front() == 'n') {
+        version.remove_prefix(1);
+    }
+
+    return version.substr(0, 3) == "8.0" && (version.size() == 3 || version[3] == '-');
+}
+
+static_assert(!ffmpegIsRelease80(FFMPEG_VERSION),
+              "The FFmpeg plug-ins require FFmpeg 8.0.1 or later: FFmpeg 8.0's libswscale truncates in its range "
+              "conversions (fixed in 8.0.1)");
+
+// Why the FFmpeg libraries loaded at run time cannot be used (they are FFmpeg 8.0, av_version_info()), or an empty
+// string if they can. Independent of OFX, so that tests/ffmpeg_read_test links FFmpegFile.cpp without the Support
+// library.
+std::string ffmpegRuntimeVersionError();
+
 #include "ofxsMultiThread.h"
+
+// For the plug-ins' load(): if ffmpegRuntimeVersionError() is not empty, prints it on stderr and throws
+// OFX::Exception::Suite(kOfxStatFailed), so that the host does not list the plug-in (ofxCore.h, kOfxActionLoad:
+// "kOfxStatFailed, the load action failed, no further actions will be passed to the plug-in"). Inline, so that only
+// the plug-ins, which call it, need the Support library.
+inline void
+requireSupportedFFmpegRuntime(const char* pluginName)
+{
+    const std::string error = ffmpegRuntimeVersionError();
+    if (!error.empty()) {
+        std::cerr << pluginName << ": " << error << std::endl;
+        OFX::throwSuiteStatusException(kOfxStatFailed);
+    }
+}
+
 #ifndef OFX_USE_MULTITHREAD_MUTEX
 // some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
 #include <mutex>
@@ -829,8 +879,8 @@ private:
 
         // Return the number of input frames needed by this stream's codec before it can produce output. We expect to have to
         // wait this many frames to receive output; any more and a decode stall is detected.
-        // In FFmpeg 2.1.4, I found that some codecs now support multithreaded decode which appears as latency
-        // I needed to add the thread_count onto the codec delay - pickles
+        // Frame-threaded decoding delays the output by one frame per thread (n8.0 libavcodec/avcodec.h:1565,
+        // pthread_frame.c:959 sets AVCodecContext.delay to thread_count - 1), so the thread count is added too.
         int getCodecDelay() const
         {
             return (((_videoCodec->capabilities & AV_CODEC_CAP_DELAY) ? _codecContext->delay : 0)

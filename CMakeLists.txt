@@ -233,7 +233,8 @@ if(OFX_IO_WITH_FFMPEG AND NOT CMAKE_DISABLE_FIND_PACKAGE_FFmpeg AND PKG_CONFIG_F
       set(ENV{PKG_CONFIG_PATH} "${FFMPEG_PKG_CONFIG_PATH}:$ENV{PKG_CONFIG_PATH}")
     endif()
   endif()
-  # FFmpeg 8.0 or later: the versions of the libraries in the n8.0 release (as checked in FFmpeg/FFmpegFile.h)
+  # FFmpeg 8.0.1 or later: the versions of the libraries in the n8.0 release, which n8.0.1 keeps (as checked in
+  # FFmpeg/FFmpegFile.h, which also rejects 8.0 itself by its FFMPEG_VERSION: pkg-config only has library versions)
   set(_io_ffmpeg_modules libavformat>=62.3.100 libavcodec>=62.11.100 libswscale>=9.1.100 libavutil>=60.8.100)
   pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET ${_io_ffmpeg_modules})
   if(NOT FFMPEG_FOUND)
@@ -246,7 +247,7 @@ if(OFX_IO_WITH_FFMPEG AND NOT CMAKE_DISABLE_FIND_PACKAGE_FFmpeg AND PKG_CONFIG_F
         string(APPEND _io_ffmpeg_found " ${_m} ${_IO_FFMPEG_ANY_${_m}_VERSION}")
       endforeach()
       string(REPLACE ";" ", " _io_ffmpeg_min "${_io_ffmpeg_modules}")
-      message(FATAL_ERROR "The FFmpeg plug-ins require FFmpeg 8.0 or later (${_io_ffmpeg_min}), but pkg-config "
+      message(FATAL_ERROR "The FFmpeg plug-ins require FFmpeg 8.0.1 or later (${_io_ffmpeg_min}), but pkg-config "
               "found${_io_ffmpeg_found} (in ${_IO_FFMPEG_ANY_libavcodec_PREFIX}). Select another FFmpeg with "
               "-DFFMPEG_PKG_CONFIG_PATH=<prefix>/lib/pkgconfig, or build without the FFmpeg plug-ins with "
               "-DOFX_IO_WITH_FFMPEG=OFF.")

@@ -671,6 +671,7 @@ split(const string& s,
 void
 ReadFFmpegPluginFactory::load()
 {
+    requireSupportedFFmpegRuntime(kPluginIdentifier);
     // global data (kOfxActionLoad): the open files of the instances, destroyed at unload (the binary may stay in
     // memory, and be loaded again)
     av_log_set_level(AV_LOG_WARNING);
@@ -995,8 +996,8 @@ ReadFFmpegPluginFactory::describe(ImageEffectDescriptor& desc)
     // basic labels
     desc.setLabel(kPluginName);
     desc.setPluginDescription(kPluginDescription);
-    // FFmpeg 4 is thread-safe, see
-    // https://ffmpeg.org/doxygen/4.1/group__lavc__misc.html#ga4e9a0032df8f76cc766846514cebfab7
+    // Fully safe: the FFmpeg libraries need no global lock, FFmpegFileManager guards the open files, and each
+    // FFmpegFile guards its contexts (FFmpegFile::_lock)
     desc.setRenderThreadSafety(eRenderFullySafe);
 
     // Thus effect prefers sequential render, but will still give correct results otherwise

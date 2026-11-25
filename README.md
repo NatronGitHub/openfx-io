@@ -58,10 +58,15 @@ to checkout a given tag.
 - [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) 2.x or 3.x, with
   [LibRaw](https://www.libraw.org) for the RAW formats
 - [OpenEXR](https://openexr.com) and [Imath](https://github.com/AcademySoftwareFoundation/Imath)
-- [FFmpeg](https://ffmpeg.org) 8.0 to 9 (the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)'s
-  libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100 and libswscale 9.1.100, or later: the build stops with an
-  older FFmpeg; [`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins compile
-  against a given FFmpeg version)
+- [FFmpeg](https://ffmpeg.org) 8.0.1 to 9 (the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges)'s
+  libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100 and libswscale 9.1.100, or later), but not 8.0 itself,
+  whose libswscale truncates in its range conversions ([fixed in
+  8.0.1](https://github.com/FFmpeg/FFmpeg/commit/44bfe0da6167c19221810f4865ba578e3ddd2c39)). The build stops with an
+  older FFmpeg, and the FFmpeg plug-ins don't load if the FFmpeg libraries found at run time are 8.0 (this only
+  matters for builds that use the system's FFmpeg, such as unbundled Linux builds; a host's plug-in cache may hide the
+  failed load until the cache is cleared).
+  [`tests/ffmpeg_syntax_check.sh`](tests/ffmpeg_syntax_check.sh) checks that the FFmpeg plug-ins compile against a given
+  FFmpeg version
 - [libpng](http://www.libpng.org/pub/png/libpng.html)
 - [SeExpr](https://github.com/wdas/SeExpr) [2.11](https://github.com/wdas/SeExpr/releases/tag/v2.11), which has the SeExpr 1 API (`SeExpression.h`); SeExpr 3.x
   (the SeExpr2 API) does not work
@@ -231,7 +236,7 @@ compiling:
 See the [CI workflow](.github/workflows/ci.yml) for the complete package lists and build commands.
 
 - **Linux**: install the development packages of the libraries above from the distribution. On [Ubuntu
-  26.04](https://packages.ubuntu.com/resolute/) (whose [FFmpeg](https://packages.ubuntu.com/resolute/libavcodec-dev) is 8.0): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
+  26.04](https://packages.ubuntu.com/resolute/) (whose [FFmpeg](https://packages.ubuntu.com/resolute/libavcodec-dev) is 8.0.1): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
   libpng-dev libwebp-dev libtiff-dev libopenjp2-7-dev libavcodec-dev libavformat-dev libavutil-dev
   libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools` for the tests and hostDemo.
   Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with [`bison`](https://www.gnu.org/software/bison/) and [`flex`](https://github.com/westes/flex)) and passes its

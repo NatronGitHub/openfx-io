@@ -94,11 +94,11 @@ jobs:
     # Also runs on draft pull requests. Ubuntu 26.04 moves (apt-get update installs its updates of FFmpeg, OpenImageIO,
     # OpenColorIO, LibRaw..., and the runner image changes weekly): the weekly run builds on Linux every week, even if
     # master didn't change (no "needs: changes").
-    # Ubuntu 26.04: its FFmpeg is 8.0 (the minimum, see README.md), and its OpenImageIO links the same FFmpeg
+    # Ubuntu 26.04: its FFmpeg is 8.0.1 (the minimum, see README.md), and its OpenImageIO links the same FFmpeg
     runs-on: ubuntu-26.04
     timeout-minutes: 90
     env:
-      # pkg-config directory of the FFmpeg to build against; empty: Ubuntu's (libavcodec-dev, ...: FFmpeg 8.0)
+      # pkg-config directory of the FFmpeg to build against; empty: Ubuntu's (libavcodec-dev, ...: FFmpeg 8.0.1)
       FFMPEG_PKG_CONFIG_PATH: ""
       # OIIOText's default font (OpenImageIO's FreeMono, from fonts-freefont-ttf): OpenImageIO 2.5 only looks for fonts
       # in its font directories (e.g. /usr/share/fonts) and the directories just below them, not deeper as 2.4 did,
@@ -285,7 +285,7 @@ jobs:
     # Natron's Linux testing bundle. Natron's CI (RB-2.6 .github/workflows/ci.yml) runs its Linux tests on
     # ubuntu-24.04 (there is no pyside2 on 26.04), with the openfx-io-build-ubuntu_24-testing.zip asset of the
     # natron_testing release (see "Natron's testing bundles" in README.md): the bundle must load on Ubuntu 24.04,
-    # whose FFmpeg (6.1) is older than the plug-ins' minimum (8.0). This job builds FFmpeg (cached, like SeExpr) and
+    # whose FFmpeg is older than the plug-ins' minimum (8.0.1). This job builds FFmpeg (cached, like SeExpr) and
     # IO.ofx against it on ubuntu-24.04, bundles that FFmpeg (and Ubuntu's other libraries), and checks that the bundle
     # loads (verify_plugin_loads) and renders (hostDemo) without LD_LIBRARY_PATH. The rest of the CI (tests, weekly
     # variants) is the "linux" job's, on 26.04.
