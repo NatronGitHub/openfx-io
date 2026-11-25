@@ -2029,6 +2029,12 @@ FFmpegFile::getStream(int streamIndex)
 std::string
 FFmpegFile::getColorspaceMetadata() const
 {
+#ifdef OFX_IO_MT_FFMPEG
+    // av_read_frame() (in decode()) may update _context->metadata (AVFMT_EVENT_FLAG_METADATA_UPDATED, FFmpeg n9.0.2
+    // libavformat/avformat.h:1689-1695)
+    AutoMutex guard(_lock);
+#endif
+
     // the metadata of the format (WriteFFmpeg writes it there): its keys are not case sensitive (av_dict_get()
     // without AV_DICT_MATCH_CASE), e.g. Matroska tags are upper case
     const AVDictionaryEntry* t = (_context && _context->metadata) ? av_dict_get(_context->metadata, kMetaKeyColorspace, nullptr, 0) : nullptr;

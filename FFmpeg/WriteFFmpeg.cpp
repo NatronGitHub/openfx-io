@@ -2396,9 +2396,11 @@ WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
 
 // Set the color tags of the video stream, once its pixel format is known. configureVideoStream() set the primaries
 // and transfer function of the OCIO output colorspace (getColorInfo()), which are kept.
-// - For the usual video codecs (IsYUVFromShortName()), the primaries and transfer function that getColorInfo() does not
-//   give are those of the usual video formats: BT.709 primaries for HD, EBU 3213 (BT.470BG) for PAL and SMPTE C (SMPTE
-//   170M) for other SD formats, and the BT.709 transfer function.
+// - For the usual video codecs (IsYUVFromShortName()), if getColorInfo() does not know the OCIO colorspace (the
+//   transfer function is unspecified), the primaries and transfer function are those of the usual video formats:
+//   BT.709 primaries for HD, EBU 3213 (BT.470BG) for PAL and SMPTE C (SMPTE 170M) for other SD formats, and the BT.709
+//   transfer function. If it knows the colorspace but not its primaries (e.g. ACES or ACEScg), they stay
+//   unspecified.
 // - ProRes: the frame header (where prores_ks writes the transfer function of the frame as is, FFmpeg n9.0
 //   libavcodec/proresenc_kostya.c:786-788) only allows the transfer_characteristic codes 0, 1 (BT.709), 2
 //   (unspecified), 16 (PQ) and 18 (HLG) (SMPTE RDD 36): the BT.601 and BT.2020 transfer functions are the BT.709 one
@@ -2424,7 +2426,8 @@ WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
     const bool isYUVCodec = (codec >= 0) && (codec < (int)codecsShortNames.size()) && IsYUVFromShortName(codecsShortNames[codec].c_str(), dnxhdCodecProfile_i);
     const bool isHD = isRec709Format(avCodecContext->height); // false for JPEG
 
-    if (isYUVCodec) {
+    if (isYUVCodec && (avCodecContext->color_trc == AVCOL_TRC_UNSPECIFIED)) {
+        // getColorInfo() sets the transfer function of every colorspace it knows
         if (avCodecContext->color_primaries == AVCOL_PRI_UNSPECIFIED) {
             const AVRational displayRatio = { avCodecContext->width, avCodecContext->height };
             if (isHD) {
@@ -2435,9 +2438,7 @@ WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
                 avCodecContext->color_primaries = AVCOL_PRI_SMPTE170M; // kQTPrimaries_SMPTE_C
             }
         }
-        if (avCodecContext->color_trc == AVCOL_TRC_UNSPECIFIED) {
-            avCodecContext->color_trc = AVCOL_TRC_BT709; // kQTTransferFunction_ITU_R709_2
-        }
+        avCodecContext->color_trc = AVCOL_TRC_BT709; // kQTTransferFunction_ITU_R709_2
     }
     if (avCodecContext->codec_id == AV_CODEC_ID_PRORES) {
         switch (avCodecContext->color_trc) {
@@ -2503,6 +2504,10 @@ WriteFFmpegPlugin::IsYUVFromShortName(const char* shortName,
             || !strcmp(shortName, "mjpeg") || !strcmp(shortName, "mpeg1video") || !strcmp(shortName, "mpeg4") || !strcmp(shortName, "v210"));
 }
 
+// The primaries and transfer function of the OCIO output colorspace, or AVCOL_PRI_UNSPECIFIED and
+// AVCOL_TRC_UNSPECIFIED if it is unknown. Every colorspace it knows gets a transfer function, even when its
+// primaries stay unspecified (e.g. ACES), so setColorTags() reads an unspecified transfer function as "unknown
+// colorspace".
 void
 WriteFFmpegPlugin::getColorInfo(AVColorPrimaries* color_primaries,
                                 AVColorTransferCharacteristic* color_trc) const
@@ -2518,7 +2523,10 @@ WriteFFmpegPlugin::getColorInfo(AVColorPrimaries* color_primaries,
     // AVCOL_PRI_SMPTE240M   = 7, ///< functionally identical to above
     // AVCOL_PRI_FILM        = 8, ///< colour filters using Illuminant C
     // AVCOL_PRI_BT2020      = 9, ///< ITU-R BT2020
-    // AVCOL_PRI_NB,              ///< Not part of ABI
+    // AVCOL_PRI_SMPTE428    = 10, ///< SMPTE ST 428-1 (CIE 1931 XYZ)
+    // AVCOL_PRI_SMPTE431    = 11, ///< SMPTE ST 431-2 (2011) / DCI P3
+    // AVCOL_PRI_SMPTE432    = 12, ///< SMPTE ST 432-1 (2010) / P3 D65 / Display P3
+    // (FFmpeg n9.0.2 libavutil/pixfmt.h:636-654)
 
     // AVCOL_TRC_RESERVED0    = 0,
     // AVCOL_TRC_BT709        = 1,  ///< also ITU-R BT1361
@@ -2544,7 +2552,31 @@ WriteFFmpegPlugin::getColorInfo(AVColorPrimaries* color_primaries,
     string selection;
     assert(_ocio.get());
     _ocio->getOutputColorspace(selection);
-    if ((selection.find("sRGB") != string::npos) || // sRGB in nuke-default and blender
+    // The linear colorspaces first: their names often contain the name of their primaries ("Linear sRGB / REC.709
+    // D65" in natron, "Linear Rec.709 (sRGB)" and lin_rec709_srgb in the OCIO 2 configs), which the other tests below
+    // would take for a transfer function. The primaries are only those that the name gives, else unspecified: ITU-T
+    // H.273 has no code for ACES AP0 and AP1, and no tag is better than a wrong one. The exceptions are "linear"
+    // (nuke-default) and "Linear" (blender, Natron's default config), whose primaries are those of the config's
+    // sRGB and rec709.
+    const bool isLinear = (selection.find("linear") != string::npos) || (selection.find("Linear") != string::npos) || // natron, blender, OCIO 2
+                          (selection.compare(0, 4, "lin_") == 0) || // lin_rec709_srgb, lin_ap0, ... in the OCIO 2 configs
+                          (selection.find("ACES2065-1") != string::npos) || (selection.find("ACEScg") != string::npos) || // aces 1.x, OCIO 2
+                          (selection == "aces") || // aces in aces
+                          (selection == "lnf") || // lnf, lnh, ln16 in spi-anim and spi-vfx
+                          (selection == "lnh") || (selection == "ln16");
+    if (isLinear) {
+        *color_trc = AVCOL_TRC_LINEAR;
+        if (selection.find("2020") != string::npos) {
+            *color_primaries = AVCOL_PRI_BT2020;
+        } else if ((selection.find("P3-D65") != string::npos) || (selection.find("P3 D65") != string::npos) || (selection.find("p3d65") != string::npos)) {
+            *color_primaries = AVCOL_PRI_SMPTE432; // Display P3
+        } else if ((selection.find("709") != string::npos) || (selection.find("sRGB") != string::npos) || (selection.find("srgb") != string::npos)) {
+            *color_primaries = AVCOL_PRI_BT709;
+        } else if ((selection == "linear") || (selection == "Linear")) {
+            // reference of nuke-default and blender: Rec.709 primaries, like their sRGB/rec709
+            *color_primaries = AVCOL_PRI_BT709;
+        }
+    } else if ((selection.find("sRGB") != string::npos) || // sRGB in nuke-default and blender
         (selection.find("srgb") != string::npos) || (selection == "sRGB Curve") || // natron
         (selection == "sRGB D65") || // blender-cycles
         (selection == "sRGB (D60 sim.)") || // out_srgbd60sim or "sRGB (D60 sim.)" in aces 1.0.0
@@ -2573,17 +2605,7 @@ WriteFFmpegPlugin::getColorInfo(AVColorPrimaries* color_primaries,
                (selection == "vd10") || (selection == "vd16") || (selection == "VD16")) { // VD16 in blender
         *color_primaries = AVCOL_PRI_BT709;
         *color_trc = AVCOL_TRC_GAMMA22; ///< also ITU-R BT470M / ITU-R BT1700 625 PAL & SECAM
-    } else if ((selection.find("linear") != string::npos) || (selection.find("Linear") != string::npos) || (selection == "Linear sRGB / REC.709 D65") || // natron
-               (selection == "ACES2065-1") || // ACES2065-1 in aces 1.0.0
-               (selection == "aces") || // aces in aces
-               (selection == "lnf") || // lnf, ln16 in spi-anim and spi-vfx
-               (selection == "ln16")) {
-        *color_primaries = AVCOL_PRI_BT709;
-        *color_trc = AVCOL_TRC_LINEAR;
-    } else if ((selection.find("Rec2020") != string::npos) || (selection == "Rec 2020 12 Bit Curve") || // natron
-               (selection == "aces") || // aces in aces
-               (selection == "lnf") || // lnf, ln16 in spi-anim and spi-vfx
-               (selection == "ln16")) {
+    } else if ((selection.find("Rec2020") != string::npos) || (selection == "Rec 2020 12 Bit Curve")) { // natron
         *color_primaries = AVCOL_PRI_BT2020;
         *color_trc = AVCOL_TRC_BT2020_12;
     }

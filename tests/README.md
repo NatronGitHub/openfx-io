@@ -201,10 +201,11 @@ the real render pipeline, linked directly (no host binary):
 * **WriteFFmpeg color tags and Y'CbCr matrix, ReadFFmpeg round trip**: encode a
   constant color (0.8, 0.3, 0.1) with H.264 (libx264, MP4/MOV/Matroska), ProRes 4444
   and 422 HQ, and QuickTime Animation (qtrle, RGB), with the OCIO output colorspaces
-  rec709, Rec2020, sRGB and Gamma2.2 of `test.ocio`, in SD (128x96) and 720p. The stream
-  must keep the primaries and transfer function of the OCIO colorspace (ProRes: only
-  the transfer functions of SMPTE RDD 36, so sRGB is unspecified there, and the frame
-  header must have the same codes as the stream), its Y'CbCr matrix must be BT.2020 NCL
+  rec709, Rec2020, sRGB, Gamma2.2 and the linear ones of `test.ocio`, in SD (128x96) and
+  720p. The stream must keep the primaries and transfer function of the OCIO
+  colorspace (ProRes: only the transfer functions of SMPTE RDD 36, so sRGB is
+  unspecified there, and the frame header must have the same codes as the stream),
+  its Y'CbCr matrix must be BT.2020 NCL
   with the BT.2020 primaries, else BT.709 in HD and SMPTE 170M in SD, and `gbr` (RGB) for
   qtrle; the Y' that libavcodec decodes must be the one of that matrix
   (Y' = Kr R + (1 - Kr - Kb) G + Kb B, video range), and ReadFFmpeg (Auto matrix and
@@ -213,7 +214,13 @@ the real render pipeline, linked directly (no host binary):
   must use it as its File Colorspace. DNxHR HQX and HQ (720p, Rec2020, and HQ in SD,
   rec709) must use the BT.709 matrix, the one of the DNxHD frame header that FFmpeg's
   encoder writes and FFmpeg's decoder uses, whatever the primaries and size; DNxHR 444
-  is RGB (`gbr`).
+  is RGB (`gbr`). With the linear colorspaces of `test.ocio` (issue #222), the transfer
+  function must be linear and the primaries those the name gives: BT.709 for
+  "Linear sRGB / REC.709 D65", `lin_rec709_srgb` and `linear` (the reference of
+  nuke-default), BT.2020 for "Linear Rec.2020", P3-D65 (SMPTE 432) for "Linear P3-D65",
+  and unspecified for ACES2065-1 and ACEScg (AP0 and AP1 have no ITU-T H.273 code), with
+  ProRes 4444 (ACES2065-1) too. A colorspace WriteFFmpeg doesn't know (ProRes 422 HQ, SD,
+  AlexaV3LogC) still gets the default SMPTE 170M primaries and BT.709 transfer function.
 * **WriteFFmpeg, output RoD changed during the render**: from the second frame
   on, the render window and the source image are smaller (64x32) or larger
   (192x160) than the movie (128x128, the RoD at `beginSequenceRender`), as when

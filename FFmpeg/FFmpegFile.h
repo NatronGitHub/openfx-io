@@ -984,7 +984,7 @@ public:
     }
 
     // The OCIO colorspace name written by WriteFFmpeg (or Nuke) in the kMetaKeyColorspace metadata of the file, or
-    // an empty string.
+    // an empty string. Thread safe (takes _lock: decode() may update the metadata).
     std::string getColorspaceMetadata() const;
 
     void setDoNotAttachPrefix(bool doNotAttachPrefix) const
