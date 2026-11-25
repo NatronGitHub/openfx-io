@@ -1,7 +1,8 @@
 /*
  * runscript_render_test — RunScript's render on POSIX (issue #287): a script that runs while the host aborts the
  * render must be killed, and the render must return (kOfxStatFailed) soon after the abort, instead of waiting for the
- * script to exit. Also: a script that floods its standard error, and one that ends normally, still render.
+ * script to exit. Also: a script that floods its standard error, and one that ends normally, still render; a render
+ * at a render scale other than 1 fails with an error message (issue #438).
  * ofxImageEffect.h, abort(): "This function indicates whether a plugin should stop whatever processing it is doing."
  *
  * Each render runs on a thread, with a time limit: a render that does not return in time is a failure, and the
@@ -158,6 +159,15 @@ main()
     gPersistentWarning.clear();
     OfxStatus st = renderScript(p, "exit 0", "#!/bin/sh\necho hello >&2\nexit 0\n", -1, 30000);
     check(st == kOfxStatOK && gPersistentWarning.empty(), "renders, without a warning");
+
+    // #438: RunScript renders at scale 1 only; at another scale the render used to fail with no message
+    std::printf("a render at render scale 0.5:\n");
+    gPersistentError.clear();
+    gRS = 0.5; // makeRenderInArgs()'s render scale
+    st = renderScript(p, "scale 0.5", "#!/bin/sh\nexit 0\n", -1, 30000);
+    gRS = 1.;
+    check(st == kOfxStatFailed && gPersistentError.find("render scale") != std::string::npos,
+          "fails, with an error message: \"" + gPersistentError + "\"");
 
     std::printf("a script that floods its standard error (20 MB) and fails:\n");
     gPersistentWarning.clear();

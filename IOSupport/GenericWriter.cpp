@@ -857,6 +857,21 @@ fileStamp(const string& filename)
 }
 } // namespace
 
+// The render actions (render, beginSequenceRender) at a render scale other than 1 fail with an error message (#438): a
+// writer writes full-resolution images. getRegionOfDefinition and isIdentity fail silently instead, because a host may
+// call them at another scale to find out whether the plug-in supports render scales (Natron calls
+// getRegionOfDefinition at scale 0.5, then never renders this plug-in at a scale other than 1).
+[[noreturn]] static void
+renderScaleError(ImageEffect& effect,
+                 const OfxPointD& renderScale)
+{
+    stringstream ss;
+    ss << "Writers render at full resolution only (render scale 1), but the host asked for a render scale of " << renderScale.x << " x " << renderScale.y << '.';
+    effect.setPersistentMessage(Message::eMessageError, "", ss.str());
+    // what throwSuiteStatusException(kOfxStatFailed) throws (it isn't declared [[noreturn]])
+    throw OFX::Exception::Suite(kOfxStatFailed);
+}
+
 void
 GenericWriterPlugin::render(const RenderArguments& args)
 {
@@ -913,9 +928,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
     const double time = args.time;
 
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        renderScaleError(*this, args.renderScale);
     }
 
     if (!_inputClip) {
@@ -1808,9 +1821,7 @@ void
 GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& args)
 {
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        renderScaleError(*this, args.renderScale);
     }
 
     string filename;

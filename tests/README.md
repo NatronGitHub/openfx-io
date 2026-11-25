@@ -70,6 +70,7 @@ make test-writeffmpeg-format-from-filename # WriteFFmpeg: the Format menu entry 
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
+make test-writer-render-scale # a writer at a render scale other than 1 fails with an error message (#438)
 make test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
 make test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
@@ -79,7 +80,7 @@ make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSan
 make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context, Reload, purge caches (#275, #282-#284, #361, #402)
 make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
-make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287)
+make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287), and a render at scale 0.5 fails with an error message (#438)
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
 make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
 make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
@@ -499,6 +500,12 @@ part is skipped when running as root). It is skipped (exit status 77) on MS Wind
 negative or huge size (more than 65535, as in `decode()`): `getRegionOfDefinition` must fail with an error that names
 the file, instead of giving the host that RoD; a valid 3x2 header gives the RoD `[0 0 3 2]`.
 
+`test-writer-render-scale` (issue #438) runs `ofx_render_test OUT --writer-render-scale`: WritePFM (GenericWriter) at
+render scale 0.5. `beginSequenceRender` and `render` must fail with an error message that says why, and write no
+file; `getRegionOfDefinition` must fail without a message, since Natron calls it at scale 0.5 to find out whether a
+plug-in supports render scales. At scale 1, the same instance writes the file. `test-runscript` checks the same
+message for RunScript's render (`runscript_render_test`, POSIX only).
+
 `test-readffmpeg-views-concurrent` (issue #291) runs `ofx_render_test OUT --views-concurrent`: the ffmpeg CLI writes a
 movie with two matching video streams (MPEG-4 with B-frames, 64x48, 20 frames), the second one the negative of the
 first, which ReadFFmpeg reads as views 0 and 1. One instance renders every frame of view 0, then of view 1, on one
@@ -542,6 +549,14 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   render at scale 1/2 reads the proxy, and a render at scale 1 the full-resolution file.
 * **A proxy file at scale 1/3** (#194): a 24x12 file with an 8x4 proxy: a render at scale 1/3 reads the proxy and
   writes its pixels as they are; at 0.75 and 1, the full-resolution file is read (and resampled at 0.75).
+* **A proxy file whose aspect ratio is not the original's** (#439): a 16x8 file with a 10x5 proxy, rendered at scale
+  1/2 in a 10x5 window: the proxy's pixels are written in the RoD (8x4 at that scale) only, the rest is transparent
+  black.
+* **Time Offset frame mode** (#260): the user's time offset is kept when the file changes to a sequence with another
+  first frame, with or without `originalFrameRange` (Natron sets it first); the starting time follows. In Starting
+  Time mode, the starting time is kept.
+* **A frame that exists but can not be read** (#414, POSIX only, not as root): with "Hold previous", a frame of mode
+  000 is decoded, not replaced by the previous one (GenericReader tests whether the file exists, as on MS Windows).
 * The same through `decodePlane()`, with a multi-planar test reader (the host
   then declares `kFnOfxImageEffectPropMultiPlanar`).
 * **`clipToFile()`** (#232), called directly: float RGBA and 8-bit RGB images, with padded and negative row bytes,
@@ -1475,7 +1490,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
 | `ctest_skips.sh`            | Lists the `SKIP: `/`SKIPPED: ` lines of all tests of the last ctest run (`ctest_skips.sh build`), which `ctest --output-on-failure` hides, e.g. the sections of `test-ffmpeg` without their encoder; CI runs it after ctest (#309). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-writer-render-scale` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
 
 ## Notes / limitations
 

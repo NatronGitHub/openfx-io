@@ -30,7 +30,6 @@
 #include <cmath>
 #include <cstddef> // std::ptrdiff_t
 #include <cstring> // memset
-#include <fstream>
 #include <iterator> // std::advance
 #include <memory>
 #include <sstream>
@@ -42,12 +41,9 @@
 #define DBG(x) (void)0
 #endif
 
-#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
-#include <windows.h>
-#endif
-
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
+#include "ofxsFileOpen.h"
 #include "ofxsLog.h"
 #include "ofxsMacros.h"
 
@@ -531,13 +527,21 @@ GenericReaderPlugin::timeDomainFromSequenceTimeDomain(const OfxRangeI& sequenceT
 }
 
 void
-GenericReaderPlugin::syncTimeOffset()
+GenericReaderPlugin::syncTimeParams()
 {
-    const int offset = _startingTime->getValue() - _firstFrame->getValue();
-
-    // only set it if it changes, so that the instance is not modified for nothing
-    if (_timeOffset->getValue() != offset) {
-        _timeOffset->setValue(offset);
+    // only set a param if it changes, so that the instance is not modified for nothing
+    const int firstFrame = _firstFrame->getValue();
+    if (static_cast<FrameModeEnum>(_frameMode->getValue()) == eFrameModeTimeOffset) {
+        // the user sees and sets the time offset: keep it (#260)
+        const int startingTime = firstFrame + _timeOffset->getValue();
+        if (_startingTime->getValue() != startingTime) {
+            _startingTime->setValue(startingTime);
+        }
+    } else {
+        const int offset = _startingTime->getValue() - firstFrame;
+        if (_timeOffset->getValue() != offset) {
+            _timeOffset->setValue(offset);
+        }
     }
 }
 
@@ -724,40 +728,12 @@ GenericReaderPlugin::getSequenceTime(double t,
     return eGetSequenceTimeError;
 }
 
-#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
-std::wstring
-utf8ToUtf16(const string& str)
-{
-    std::wstring native;
-
-    native.resize(MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, NULL, 0));
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &native[0], (int)native.size());
-
-    return native;
-}
-
-#endif
-
+// Whether the frame's file exists (#414): OFX::exists_utf8() tests existence on every platform. An existing file that
+// can not be read is then not a missing frame (kParamOnMissingFrame): its decode fails with the reader's error.
 static bool
 checkIfFileExists(const string& path)
 {
-#if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32))
-    WIN32_FIND_DATAW FindFileData;
-    std::wstring wpath = utf8ToUtf16(path);
-    HANDLE handle = FindFirstFileW(wpath.c_str(), &FindFileData);
-    if (handle != INVALID_HANDLE_VALUE) {
-        FindClose(handle);
-
-        return true;
-    }
-
-    return false;
-#else
-    // on Unix platforms passing in UTF-8 works
-    std::ifstream fs(path.c_str());
-
-    return fs.is_open() && fs.good();
-#endif
+    return OFX::exists_utf8(path.c_str());
 }
 
 GenericReaderPlugin::GetFilenameRetCodeEnum
@@ -1896,13 +1872,14 @@ GenericReaderPlugin::render(const RenderArguments& args)
     // When in proxy mode renderWindowFullRes is the render window at the proxy mip map level
     // At a scale that is not a power of two, the proxy file is only read at its own scale (atProxyScale), and
     // downscaleLevels is then 0; otherwise the full-resolution file is resampled.
-    const bool resample = notPowerOfTwo && !(useProxy && !proxyFile.empty());
+    const bool readsProxy = useProxy && !proxyFile.empty(); // the proxy file is read, not the full-resolution one
+    const bool resample = notPowerOfTwo && !readsProxy;
     if (resample) {
         renderMipmapLevel = 0;
     }
     int downscaleLevels = renderMipmapLevel; // the number of mipmap levels from the actual file (proxy or not) to the renderWindow
 
-    if (useProxy && !proxyFile.empty()) {
+    if (readsProxy) {
         filename = proxyFile;
         downscaleLevels -= originalProxyMipMapLevel;
     }
@@ -1945,7 +1922,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
         // RoD from), and the reader may read them again. A render window larger than an up-to-date RoD (e.g. the
         // display window of a cropped image) is not in that case: its part out of the RoD is black anyway, and the
         // file is not read again for each render.
-        OfxRectI hostWindow = renderWindow;
+        OfxRectI hostRoD;
         {
             // The RoD is bounds.x1 * par... (getRegionOfDefinition()): x * par / par is not always x (e.g. 1920 at a
             // PAR of 40/33 gives 1920.0000000000002), so shrink it by much less than a pixel before converting it,
@@ -1956,13 +1933,15 @@ GenericReaderPlugin::render(const RenderArguments& args)
             hostRoDCanonical.y1 += 1e-6 * (1. + std::fabs(hostRoDCanonical.y1));
             hostRoDCanonical.x2 -= 1e-6 * (1. + std::fabs(hostRoDCanonical.x2));
             hostRoDCanonical.y2 -= 1e-6 * (1. + std::fabs(hostRoDCanonical.y2));
-            OfxRectI hostRoD;
             Coords::toPixelEnclosing(hostRoDCanonical, args.renderScale, _outputClip->getPixelAspectRatio(), &hostRoD);
-            if (!intersectWindow(renderWindow, hostRoD, &hostWindow)) {
-                hostWindow = frameWindow; // (nothing to refresh)
-            }
         }
-        if (((hostWindow.x1 < frameWindow.x1) || (hostWindow.y1 < frameWindow.y1) || (hostWindow.x2 > frameWindow.x2) || (hostWindow.y2 > frameWindow.y2))
+        OfxRectI hostWindow;
+        if (!intersectWindow(renderWindow, hostRoD, &hostWindow)) {
+            hostWindow = frameWindow; // (nothing to refresh)
+        }
+        // (not for a proxy file, whose frame bounds are not those of the RoD: its aspect ratio may differ)
+        if (!readsProxy
+            && ((hostWindow.x1 < frameWindow.x1) || (hostWindow.y1 < frameWindow.y1) || (hostWindow.x2 > frameWindow.x2) || (hostWindow.y2 > frameWindow.y2))
             && refreshFrameBounds(filename, sequenceTime, args.renderView)) {
             // the reader's cached frame bounds were older than the file: get the new ones
             success = getFrameBounds(filename, sequenceTime, args.renderView, &frameBounds, &format, &par, &error, &tile_width, &tile_height);
@@ -1974,6 +1953,15 @@ GenericReaderPlugin::render(const RenderArguments& args)
             }
             clampProxyFrameBounds(downscaleLevels, &frameBounds);
             frameWindow = resample ? scaleSmallestEnclosing(frameBounds, args.renderScale) : Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        }
+        if (readsProxy) {
+            // The RoD is the full-resolution file's (getRegionOfDefinition() does not read the proxy file): a proxy
+            // file whose aspect ratio is not the original's covers more or less than the RoD at the render scale.
+            // Its pixels out of the RoD are not written (they are black, as out of the RoD at scale 1), and the part
+            // of the RoD out of the proxy file is black (#439).
+            OfxRectI inRoD;
+            (void)intersectWindow(frameWindow, hostRoD, &inRoD); // all 0 if they don't intersect
+            frameWindow = inRoD;
         }
         if ((renderWindow.x1 < frameWindow.x1) || (renderWindow.y1 < frameWindow.y1) || (renderWindow.x2 > frameWindow.x2) || (renderWindow.y2 > frameWindow.y2)) {
             for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -2399,9 +2387,10 @@ GenericReaderPlugin::changedFilename(const InstanceChangedArgs& args)
             _startingTime->setValue(timeDomain.min);
         }
         // the first frame changed: keep the time offset in sync with the starting time (#154). If the
-        // params were already guessed, the starting time is kept (Natron already set it to the first
-        // frame from kParamOriginalFrameRange).
-        syncTimeOffset();
+        // params were already guessed: in Time Offset mode, the time offset is kept and the starting time follows
+        // (#260); in Starting Time mode, the starting time is kept (Natron already set it to the first frame from
+        // kParamOriginalFrameRange).
+        syncTimeParams();
     }
 
     // restore state! let the derived class (which calls GenericReaderPlugin::restoreStateFromParams()) initialize any other parameters or structures
@@ -2590,9 +2579,13 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
         _lastFrame->setValue(oLast);
         _lastFrame->setDefault(oLast);
 
-        _startingTime->setValue(oFirst);
         _startingTime->setDefault(oFirst);
-        syncTimeOffset(); // the time offset is now 0 (#154)
+        if (static_cast<FrameModeEnum>(_frameMode->getValue()) != eFrameModeTimeOffset) {
+            // Starting Time mode: the starting time is reset to the first frame, and the time offset is now 0 (#154)
+            _startingTime->setValue(oFirst);
+        }
+        // in Time Offset mode, the time offset is kept and the starting time follows the first frame (#260)
+        syncTimeParams();
     } else if ((paramName == kParamFirstFrame) && (args.reason == eChangeUserEdit)) {
         int first;
         int oFirst, oLast;

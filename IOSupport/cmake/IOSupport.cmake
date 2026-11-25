@@ -11,7 +11,7 @@
 #                    OpenGL rendering, GenericOCIOOpenGL.cpp glsl.cpp (+ SupportExt OPENGL), and <target> is linked
 #                    with OpenColorIO::OpenColorIO and gets OFX_IO_USING_OCIO. Without OpenColorIO, GenericOCIO only
 #                    passes images through.
-#   GenericReader    GenericReader.cpp (+ SequenceParsing GenericOCIO, SupportExt THREADS MULTIPLANE)
+#   GenericReader    GenericReader.cpp (+ SequenceParsing GenericOCIO, SupportExt THREADS FILEOPEN MULTIPLANE)
 #   GenericWriter    GenericWriter.cpp (+ SequenceParsing GenericOCIO, SupportExt FILEOPEN MULTIPLANE)
 #   ALL              all of them
 # SupportExt sources are added with supportext_add_sources() (SupportExt/cmake/SupportExt.cmake), which must be
@@ -31,7 +31,7 @@ set(_IOSUPPORT_GenericOCIO_OCIO_SOURCES    GenericOCIOOpenGL.cpp glsl.cpp)
 set(_IOSUPPORT_GenericOCIO_OCIO_SUPPORTEXT OPENGL)
 set(_IOSUPPORT_GenericReader_SOURCES   GenericReader.cpp)
 set(_IOSUPPORT_GenericReader_DEPENDS   SequenceParsing GenericOCIO)
-set(_IOSUPPORT_GenericReader_SUPPORTEXT THREADS MULTIPLANE)
+set(_IOSUPPORT_GenericReader_SUPPORTEXT THREADS FILEOPEN MULTIPLANE)
 set(_IOSUPPORT_GenericWriter_SOURCES   GenericWriter.cpp)
 set(_IOSUPPORT_GenericWriter_DEPENDS   SequenceParsing GenericOCIO)
 set(_IOSUPPORT_GenericWriter_SUPPORTEXT FILEOPEN MULTIPLANE)
