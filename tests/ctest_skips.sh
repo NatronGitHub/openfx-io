@@ -7,7 +7,9 @@
 #
 # A skip line starts with "SKIP: " or "SKIPPED: " (after optional blanks), followed by what is not run and why: the
 # tests print one per skipped part. Other mentions of "skip" (e.g. a summary such as "3 plug-ins skipped") are not
-# counted.
+# counted. A note line starts with "NOTE: ": something to look at that skipped nothing (e.g. a control clip of
+# test-ffmpeg that no longer shows its bug); notes are listed and counted apart from the skips, with one notice
+# annotation per test in GitHub Actions.
 #
 # Informative only: exit status 0, also when a BUILD_DIR has no LastTest.log (ctest did not run there); 2 on usage
 # errors. The tests that ctest itself skipped (SKIP_RETURN_CODE) are in ctest's own "did not run" list.
@@ -35,6 +37,11 @@ for dir in "$@"; do
             n[name]++
             print name ": " $0
         }
+        out && /^[[:space:]]*NOTE: / {
+            if (!(name in notes)) { norder[++ntests] = name }
+            notes[name]++
+            print name ": " $0
+        }
         END {
             if (tests == 0) { print dir ": no skips inside the tests" }
             for (i = 1; i <= tests; i++) {
@@ -42,6 +49,13 @@ for dir in "$@"; do
                 print dir ": " t ": " n[t] " skipped"
                 if (ga == "true") {
                     printf "::warning title=Skips inside %s::%s: %s: %d skipped (see the step \"Skips inside the tests\")\n", t, dir, t, n[t]
+                }
+            }
+            for (i = 1; i <= ntests; i++) {
+                t = norder[i]
+                print dir ": " t ": " notes[t] " notes"
+                if (ga == "true") {
+                    printf "::notice title=Notes inside %s::%s: %s: %d notes (see the step \"Skips inside the tests\")\n", t, dir, t, notes[t]
                 }
             }
         }' "$log"

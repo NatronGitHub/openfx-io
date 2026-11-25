@@ -123,6 +123,13 @@
 # number).
 #
 # Environment:
+#   FFMPEG_READ_TEST_STRICT=1  (CI) a skipped section fails the run (a "FAIL: unexpected skip" line), unless its
+#                              reason matches FFMPEG_READ_TEST_EXPECTED_SKIPS (#198). Default: skips only count.
+#   FFMPEG_READ_TEST_EXPECTED_SKIPS=ERE
+#                              with FFMPEG_READ_TEST_STRICT=1, the skips that don't fail: a bash extended regular
+#                              expression, matched against the reason of the SKIPPED line (e.g. 'no hap encoder';
+#                              the harness's: 'no decoder in the linked libavcodec: CLIP'). An invalid one is an
+#                              error (exit status 2); a pattern that never matches is allowed, and not reported.
 #   FFMPEG_READ_TEST_KEEP=dir  generate the clips in dir and keep them
 #   FFMPEG_READ_TEST_ARGS=...  extra harness arguments (e.g. --verbose)
 #   FFMPEG_READ_TEST_BIN=path  the harness (default: ffmpeg_read_test next to this script, as tests/Makefile
@@ -142,6 +149,16 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
     exit 2
 fi
 
+# [[ =~ ]] returns 2 on an invalid regular expression: say so once, rather than failing every skip as unexpected
+if [ -n "${FFMPEG_READ_TEST_EXPECTED_SKIPS:-}" ]; then
+    status=0
+    [[ "" =~ $FFMPEG_READ_TEST_EXPECTED_SKIPS ]] || status=$?
+    if [ "$status" -eq 2 ]; then
+        echo "error: FFMPEG_READ_TEST_EXPECTED_SKIPS is not a valid extended regular expression: $FFMPEG_READ_TEST_EXPECTED_SKIPS" >&2
+        exit 2
+    fi
+fi
+
 if [ -n "${FFMPEG_READ_TEST_KEEP:-}" ]; then
     tmp="$FFMPEG_READ_TEST_KEEP"
     mkdir -p "$tmp"
@@ -150,13 +167,27 @@ else
     trap 'rm -rf "$tmp"' EXIT
 fi
 
-# skip REASON: the current section is not run (the harness prints the same "SKIPPED: " line when it exits with
-# status 77); the last line gives their number. ctest hides the output of a passing test: in CI, tests/ctest_skips.sh
-# lists these lines (#309).
+# skip REASON: the current section is not run; the last line gives their number. ctest hides the output of a passing
+# test: in CI, tests/ctest_skips.sh lists these lines (#309), and FFMPEG_READ_TEST_STRICT=1 fails on the unexpected
+# ones (count_skip).
 nskipped=0
 skip() {
     echo "SKIPPED: $*"
+    count_skip "$*"
+}
+# count_skip REASON: counts a skipped section whose "SKIPPED: " line is already printed (by skip, or by the harness
+# when it exits with status 77); with FFMPEG_READ_TEST_STRICT=1, fails the run (rc=1) unless REASON matches
+# FFMPEG_READ_TEST_EXPECTED_SKIPS.
+count_skip() {
     nskipped=$((nskipped + 1))
+    if [ "${FFMPEG_READ_TEST_STRICT:-0}" = 1 ]; then
+        local expected="${FFMPEG_READ_TEST_EXPECTED_SKIPS:-}"
+        # (an invalid pattern stopped the script at its start)
+        if [ -z "$expected" ] || ! [[ "$1" =~ $expected ]]; then
+            echo "FAIL: unexpected skip (FFMPEG_READ_TEST_STRICT=1): $1"
+            rc=1
+        fi
+    fi
 }
 
 NFRAMES=40
@@ -1546,7 +1577,8 @@ else
         differing=$((differing + n))
     done
     if [ "$differing" -eq 0 ]; then
-        skip "this FFmpeg/libx264 no longer reproduces issue #442: the ffmpeg CLI decodes every frame of intra_refresh.mp4 after a seek as sequentially (the checks below still run)"
+        # (a NOTE, not a skip: the checks below still run; tests/ctest_skips.sh lists it)
+        echo "NOTE: this FFmpeg/libx264 no longer reproduces issue #442: the ffmpeg CLI decodes every frame of intra_refresh.mp4 after a seek as sequentially (the checks below still run)"
     fi
     size=$(wc -c < "$tmp/intra_refresh.mp4")
     # shellcheck disable=SC2086
@@ -1863,6 +1895,9 @@ if have_encoder libx264; then
         echo "FAIL: could not generate the 60 s clips"
         rc=1
     fi
+else
+    echo "== Matroska and FLV (H.264, 24 fps, 60 s): bytes read at open =="
+    skip "no libx264 encoder in the ffmpeg CLI"
 fi
 # A high bit rate FLV (about 400 kB per frame, more than in the first windows read at the end) without the
 # duration metadata, with and without a start time: the end must still be read from the last packets.
@@ -1877,6 +1912,9 @@ if have_encoder libx264 && have_encoder aac; then
             rc=1
         fi
     done
+else
+    echo "== FLV (H.264 with B-frames, 400 kB per frame, no duration metadata) =="
+    skip "no libx264 or aac encoder in the ffmpeg CLI"
 fi
 # Matroska with a single keyframe, and Matroska without cues (written to a pipe), 160x120 noise (about 9 MB):
 # opening must not read the file (the Matroska demuxer parses the clusters to seek without cues,
@@ -1896,6 +1934,9 @@ if have_encoder libx264; then
             --seek-bytes 3,$((size * 3 / 2))
         rm -f "$tmp/noise_$kind.mkv"
     done
+else
+    echo "== Matroska (one keyframe, and without cues): bytes read at open, and decoding frame 3 =="
+    skip "no libx264 encoder in the ffmpeg CLI"
 fi
 # MPEG-TS/PS, whose end is read from the last packets: two programs in a TS (the second starting at 100 s:
 # only the program of the video stream counts), an MPEG-PS whose last reference frame has no PTS (it is
@@ -1962,6 +2003,9 @@ if have_encoder mpeg2video && have_encoder mp2 && have_encoder ac3; then
         echo "FAIL: could not generate the MPEG-TS/PS clips"
         rc=1
     fi
+else
+    echo "== MPEG-TS, MPEG-PS and VOB (MPEG-2 with B-frames): frame count =="
+    skip "no mpeg2video, mp2 or ac3 encoder in the ffmpeg CLI"
 fi
 # An MPEG-TS whose end probe fails: 1 s of video and 8 s of 8-channel 32-bit SMPTE 302M audio (11 MB), so the
 # last 4 MB have no video packet. The end is FFmpeg's estimate, and the last frame is held until the end of the
@@ -2162,7 +2206,7 @@ check_bitdepth() {
     # shellcheck disable=SC2086
     "$bin" "$tmp/$name" "${args[@]}" ${FFMPEG_READ_TEST_ARGS:-} || status=$?
     if [ "$status" -eq 77 ]; then
-        nskipped=$((nskipped + 1))
+        count_skip "no decoder in the linked libavcodec: $name"
     elif [ "$status" -ne 0 ]; then
         rc=1
     fi
@@ -2174,7 +2218,10 @@ check_bitdepth bitdepth_vp9_12.mkv "Bit depth: VP9 profile 2, 12 bits, lossless"
 check_bitdepth bitdepth_vp9_422_10.webm "Bit depth: VP9 profile 3, 4:2:2 10 bits, lossless" 10 yuv422p10le libvpx-vp9 -lossless 1
 check_bitdepth bitdepth_av1_10.mkv "Bit depth: AV1 10 bits (SVT-AV1, decoded by libdav1d)" 10 yuv420p10le libsvtav1 -crf 10 -preset 8
 check_bitdepth bitdepth_hevc_10.mp4 "Bit depth: HEVC Main 10, lossless (libx265)" 10 yuv420p10le libx265 -x265-params lossless=1:log-level=error
-check_bitdepth bitdepth_hevc_vt_10.mp4 "Bit depth: HEVC Main 10 (VideoToolbox)" 10 yuv420p10le hevc_videotoolbox -profile:v main10 -q:v 80
+# (VideoToolbox is macOS's: elsewhere this section is not run at all, rather than always skipped)
+if [ "$(uname -s)" = Darwin ]; then
+    check_bitdepth bitdepth_hevc_vt_10.mp4 "Bit depth: HEVC Main 10 (VideoToolbox)" 10 yuv420p10le hevc_videotoolbox -profile:v main10 -q:v 80
+fi
 check_bitdepth bitdepth_h264_10.mkv "Bit depth: H.264 High 10 (libx264, sets bits_per_raw_sample)" 10 yuv420p10le libx264 -profile:v high10 -qp 1 -preset ultrafast
 # Bayer (FFV1 sets bits_per_raw_sample to 16, and the components of bayer_rggb16 have 4, 8 and 4 bits)
 check_bitdepth bitdepth_ffv1_bayer16.mkv "Bit depth: FFV1 bayer_rggb16le" 16 bayer_rggb16le ffv1 -level 4 -strict experimental

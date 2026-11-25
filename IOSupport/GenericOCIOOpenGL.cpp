@@ -95,8 +95,11 @@ GenericOCIO::applyGL(const Texture* srcImg,
         // Extract the shader information.
         bool gpulegacy = false;
         OCIO::ConstGPUProcessorRcPtr gpuProc;
-        gpuProc = gpulegacy ? processor->getOptimizedLegacyGPUProcessor(OCIO::OPTIMIZATION_GOOD, LUT3D_EDGE_SIZE)
-                            : processor->getOptimizedGPUProcessor(OCIO::OPTIMIZATION_VERY_GOOD);
+        {
+            OCIOOptimizedProcessorLock lock;
+            gpuProc = gpulegacy ? processor->getOptimizedLegacyGPUProcessor(OCIO::OPTIMIZATION_GOOD, LUT3D_EDGE_SIZE)
+                                : processor->getOptimizedGPUProcessor(OCIO::OPTIMIZATION_VERY_GOOD);
+        }
         // See https://github.com/AcademySoftwareFoundation/OpenColorIO/blob/b2e88b195c1e1a82a51818e0a4aa2975e03b6a88/vendor/aftereffects/OpenColorIO_AE_Context.cpp#L851
         // Step 1: Create a GPU Shader Description
         OCIO::GpuShaderDescRcPtr shaderDesc = OCIO::GpuShaderDesc::CreateShaderDesc();

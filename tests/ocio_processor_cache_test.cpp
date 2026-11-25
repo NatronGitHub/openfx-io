@@ -35,7 +35,11 @@
  *
  * The test writes its OCIO configs and CDL files in <dir> and sets $OCIO to the first config.
  * The plug-ins are linked directly and driven through the OFX actions by the in-process host of ofx_test_host.h.
- * Usage: ocio_processor_cache_test <dir>
+ * Usage: ocio_processor_cache_test [--no-purge-during-renders] <dir>
+ * --no-purge-during-renders: without the purges while 3 threads render (part 4), whose only ThreadSanitizer reports
+ * with uninstrumented OpenColorIO libraries are false positives in OCIO's file cache (CI's
+ * test-ocio-processor-cache-renders-tsan; the concurrent renders of the other parts, e.g. the GetEnvVariable() race of
+ * OpenColorIO < 2.6 that OCIOOptimizedProcessorLock fixes, are still checked).
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -498,12 +502,18 @@ main(int argc,
      char** argv)
 {
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // (line-buffered: a crash keeps the lines before it, under ctest or a pipe)
-    if (argc < 2) {
-        std::printf("usage: %s <dir>\n", argv[0]);
+    bool purgeDuringRenders = true;
+    int arg = 1;
+    if (arg < argc && std::string(argv[arg]) == "--no-purge-during-renders") {
+        purgeDuringRenders = false;
+        ++arg;
+    }
+    if (arg + 1 != argc) {
+        std::printf("usage: %s [--no-purge-during-renders] <dir>\n", argv[0]);
 
         return 2;
     }
-    const std::string dir = argv[1];
+    const std::string dir = argv[arg];
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     const std::string configA = dir + "/a.ocio";
@@ -709,7 +719,11 @@ main(int argc,
             check(ok(in.purgeCaches()), name + ": purge caches");
             v = in.render1();
             check(v == static_cast<float>(kInput * 3. * look), name + ", after purging the caches: the new slope, 0.25 * 3 * " + str(look) + " (got " + str(v) + ")");
-            testPurgeDuringRenders(name, in, 3. * look);
+            if (purgeDuringRenders) {
+                testPurgeDuringRenders(name, in, 3. * look);
+            } else {
+                std::printf("  (%s: no purge during renders: --no-purge-during-renders)\n", name.c_str());
+            }
         }
     }
 

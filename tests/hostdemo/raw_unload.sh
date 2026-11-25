@@ -85,7 +85,7 @@ for i in $(seq 1 "$RUNS"); do
     elif [ "$STRICT" = 1 ] && [ "$(uname -s)" != Darwin ] && grep -q "^note: no OpenMP runtime" "$log"; then
         echo "FAIL run $i: no OpenMP runtime was loaded after the render (IO_HOSTDEMO_STRICT=1, not macOS)"
     elif grep -q "^FAIL" "$log"; then
-        echo "FAIL run $i: $(grep '^FAIL' "$log" | head -1)"
+        echo "FAIL run $i: $(grep -m 1 '^FAIL' "$log")"
     elif [ $status -ne 0 ]; then
         why="exit status $status"
         [ $status -gt 128 ] && why="$why (signal $((status - 128)))"

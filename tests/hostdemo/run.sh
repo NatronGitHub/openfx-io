@@ -1,5 +1,7 @@
 #!/bin/bash
-# Load and render every plug-in of an IO.ofx bundle with openfx's hostDemo (HostSupport/examples).
+# Load and render every plug-in of an IO.ofx bundle with a host that has the command line of openfx's hostDemo
+# (HostSupport/examples): ctest's io-hostdemo uses openfx's Python host, ofxhost.hostdemo (its hostdemo-inprocess
+# wrapper, #261), which writes the same files and --report fields; CI's Linux testing-bundle check uses the C++ hostDemo.
 #
 # The plug-ins are listed by the bundle itself (verify_plugin_loads). Each one must be covered by a test below, or by
 # an explicit skip with its reason (SKIPS): a plug-in of the bundle that is neither fails the test, so that a new
@@ -21,7 +23,8 @@
 # was not written (its writer failed, or is not in the bundle) fails too.
 # Not tested: ReadOIIO's RAW support (see below).
 #
-# Usage: tests/hostdemo/run.sh <hostDemo> <IO.ofx.bundle> <verify_plugin_loads> [work dir]
+# Usage: tests/hostdemo/run.sh <hostDemo or hostdemo-inprocess> <IO.ofx.bundle> <verify_plugin_loads> [work dir]
+# (hostdemo-inprocess: with OFXHOST_PYTHON, the Python of the ofxh module, and the module on PYTHONPATH)
 # Environment:
 #   OCIO                    default: tests/test.ocio, a minimal config with identity color spaces
 #   HOSTDEMO_TIMEOUT        seconds per hostDemo run (default 120)
@@ -38,7 +41,7 @@
 set -o pipefail
 
 if [ $# -lt 3 ]; then
-    echo "Usage: $0 <hostDemo> <IO.ofx.bundle> <verify_plugin_loads> [work dir]"
+    echo "Usage: $0 <hostDemo or hostdemo-inprocess> <IO.ofx.bundle> <verify_plugin_loads> [work dir]"
     exit 1
 fi
 # absolute paths (hostDemo runs in the output directory)
@@ -60,7 +63,7 @@ else
 fi
 
 STRICT=${IO_HOSTDEMO_STRICT:-0}
-BINARY=$(ls "$BUNDLE"/Contents/*/IO.ofx 2> /dev/null | head -1)
+BINARY=$(ls "$BUNDLE"/Contents/*/IO.ofx 2> /dev/null | sed -n 1p) # (not head -1: ls may get SIGPIPE, under pipefail)
 if [ -z "$BINARY" ]; then
     echo "not installed: $BUNDLE (run cmake --install first)"
     [ "$STRICT" = 1 ] && { echo "FAIL: IO_HOSTDEMO_STRICT=1"; exit 1; }
