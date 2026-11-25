@@ -1116,14 +1116,19 @@ the next P-frame from a gray frame without an error: frames 1-12 must fail and f
 be those of the clean file, sequentially (`--reference` with `--fail` and `--reference-sequential`,
 since a seek in such a file lands on a P-frame). Truncated ProRes and MJPEG in MOV (faststart, cut
 in frame 16, a packet that the demuxer flags as corrupt) must fail for the missing frames, with an
-error, sequentially and after a seek, as for issue #134. A run of 4 damaged ProRes and MJPEG
-frames must show the frame before them, also when each one is decoded first in a newly opened file (`--fresh`, in reverse and in
-another order). A truncated H.264 MP4 (faststart, with B-frames) must fail from the DTS of the
-truncated packet, found in the index at open, in any render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
-decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one
-damaged from its 7th packet on, decoding every frame sequentially, and in reverse order in a newly
-opened file, must read at most 12 times the file (`--max-seq-bytes`, `--max-reverse-bytes`: the
-reader remembers the damaged ranges, instead of reading the damaged packets again for each frame).
+error, sequentially and after a seek, as for issue #134. A run of 4 damaged ProRes and MJPEG frames
+must show the frame before them, also when each one is decoded first in a newly opened file
+(`--fresh`, in reverse and in another order). The MJPEG clips (yuvj420p) are made from a ramp
+generated directly in yuvj420p (`RAMP_PIX_FMT`), without a round trip through the video range: on
+every FFmpeg version, that round trip loses a luma level (32 becomes 31, hidden by the `--ramp`
+tolerance of 1.6), to which FFmpeg n8.0 adds a chroma bias
+([#345](https://github.com/NatronGitHub/openfx-io/issues/345)). A truncated H.264 MP4 (faststart,
+with B-frames) must fail from the DTS of the truncated packet, found in the index at open, in any
+render order. In a 300-frame ProRes MOV with packets 100-199 damaged, the frames after the run must
+decode, sequentially and decoded first in a newly opened file, with 1 and 8 threads; in one damaged
+from its 7th packet on, decoding every frame sequentially, and in reverse order in a newly opened
+file, must read at most 12 times the file (`--max-seq-bytes`, `--max-reverse-bytes`: the reader
+remembers the damaged ranges, instead of reading the damaged packets again for each frame).
 In one with packets 100-179 and 181-183 damaged, decoding frames 101, 184, 181 and 182 in that
 order in a newly opened file (`--order`) must fail for 101, and give frame 181 for the other
 three: with frame threads, the error of a damaged packet comes with a later packet, and the good
