@@ -1,12 +1,11 @@
 name: Continuous Integration
 
-# Per push/PR: full CMake builds + tests on Linux, Windows/MSYS2 UCRT64 and macOS/MacPorts: Release, C++17 (Natron's Qt5
-# builds). A draft push runs Linux and Windows; marking the PR ready runs them again and adds macOS. Extra variants
-# (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests) only run weekly or on demand. Every
-# build, test and dependency build uses CMake (and ctest). The Makefiles stay buildable (Natron's RB-2.6
-# build-plugins.sh uses them): a weekly Linux step only checks that they still build the plug-ins. Natron's Linux
-# testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes, weekly and on demand, not
-# for pull requests.
+# Per push/PR: exactly three full CMake builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64): Release, C++17
+# (Natron's Qt5 builds). Extra variants (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests)
+# only run weekly or on demand. Every build, test and dependency build uses CMake (and ctest). The Makefiles stay
+# buildable (Natron's RB-2.6 build-plugins.sh uses them): a weekly Linux step only checks that they still build the
+# plug-ins. Natron's Linux testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes,
+# weekly and on demand, not for pull requests.
 #
 # Weekly run (Saturdays): the jobs whose upstream moves (linux: Ubuntu 26.04's updates and runner image; windows:
 # MSYS2 UCRT64, a rolling distribution; macos: MacPorts, updated by "port selfupdate") run every week, even if master
@@ -14,11 +13,11 @@ name: Continuous Integration
 # and cached, also built on every push to master) only runs if master changed since the last weekly run (the
 # "changes" job).
 #
-# Frugal CI (NatronGitHub runners are shared by all repos): one run per push, plus one when a PR is marked ready. The
-# macOS job (scarce runners) only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows.
-# Pushes run CI only on master, RB-* and tags; feature branches run through their pull request. Draft pull requests run
-# Linux and Windows only (validate with CI, not with local builds); macOS runs once the PR is ready for review.
-# Superseded runs are cancelled, except for tags. Artifacts only for tags and manual runs.
+# Frugal CI (NatronGitHub runners are shared by all repos): one run per change. The macOS job (scarce runners)
+# only runs after the Linux and Windows jobs passed; merging requires only Linux and Windows. Pushes run CI only on
+# master, RB-* and tags; feature branches run through their pull request. Draft pull requests don't run CI: drafts are
+# validated locally; CI runs once, when the PR is marked ready (ready_for_review). Superseded runs are cancelled,
+# except for tags. Artifacts only for tags and manual runs.
 on:
   workflow_dispatch: {}
   schedule:
@@ -42,10 +41,8 @@ permissions:
 
 concurrency:
   # weekly and manual runs have their own groups, so that they don't cancel (or get cancelled by) master's push CI.
-  # Runs of draft pull requests (Linux and Windows only) have their own group too: a new push to a draft cancels the
-  # previous draft run, but a late run of a push made while the PR was a draft can't cancel the ready_for_review run
-  # (the only one with macOS). Either way, the ready_for_review run builds Linux and Windows again on the draft's last
-  # commit before macOS (a single group wouldn't avoid that); avoiding it would need a job that queries the API.
+  # Runs of draft pull requests (which skip every job) have their own group too: otherwise a late run of a push made
+  # while the PR was a draft cancels the ready_for_review run, then skips itself, and no CI runs at all.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event_name || 'ci' }}${{ github.event.pull_request.draft && '-draft' || '' }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
@@ -91,9 +88,10 @@ jobs:
 
   linux:
     name: Linux (Ubuntu 26.04)
-    # Also runs on draft pull requests. Ubuntu 26.04 moves (apt-get update installs its updates of FFmpeg, OpenImageIO,
+    # No CI for draft pull requests. Ubuntu 26.04 moves (apt-get update installs its updates of FFmpeg, OpenImageIO,
     # OpenColorIO, LibRaw..., and the runner image changes weekly): the weekly run builds on Linux every week, even if
     # master didn't change (no "needs: changes").
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     # Ubuntu 26.04: its FFmpeg is 8.0.1 (the minimum, see README.md), and its OpenImageIO links the same FFmpeg
     runs-on: ubuntu-26.04
     timeout-minutes: 90
@@ -472,14 +470,11 @@ jobs:
 
   macos:
     name: macOS 15 (Xcode clang, MacPorts)
-    # macOS runners are scarce: only build on macOS once Linux and Windows passed, and not on draft pull requests (Linux
-    # and Windows do run on drafts; macOS runs when the PR is marked ready for review). macOS is informative: merging
-    # only requires Linux and Windows. MacPorts moves (port selfupdate): like Linux and Windows, the weekly run builds on
-    # macOS every week, even if master didn't change.
+    # macOS runners are scarce: only build on macOS once Linux and Windows passed (they already skip drafts). macOS is
+    # informative: merging only requires Linux and Windows. MacPorts moves (port selfupdate): like Linux and Windows,
+    # the weekly run builds on macOS every week, even if master didn't change.
     needs: [linux, windows]
-    if: >-
-      ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' &&
-      (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 150
     env:
@@ -622,8 +617,9 @@ jobs:
 
   windows:
     name: Windows (MSYS2 UCRT64)
-    # Also runs on draft pull requests. MSYS2 is a rolling distribution (e.g. its FFmpeg moves): the weekly run builds on
+    # No CI for draft pull requests. MSYS2 is a rolling distribution (e.g. its FFmpeg moves): the weekly run builds on
     # Windows every week, even if master didn't change (no "needs: changes").
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:
