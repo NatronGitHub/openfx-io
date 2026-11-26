@@ -1,6 +1,7 @@
 /*
  * ofx_render_test — full render/encode/decode integration tests for the openfx-io
- * FFmpeg plugins, DIRECTLY LINKED with the OFX C++ Support library and driven by a
+ * FFmpeg plugins (WriteFFmpeg, ReadFFmpeg), WriteOIIO, the PFM plug-ins (WritePFM, ReadPFM), WritePNG and
+ * GenericWriter (with a test writer), DIRECTLY LINKED with the OFX C++ Support library and driven by a
  * minimal in-process OFX host (no bundle / no dlopen / no external host).
  *
  * Unlike the describe-only tests, this creates plugin instances and drives the
@@ -236,6 +237,8 @@
  *     - every frame of view 0, then of view 1, rendered on one thread (view 1 must be the negative of view 0), then
  *       both views of each frame and a random order on one thread, then a random order on 8 threads at once: each
  *       render must give the image of its view and frame
+ *     - a movie with a yuv420p and a yuv420p10le VP9 stream: the second stream is not a view, view 1 renders the first
+ *       stream, which is not uniform (the output pixel formats did not have to match: a heap overflow)
  *
  * Exit status: 0 = all checks passed.
  */
@@ -327,14 +330,12 @@ namespace {
 struct WriterParams {
     std::vector<std::pair<std::string, std::string>> strings;
     std::vector<std::pair<std::string, int>> ints;
-    std::vector<std::pair<std::string, double>> doubles; // double params
+    std::vector<std::pair<std::string, double>> doubles; // double params (e.g. "fps")
     double inputPar = 1.;            // the PAR of the source clip
     bool expectBeginFailure = false; // beginSequenceRender must fail (and nothing is rendered)
-    bool constantImage = false;      // render the same mid-gray image for every frame instead of a ramp
     std::vector<float> color;        // if it has 3 values, render this constant RGB color for every frame (view 0)
     std::vector<float> frameValues;  // if not empty, the gray level of frame t is frameValues[t - 1] (instead of a ramp)
     bool expectNoFile = false;       // with expectBeginFailure: the output file must not be created
-    double fps = 0.;                 // if > 0, the value of the "fps" param
     std::vector<int> views = { 0 };  // the views rendered for each frame, in this order: view 0 is the ramp, the
                                      // others its negative (1 - v)
     int sequenceView = 0;            // the view in beginSequenceRender (kFnOfxImageEffectPropView); -1: none
@@ -364,9 +365,16 @@ struct WriterParams {
     // not W x H (the size of the movie, the output RoD at beginSequenceRender), as when Natron changes the
     // project format during the render
     int renderW = 0, renderH = 0;
-    // if > 0, render colorPattern() instead of the gray ramp; 2: with its alpha ramp (else opaque); 3: binaryNoise();
-    // 4 and 5: redBlue() lines and columns
-    int pattern = 0;
+    // the source image of each frame
+    enum class Pattern {
+        eGray, // the gray ramp (or color, or frameValues)
+        eColor, // colorPattern(), opaque
+        eColorAlpha, // colorPattern(), with its alpha ramp
+        eBinaryNoise, // binaryNoise()
+        eRedBlueLines, // redBlue() lines
+        eRedBlueColumns, // redBlue() columns
+    };
+    Pattern pattern = Pattern::eGray;
     // the quantization of colorPattern() (see there)
     int patternQuant = 255;
     // the frames may fail to encode (and endSequenceRender may fail), with the error "Cannot encode frame"; if they
@@ -455,15 +463,10 @@ bool paramsSetSince(const Effect& ctx, const std::map<std::string, int>& before,
     return set;
 }
 
-int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp = WriterParams())
+// Sets the file param to outFile, and the strings, ints and doubles params of wp, in the params ctx of a writer; 0 if
+// they all exist.
+int applyParams(Effect& ctx, const std::string& outFile, const WriterParams& wp)
 {
-    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
-    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
-    std::remove(outFile.c_str());
-
-    Effect ctx;
-    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
-
     setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
     for (const auto& sp : wp.strings) {
         if (!ctx.params.count(sp.first)) { std::printf("  FAIL: no param %s\n", sp.first.c_str()); return 1; }
@@ -478,16 +481,49 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         ctx.params[dp.first].hasOv = true;
         ctx.params[dp.first].ov.d = { dp.second };
     }
-    if (wp.fps > 0.) {
-        if (!ctx.params.count("fps")) { std::printf("  FAIL: no param fps\n"); return 1; }
-        ctx.params["fps"].hasOv = true;
-        ctx.params["fps"].ov.d = { wp.fps };
+    return 0;
+}
+
+// Unloads the loaded plug-in p, after destroying its instance (once created), when finish() is called or on return.
+class LoadedPlugin {
+public:
+    explicit LoadedPlugin(OfxPlugin* p) : _p(p) {}
+    LoadedPlugin(const LoadedPlugin&) = delete;
+    LoadedPlugin& operator=(const LoadedPlugin&) = delete;
+    ~LoadedPlugin() { finish(); }
+
+    // the instance was created
+    void created(Effect* inst) { _inst = inst; }
+
+    void finish()
+    {
+        if (!_p) return;
+        if (_inst) _p->mainEntry(kOfxActionDestroyInstance, EH(*_inst), nullptr, nullptr);
+        _p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+        _p = nullptr;
     }
 
-    Effect inst;
+private:
+    OfxPlugin* _p;
+    Effect* _inst = nullptr;
+};
+
+int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp = WriterParams())
+{
+    OfxPlugin* p = findPlugin("fr.inria.openfx.WriteFFmpeg");
+    if (!p) { std::printf("  FAIL: WriteFFmpeg not found\n"); return 1; }
+    std::remove(outFile.c_str());
+
+    Effect ctx;
+    Effect inst; // (before loaded, which destroys it)
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    LoadedPlugin loaded(p);
+    if (applyParams(ctx, outFile, wp)) return 1;
+
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    loaded.created(&inst);
     for (const auto& cp : wp.choicesAfterCreate) {
         const int i = choiceIndex(ctx, cp.first.c_str(), cp.second.c_str());
         if (i < 0) { std::printf("  FAIL: no option \"%s\" in param %s\n", cp.second.c_str(), cp.first.c_str()); return 1; }
@@ -512,7 +548,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         pSetInt(PH(&o->props), kOfxImageClipPropConnected, 0, 0);
     }
 
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); std::printf("  getClipPreferences = %d\n", cp); }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); std::printf("  getClipPreferences = %d\n", cp); }
     const std::map<std::string, int> setBefore = paramSetCounts(ctx); // (#398)
 
     {
@@ -526,15 +562,12 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         if (wp.sequenceView >= 0) {
             pSetInt(ap, kFnOfxImageEffectPropView, 0, wp.sequenceView);
         }
-        const bool began = ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr));
+        const bool began = ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, EH(inst), PH(&a), nullptr));
         if (wp.expectNoParamSetInRender && paramsSetSince(ctx, setBefore, "beginSequenceRender")) {
-            p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
-            p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
             return 1;
         }
         if (wp.expectBeginFailure) {
-            p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
-            p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            loaded.finish();
             if (began) { std::printf("  FAIL: beginSequenceRender succeeded, a failure was expected\n"); return 1; }
             if (wp.expectNoFile) {
                 std::FILE* f = std::fopen(outFile.c_str(), "rb");
@@ -556,7 +589,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 0);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 1);
         pSetInt(ap, kFnOfxImageEffectPropView, 0, wp.interactiveBeginView);
-        if (ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr))) {
+        if (ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, EH(inst), PH(&a), nullptr))) {
             std::printf("  FAIL: the interactive beginSequenceRender succeeded during a sequence render\n");
             return 1;
         }
@@ -589,20 +622,21 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             npix = (size_t)rw * rh;
         }
         for (int view : wp.views) {
-            float v = wp.constantImage ? 0.5f : (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
+            float v = (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
             if (!wp.frameValues.empty()) v = wp.frameValues[(size_t)(t - 1) % wp.frameValues.size()];
             if (view != 0) v = 1.f - v;
-            if (wp.pattern == 3) {
+            using Pattern = WriterParams::Pattern;
+            if (wp.pattern == Pattern::eBinaryNoise) {
                 for (int r = 0; r < rh; ++r) {
                     for (int x = 0; x < rw; ++x) binaryNoise(x, r, t, &fp[((size_t)r * rw + x) * 4]);
                 }
-            } else if ((wp.pattern == 4) || (wp.pattern == 5)) {
+            } else if ((wp.pattern == Pattern::eRedBlueLines) || (wp.pattern == Pattern::eRedBlueColumns)) {
                 for (int r = 0; r < rh; ++r) {
-                    for (int x = 0; x < rw; ++x) redBlue(x, r, wp.pattern == 5, &fp[((size_t)r * rw + x) * 4]);
+                    for (int x = 0; x < rw; ++x) redBlue(x, r, wp.pattern == Pattern::eRedBlueColumns, &fp[((size_t)r * rw + x) * 4]);
                 }
-            } else if (wp.pattern > 0) {
+            } else if (wp.pattern != Pattern::eGray) {
                 for (int r = 0; r < rh; ++r) {
-                    for (int x = 0; x < rw; ++x) colorPattern(x, r, t, rw, rh, wp.pattern > 1, &fp[((size_t)r * rw + x) * 4], wp.patternQuant);
+                    for (int x = 0; x < rw; ++x) colorPattern(x, r, t, rw, rh, wp.pattern == Pattern::eColorAlpha, &fp[((size_t)r * rw + x) * 4], wp.patternQuant);
                 }
             } else {
                 const bool colored = (wp.color.size() == 3) && (view == 0);
@@ -615,7 +649,7 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
             }
             PropSet a = makeRenderInArgs((double)t, rw, rh);
             pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
-            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
             if (!ok(st)) {
                 std::printf(wp.allowEncodeFailure ? "  render frame %d view %d = %d (a failure is allowed)\n" : "  FAIL: render frame %d view %d = %d\n", t, view, st);
                 ++rfail;
@@ -632,15 +666,10 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, EH(inst), PH(&a), nullptr);
         if (!wp.endErrorText.empty()) {
-            std::string error;
-            {
-                std::lock_guard<std::mutex> lock(gMessagesMutex);
-                error = gPersistentError;
-            }
-            p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
-            p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+            const std::string error = persistentError();
+            loaded.finish();
             if (ok(st) || rfail || (error.find(wp.endErrorText) == std::string::npos)) {
                 std::printf("  FAIL: endSequenceRender = %d, render failures=%d, error \"%s\" (expected a failure, \"%s\")\n", st, rfail, error.c_str(), wp.endErrorText.c_str());
                 return 1;
@@ -656,8 +685,8 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
         gWarningAfterRender = gPersistentWarning;
     }
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
-    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    loaded.finish();
+    const std::string error = persistentError();
 
     std::FILE* f = std::fopen(outFile.c_str(), "rb");
     long sz = 0;
@@ -665,19 +694,19 @@ int testWriteFFmpeg(const std::string& outFile, int W, int H, int nFrames, const
     std::printf("  encoded %s (%ld bytes), render failures=%d\n", outFile.c_str(), sz, rfail);
     if (wp.expectRenderFailure) {
         const int expected = (nFrames - 1) * (int)wp.views.size();
-        if ((rfail != expected) || (gPersistentError.find(wp.renderErrorText) == std::string::npos)) {
-            std::printf("  FAIL: expected %d render failures, \"%s\" (error: \"%s\")\n", expected, wp.renderErrorText.c_str(), gPersistentError.c_str());
+        if ((rfail != expected) || (error.find(wp.renderErrorText) == std::string::npos)) {
+            std::printf("  FAIL: expected %d render failures, \"%s\" (error: \"%s\")\n", expected, wp.renderErrorText.c_str(), error.c_str());
             return 1;
         }
-        std::printf("  PASS (render failed as expected: %s)\n", gPersistentError.c_str());
+        std::printf("  PASS (render failed as expected: %s)\n", error.c_str());
         return 0;
     }
     if (wp.allowEncodeFailure && rfail) {
-        if (gPersistentError.find("Cannot encode frame") == std::string::npos) {
-            std::printf("  FAIL: %d frames failed to render, without the error \"Cannot encode frame\" (error: \"%s\")\n", rfail, gPersistentError.c_str());
+        if (error.find("Cannot encode frame") == std::string::npos) {
+            std::printf("  FAIL: %d frames failed to render, without the error \"Cannot encode frame\" (error: \"%s\")\n", rfail, error.c_str());
             return 1;
         }
-        std::printf("  PASS (the encoder failed cleanly: %s)\n", gPersistentError.c_str());
+        std::printf("  PASS (the encoder failed cleanly: %s)\n", error.c_str());
         return 0;
     }
     if (rfail || sz <= 0) { std::printf("  FAIL (encode)\n"); return 1; }
@@ -923,7 +952,9 @@ int testStartTimecode(const std::string& outFile, const char* timecode, double f
 {
     WriterParams wp = base;
     wp.strings.push_back({ "startTimecode", timecode });
-    wp.fps = fps;
+    if (fps > 0.) {
+        wp.doubles.push_back({ "fps", fps });
+    }
     if (!expected) {
         wp.expectBeginFailure = true;
         wp.expectNoFile = true;
@@ -949,23 +980,17 @@ int testStartTimecodeChangedParam(const std::string& outFile)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     int fail = 0;
     const struct { const char* tc; bool valid; } cases[] = { { "01:02:03:99", false }, { "01:02:03:04", true }, { "+1:02:03:04", false }, { "", true } };
     for (const auto& c : cases) {
         setOverrideString(&ctx, "startTimecode", c.tc);
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, "startTimecode");
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        instanceChanged(p, inst, "startTimecode");
         const bool reported = gPersistentError.find("Start Timecode") != std::string::npos;
         std::printf("  \"%s\": %s\n", c.tc, reported ? "error reported" : "no error");
         if (reported == c.valid) { std::printf("  FAIL (expected %s)\n", c.valid ? "no error" : "an error"); ++fail; }
     }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     if (fail) return 1;
     std::printf("  PASS\n");
@@ -991,25 +1016,19 @@ int testBitrateToleranceFps0()
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     int fail = 0;
     const struct { double bitrate; double expected; } cases[] = { { 0., 0. }, { 10., 2.5 } };
     for (const auto& c : cases) {
         ctx.params["bitrateMbps"].hasOv = true;
         ctx.params["bitrateMbps"].ov.d = { c.bitrate };
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, "fps");
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        instanceChanged(p, inst, "fps");
         double vmin = -1.;
         pGetDouble(PH(ctx.params["bitrateToleranceMbps"].props), kOfxParamPropMin, 0, &vmin);
         std::printf("  fps 0, bitrate %g: minimum bitrate tolerance %g (expected %g)\n", c.bitrate, vmin, c.expected);
         if (!(vmin == c.expected)) { std::printf("  FAIL\n"); ++fail; }
     }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     if (fail) return 1;
     std::printf("  PASS\n");
@@ -1030,18 +1049,12 @@ int testStartTimecodeDefaultFormat(const std::string& outFile, bool expectError)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     setOverrideString(&ctx, "startTimecode", "01:00:00:00");
-    PropSet a; OfxPropertySetHandle ap = PH(&a);
-    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-    pSetString(ap, kOfxPropName, 0, "startTimecode");
-    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-    pSetDouble(ap, kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-    p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    instanceChanged(p, inst, "startTimecode");
     const bool reported = gPersistentError.find("Start Timecode") != std::string::npos;
     std::printf("  %s at 300 fps: \"%s\"\n", outFile.c_str(), gPersistentError.c_str());
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     if (reported != expectError) { std::printf("  FAIL: expected %s\n", expectError ? "a Start Timecode error" : "no Start Timecode error"); return 1; }
     std::printf("  PASS\n");
@@ -1067,17 +1080,11 @@ int testSettingsErrorsChangedParam(const std::string& outFile)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     int fail = 0;
     // edit param, then check which errors the persistent message shows
     auto edit = [&](const char* what, const char* param, bool timecodeError, bool containerError) {
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, param);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        instanceChanged(p, inst, param);
         const bool tc = gPersistentError.find("Start Timecode") != std::string::npos;
         const bool container = gPersistentError.find("is not supported in container") != std::string::npos;
         std::printf("  %s: \"%s\"\n", what, gPersistentError.c_str());
@@ -1111,7 +1118,7 @@ int testSettingsErrorsChangedParam(const std::string& outFile)
     edit("Format Options cleared: the timecode error is back", "formatOptions", true, false);
     setOverrideString(&ctx, "startTimecode", "");
     edit("timecode cleared: no error", "startTimecode", false, false);
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     if (fail) return 1;
     std::printf("  PASS\n");
@@ -1127,9 +1134,9 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
     WriterParams base;
     base.strings = { { "codecShortName", "mpeg4" } };
     base.ints = { { "gopSize", 5 } };
-    base.constantImage = true; // with the ramp, each frame is a scene change, which gives an I frame
+    base.frameValues = { 0.5f }; // with the ramp, each frame is a scene change, which gives an I frame
 
-    auto check = [&](bool cond, const char* what) {
+    auto expect = [&](bool cond, const char* what) {
         if (!cond) { std::printf("  FAIL: %s\n", what); ++failures; }
     };
     // faststart: moov must precede mdat; mdta: the metadata is written as mdta keys (use_metadata_tags)
@@ -1137,9 +1144,9 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
         const long moov = findTopLevelAtom(outFile, "moov"), mdat = findTopLevelAtom(outFile, "mdat");
         const bool hasMdta = moovContains(outFile, "mdta");
         std::printf("  moov at %ld, mdat at %ld, mdta in moov: %s\n", moov, mdat, hasMdta ? "yes" : "no");
-        check(moov >= 0 && mdat >= 0, "no moov or mdat atom");
-        check(faststart ? moov < mdat : mdat < moov, faststart ? "moov must precede mdat (faststart)" : "mdat must precede moov (no faststart)");
-        check(hasMdta == mdta, mdta ? "no mdta keys (use_metadata_tags)" : "unexpected mdta keys");
+        expect(moov >= 0 && mdat >= 0, "no moov or mdat atom");
+        expect(faststart ? moov < mdat : mdat < moov, faststart ? "moov must precede mdat (faststart)" : "mdat must precede moov (no faststart)");
+        expect(hasMdta == mdta, mdta ? "no mdta keys (use_metadata_tags)" : "unexpected mdta keys");
     };
     // encode with the given options; returns false if the encode or decode failed
     auto encode = [&](const char* codecOptions, const char* formatOptions, bool fastStartParam = false) {
@@ -1168,14 +1175,14 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
 
     std::printf("  -- reference: mpeg4, Keyframe Interval = 5, no options\n");
     if (!encode(nullptr, nullptr)) return 1;
-    check(n == nFrames && nI < n, "expected P frames");
+    expect(n == nFrames && nI < n, "expected P frames");
     checkAtoms(/*faststart=*/false, /*mdta=*/false);
 
     std::printf("  -- Codec Options \"g=1\" (overrides Keyframe Interval), Format Options \"movflags=+faststart\"\n");
     if (!encode("g=1", "movflags=+faststart")) return 1;
-    check(n == nFrames && nI == n, "expected all I frames");
+    expect(n == nFrames && nI == n, "expected all I frames");
     checkAtoms(/*faststart=*/true, /*mdta=*/false);
-    check(gMessages.find("not applied") == std::string::npos, "unexpected warning");
+    expect(gMessages.find("not applied") == std::string::npos, "unexpected warning");
 
     // The plug-in movflags are write_colr+faststart when Fast Start is checked. (write_colr cannot be
     // checked: FFmpeg 8 writes a colr atom in MP4 whenever the color properties are known.)
@@ -1189,7 +1196,7 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
 
     std::printf("  -- several options, spaces as separators, and unknown keys\n");
     if (!encode(" g=1  bogus_codec_key=3 ", "bogus_format_key=4")) return 1;
-    check(n == nFrames && nI == n, "expected all I frames");
+    expect(n == nFrames && nI == n, "expected all I frames");
     if (gMessages.find(kOfxMessageWarning) == std::string::npos ||
         gMessages.find("not applied by the mpeg4 encoder: bogus_codec_key=3") == std::string::npos ||
         gMessages.find("not applied by the mp4 muxer: bogus_format_key=4") == std::string::npos) {
@@ -1199,7 +1206,7 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
 
     std::printf("  -- a backslash is literal in single quotes, an '=' may end a value\n");
     if (!encode("bogus_path='C:\\' g=1 bogus_eq=a=", nullptr)) return 1;
-    check(n == nFrames && nI == n, "expected all I frames (g=1 must not be swallowed)");
+    expect(n == nFrames && nI == n, "expected all I frames (g=1 must not be swallowed)");
     if (gMessages.find("bogus_path=C:\\") == std::string::npos || gMessages.find("bogus_eq=a=") == std::string::npos) {
         std::printf("  FAIL: expected a warning about bogus_path=C:\\ and bogus_eq=a=, got:\n%s", gMessages.c_str());
         ++failures;
@@ -1208,7 +1215,7 @@ int testWriteFFmpegOptions(const std::string& outFile, int W, int H, int nFrames
     // issue #109: as in av_get_token(), whitespace around '=' is ignored, where it is not ambiguous
     std::printf("  -- spaces around '=', a quoted value with '=' after a space\n");
     if (!encode("g = 1 bogus_sp= 'x=y:z'", "bogus_fmt =3")) return 1;
-    check(n == nFrames && nI == n, "expected all I frames (g = 1)");
+    expect(n == nFrames && nI == n, "expected all I frames (g = 1)");
     if (gMessages.find("not applied by the mpeg4 encoder: bogus_sp=x=y:z\n") == std::string::npos ||
         gMessages.find("not applied by the mp4 muxer: bogus_fmt=3\n") == std::string::npos) {
         std::printf("  FAIL: expected a warning about bogus_sp=x=y:z and bogus_fmt=3, got:\n%s", gMessages.c_str());
@@ -1286,7 +1293,7 @@ int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFr
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     {
         const char* const boxes[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
         for (int k = 0; k < 4; ++k) {
@@ -1312,7 +1319,7 @@ int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFr
         pSetInt(PH(&o->props), kOfxImageClipPropConnected, 0, 0);
     }
 
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); std::printf("  getClipPreferences = %d\n", cp); }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); std::printf("  getClipPreferences = %d\n", cp); }
 
     {
         PropSet a; OfxPropertySetHandle ap = PH(&a);
@@ -1323,7 +1330,7 @@ int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFr
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
         pSetInt(ap, kFnOfxImageEffectPropView, 0, 0);
-        if (!ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr))) { std::printf("  FAIL: beginSequenceRender\n"); return 1; }
+        if (!ok(p->mainEntry(kOfxImageEffectActionBeginSequenceRender, EH(inst), PH(&a), nullptr))) { std::printf("  FAIL: beginSequenceRender\n"); return 1; }
     }
 
     float* fp = reinterpret_cast<float*>(src->buffer.data());
@@ -1333,7 +1340,7 @@ int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFr
         const float v = (float)t / (float)(nFrames + 1); // gray ramp, monotonic in t
         for (size_t i = 0; i < npix; ++i) { fp[i] = v; }
         PropSet a = makeRenderInArgs((double)t, W, H);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: render frame %d = %d\n", t, st); ++rfail; }
     }
 
@@ -1345,11 +1352,11 @@ int testWriteFFmpegAlphaSource(const std::string& outFile, int W, int H, int nFr
         double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, EH(inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d\n", st); return 1; }
     }
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     std::FILE* f = std::fopen(outFile.c_str(), "rb");
@@ -1375,20 +1382,12 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool ne
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextReader);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
 
     // Notify the plugin that the filename changed, so it runs guessParamsFromFilename and
     // initializes its frame-range / starting-time params (otherwise getSequenceTime maps
     // time 1 -> frame 0, which is out of the 1-based decode range).
-    {
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-    }
+    instanceChanged(p, inst, kOfxImageEffectFileParamName);
 
     Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
     if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
@@ -1396,7 +1395,7 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool ne
     const int outComps = 3; // reader's getClipPreferences requests RGB for opaque video
     setupClipImage(out, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
 
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     float* fp = reinterpret_cast<float*>(out->buffer.data());
     const size_t npix = (size_t)W * H;
     double prev = -1.0;
@@ -1407,7 +1406,7 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool ne
             PropSet a; pSetDouble(PH(&a), kOfxPropTime, 0, (double)t);
             double rs[2] = { 1., 1. }; pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
             pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
-            PropSet o; OfxStatus rst = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), PH(&o));
+            PropSet o; OfxStatus rst = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
             double rod[4] = { -1, -1, -1, -1 }; pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
             if (t == 1 && (!ok(rst) || rod[2] != W || rod[3] != H)) {
                 std::printf("  FAIL: getRegionOfDefinition=%d rod=[%.0f %.0f %.0f %.0f] (expected 0 0 %d %d)\n", rst, rod[0], rod[1], rod[2], rod[3], W, H);
@@ -1415,7 +1414,7 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool ne
             }
         }
         PropSet a = makeRenderInArgs((double)t, W, H);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: read render frame %d = %d\n", t, st); ++rfail; continue; }
         double sum = 0;
         for (size_t i = 0; i < npix; ++i) sum += fp[i * outComps + 0];
@@ -1454,8 +1453,8 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool ne
             int win[4] = { w.x1, w.y1, w.x2, w.y2 };
             pSetIntN(PH(&a), kOfxImageEffectPropRenderWindow, 4, win);
             pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
-            gPersistentError.clear();
-            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+            msgClear(nullptr);
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
             if (!ok(st)) { std::printf("  FAIL: scale %g, render window %d,%d,%d,%d = %d %s\n", scale, w.x1, w.y1, w.x2, w.y2, st, gPersistentError.c_str()); ++wfail; continue; }
             if (ref.empty()) { ref.assign(op, op + nValues); continue; }
             int bad = 0;
@@ -1473,7 +1472,7 @@ int testReadFFmpeg(const std::string& inFile, int W, int H, int nFrames, bool ne
     }
     if (!wfail) std::printf("  PASS: render windows narrower than the frame, at scale 1 and 1/2\n");
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     if (rfail || vfail || wfail) { std::printf("  FAIL (decode: renderFails=%d monotonicViolations=%d windowFails=%d)\n", rfail, vfail, wfail); return 1; }
@@ -1522,16 +1521,8 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextReader);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
-    {
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-    }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    instanceChanged(p, inst, kOfxImageEffectFileParamName);
     // read frames outside of the movie (the first frame of a movie is 1), at the same time
     setOverrideInt(&ctx, "firstFrame", 0);
     setOverrideInt(&ctx, "lastFrame", nFrames + 3);
@@ -1550,7 +1541,7 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
     // the clip's RoD is in canonical coordinates (independent of the render scale)
     double clipRod[4] = { 0., 0., (double)W, (double)H };
     pSetDoubleN(PH(&out->props), kOfxImageEffectPropRegionOfDefinition, 4, clipRod);
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     float* fp = reinterpret_cast<float*>(out->buffer.data());
     const size_t npix = (size_t)OW * OH;
     const size_t nval = npix * outComps;
@@ -1565,12 +1556,12 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
         setOverrideInt(&ctx, "onMissingFrame", o.option);
         for (int t : frames) {
             fillUnwritten(fp, nval);
-            gPersistentError.clear();
+            msgClear(nullptr);
             PropSet a = makeRenderInArgs((double)t, OW, OH);
             double rs[2] = { scale, scale };
             pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
             pSetDoubleN(PH(&out->image), kOfxImageEffectPropRenderScale, 2, rs);
-            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+            OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
             size_t nNaN = 0;
             double sum = 0, alphaMin = 1e30, alphaMax = -1e30;
             for (size_t i = 0; i < npix; ++i) {
@@ -1616,9 +1607,9 @@ int testReadFFmpegMissingFrame(const std::string& inFile, int W, int H, int nFra
         }
     }
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
-    gPersistentError.clear();
+    msgClear(nullptr);
 
     if (fails) { std::printf("  FAIL (%d)\n", fails); return 1; }
     std::printf("  PASS\n");
@@ -1673,7 +1664,7 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     for (const char* name : { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA }) {
         auto it = ctx.params.find(name);
         if (it != ctx.params.end()) {
@@ -1705,14 +1696,14 @@ int testWriteOIIONoInputImage(const std::string& outFile, int W, int H, bool cha
         if (f) { std::fputs("previous", f); std::fclose(f); }
     }
 
-    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); }
 
     PropSet a = makeRenderInArgs(1., W, H);
     gAbort = aborted ? 1 : 0;
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     gAbort = 0;
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     if (aborted) {
@@ -1763,9 +1754,9 @@ int testWriteOIIONoPendingError(const std::string& filename)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 64, 64, 1, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
-    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); }
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     const std::string pending = OIIO::geterror();
@@ -1796,7 +1787,7 @@ int testWriteOIIOChannelSelection(const std::string& outFile, int W, int H, cons
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     const char* const boxes[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
     for (int k = 0; k < 4; ++k) {
         auto it = ctx.params.find(boxes[k]);
@@ -1820,12 +1811,12 @@ int testWriteOIIOChannelSelection(const std::string& outFile, int W, int H, cons
         ctx.clips[kOfxImageEffectOutputClipName]->connected = false;
     }
 
-    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); }
 
     PropSet a = makeRenderInArgs(1., W, H);
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     if (!ok(st)) { std::printf("  FAIL: render = %d\n", st); return 1; }
@@ -1873,7 +1864,7 @@ int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H, bo
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, 1, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     for (const char* name : { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA }) {
         auto it = ctx.params.find(name);
         if (it != ctx.params.end()) {
@@ -1905,14 +1896,14 @@ int testWriteOIIODisjointInputImage(const std::string& outFile, int W, int H, bo
         if (f) { std::fputs("previous", f); std::fclose(f); }
     }
 
-    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); }
+    { PropSet outArgs; p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); }
 
     PropSet a = makeRenderInArgs(1., W, H);
     gAbort = aborted ? 1 : 0;
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     gAbort = 0;
 
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     if (aborted || outputMissing) {
@@ -2145,31 +2136,31 @@ int testWriteFFmpegColor(const std::string& outFile, int W, int H, WriterParams 
     StreamInfo s;
     if (probeStream(outFile, &s)) return 1;
     int failures = 0;
-    auto check = [&](bool cond, const std::string& what) {
+    auto expect = [&](bool cond, const std::string& what) {
         if (!cond) { std::printf("  FAIL: %s\n", what.c_str()); ++failures; }
     };
-    if (!e.tag.empty()) check(s.tag == e.tag, "the codec tag must be " + e.tag);
-    if (!e.pixFmt.empty()) check(s.pixFmt == e.pixFmt, "pix_fmt must be " + e.pixFmt);
-    if (e.bitsPerRawSample >= 0) check(s.bitsPerRawSample == e.bitsPerRawSample, "bits_per_raw_sample must be " + std::to_string(e.bitsPerRawSample));
-    if (e.space >= 0) check(s.space == e.space, std::string("color_space must be ") + av_color_space_name((AVColorSpace)e.space));
-    if (e.range >= 0) check(s.range == e.range, std::string("color_range must be ") + av_color_range_name((AVColorRange)e.range));
-    if (e.rangeNotFull) check(s.range != AVCOL_RANGE_JPEG, "color_range must not be pc (full range)");
+    if (!e.tag.empty()) expect(s.tag == e.tag, "the codec tag must be " + e.tag);
+    if (!e.pixFmt.empty()) expect(s.pixFmt == e.pixFmt, "pix_fmt must be " + e.pixFmt);
+    if (e.bitsPerRawSample >= 0) expect(s.bitsPerRawSample == e.bitsPerRawSample, "bits_per_raw_sample must be " + std::to_string(e.bitsPerRawSample));
+    if (e.space >= 0) expect(s.space == e.space, std::string("color_space must be ") + av_color_space_name((AVColorSpace)e.space));
+    if (e.range >= 0) expect(s.range == e.range, std::string("color_range must be ") + av_color_range_name((AVColorRange)e.range));
+    if (e.rangeNotFull) expect(s.range != AVCOL_RANGE_JPEG, "color_range must not be pc (full range)");
     if (e.proResHeader) {
         int pr = -1, tr = -1, mx = -1;
         const bool found = proResFrameHeaderColors(outFile, &pr, &tr, &mx);
         std::printf("  ProRes frame header: color_primaries %d, transfer_characteristic %d, matrix_coefficients %d\n", pr, tr, mx);
-        check(found && pr == e.primaries && tr == e.trc && mx == e.space,
+        expect(found && pr == e.primaries && tr == e.trc && mx == e.space,
               "the ProRes frame header must have color_primaries " + std::to_string(e.primaries) + ", transfer_characteristic "
                   + std::to_string(e.trc) + " and matrix_coefficients " + std::to_string(e.space));
     }
-    if (e.primaries >= 0) check(s.primaries == e.primaries, std::string("color_primaries must be ") + av_color_primaries_name((AVColorPrimaries)e.primaries));
-    if (e.trc >= 0) check(s.trc == e.trc, std::string("color_transfer must be ") + av_color_transfer_name((AVColorTransferCharacteristic)e.trc));
+    if (e.primaries >= 0) expect(s.primaries == e.primaries, std::string("color_primaries must be ") + av_color_primaries_name((AVColorPrimaries)e.primaries));
+    if (e.trc >= 0) expect(s.trc == e.trc, std::string("color_transfer must be ") + av_color_transfer_name((AVColorTransferCharacteristic)e.trc));
     if (!e.center.empty()) {
         bool levels = s.center.size() == e.center.size();
         for (size_t i = 0; levels && i < e.center.size(); ++i) levels = std::abs(s.center[i] - e.center[i]) <= e.tolerance;
         std::string what = "the decoded black and white levels must be";
         for (int c : e.center) what += " " + std::to_string(c);
-        check(levels, what);
+        expect(levels, what);
     }
     std::printf(failures ? "  FAIL (color)\n" : "  PASS (color)\n");
     return failures;
@@ -2187,16 +2178,8 @@ int readFFmpegMeanRGB(const std::string& inFile, int W, int H, double rgb[3], st
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, 1, kOfxImageEffectContextReader);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
-    {
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-    }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    instanceChanged(p, inst, kOfxImageEffectFileParamName);
     if (fileColorspace) {
         auto it = ctx.params.find("ocioInputSpace");
         *fileColorspace = (it != ctx.params.end() && it->second.hasOv && !it->second.ov.s.empty()) ? it->second.ov.s[0] : std::string();
@@ -2205,9 +2188,9 @@ int readFFmpegMeanRGB(const std::string& inFile, int W, int H, double rgb[3], st
     if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
     out->connected = true;
     setupClipImage(out, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     PropSet a = makeRenderInArgs(1., W, H);
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     const float* fp = reinterpret_cast<const float*>(out->buffer.data());
     const size_t npix = (size_t)W * H;
     for (int c = 0; c < 3; ++c) {
@@ -2215,7 +2198,7 @@ int readFFmpegMeanRGB(const std::string& inFile, int W, int H, double rgb[3], st
         for (size_t i = 0; i < npix; ++i) sum += fp[i * 3 + c];
         rgb[c] = sum / (double)npix;
     }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     if (!ok(st)) { std::printf("  FAIL: ReadFFmpeg render = %d\n", st); return 1; }
     return 0;
@@ -2261,36 +2244,36 @@ int testWriteFFmpegColorRoundTrip(const std::string& outFile, const ColorRoundTr
     const std::string file = outFile + c.ext;
     if (testWriteFFmpeg(file, c.W, c.H, 2, wp)) return 1;
     int failures = 0;
-    auto check = [&](bool cond, const std::string& what) {
+    auto expect = [&](bool cond, const std::string& what) {
         if (!cond) { std::printf("  FAIL: %s\n", what.c_str()); ++failures; }
     };
     StreamInfo s;
     if (probeStream(file, &s)) return 1;
-    if (c.space >= 0) check(s.space == c.space, std::string("color_space must be ") + av_color_space_name((AVColorSpace)c.space));
-    if (c.primaries >= 0) check(s.primaries == c.primaries, std::string("color_primaries must be ") + av_color_primaries_name((AVColorPrimaries)c.primaries));
-    if (c.trc >= 0) check(s.trc == c.trc, std::string("color_transfer must be ") + av_color_transfer_name((AVColorTransferCharacteristic)c.trc));
+    if (c.space >= 0) expect(s.space == c.space, std::string("color_space must be ") + av_color_space_name((AVColorSpace)c.space));
+    if (c.primaries >= 0) expect(s.primaries == c.primaries, std::string("color_primaries must be ") + av_color_primaries_name((AVColorPrimaries)c.primaries));
+    if (c.trc >= 0) expect(s.trc == c.trc, std::string("color_transfer must be ") + av_color_transfer_name((AVColorTransferCharacteristic)c.trc));
     if (c.proResHeader) {
         int pr = -1, tr = -1, mx = -1;
         const bool found = proResFrameHeaderColors(file, &pr, &tr, &mx);
         std::printf("  ProRes frame header: color_primaries %d, transfer_characteristic %d, matrix_coefficients %d\n", pr, tr, mx);
-        check(found && pr == c.primaries && tr == c.trc && mx == c.space, "the ProRes frame header must have the tags of the stream");
+        expect(found && pr == c.primaries && tr == c.trc && mx == c.space, "the ProRes frame header must have the tags of the stream");
     }
     if (c.kr >= 0.) {
         const double y = c.kr * color[0] + (1. - c.kr - c.kb) * color[1] + c.kb * color[2];
         const int expected = (int)std::lround((16. + 219. * y) * (double)(1 << (c.bits - 8)));
         const int tolerance = 1 << (c.bits - 8);
         std::printf("  decoded Y' %d, expected %d +-%d (Kr %.4f, Kb %.4f)\n", s.center.empty() ? -1 : s.center[0], expected, tolerance, c.kr, c.kb);
-        check(!s.center.empty() && std::abs(s.center[0] - expected) <= tolerance, "the decoded Y' must be the one of the Y'CbCr matrix");
+        expect(!s.center.empty() && std::abs(s.center[0] - expected) <= tolerance, "the decoded Y' must be the one of the Y'CbCr matrix");
     }
     double rgb[3] = { -1., -1., -1. };
     std::string fileColorspace;
     if (readFFmpegMeanRGB(file, c.W, c.H, rgb, &fileColorspace)) return failures + 1;
     std::printf("  ReadFFmpeg: mean RGB %.4f %.4f %.4f (encoded %.4f %.4f %.4f), File Colorspace \"%s\", metadata \"%s\"\n", rgb[0], rgb[1], rgb[2],
                 color[0], color[1], color[2], fileColorspace.c_str(), formatColorspaceMetadata(file).c_str());
-    for (int i = 0; i < 3; ++i) check(std::fabs(rgb[i] - color[i]) <= 0.01, "ReadFFmpeg must decode the encoded color");
+    for (int i = 0; i < 3; ++i) expect(std::fabs(rgb[i] - color[i]) <= 0.01, "ReadFFmpeg must decode the encoded color");
     if (c.fileColorspace) {
-        check(formatColorspaceMetadata(file) == c.fileColorspace, std::string("the uk.co.thefoundry.Colorspace metadata must be ") + c.fileColorspace);
-        check(fileColorspace == c.fileColorspace, std::string("the File Colorspace of ReadFFmpeg must be ") + c.fileColorspace);
+        expect(formatColorspaceMetadata(file) == c.fileColorspace, std::string("the uk.co.thefoundry.Colorspace metadata must be ") + c.fileColorspace);
+        expect(fileColorspace == c.fileColorspace, std::string("the File Colorspace of ReadFFmpeg must be ") + c.fileColorspace);
     }
     std::printf(failures ? "  FAIL (color round trip)\n" : "  PASS (color round trip)\n");
     return failures;
@@ -2425,7 +2408,7 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
     wp.strings = { { "codecShortName", c.codec } };
     wp.ints = { { "prefPixelCoding", c.prefCoding }, { "prefBitDepth", c.prefDepth }, { "enableAlpha", c.alpha ? 1 : 0 },
                 { "inputPremult", 2 } }; // unpremultiplied: the pattern is written as is
-    wp.pattern = c.alpha ? 2 : 1;
+    wp.pattern = c.alpha ? WriterParams::Pattern::eColorAlpha : WriterParams::Pattern::eColor;
     wp.patternQuant = c.quant;
     wp.expectBeginFailure = c.expectBeginFailure;
     wp.expectNoFile = c.expectBeginFailure;
@@ -2484,16 +2467,8 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
-    {
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-    }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    instanceChanged(p, inst, kOfxImageEffectFileParamName);
     if (readAlpha) {
         setOverrideInt(&ctx, "outputComponents", optRGBA);
         setOverrideInt(&ctx, "filePremult", 2); // unpremultiplied
@@ -2504,14 +2479,14 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
     out->connected = true;
     const int outComps = readAlpha ? 4 : 3;
     setupClipImage(out, W, H, readAlpha ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     float* fp = reinterpret_cast<float*>(out->buffer.data());
     double maxErr[4] = { 0., 0., 0., 0. };
     int worst[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
     for (int t = 1; t <= N; ++t) {
         for (size_t i = 0; i < out->buffer.size() / sizeof(float); ++i) fp[i] = -1.f; // sentinel
         PropSet a = makeRenderInArgs((double)t, W, H);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: read render frame %d = %d\n", t, st); ++failures; continue; }
         double frameErr = 0.;
         for (int r = 0; r < H; ++r) {
@@ -2528,7 +2503,7 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
         }
         std::printf("  frame %d: largest difference (x 255) %.3f\n", t, frameErr * 255);
     }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::printf("  ReadFFmpeg: largest difference with the pattern (x 255): R %.3f at (%d,%d), G %.3f at (%d,%d), B %.3f at (%d,%d)",
                 maxErr[0] * 255, worst[0][0], worst[0][1], maxErr[1] * 255, worst[1][0], worst[1][1], maxErr[2] * 255, worst[2][0], worst[2][1]);
@@ -2541,8 +2516,6 @@ int testUncompressed(const std::string& outFile, const UncompressedCase& c)
     std::printf(failures ? "  FAIL (%s)\n" : "  PASS (%s)\n", c.label);
     return failures;
 }
-
-} // namespace
 
 // A Fixed output format whose PAR is 0 (the range of the PAR param starts at 0): the PAR is invalid, and is
 // replaced by 1. Before, the RoD had a width of 0 (the format was multiplied by the PAR), and beginSequenceRender
@@ -2567,16 +2540,16 @@ int testWriterFormatPar0()
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 128, 128, 3, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     PropSet a; OfxPropertySetHandle ap = PH(&a);
     pSetDouble(ap, kOfxPropTime, 0, 1.);
     double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     PropSet o;
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), PH(&o));
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
     double rod[4] = { -1., -1., -1., -1. };
     pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
     std::printf("  status=%d RoD=%g,%g,%g,%g\n", st, rod[0], rod[1], rod[2], rod[3]);
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     if (!ok(st) || rod[0] != 0. || rod[1] != 0. || rod[2] != 64. || rod[3] != 48.) {
         std::printf("  FAIL: expected the RoD 0,0,64,48 (the PAR of 0 is replaced by 1)\n");
@@ -2648,7 +2621,7 @@ int testWriteFFmpegMissingCodecAtRawvideoIndex(const std::string& outFile)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, 64, 48, 3, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
     int failures = 0;
     const int rawvideo = choiceIndex(ctx, "codec", "Uncompressed RGB or Y'CbCr");
     if (rawvideo < 0) {
@@ -2659,13 +2632,7 @@ int testWriteFFmpegMissingCodecAtRawvideoIndex(const std::string& outFile)
         setOverrideInt(&ctx, "codec", rawvideo);
         setOverrideString(&ctx, "codecShortName", "v308");
         setOverrideInt(&ctx, "prefPixelCoding", 0); // 4:2:0
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, "prefBitDepth");
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        instanceChanged(p, inst, "prefBitDepth");
         const ParamRec& shortName = ctx.params["codecShortName"];
         const ParamRec& coding = ctx.params["prefPixelCoding"];
         const std::string name = shortName.ov.s.empty() ? std::string() : shortName.ov.s[0];
@@ -2676,7 +2643,7 @@ int testWriteFFmpegMissingCodecAtRawvideoIndex(const std::string& outFile)
             ++failures;
         }
     }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::printf(failures ? "  FAIL (v308 at the rawvideo index)\n" : "  PASS (v308 at the rawvideo index: replaced on the main thread)\n");
     return failures;
@@ -2852,7 +2819,7 @@ int testDNxHR444Noise(const std::string& outFile)
     wp.strings = { { "codecShortName", "dnxhd" } };
     wp.ints = { { "DNxHDCodecProfile", 0 } }; // DNxHR 444
     // relies on WriteFFmpeg writing DNxHR 444 as gbrp10: in yuv444p10, this noise only needs a qscale of about 35
-    wp.pattern = 3;
+    wp.pattern = WriterParams::Pattern::eBinaryNoise;
     wp.allowEncodeFailure = true;
     const int failures = testWriteFFmpeg(outFile, 256, 120, 2, wp); // 256x120: the smallest DNxHR size
     std::remove(outFile.c_str());
@@ -2861,7 +2828,7 @@ int testDNxHR444Noise(const std::string& outFile)
 
 // Gives the R/G/B/A checkboxes whose kOfxParamPropSecret the plug-in did not set the default of the spec, 0 (visible:
 // ofxParam.h, kOfxParamPropSecret, "Default - 0"). The test host fails when a plug-in reads an unset property.
-static void setDefaultCheckboxesSecret(Effect& ctx)
+void setDefaultCheckboxesSecret(Effect& ctx)
 {
     for (const char* name : { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA }) {
         auto it = ctx.params.find(name);
@@ -2882,15 +2849,15 @@ public:
     ~WriterSession()
     {
         if (_created) {
-            _p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr);
+            _p->mainEntry(kOfxActionDestroyInstance, EH(_inst), nullptr, nullptr);
         }
         if (_p) {
             _p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
         }
     }
 
-    // The instance (Writer context) of the plug-in pluginId, with the params of wp (strings, ints and fps only); 0 if
-    // it was created.
+    // The instance (Writer context) of the plug-in pluginId, with the params of wp (strings, ints and doubles only); 0
+    // if it was created.
     int create(const std::string& outFile, int W, int H, int nFrames, const WriterParams& wp,
                const char* pluginId = "fr.inria.openfx.WriteFFmpeg")
     {
@@ -2900,21 +2867,10 @@ public:
         if (!p) { std::printf("  FAIL: %s not found\n", pluginId); return 1; }
         if (loadAndDescribe(p, _ctx, _ctx, kOfxImageEffectContextWriter) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
         _p = p;
-        setOverrideString(&_ctx, kOfxImageEffectFileParamName, outFile);
-        for (const auto& sp : wp.strings) {
-            if (!_ctx.params.count(sp.first)) { std::printf("  FAIL: no param %s\n", sp.first.c_str()); return 1; }
-            setOverrideString(&_ctx, sp.first.c_str(), sp.second);
-        }
-        for (const auto& ip : wp.ints) {
-            if (!_ctx.params.count(ip.first)) { std::printf("  FAIL: no param %s\n", ip.first.c_str()); return 1; }
-            setOverrideInt(&_ctx, ip.first.c_str(), ip.second);
-        }
-        if (wp.fps > 0.) {
-            setFps(wp.fps);
-        }
+        if (applyParams(_ctx, outFile, wp)) return 1;
         _inst.delegate = &_ctx;
         setInstanceProps(_inst, W, H, nFrames, kOfxImageEffectContextWriter);
-        if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(_inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
         _created = true;
         setDefaultCheckboxesSecret(_ctx);
         _src = _ctx.clips.count(kOfxImageEffectSimpleSourceClipName) ? _ctx.clips[kOfxImageEffectSimpleSourceClipName] : nullptr;
@@ -2929,7 +2885,7 @@ public:
             pSetInt(PH(&o->props), kOfxImageClipPropConnected, 0, 0);
         }
         PropSet outArgs;
-        p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, PH(&outArgs));
+        p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(_inst), nullptr, PH(&outArgs));
         return 0;
     }
 
@@ -2961,21 +2917,10 @@ public:
     float* sourcePixels() { return reinterpret_cast<float*>(_src->buffer.data()); }
 
     // kOfxActionInstanceChanged on the param or clip name (a user edit), as the host calls it on its main thread
-    OfxStatus instanceChanged(const char* type, const char* name)
-    {
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, type);
-        pSetString(ap, kOfxPropName, 0, name);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        return _p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&_inst), ap, nullptr);
-    }
+    OfxStatus instanceChanged(const char* type, const char* name) { return ::instanceChanged(_p, _inst, name, kOfxChangeUserEdited, type); }
 
     // kOfxActionSyncPrivateData, as the host calls it before it saves the project
-    OfxStatus syncPrivateData() { return _p->mainEntry(kOfxActionSyncPrivateData, reinterpret_cast<OfxImageEffectHandle>(&_inst), nullptr, nullptr); }
+    OfxStatus syncPrivateData() { return _p->mainEntry(kOfxActionSyncPrivateData, EH(_inst), nullptr, nullptr); }
 
     // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
     void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
@@ -3006,7 +2951,7 @@ public:
             double rs[2] = { renderScale, renderScale };
             pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         }
-        return _p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), nullptr);
+        return _p->mainEntry(kOfxImageEffectActionRender, EH(_inst), PH(&a), nullptr);
     }
 
     // kOfxImageEffectActionGetRegionOfDefinition at time 1 and the given render scale; rod: if not null, the RoD
@@ -3018,7 +2963,7 @@ public:
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        const OfxStatus st = _p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), PH(&o));
+        const OfxStatus st = _p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(_inst), PH(&a), PH(&o));
         if (rod) {
             const auto& v = o.props[kOfxImageEffectPropRegionOfDefinition].d;
             *rod = (v.size() == 4) ? OfxRectD { v[0], v[1], v[2], v[3] } : OfxRectD { 0., 0., 0., 0. };
@@ -3041,12 +2986,6 @@ public:
         return failures ? 1 : 0;
     }
 
-    static std::string persistentError()
-    {
-        std::lock_guard<std::mutex> lock(gMessagesMutex);
-        return gPersistentError;
-    }
-
 private:
     OfxStatus sequenceAction(const char* action, double first, double last, double step, double renderScale = 1.)
     {
@@ -3061,7 +3000,7 @@ private:
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
         pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
         pSetInt(ap, kFnOfxImageEffectPropView, 0, 0);
-        return _p->mainEntry(action, reinterpret_cast<OfxImageEffectHandle>(&_inst), ap, nullptr);
+        return _p->mainEntry(action, EH(_inst), ap, nullptr);
     }
 
     OfxPlugin* _p = nullptr;
@@ -3093,7 +3032,7 @@ int testWriteFFmpegBeginFailure(const std::string& outFile, int W, int H, const 
     }
     setFailure(s, true);
     OfxStatus st = s.begin(N);
-    const std::string error = WriterSession::persistentError();
+    const std::string error = persistentError();
     if (ok(st) || (error.find(expectedError) == std::string::npos)) {
         std::printf("  FAIL: beginSequenceRender = %d, expected a failure with \"%s\" (error: \"%s\")\n", st, expectedError, error.c_str());
         ++failures;
@@ -3214,7 +3153,7 @@ int testDNxHDProfiles(const std::string& outFile)
                 WriterParams wp;
                 wp.strings = { { "codecShortName", "dnxhd" } };
                 wp.ints = { { "DNxHDCodecProfile", c.profile } };
-                wp.fps = fps;
+                wp.doubles = { { "fps", fps } };
                 WriterSession s;
                 if (s.create(file, W, H, N, wp)) {
                     std::printf("  FAIL: %s %dx%d at %g fps: the instance\n", c.name, W, H, fps);
@@ -3223,7 +3162,7 @@ int testDNxHDProfiles(const std::string& outFile)
                 }
                 if (expectedCid == 0) {
                     const OfxStatus st = s.begin(N);
-                    const std::string error = WriterSession::persistentError();
+                    const std::string error = persistentError();
                     s.end(N);
                     if (ok(st) || (error.find(rejected) == std::string::npos)) {
                         std::printf("  FAIL: %s %dx%d at %g fps: beginSequenceRender = %d, expected a failure with \"%s\" (error: \"%s\")\n",
@@ -3286,7 +3225,7 @@ int testDNxHRMinSize(const std::string& outFile)
             }
             if (!sz.encodes) {
                 const OfxStatus st = s.begin(N);
-                const std::string error = WriterSession::persistentError();
+                const std::string error = persistentError();
                 s.end(N);
                 const std::string size = std::to_string(sz.W) + "x" + std::to_string(sz.H);
                 if (ok(st) || (error.find(rejected) == std::string::npos) || (error.find(size) == std::string::npos)) {
@@ -3342,7 +3281,7 @@ int testWriteFFmpegEncodeFailure(const std::string& outFile, const char* label, 
         inject(s);
         const OfxStatus st1 = s.render(1);
         afterFrame1(s);
-        std::printf("  render frame 1 = %d (error: \"%s\")\n", st1, WriterSession::persistentError().c_str());
+        std::printf("  render frame 1 = %d (error: \"%s\")\n", st1, persistentError().c_str());
         if (frame1Fails && ok(st1)) { std::printf("  FAIL: frame 1 was rendered: the failure injection did not work\n"); ++failures; }
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
@@ -3389,6 +3328,15 @@ int testWriteFFmpegEncodeFailures(const std::string& outFile)
     return failures;
 }
 
+#ifdef _WIN32
+// The tests of a full disk (RLIMIT_FSIZE) are skipped on MS Windows: exit status 77
+[[noreturn]] void skipWithoutRlimitFsize()
+{
+    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
+    std::exit(77);
+}
+#endif
+
 // #288, POSIX only: frame 1 fails to be written because the file can not grow, as on a full disk. The failure is
 // injected with RLIMIT_FSIZE, so that the real write error path (avio, the muxer, writeToFile()) fails, without a test
 // hook in the plug-in; flush_packets=1 makes the muxer write each packet to the file when it is muxed. Exits with 77
@@ -3397,8 +3345,7 @@ int testWriteFFmpegEncodeFailureDiskFull(const std::string& outFile)
 {
 #ifdef _WIN32
     (void)outFile;
-    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
-    std::exit(77);
+    skipWithoutRlimitFsize();
 #else
     // a write beyond RLIMIT_FSIZE fails with EFBIG, instead of killing the process with SIGXFSZ
     std::signal(SIGXFSZ, SIG_IGN);
@@ -3475,17 +3422,36 @@ private:
     struct rlimit _old = {};
     bool _ok = false;
 };
+
+// The source image of s: uniform noise (seed seed), which no codec compresses into a few KB
+void fillNoise(WriterSession& s, int W, int H, unsigned seed)
+{
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(0.f, 1.f);
+    float* pix = s.sourcePixels();
+    for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
+}
+
+// The status of the render of frame 1 by s, with the file size limited to maxSize bytes (as on a full disk); nothing
+// if the limit could not be set or restored
+std::optional<OfxStatus> renderWithFileSizeLimit(WriterSession& s, FileSizeLimit& fileSizeLimit, rlim_t maxSize)
+{
+    if (!fileSizeLimit.limit(maxSize)) return std::nullopt;
+    const OfxStatus st = s.render(1);
+    if (!fileSizeLimit.restore()) return std::nullopt;
+    return st;
+}
 #endif
 
 #ifndef _WIN32
 // #362: the file that WriteOIIO writes with the file size limit, and the limit to restore, for onExitDuringRender()
-static const char* gFileWithLimit = nullptr;
-static struct rlimit gNoFileSizeLimit = {};
+const char* gFileWithLimit = nullptr;
+struct rlimit gNoFileSizeLimit = {};
 
 // atexit() handler: on a write error, OpenImageIO 3.1's JPEG writer, when it writes through a "file" proxy, exits the
 // process (libjpeg's default error_exit()). exit() does not run the destructor of FileSizeLimit, so the limit is
 // restored here (or this message could not be written to a log larger than the limit), and the file is removed.
-static void onExitDuringRender()
+void onExitDuringRender()
 {
     if (!gFileWithLimit) {
         return;
@@ -3502,8 +3468,8 @@ static void onExitDuringRender()
 // Reads file with OpenImageIO: true if it has one subimage per element of nChannels, of W x H pixels and with that
 // number of channels, which can all be read. If views is not empty, these are the views of the file: the "view" of
 // each subimage (a multi-part EXR), or the "multiView" of the only subimage (a single-part EXR).
-static bool readBackOIIO(const std::string& file, int W, int H, const std::vector<int>& nChannels,
-                         const std::vector<std::string>& views = {})
+bool readBackOIIO(const std::string& file, int W, int H, const std::vector<int>& nChannels,
+                  const std::vector<std::string>& views = {})
 {
     auto in = OIIO::ImageInput::open(file);
     if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", file.c_str(), OIIO::geterror().c_str()); return false; }
@@ -3540,18 +3506,15 @@ int testWriteOIIODiskFull(const std::string& outFile)
 {
 #ifdef _WIN32
     (void)outFile;
-    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
-    std::exit(77);
+    skipWithoutRlimitFsize();
 #else
     const int W = 512, H = 512;
     const rlim_t kMaxFileSize = 16384; // more than any header, much less than any of these files
     int failures = 0;
     if (::getrlimit(RLIMIT_FSIZE, &gNoFileSizeLimit) != 0) { std::printf("  FAIL: getrlimit: %s\n", std::strerror(errno)); return 1; }
     std::atexit(onExitDuringRender);
-    // a Natron-like host (this test runs by itself), for the Parts and Views params of WriteOIIO: dynamic choices and
-    // multi-planar
-    pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
-    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    // a Natron-like host (this test runs by itself), for the Parts and Views params of WriteOIIO
+    setMultiPlanarHost();
     struct Case {
         const char* label;
         const char* ext;
@@ -3573,28 +3536,22 @@ int testWriteOIIODiskFull(const std::string& outFile)
         std::printf("==== WriteOIIO %s, the disk is full after %d bytes (issues #292, #362) ====\n", c.label, (int)kMaxFileSize);
         std::remove(file.c_str());
         FileSizeLimit fileSizeLimit(file);
-        gViewCount = c.nViews;
+        const ViewCountGuard viewCount(c.nViews);
         WriterParams wp;
         if (c.nViews > 1) wp.ints.emplace_back("partSplitting", 1); // Split Views
         WriterSession s;
-        if (s.create(file, W, H, 1, wp, "fr.inria.openfx.WriteOIIO")) { ++failures; gViewCount = 1; continue; }
-        // noise, which no codec compresses into a few KB
-        std::mt19937 rng(292);
-        std::uniform_real_distribution<float> dist(0.f, 1.f);
-        float* pix = s.sourcePixels();
-        for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
+        if (s.create(file, W, H, 1, wp, "fr.inria.openfx.WriteOIIO")) { ++failures; continue; }
+        fillNoise(s, W, H, 292);
 
         OfxStatus st = s.begin(1);
         if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); ++failures; continue; }
-        if (!fileSizeLimit.limit(kMaxFileSize)) { ++failures; continue; }
         gFileWithLimit = file.c_str();
-        st = s.render(1);
+        const std::optional<OfxStatus> limited = renderWithFileSizeLimit(s, fileSizeLimit, kMaxFileSize);
         gFileWithLimit = nullptr;
-        if (!fileSizeLimit.restore()) { ++failures; continue; }
-        const std::string error = WriterSession::persistentError();
-        struct stat sb;
-        const long size = (::stat(file.c_str(), &sb) == 0) ? (long)sb.st_size : -1L;
-        std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, error.c_str(), size);
+        if (!limited) { ++failures; continue; }
+        st = *limited;
+        const std::string error = persistentError();
+        std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, error.c_str(), fileSize(file));
         if (ok(st)) { std::printf("  FAIL: the render succeeded, the file is truncated\n"); ++failures; }
         else if (error.find(file) == std::string::npos) { std::printf("  FAIL: the error does not name the file\n"); ++failures; }
         s.end(1);
@@ -3602,7 +3559,6 @@ int testWriteOIIODiskFull(const std::string& outFile)
         // without the limit, the same instance writes the file
         if (s.renderAll(1)) { std::printf("  FAIL: the render without the limit\n"); ++failures; }
         else if (!readBackOIIO(file, W, H, c.nChannels, (c.nViews > 1) ? std::vector<std::string> { "main", "right" } : std::vector<std::string> {})) { ++failures; }
-        gViewCount = 1;
     }
     if (!failures) std::printf("  PASS\n");
     return failures;
@@ -3610,7 +3566,7 @@ int testWriteOIIODiskFull(const std::string& outFile)
 }
 
 // true if OpenImageIO was built with OpenJPH (its "build:dependencies" attribute, e.g. "..., openjph 0.33.0, ...")
-static bool hasOpenJPH()
+bool hasOpenJPH()
 {
     std::string libs = OIIO::get_string_attribute("build:dependencies");
     std::transform(libs.begin(), libs.end(), libs.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
@@ -3628,8 +3584,7 @@ int testWriteOIIOFiles(const std::string& outFile)
     int skipped = 0;
     // a Natron-like host (this test runs by itself): WriteOIIO has the Parts and Views params if the host supports
     // dynamic choices and is multi-planar
-    pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
-    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    setMultiPlanarHost();
     struct Case {
         const char* label;
         const char* ext;
@@ -3657,12 +3612,11 @@ int testWriteOIIOFiles(const std::string& outFile)
         std::remove(file.c_str());
         WriterParams wp;
         if (c.parts >= 0) wp.ints.emplace_back("partSplitting", c.parts);
-        gViewCount = c.nViews;
+        const ViewCountGuard viewCount(c.nViews);
         WriterSession s;
         if (s.create(file, W, H, 1, wp, "fr.inria.openfx.WriteOIIO") || (c.compression && !s.setChoice("compression", c.compression))) { ++failures; }
-        else if (s.renderAll(1)) { std::printf("  FAIL: the render: \"%s\"\n", WriterSession::persistentError().c_str()); ++failures; }
+        else if (s.renderAll(1)) { std::printf("  FAIL: the render: \"%s\"\n", persistentError().c_str()); ++failures; }
         else if (!readBackOIIO(file, W, H, c.nChannels, (c.nViews > 1) ? std::vector<std::string> { "main", "right" } : std::vector<std::string> {})) { ++failures; }
-        gViewCount = 1;
         std::remove(file.c_str());
     }
     if (!failures && skipped) std::printf("  PASS (%d case skipped)\n", skipped);
@@ -3743,8 +3697,7 @@ int testWritePFMDiskFull(const std::string& outFile)
 {
 #ifdef _WIN32
     (void)outFile;
-    std::printf("SKIP: no RLIMIT_FSIZE on MS Windows\n");
-    std::exit(77);
+    skipWithoutRlimitFsize();
 #else
     const int W = 512, H = 512;
     const rlim_t kMaxFileSize = 16384; // more than the header, much less than the file (3 MB)
@@ -3757,20 +3710,18 @@ int testWritePFMDiskFull(const std::string& outFile)
     if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
     OfxStatus st = s.begin(1);
     if (!ok(st)) { std::printf("  FAIL: beginSequenceRender = %d\n", st); return 1; }
-    if (!fileSizeLimit.limit(kMaxFileSize)) return 1;
-    st = s.render(1);
-    if (!fileSizeLimit.restore()) return 1;
-    const std::string error = WriterSession::persistentError();
-    struct stat sb;
-    const long size = (::stat(file.c_str(), &sb) == 0) ? (long)sb.st_size : -1L;
-    std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, error.c_str(), size);
+    const std::optional<OfxStatus> limited = renderWithFileSizeLimit(s, fileSizeLimit, kMaxFileSize);
+    if (!limited) return 1;
+    st = *limited;
+    const std::string error = persistentError();
+    std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, error.c_str(), fileSize(file));
     if (ok(st)) { std::printf("  FAIL: the render succeeded, the file is truncated\n"); ++failures; }
     else if (error.find(file) == std::string::npos) { std::printf("  FAIL: the error does not name the file\n"); ++failures; }
     s.end(1);
 
     // without the limit, the same instance writes the whole file: the header, then W x H RGB floats
     if (s.renderAll(1)) { std::printf("  FAIL: the render without the limit\n"); ++failures; }
-    else if ((::stat(file.c_str(), &sb) != 0) || (sb.st_size <= (off_t)W * H * 3 * 4)) {
+    else if (fileSize(file) <= (long)W * H * 3 * 4) {
         std::printf("  FAIL: the file without the limit is not larger than %d bytes\n", W * H * 3 * 4);
         ++failures;
     }
@@ -3821,35 +3772,31 @@ int testWriterRenderScale(const std::string& outFile)
     int failures = 0;
     WriterSession s;
     if (s.create(file, 8, 4, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
-    auto check = [&failures](bool cond, const std::string& what) {
-        std::printf("  %s: %s\n", cond ? "ok" : "FAIL", what.c_str());
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
         failures += cond ? 0 : 1;
     };
-    auto exists = [&file]() {
-        std::FILE* f = std::fopen(file.c_str(), "rb");
-        if (f) std::fclose(f);
-        return f != nullptr;
-    };
+    auto exists = [&file]() { return fileSize(file) >= 0; };
     msgClear(nullptr);
     OfxStatus st = s.regionOfDefinition(0.5);
-    std::string error = WriterSession::persistentError();
-    check(!ok(st) && error.empty(), "getRegionOfDefinition at scale 0.5 fails (" + std::to_string(st) + ") without a message: \"" + error + "\"");
+    std::string error = persistentError();
+    expect(!ok(st) && error.empty(), "getRegionOfDefinition at scale 0.5 fails (" + std::to_string(st) + ") without a message: \"" + error + "\"");
     msgClear(nullptr);
     st = s.begin(1, 0.5);
-    error = WriterSession::persistentError();
-    check(!ok(st) && error.find("render scale") != std::string::npos,
+    error = persistentError();
+    expect(!ok(st) && error.find("render scale") != std::string::npos,
           "beginSequenceRender at scale 0.5 fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
     s.end(1);
     msgClear(nullptr);
     st = s.render(1, 0.5);
-    error = WriterSession::persistentError();
-    check(!ok(st) && error.find("render scale") != std::string::npos,
+    error = persistentError();
+    expect(!ok(st) && error.find("render scale") != std::string::npos,
           "render at scale 0.5 fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
-    check(!exists(), "no file is written at scale 0.5");
+    expect(!exists(), "no file is written at scale 0.5");
     // (no msgClear: a successful render must clear the error itself, as a host shows it until then)
-    check(s.renderAll(1) == 0 && exists(), "at scale 1, the file is written");
-    error = WriterSession::persistentError();
-    check(error.empty(), "after the render at scale 1, no error: \"" + error + "\"");
+    expect(s.renderAll(1) == 0 && exists(), "at scale 1, the file is written");
+    error = persistentError();
+    expect(error.empty(), "after the render at scale 1, no error: \"" + error + "\"");
     std::remove(file.c_str());
     if (!failures) std::printf("  PASS\n");
     return failures;
@@ -3867,11 +3814,11 @@ int testWriterRenderScale(const std::string& outFile)
 int testWriterIntRanges(const std::string& outFile)
 {
     int failures = 0;
-    auto check = [&failures](bool cond, const std::string& what) {
-        std::printf("  %s: %s\n", cond ? "ok" : "FAIL", what.c_str());
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
         failures += cond ? 0 : 1;
     };
-    // a frame that never comes to encode() would wait forever (the fielded render on master): fail instead
+    // a frame that never comes to encode() would wait forever (a fielded render did, before #184): fail instead
     std::thread([] {
         std::this_thread::sleep_for(std::chrono::minutes(5));
         std::printf("  FAIL: timeout, a render waits forever\n");
@@ -3901,7 +3848,7 @@ int testWriterIntRanges(const std::string& outFile)
             char what[256];
             std::snprintf(what, sizeof(what), "project %gx%g at (%g, %g), PAR %g: RoD (%g, %g)-(%g, %g), status %d (expected (%g, %g)-(%g, %g))",
                           c.size.x, c.size.y, c.offset.x, c.offset.y, c.par, rod.x1, rod.y1, rod.x2, rod.y2, st, c.rod.x1, c.rod.y1, c.rod.x2, c.rod.y2);
-            check(ok(st) && (rod.x1 == c.rod.x1) && (rod.y1 == c.rod.y1) && (rod.x2 == c.rod.x2) && (rod.y2 == c.rod.y2), what);
+            expect(ok(st) && (rod.x1 == c.rod.x1) && (rod.y1 == c.rod.y1) && (rod.x2 == c.rod.x2) && (rod.y2 == c.rod.y2), what);
         }
         std::remove(file.c_str());
     }
@@ -3946,8 +3893,8 @@ int testWriterIntRanges(const std::string& outFile)
         msgClear(nullptr);
         const OfxStatus beginStatus = s.begin(c.first, c.last, c.step);
         if (c.error) {
-            const std::string error = WriterSession::persistentError();
-            check(!ok(beginStatus) && (error.find(c.error) != std::string::npos),
+            const std::string error = persistentError();
+            expect(!ok(beginStatus) && (error.find(c.error) != std::string::npos),
                   std::string(c.what) + ": beginSequenceRender = " + std::to_string(beginStatus) + ", error: \"" + error + "\"");
             s.end(c.first, c.last, c.step);
             std::remove(file.c_str());
@@ -3965,14 +3912,14 @@ int testWriterIntRanges(const std::string& outFile)
         }
         rendered = ok(s.end(c.first, c.last, c.step)) && rendered;
         if (c.frames == 0) {
-            check(true, std::string(c.what) + ": no undefined behaviour (render " + (rendered ? "succeeded" : "failed") + ")");
+            expect(true, std::string(c.what) + ": no undefined behaviour (render " + (rendered ? "succeeded" : "failed") + ")");
             std::remove(file.c_str());
             continue;
         }
         int nFrames = 0, nIFrames = 0;
         const bool probed = rendered && !probeVideoFrames(file, &nFrames, &nIFrames);
-        check(probed && (nFrames == c.frames), std::string(c.what) + ": " + std::to_string(nFrames) + " frames written, expected " +
-              std::to_string(c.frames) + (rendered ? "" : " (error: \"" + WriterSession::persistentError() + "\")"));
+        expect(probed && (nFrames == c.frames), std::string(c.what) + ": " + std::to_string(nFrames) + " frames written, expected " +
+              std::to_string(c.frames) + (rendered ? "" : " (error: \"" + persistentError() + "\")"));
         if (probed && !c.greys.empty()) {
             // the images of the whole frames (increasing grey levels), not the white images of the half frames
             int w = 0, h = 0, depth = 0;
@@ -3982,7 +3929,7 @@ int testWriterIntRanges(const std::string& outFile)
             const bool order = read && (values[0][0] < values[1][0]) && (values[1][0] < values[2][0]);
             std::string got;
             for (const auto& v : values) got += " " + std::to_string(v.empty() ? -1 : v[0]);
-            check(order, std::string(c.what) + ": the luma of the frames is" + got + " (expected increasing: the images of the whole frames)");
+            expect(order, std::string(c.what) + ": the luma of the frames is" + got + " (expected increasing: the images of the whole frames)");
         }
         std::remove(file.c_str());
     }
@@ -4016,32 +3963,21 @@ int testReadPFMHeaderSize(const std::string& outFile)
             if (!f || (std::fclose(f) != 0) || !written) { std::printf("  FAIL: cannot write %s\n", file.c_str()); ++failures; continue; }
         }
         // (cleared, so that an error can only come from this header)
-        {
-            std::lock_guard<std::mutex> lock(gMessagesMutex);
-            gPersistentError.clear();
-        }
+        msgClear(nullptr);
         setOverrideString(&ctx, kOfxImageEffectFileParamName, file);
         Effect inst;
         inst.delegate = &ctx;
         setInstanceProps(inst, 3, 2, 1, kOfxImageEffectContextReader);
-        const OfxImageEffectHandle handle = reinterpret_cast<OfxImageEffectHandle>(&inst);
+        const OfxImageEffectHandle handle = EH(inst);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); ++failures; continue; }
-        {
-            PropSet a; OfxPropertySetHandle ap = PH(&a);
-            pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-            pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-            pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-            pSetDouble(ap, kOfxPropTime, 0, 1.);
-            double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-            p->mainEntry(kOfxActionInstanceChanged, handle, PH(&a), nullptr);
-        }
+        instanceChanged(p, inst, kOfxImageEffectFileParamName);
         PropSet a; pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
         double rs[2] = { 1., 1. }; pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
         const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, handle, PH(&a), PH(&o));
         double rod[4] = { -1, -1, -1, -1 }; pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
-        const std::string error = WriterSession::persistentError();
+        const std::string error = persistentError();
         std::printf("  \"%s\": getRegionOfDefinition = %d, [%.0f %.0f %.0f %.0f] (error: \"%s\")\n", h.size, st, rod[0], rod[1], rod[2], rod[3], error.c_str());
         if (h.valid && (!ok(st) || (rod[0] != 0) || (rod[1] != 0) || (rod[2] != 3) || (rod[3] != 2))) {
             std::printf("  FAIL: the RoD must be [0 0 3 2]\n");
@@ -4064,6 +4000,8 @@ int testReadPFMHeaderSize(const std::string& outFile)
 // #251: a test writer of image files (".partial"), whose encode() writes kTestWriterFileSize bytes, or writes part of
 // the file and then fails or sets the host's abort flag (as a writer that stops when the render is aborted), as
 // gTestWriterMode says.
+} // namespace
+
 namespace TestWriter251 {
 using namespace OFX;
 enum class Mode { eWrite, eFail, eAbort };
@@ -4114,6 +4052,8 @@ TestWriterPluginFactory gTestWriterFactory("fr.inria.openfx.tests.TestWriter251"
 mRegisterPluginFactoryInstance(gTestWriterFactory)
 } // namespace TestWriter251
 
+namespace {
+
 // #251: a failed or aborted render of an image file must not leave a partial file, which a render with "Overwrite"
 // unchecked would take for a written frame (the test then does that render, which must write the whole file):
 // - the test writer (on every system, with a non-ASCII file name) writes part of the file, then fails or the render is
@@ -4142,7 +4082,7 @@ int testWriterRemovePartialFile(const std::string& outFile)
         st = render();
         s.end(1);
         const auto data = contents(file);
-        std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, WriterSession::persistentError().c_str(), data ? (long)data->size() : -1L);
+        std::printf("  render = %d (error: \"%s\"), file size %ld\n", st, persistentError().c_str(), data ? (long)data->size() : -1L);
         if (!aborted && ok(st)) { std::printf("  FAIL: the render succeeded\n"); ++failures; }
         else if (data) { std::printf("  FAIL: the render left a partial file\n"); ++failures; }
     };
@@ -4195,18 +4135,9 @@ int testWriterRemovePartialFile(const std::string& outFile)
         FileSizeLimit fileSizeLimit(file);
         WriterSession s;
         if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WritePNG")) return failures + 1;
-        // noise, which zlib does not compress into a few KB
-        std::mt19937 rng(251);
-        std::uniform_real_distribution<float> dist(0.f, 1.f);
-        float* pix = s.sourcePixels();
-        for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
+        fillNoise(s, W, H, 251);
         // frame 1 can not be written
-        auto renderDiskFull = [&]() -> OfxStatus {
-            if (!fileSizeLimit.limit(kMaxFileSize)) return kOfxStatErrFatal;
-            const OfxStatus st = s.render(1);
-            if (!fileSizeLimit.restore()) return kOfxStatErrFatal;
-            return st;
-        };
+        auto renderDiskFull = [&]() { return renderWithFileSizeLimit(s, fileSizeLimit, kMaxFileSize).value_or(kOfxStatErrFatal); };
 
         std::printf("==== WritePNG, the disk is full after %d bytes, no previous file (issue #251) ====\n", (int)kMaxFileSize);
         expectNoFile(s, file, renderDiskFull, false);
@@ -4222,7 +4153,7 @@ int testWriterRemovePartialFile(const std::string& outFile)
             const OfxStatus rst = s.render(1);
             if (ok(st)) s.end(1);
             const auto data = contents(file);
-            std::printf("  render = %d (error: \"%s\"), file size %ld\n", rst, WriterSession::persistentError().c_str(), data ? (long)data->size() : -1L);
+            std::printf("  render = %d (error: \"%s\"), file size %ld\n", rst, persistentError().c_str(), data ? (long)data->size() : -1L);
             if (ok(rst)) { std::printf("  FAIL: the render succeeded\n"); ++failures; }
             else if (data != written) { std::printf("  FAIL: the previous file was changed\n"); ++failures; }
         }
@@ -4240,8 +4171,6 @@ int testWriterRemovePartialFile(const std::string& outFile)
 }
 
 // ---- #207, #220, #316: exact values of the conversions between Y'CbCr and RGB (option --swscale-exact) ----
-
-namespace {
 
 // The BT.601 matrix (ITU-T H.273 §8.3, MatrixCoefficients 6), which ReadFFmpeg (Auto, untagged or SMPTE 170M) and
 // WriteFFmpeg use in SD.
@@ -4413,16 +4342,8 @@ int readFFmpegFrames(const std::string& file, int W, int H, int nFrames, bool rg
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H, nFrames, kOfxImageEffectContextReader);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
-    {
-        PropSet a; OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        p->mainEntry(kOfxActionInstanceChanged, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
-    }
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+    instanceChanged(p, inst, kOfxImageEffectFileParamName);
     const int optRange = choiceIndex(ctx, "ycbcrRange", range);
     if (optRange < 0) { std::printf("  FAIL: no %s option in ycbcrRange\n", range); return 1; }
     setOverrideInt(&ctx, "ycbcrRange", optRange);
@@ -4438,13 +4359,13 @@ int readFFmpegFrames(const std::string& file, int W, int H, int nFrames, bool rg
     out->connected = true;
     const int comps = rgba ? 4 : 3;
     setupClipImage(out, W, H, rgba ? kOfxImageComponentRGBA : kOfxImageComponentRGB, kOfxBitDepthFloat, true);
-    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
+    { PropSet outArgs; OfxStatus cp = p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)); if (!ok(cp)) { std::printf("  FAIL: getClipPreferences = %d\n", cp); return 1; } }
     float* fp = reinterpret_cast<float*>(out->buffer.data());
     int failures = 0;
     for (int t = 1; t <= nFrames; ++t) {
         for (size_t i = 0; i < out->buffer.size() / sizeof(float); ++i) fp[i] = -1.f; // sentinel
         PropSet a = makeRenderInArgs((double)t, W, H);
-        const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&inst), PH(&a), nullptr);
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
         if (!ok(st)) { std::printf("  FAIL: ReadFFmpeg render frame %d = %d\n", t, st); ++failures; break; }
         std::vector<float> f((size_t)W * H * comps);
         for (int r = 0; r < H; ++r) { // the OFX image is bottom-up
@@ -4452,7 +4373,7 @@ int readFFmpegFrames(const std::string& file, int W, int H, int nFrames, bool rg
         }
         frames->push_back(std::move(f));
     }
-    p->mainEntry(kOfxActionDestroyInstance, reinterpret_cast<OfxImageEffectHandle>(&inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     return failures;
 }
@@ -4580,11 +4501,11 @@ int testReadOddWidthMpeg4(const std::string& outFile)
     return pass ? 0 : 1;
 }
 
-// #207: WriteFFmpeg's 4:2:0 and 4:2:2 chroma of alternating red and blue lines (pattern 4) or columns (pattern 5),
+// #207: WriteFFmpeg's 4:2:0 and 4:2:2 chroma of alternating red and blue lines or columns (pattern),
 // decoded without swscale: each chroma sample must be the average of the two pixels it covers (it was one of them
 // with SWS_POINT: Cb 240 or 90, instead of 165). At an odd width, the last chroma sample covers one column, and must
 // be between red and blue.
-int testWriteChroma(const std::string& outFile, const char* label, const char* ext, int prefCoding, int pattern, int W, int H, const char* expectPixFmt)
+int testWriteChroma(const std::string& outFile, const char* label, const char* ext, int prefCoding, WriterParams::Pattern pattern, int W, int H, const char* expectPixFmt)
 {
     const int N = 2;
     WriterParams wp;
@@ -4608,8 +4529,8 @@ int testWriteChroma(const std::string& outFile, const char* label, const char* e
             for (int y = 0; y < ch; ++y) {
                 const uint8_t* row = frame->data[c] + (ptrdiff_t)y * frame->linesize[c];
                 for (int x = 0; x < cw; ++x) {
-                    // the pixels the sample covers: two lines (pattern 4, 4:2:0) or two columns (pattern 5)
-                    const bool covers2 = (pattern == 4) ? (d->log2_chroma_h > 0) : ((2 * x + 1) < frame->width);
+                    // the pixels the sample covers: two lines (4:2:0) or two columns
+                    const bool covers2 = (pattern == WriterParams::Pattern::eRedBlueLines) ? (d->log2_chroma_h > 0) : ((2 * x + 1) < frame->width);
                     const double lo = std::min(yRed[c], yBlue[c]), hi = std::max(yRed[c], yBlue[c]);
                     const double e = covers2 ? std::fabs(row[x] - 0.5 * (yRed[c] + yBlue[c])) : ((row[x] < lo - 0.5) || (row[x] > hi + 0.5) ? 255. : 0.);
                     if (!(e <= maxErr)) maxErr = e;
@@ -4636,7 +4557,7 @@ int testWriteExact(const std::string& outFile, const char* label, int prefCoding
     WriterParams wp;
     wp.strings = { { "codecShortName", "rawvideo" } };
     wp.ints = { { "prefPixelCoding", prefCoding }, { "prefBitDepth", prefDepth }, { "enableAlpha", 0 }, { "inputPremult", 2 } };
-    wp.pattern = 1;
+    wp.pattern = WriterParams::Pattern::eColor;
     wp.patternQuant = 0;
     const std::string file = outFile + ".i316w.nut";
     if (testWriteFFmpeg(file, W, H, N, wp)) return 1;
@@ -4717,12 +4638,13 @@ int testSwscaleExact(const std::string& outFile)
     }
     std::printf("==== ReadFFmpeg MPEG-4 at an odd width: the last column (issue #220) ====\n");
     failures += testReadOddWidthMpeg4(outFile);
-    struct ChromaCase { const char* label; const char* ext; int prefCoding; int pattern; int W, H; const char* pixFmt; };
+    struct ChromaCase { const char* label; const char* ext; int prefCoding; WriterParams::Pattern pattern; int W, H; const char* pixFmt; };
+    const WriterParams::Pattern lines = WriterParams::Pattern::eRedBlueLines, columns = WriterParams::Pattern::eRedBlueColumns;
     const ChromaCase chromas[] = {
-        { "WriteFFmpeg 4:2:0, red and blue lines", "mkv", 0, 4, 64, 48, "yuv420p" },
-        { "WriteFFmpeg 4:2:0, red and blue lines, odd width", "mkv", 0, 4, 49, 48, "yuv420p" },
-        { "WriteFFmpeg 4:2:0, red and blue columns, odd width", "mkv", 0, 5, 49, 48, "yuv420p" },
-        { "WriteFFmpeg 4:2:2, red and blue columns, odd width (NUT)", "nut", 1, 5, 49, 48, "yuv422p" },
+        { "WriteFFmpeg 4:2:0, red and blue lines", "mkv", 0, lines, 64, 48, "yuv420p" },
+        { "WriteFFmpeg 4:2:0, red and blue lines, odd width", "mkv", 0, lines, 49, 48, "yuv420p" },
+        { "WriteFFmpeg 4:2:0, red and blue columns, odd width", "mkv", 0, columns, 49, 48, "yuv420p" },
+        { "WriteFFmpeg 4:2:2, red and blue columns, odd width (NUT)", "nut", 1, columns, 49, 48, "yuv422p" },
     };
     for (const ChromaCase& c : chromas) {
         std::printf("==== %s: the chroma is the average (issue #207) ====\n", c.label);
@@ -4740,8 +4662,6 @@ int testSwscaleExact(const std::string& outFile)
     failures += testWriteExact(outFile, "WriteFFmpeg 4:4:4 16-bit", 2, 3, "yuv444p16le", 24.);
     return failures;
 }
-
-} // namespace
 
 // #304: while a movie is rendered (between beginSequenceRender and endSequenceRender, the frames on a render thread),
 // the host calls, on its main thread, kOfxActionInstanceChanged for the params and the clip whose change updates the
@@ -4773,7 +4693,7 @@ int testWriteFFmpegParamChangeDuringRender(const std::string& outFile)
         for (int t = 1; t <= N; ++t) {
             st = std::async(std::launch::async, [&s, t]() { return s.render(t); }).get();
             if (!ok(st)) {
-                std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, WriterSession::persistentError().c_str());
+                std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, persistentError().c_str());
                 ++failures;
             }
             if (t <= nChanges) {
@@ -4781,13 +4701,13 @@ int testWriteFFmpegParamChangeDuringRender(const std::string& outFile)
                 st = c.type ? s.instanceChanged(c.type, c.name) : s.syncPrivateData();
                 std::printf("  after frame %d: %s(%s %s) = %d\n", t, c.type ? "instanceChanged" : "syncPrivateData", c.type ? c.type : "", c.name, st);
                 if ((st != kOfxStatOK) && (st != kOfxStatReplyDefault)) {
-                    std::printf("  FAIL: %s = %d (error: \"%s\")\n", c.name, st, WriterSession::persistentError().c_str());
+                    std::printf("  FAIL: %s = %d (error: \"%s\")\n", c.name, st, persistentError().c_str());
                     ++failures;
                 }
             }
         }
         st = s.end(N);
-        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, WriterSession::persistentError().c_str()); ++failures; }
+        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, persistentError().c_str()); ++failures; }
     }
     int nFrames = 0, nIFrames = 0;
     if (probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
@@ -4810,10 +4730,10 @@ int testWriteFFmpegParamChangeDuringRender(const std::string& outFile)
 // only because the render thread makes no host call between that read, in WriteFFmpeg's encodeWarnings(), and this
 // hook: a param read added there would take gHostDataMutex (ofx_test_host.h), a happens-before that would hide a
 // regression.) Then the frames are rendered, and the file must be complete.
-static std::atomic<int> gCodecRaceStep { 0 }; // 1: the render thread is stopped in setPersistentMessage, 2: it may go on
-static thread_local bool tCodecRaceRenderThread = false;
+std::atomic<int> gCodecRaceStep { 0 }; // 1: the render thread is stopped in setPersistentMessage, 2: it may go on
+thread_local bool tCodecRaceRenderThread = false;
 
-static void codecRaceHook(const char* type)
+void codecRaceHook(const char* type)
 {
     if (!tCodecRaceRenderThread || !type || std::strcmp(type, kOfxMessageWarning) || (gCodecRaceStep.load(std::memory_order_relaxed) != 0)) {
         return;
@@ -4861,22 +4781,22 @@ int testWriteFFmpegCodecEditDuringBegin(const std::string& outFile)
             ++failures;
         }
         if ((st != kOfxStatOK) && (st != kOfxStatReplyDefault)) {
-            std::printf("  FAIL: instanceChanged(codec) = %d (error: \"%s\")\n", st, WriterSession::persistentError().c_str());
+            std::printf("  FAIL: instanceChanged(codec) = %d (error: \"%s\")\n", st, persistentError().c_str());
             ++failures;
         }
         if (!ok(beginStatus)) {
-            std::printf("  FAIL: beginSequenceRender = %d (error: \"%s\")\n", beginStatus, WriterSession::persistentError().c_str());
+            std::printf("  FAIL: beginSequenceRender = %d (error: \"%s\")\n", beginStatus, persistentError().c_str());
             return failures + 1;
         }
         for (int t = 1; t <= N; ++t) {
             st = s.render(t);
             if (!ok(st)) {
-                std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, WriterSession::persistentError().c_str());
+                std::printf("  FAIL: render frame %d = %d (error: \"%s\")\n", t, st, persistentError().c_str());
                 ++failures;
             }
         }
         st = s.end(N);
-        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, WriterSession::persistentError().c_str()); ++failures; }
+        if (!ok(st)) { std::printf("  FAIL: endSequenceRender = %d (error: \"%s\")\n", st, persistentError().c_str()); ++failures; }
     }
     int nFrames = 0, nIFrames = 0;
     if (probeVideoFrames(outFile, &nFrames, &nIFrames) || (nFrames != N)) {
@@ -4970,7 +4890,7 @@ int testReadFFmpegDestroyClosesFile(const std::string& outFile)
         Effect inst;
         inst.delegate = &ctx;
         setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
-        const OfxImageEffectHandle handle = reinterpret_cast<OfxImageEffectHandle>(&inst);
+        const OfxImageEffectHandle handle = EH(inst);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
         void* instance = nullptr;
         pGetPointer(PH(&inst.props), kOfxPropInstanceData, 0, &instance);
@@ -4980,13 +4900,7 @@ int testReadFFmpegDestroyClosesFile(const std::string& outFile)
             std::printf("  pass %d: the instance %s the address of the first one\n", pass + 1, (instance == firstInstance) ? "has" : "does not have");
         }
         {
-            PropSet a; OfxPropertySetHandle ap = PH(&a);
-            pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-            pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-            pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-            pSetDouble(ap, kOfxPropTime, 0, 1.);
-            double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-            const OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, handle, PH(&a), nullptr);
+            const OfxStatus st = instanceChanged(p, inst, kOfxImageEffectFileParamName);
             if (!ok(st)) { std::printf("  FAIL: InstanceChanged = %d\n", st); ++fails; }
         }
         {
@@ -5141,7 +5055,7 @@ int encodeCodecVariant(const std::string& file, const std::string& shortName, co
     }
     succeeded = ok(s.end(nFrames)) && succeeded;
     if (!succeeded) {
-        *error = WriterSession::persistentError();
+        *error = persistentError();
         std::replace(error->begin(), error->end(), '\n', ' '); // one line per movie
     }
     return succeeded ? 0 : 1;
@@ -5154,7 +5068,6 @@ std::string stringParamValue(const Effect& ctx, const char* name)
     return ((it != ctx.params.end()) && it->second.hasOv && !it->second.ov.s.empty()) ? it->second.ov.s[0] : std::string("?");
 }
 
-namespace {
 // The encoder of a Codec menu entry (its codecShortName): the ProRes entries are prores_ks with a profile suffix
 // (e.g. prores_ksapch), the others are the name of the encoder.
 std::string encoderOfShortName(const std::string& shortName)
@@ -5250,7 +5163,6 @@ std::vector<std::string> codecMenuShortNames(const std::string& outFile)
     }
     return shortNames;
 }
-} // namespace
 
 // #343: for each encoder of the Codec menu, the encoder settings that WriteFFmpeg shows (- hidden, d disabled, E
 // enabled) and the pixel format it selects for each Pref. Pixel Coding, Bit Depth and Alpha, and movies encoded with
@@ -5348,7 +5260,6 @@ int testWriteFFmpegCodecParams(const std::string& outFile)
     return failures;
 }
 
-namespace {
 // The pixel format of the video stream of a movie, or "none".
 std::string videoStreamPixelFormat(const std::string& file)
 {
@@ -5405,7 +5316,6 @@ bool encoderHasAlphaFormat(const AVCodec* c, int log2w, int log2h, int depth)
     }
     return false;
 }
-} // namespace
 
 // #218: the pixel format that WriteFFmpeg selects must fit the Pref. Pixel Coding. 4:4:0 (one chroma sample per 1x2
 // luma samples) has as many chroma samples as 4:2:2, and was taken as 4:2:2: FFV1, which lists yuv440p before yuv422p,
@@ -5567,7 +5477,6 @@ int testWriteFFmpegPixelFormatChoice(const std::string& outFile)
     return failures;
 }
 
-namespace {
 // The names of the encoders whose codec context logged (AVCodecContext's item_name() is the name of its codec,
 // libavcodec/options.c), while logEncoderNames() is the av_log callback. The encoders may log from their threads:
 // the mutex guards names.
@@ -5634,7 +5543,6 @@ std::string joinNames(const std::set<std::string>& names)
     for (const std::string& n : names) list += (list.empty() ? "" : ", ") + n;
     return list;
 }
-} // namespace
 
 // #348: WriteFFmpeg must encode with the encoder selected in the Codec menu, not with the default encoder of its codec
 // ID (avcodec_find_encoder(), the first one registered in libavcodec/allcodecs.c), as "ffmpeg -c:v name" does. For
@@ -5779,7 +5687,7 @@ int testWriteFFmpegFormatFromFilename(const std::string& outFile)
         { "mkv", "matroska" }, { "MKV", "matroska" }, { "matroska", "matroska" }, { "webm", "matroska" }, // webm: no webm muxer in the menu
         { "WebM", "matroska" },
         { "mpg", "mpeg" }, { "mpeg", "mpeg" }, { "ts", "mpegts" }, { "m2t", "mpegts" }, { "m2ts", "mpegts" },
-        { "mts", "mpegts" }, { "mov", "mov" }, { "mp4", "mp4" }, { "3gp", "3gp" }, { "3g2", "3g2" }, // 3gp, 3g2: mp4 before #382
+        { "mts", "mpegts" }, { "mov", "mov" }, { "mp4", "mp4" }, { "3gp", "3gp" }, { "3g2", "3g2" }, // 3gp, 3g2: their own muxers, not mp4 (#382)
         { "avi", "avi" }, { "flv", "flv" }, { "ogv", "ogv" },
     };
     av_log_set_level(AV_LOG_ERROR);
@@ -5880,11 +5788,7 @@ int testReadFFmpegViewsConcurrent(const std::string& outFile)
 
     OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
     if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
-    // a stereo project (restored on return)
-    struct ViewCount {
-        ViewCount() { gViewCount = 2; }
-        ~ViewCount() { gViewCount = 1; }
-    } viewCount;
+    const ViewCountGuard viewCount(2); // a stereo project (restored on return)
     Effect ctx;
     if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
     setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
@@ -5893,17 +5797,9 @@ int testReadFFmpegViewsConcurrent(const std::string& outFile)
         Effect inst;
         inst.delegate = &ctx;
         setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
-        const OfxImageEffectHandle handle = reinterpret_cast<OfxImageEffectHandle>(&inst);
+        const OfxImageEffectHandle handle = EH(inst);
         if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
-        {
-            PropSet a; OfxPropertySetHandle ap = PH(&a);
-            pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-            pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-            pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-            pSetDouble(ap, kOfxPropTime, 0, 1.);
-            double rs[2] = { 1., 1. }; pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-            p->mainEntry(kOfxActionInstanceChanged, handle, PH(&a), nullptr);
-        }
+        instanceChanged(p, inst, kOfxImageEffectFileParamName);
         Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
         if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
         out->connected = true;
@@ -6021,22 +5917,97 @@ int testReadFFmpegViewsConcurrent(const std::string& outFile)
     return failures;
 }
 
+// The streams of a movie are its views only if they match (CheckStreamPropertiesMatch()), and ReadFFmpeg sizes its
+// decode buffer from the first stream. Two VP9 streams of the same size, the first one yuv420p and the second one
+// yuv420p10le (the negative of the first), matched: the render of view 1 decoded 16-bit samples into the 8-bit buffer
+// of the first stream (a heap overflow). The streams must decode to the same output pixel format: the second stream is
+// not a view, and view 1 renders the first stream (an image that is not uniform, so not a black render).
+int testReadFFmpegViewsPixelFormat(const std::string& outFile)
+{
+    const int W = 64, H = 48, N = 3;
+    std::printf("==== ReadFFmpeg, a movie with a yuv420p and a yuv420p10le stream: they are not two views ====\n");
+    // (the ffmpeg CLI writes the movie, and its FFmpeg build may differ from the one linked here)
+    if (std::system("ffmpeg -hide_banner -loglevel quiet -f lavfi -i nullsrc=s=16x16 -frames:v 1 -c:v libvpx-vp9 -f null -") != 0) {
+        std::printf("  SKIP: no libvpx-vp9 encoder in the ffmpeg CLI\n");
+        return 0;
+    }
+    const std::string src = "testsrc2=s=" + std::to_string(W) + "x" + std::to_string(H) + ":r=25";
+    const std::string cmd = "ffmpeg -y -loglevel error -f lavfi -i \"" + src + "\" -f lavfi -i \"" + src + ",negate\" -map 0:v -map 1:v -frames:v "
+        + std::to_string(N) + " -c:v libvpx-vp9 -deadline realtime -pix_fmt:v:0 yuv420p -pix_fmt:v:1 yuv420p10le \"" + outFile + "\"";
+    if (std::system(cmd.c_str()) != 0) { std::printf("  FAIL: %s\n", cmd.c_str()); return 1; }
+
+    OfxPlugin* p = findPlugin("fr.inria.openfx.ReadFFmpeg");
+    if (!p) { std::printf("  FAIL: ReadFFmpeg not found\n"); return 1; }
+    const ViewCountGuard viewCount(2); // a stereo project (restored on return)
+    Effect ctx;
+    if (loadAndDescribe(p, ctx, ctx, kOfxImageEffectContextReader) != 0) { std::printf("  FAIL: load/describe\n"); return 1; }
+    setOverrideString(&ctx, kOfxImageEffectFileParamName, outFile);
+    int failures = 0;
+    {
+        Effect inst;
+        inst.delegate = &ctx;
+        setInstanceProps(inst, W, H, N, kOfxImageEffectContextReader);
+        const OfxImageEffectHandle handle = EH(inst);
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, handle, nullptr, nullptr))) { std::printf("  FAIL: CreateInstance\n"); return 1; }
+        instanceChanged(p, inst, kOfxImageEffectFileParamName);
+        Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
+        if (!out) { std::printf("  FAIL: no Output clip\n"); return 1; }
+        out->connected = true;
+        setupClipImage(out, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+        { PropSet outArgs; if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, handle, nullptr, PH(&outArgs)))) { std::printf("  FAIL: getClipPreferences\n"); return 1; } }
+        Clip img;
+        setupClipImage(&img, W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+        std::vector<uint8_t> views[2];
+        for (int t = 1; t <= N; ++t) {
+            for (int v = 0; v < 2; ++v) {
+                const ThreadImageGuard imageGuard(&img.image);
+                PropSet a = makeRenderInArgs((double)t, W, H);
+                pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, v);
+                const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, handle, PH(&a), nullptr);
+                if (!ok(st)) { std::printf("  FAIL: render of view %d, frame %d = %d\n", v, t, st); ++failures; }
+                views[v] = img.buffer;
+            }
+            if (views[0] != views[1]) {
+                std::printf("  FAIL: frame %d: view 1 must render the first stream, as view 0 (the yuv420p10le stream is not a view)\n", t);
+                ++failures;
+            }
+            // the testsrc2 image, not a uniform (e.g. black) one
+            const float* fp = reinterpret_cast<const float*>(views[0].data());
+            const size_t nValues = (size_t)W * H * 3;
+            float lo = fp[0], hi = fp[0];
+            for (size_t i = 1; i < nValues; ++i) {
+                lo = std::min(lo, fp[i]);
+                hi = std::max(hi, fp[i]);
+            }
+            if (!(hi - lo > 0.25f)) {
+                std::printf("  FAIL: frame %d: view 0 is uniform (values in [%g, %g]), not the test image\n", t, lo, hi);
+                ++failures;
+            }
+        }
+        p->mainEntry(kOfxActionDestroyInstance, handle, nullptr, nullptr);
+    }
+    p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
+    if (!failures) {
+        std::printf("  PASS: view 1 renders the first stream (%d frames)\n", N);
+    }
+    return failures;
+}
+
+} // namespace
+
 int
 main(int argc, char** argv)
 {
     initHost();
     const std::string outFile = (argc > 1) ? argv[1] : "/tmp/iotest/ofx_render_out.mov";
-    if ((argc > 2) && (std::string(argv[2]) == "--dnxhr444-noise")) {
-        const int failures = testDNxHR444Noise(outFile);
-        std::printf(failures ? "FAILED: %d\n" : "ALL PASSED\n", failures);
-        return failures ? 1 : 0;
-    }
-    if ((argc > 2) && (std::string(argv[2]).compare(0, 2, "--") == 0) && (std::string(argv[2]) != "--dnxhr444-noise")) {
+    if ((argc > 2) && (std::string(argv[2]).compare(0, 2, "--") == 0)) {
         // a crash or a deadlock must not lose the output
         std::setvbuf(stdout, nullptr, _IONBF, 0);
         const std::string mode = argv[2];
         int failures = 0;
-        if (mode == "--begin-failure") {
+        if (mode == "--dnxhr444-noise") {
+            failures = testDNxHR444Noise(outFile);
+        } else if (mode == "--begin-failure") {
             failures = testWriteFFmpegBeginFailures(outFile);
         } else if (mode == "--dnxhd-profiles") {
             std::printf("==== WriteFFmpeg DNxHD/DNxHR Codec Profiles, 1080p and 720p at 23.976 to 60 fps: the expected CID, or a clear error (issue #305) ====\n");
@@ -6080,7 +6051,7 @@ main(int argc, char** argv)
         } else if (mode == "--pfm-read-errors") {
             failures = testReadPFMHeaderSize(outFile);
         } else if (mode == "--views-concurrent") {
-            failures = testReadFFmpegViewsConcurrent(outFile);
+            failures = testReadFFmpegViewsConcurrent(outFile) + testReadFFmpegViewsPixelFormat(outFile + ".pixfmt.mkv");
         } else {
             std::printf("unknown option %s\n", mode.c_str());
             return 2;
@@ -6128,7 +6099,7 @@ main(int argc, char** argv)
     {
         // Matroska stores timestamps in milliseconds: at 24 fps, every frame of the movie must be decoded
         WriterParams wp;
-        wp.fps = 24.;
+        wp.doubles = { { "fps", 24. } };
         std::printf("==== WriteFFmpeg + ReadFFmpeg, Matroska at 24 fps: every frame is decoded ====\n");
         failures += testWriteFFmpeg(outFile + ".24fps.mkv", W, H, N, wp) || testReadFFmpeg(outFile + ".24fps.mkv", W, H, N);
     }
@@ -6141,8 +6112,9 @@ main(int argc, char** argv)
             std::printf("SKIP: WriteFFmpeg + ReadFFmpeg, libaom-av1 in %s at 24 fps: no encoder or not in this container (issue #247)\n", ext);
             continue;
         }
+        const double fps = 24.;
         WriterParams wp;
-        wp.fps = 24.;
+        wp.doubles = { { "fps", fps } };
         wp.strings = { { "codecShortName", "libaom-av1" } };
         std::printf("==== WriteFFmpeg + ReadFFmpeg, libaom-av1 in %s at 24 fps: the movie lasts %d frames, and every frame is decoded (issue #247) ====\n", ext, N);
         const std::string file = outFile + ".i247." + ext;
@@ -6150,8 +6122,8 @@ main(int argc, char** argv)
             ++failures;
         } else {
             const double duration = videoStreamDuration(file);
-            const double expected = N / wp.fps;
-            if (std::fabs(duration - expected) > 0.5 / wp.fps) {
+            const double expected = N / fps;
+            if (std::fabs(duration - expected) > 0.5 / fps) {
                 std::printf("  FAIL: the movie lasts %g s, expected %g s\n", duration, expected);
                 ++failures;
             } else {

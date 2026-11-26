@@ -680,7 +680,7 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+    if (paramEffectsOpenGLAndTileSupport(paramName)) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
         return;
     }

@@ -542,6 +542,25 @@ mapViewChannels(const Imf_::Header& header,
     mapChannels(header, views, &inView, channels);
 }
 
+// The data window of the file, in OFX pixel coordinates (x2 and y2 exclusive, y up), without the black border of
+// getWindows(). OpenEXR windows are inclusive, with y down: EXR pixel (x, y) is OFX pixel (x - dispwin.min.x,
+// dispwin.max.y - y): the display window is moved to (0,0), and y is flipped.
+static OfxRectI
+dataWindowPixels(const Imf_::Header& header)
+{
+    const Imath::Box2i& datawin = header.dataWindow();
+    const Imath::Box2i& dispwin = header.displayWindow();
+    // Shift both to get dispwindow over to 0,0.
+    const int dataOffset = -dispwin.min.x;
+    OfxRectI dataWindow;
+    dataWindow.x1 = datawin.min.x + dataOffset;
+    dataWindow.x2 = datawin.max.x + dataOffset + 1;
+    dataWindow.y1 = dispwin.max.y - datawin.max.y;
+    dataWindow.y2 = dispwin.max.y - datawin.min.y + 1;
+
+    return dataWindow;
+}
+
 // The display window (the format) and the data window (the RoD) of the file, in OFX pixel coordinates (x2 and y2
 // exclusive, y up): the display window is moved to (0,0), and y is flipped. When the windows differ, the RoD is the
 // data window grown by 1 pixel, which is black (as in ReadOIIO, with Edge Pixels: Auto).
@@ -552,28 +571,19 @@ getWindows(const Imf_::Header& header,
 {
     const Imath::Box2i& datawin = header.dataWindow();
     const Imath::Box2i& dispwin = header.displayWindow();
-    // Shift both to get dispwindow over to 0,0.
-    const int dataOffset = -dispwin.min.x;
 
     displayWindow->x1 = 0;
     displayWindow->y1 = 0;
-    displayWindow->x2 = dispwin.max.x + dataOffset + 1;
+    displayWindow->x2 = dispwin.max.x - dispwin.min.x + 1;
     displayWindow->y2 = dispwin.max.y - dispwin.min.y + 1;
 
-    int left = datawin.min.x + dataOffset;
-    int bottom = dispwin.max.y - datawin.max.y;
-    int right = datawin.max.x + dataOffset;
-    int top = dispwin.max.y - datawin.min.y;
+    *dataWindow = dataWindowPixels(header);
     if ((datawin.min.x != dispwin.min.x) || (datawin.max.x != dispwin.max.x) || (datawin.min.y != dispwin.min.y) || (datawin.max.y != dispwin.max.y)) {
-        --left;
-        --bottom;
-        ++right;
-        ++top;
+        --dataWindow->x1;
+        --dataWindow->y1;
+        ++dataWindow->x2;
+        ++dataWindow->y2;
     }
-    dataWindow->x1 = left;
-    dataWindow->x2 = right + 1;
-    dataWindow->y1 = bottom;
-    dataWindow->y2 = top + 1;
 }
 
 #if (defined(_WIN32) || defined(__WIN32__) || defined(WIN32)) && !defined(__MINGW32__)
@@ -777,6 +787,20 @@ FileManager::clear()
 {
     std::lock_guard<std::mutex> g(_lock);
     _files.clear();
+}
+
+// The messages of the errors of OpenEXR (std::exception) and of std::bad_alloc, for a file
+static string
+outOfMemoryMessage(const string& filename)
+{
+    return filename + ": out of memory";
+}
+
+static string
+openEXRErrorMessage(const string& filename,
+                    const string& what)
+{
+    return filename + ": OpenEXR error: " + what;
 }
 } // namespace Exr
 
@@ -987,22 +1011,25 @@ ReadEXRPlugin::decodeView(const string& filename,
         }
 
         // OpenEXR windows are inclusive, with y down. EXR pixel (x, y) is OFX pixel (x + dataOffset, dispwin.max.y - y)
-        // (see Exr::getWindows()): the display window is moved to (0,0), and y is flipped.
+        // (see Exr::dataWindowPixels()): the display window is moved to (0,0), and y is flipped.
         const Imath::Box2i& dispwin = header.displayWindow();
         const Imath::Box2i& datawin = header.dataWindow();
         const int dataOffset = -dispwin.min.x;
         // the data window, in OFX pixel coordinates (x2 and y2 exclusive)
-        const int dataX1 = datawin.min.x + dataOffset;
-        const int dataX2 = datawin.max.x + dataOffset + 1;
-        const int dataY1 = dispwin.max.y - datawin.max.y;
-        const int dataY2 = dispwin.max.y - datawin.min.y + 1;
-        // the part of the image that comes from the file; the rest (the 1-pixel border that getFrameBounds adds
-        // when the data and display windows differ, or anything else out of the data window) is black
-        const int readX1 = (std::max)(x1, dataX1);
-        const int readX2 = (std::min)(x2, dataX2);
-        const int readY1 = (std::max)(y1, dataY1);
-        const int readY2 = (std::min)(y2, dataY2);
-        const bool hasData = (readX1 < readX2) && (readY1 < readY2);
+        const OfxRectI dataWindow = Exr::dataWindowPixels(header);
+        const int dataX1 = dataWindow.x1;
+        const int dataX2 = dataWindow.x2;
+        // the part of the image that comes from the file (read); the rest of the render window (the 1-pixel border
+        // that getFrameBounds adds when the data and display windows differ, or anything else out of the data window)
+        // is black. For an Opaque file, render() sets alpha = 1 in the whole render window, as in the rest of the RoD
+        // (setDecodedWindow()).
+        OfxRectI read;
+        const bool hasData = clipToFile(renderWindow, dataWindow, pixelData, bounds, nComps, eBitDepthFloat, rowBytes, &read);
+        setDecodedWindow(renderWindow);
+        const int readX1 = read.x1;
+        const int readX2 = read.x2;
+        const int readY1 = read.y1;
+        const int readY2 = read.y2;
 
         // Does the file write every component at every pixel (no channel missing, none subsampled)? UINT channels
         // are normalized, as in ReadOIIO.
@@ -1025,18 +1052,11 @@ ReadEXRPlugin::decodeView(const string& filename,
             }
         };
 
-        // black where the file writes nothing: out of the data window, and in it if the file doesn't write every
-        // channel of every pixel
-        for (int y = y1; y < y2; ++y) {
-            float* dst = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(x1 - bounds.x1) * pixelBytes);
-            if (!hasData || (y < readY1) || (y >= readY2)) {
-                std::fill(dst, dst + (size_t)(x2 - x1) * nComps, 0.f);
-            } else {
-                std::fill(dst, dst + (size_t)(readX1 - x1) * nComps, 0.f);
-                std::fill(dst + (size_t)(readX2 - x1) * nComps, dst + (size_t)(x2 - x1) * nComps, 0.f);
-                if (!complete) {
-                    fillConstants(dst + (size_t)(readX1 - x1) * nComps, (size_t)(readX2 - readX1));
-                }
+        // the constants in the data window if the file doesn't write every channel of every pixel (clipToFile()
+        // wrote black out of it)
+        if (hasData && !complete) {
+            for (int y = readY1; y < readY2; ++y) {
+                fillConstants((float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * rowBytes + (ptrdiff_t)(readX1 - bounds.x1) * pixelBytes), (size_t)(readX2 - readX1));
             }
         }
 
@@ -1114,12 +1134,12 @@ ReadEXRPlugin::decodeView(const string& filename,
         error = e.what();
     }
     if (outOfMemory) {
-        setPersistentMessage(Message::eMessageError, "", filename + ": out of memory");
+        setPersistentMessage(Message::eMessageError, "", Exr::outOfMemoryMessage(filename));
         throwSuiteStatusException(kOfxStatErrMemory);
     }
     if (failed) {
         // the image is incomplete: the render fails
-        setPersistentMessage(Message::eMessageError, "", filename + ": OpenEXR error: " + error);
+        setPersistentMessage(Message::eMessageError, "", Exr::openEXRErrorMessage(filename, error));
         throwSuiteStatusException(kOfxStatFailed);
     }
 } // ReadEXRPlugin::decodeView
@@ -1159,11 +1179,11 @@ ReadEXRPlugin::guessParamsFromFilename(const string& newFile,
     try {
         info = Exr::FileManager::s_readerManager.get(newFile);
     } catch (const std::bad_alloc&) {
-        setPersistentMessage(Message::eMessageError, "", newFile + ": out of memory");
+        setPersistentMessage(Message::eMessageError, "", Exr::outOfMemoryMessage(newFile));
 
         return false;
     } catch (const std::exception& e) {
-        setPersistentMessage(Message::eMessageError, "", newFile + ": OpenEXR error: " + e.what());
+        setPersistentMessage(Message::eMessageError, "", Exr::openEXRErrorMessage(newFile, e.what()));
 
         return false;
     }
@@ -1233,13 +1253,13 @@ ReadEXRPlugin::getFrameBounds(const string& filename,
         info = Exr::FileManager::s_readerManager.get(filename);
     } catch (const std::bad_alloc&) {
         if (error) {
-            *error = filename + ": out of memory";
+            *error = Exr::outOfMemoryMessage(filename);
         }
 
         return false;
     } catch (const std::exception& e) {
         if (error) {
-            *error = filename + ": OpenEXR error: " + e.what();
+            *error = Exr::openEXRErrorMessage(filename, e.what());
         }
 
         return false;

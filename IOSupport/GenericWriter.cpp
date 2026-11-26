@@ -440,8 +440,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             ss << planeToFetch.getPlaneLabel();
             ss << " could not be fetched";
 
-            setPersistentMessage(Message::eMessageError, "", ss.str());
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, ss.str());
         }
 
         return;
@@ -455,10 +454,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     if ( (srcImg->getRenderScale().x != renderScale.x) ||
          ( srcImg->getRenderScale().y != renderScale.y) ||
          ( srcImg->getField() != fieldToRender) ) {
-        setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, "OFX Host gave image with wrong scale or field properties");
     }
     */
 
@@ -492,27 +488,18 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
             std::unique_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
-                setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "Output image could not be fetched");
             }
             /*
             // the following will break on Resolve, Fusion, and maybe others
             if ( (dstImg->getRenderScale().x != renderScale.x) ||
                  ( dstImg->getRenderScale().y != renderScale.y) ||
                  ( dstImg->getField() != fieldToRender) ) {
-                setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "OFX Host gave image with wrong scale or field properties");
             }
             */
             if (dstImg->getPixelComponents() != pixelComponents) {
-                setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong components");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "OFX Host gave image with wrong components");
             }
 
             // copy the source image (the writer is a no-op)
@@ -651,20 +638,14 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
             if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
                 std::unique_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
                 if (!dstImg.get()) {
-                    setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
+                    persistentErrorAndThrow(*this, "Output image could not be fetched");
                 }
                 /*
                  // the following will break on Resolve, Fusion, and maybe others
                 if ( (dstImg->getRenderScale().x != renderScale.x) ||
                      ( dstImg->getRenderScale().y != renderScale.y) ||
                      ( dstImg->getField() != fieldToRender) ) {
-                    setPersistentMessage(Message::eMessageError, "", "OFX Host gave image with wrong scale or field properties");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
+                    persistentErrorAndThrow(*this, "OFX Host gave image with wrong scale or field properties");
                 }
                 */
 
@@ -714,10 +695,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
                     return;
                 }
-                setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "Output image could not be fetched");
             }
             fillBlack(*this, renderWindow, renderScale, dstImg.get());
         }
@@ -870,9 +848,7 @@ renderScaleError(ImageEffect& effect,
 {
     stringstream ss;
     ss << "Writers render at full resolution only (render scale 1), but the host asked for a render scale of " << renderScale.x << " x " << renderScale.y << '.';
-    effect.setPersistentMessage(Message::eMessageError, "", ss.str());
-    // what throwSuiteStatusException(kOfxStatFailed) throws (it isn't declared [[noreturn]])
-    throw OFX::Exception::Suite(kOfxStatFailed);
+    persistentErrorAndThrow(effect, ss.str());
 }
 
 void
@@ -892,41 +868,40 @@ GenericWriterPlugin::render(const RenderArguments& args)
     // in the writers, which remove and create it; if one fails, it may then remove the file of the other one.
     string filename;
     _fileParam->getValueAtTime(args.time, filename);
-    if (!isImageFile(extension(filename))) {
+    const bool movie = !isImageFile(extension(filename));
+    FileStamp before;
+    if (movie) {
         _sequenceRenderRan = true;
-        try {
-            renderFile(args);
-        } catch (...) {
-            _sequenceRenderFailed = true;
-            throw;
-        }
-        if (abort()) {
-            _sequenceRenderFailed = true;
-        }
-
-        return;
+    } else {
+        before = fileStamp(filename);
     }
-    const FileStamp before = fileStamp(filename);
-    // remove the file if this render changed it (nothing better to do if that fails: the render failed anyway)
-    auto removeIfChanged = [&filename, &before]() {
+    // after a failed or aborted render: the sequence render of a movie failed; an image file is removed if this render
+    // changed it (nothing better to do if that fails: the render failed anyway)
+    auto onFailure = [&]() {
+        if (movie) {
+            _sequenceRenderFailed = true;
+
+            return;
+        }
         const FileStamp after = fileStamp(filename);
         if (after.exists && (after != before)) {
             (void)remove_utf8(filename.c_str());
         }
     };
     try {
-        renderFile(args);
+        renderFile(args, filename);
     } catch (...) {
-        removeIfChanged();
+        onFailure();
         throw;
     }
     if (abort()) {
-        removeIfChanged();
+        onFailure();
     }
 }
 
 void
-GenericWriterPlugin::renderFile(const RenderArguments& args)
+GenericWriterPlugin::renderFile(const RenderArguments& args,
+                                const string& filename)
 {
     const double time = args.time;
 
@@ -940,23 +915,16 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
         return;
     }
 
-    string filename;
-    _fileParam->getValueAtTime(time, filename);
-    // filename = filenameFromPattern(filename, time);
     {
         string ext = extension(filename);
         if (!checkExtension(ext)) {
-            setPersistentMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
-            throwSuiteStatusException(kOfxStatErrImageFormat);
+            persistentErrorAndThrow(*this, string("Unsupported file extension: ") + ext, kOfxStatErrImageFormat);
         }
     }
 
     // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
     if (!_overwrite->getValueAtTime(time)) {
         // check if output file exists
-        string filename;
-        _fileParam->getValueAtTime(time, filename);
-        // filename = filenameFromPattern(filename, time);
         // exists_utf8(), not fopen(): a file that can not be read exists too, and the writers remove an existing file
         if ( OFX::exists_utf8( filename.c_str() ) ) {
             // file exists
@@ -996,12 +964,10 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
         PixelComponentEnum clipComps = _inputClip->getPixelComponents();
 
         if (packingMapping.empty()) {
-            setPersistentMessage(Message::eMessageError, "", "Nothing to render: At least 1 channel checkbox must be checked");
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, "Nothing to render: At least 1 channel checkbox must be checked");
         }
         if ((clipComps == ePixelComponentAlpha) && (packingMapping.size() != 1)) {
-            setPersistentMessage(Message::eMessageError, "", "Output Components selected is Alpha: select only one single channel checkbox");
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, "Output Components selected is Alpha: select only one single channel checkbox");
         }
 
         if ((packingMapping.size() == 1) && !_supportsAlpha) {
@@ -1016,8 +982,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
                     packingMapping.push_back(-1);
                 }
             } else {
-                setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render single-channel images");
-                throwSuiteStatusException(kOfxStatFailed);
+                persistentErrorAndThrow(*this, "Plug-in does not know how to render single-channel images");
             }
         } else if ((packingMapping.size() == 2) && !_supportsXY) {
             if (_supportsRGB) {
@@ -1027,19 +992,16 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
                     packingMapping.push_back(-1);
                 }
             } else {
-                setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render 2-channel images");
-                throwSuiteStatusException(kOfxStatFailed);
+                persistentErrorAndThrow(*this, "Plug-in does not know how to render 2-channel images");
             }
         } else if ((packingMapping.size() == 3) && !_supportsRGB) {
             if (_supportsRGBA) {
                 packingMapping.push_back(-1);
             } else {
-                setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render 3-channel images");
-                throwSuiteStatusException(kOfxStatFailed);
+                persistentErrorAndThrow(*this, "Plug-in does not know how to render 3-channel images");
             }
         } else if ((packingMapping.size() == 4) && !_supportsRGBA) {
-            setPersistentMessage(Message::eMessageError, "", "Plug-in does not know how to render 4-channel images");
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, "Plug-in does not know how to render 4-channel images");
         }
         int prevChannel = -1;
         for (std::size_t i = 0; i < packingMapping.size(); ++i) {
@@ -1102,10 +1064,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
     } else {
         int viewToRender = getViewToRender();
         if ((viewToRender >= 0) && (viewToRender != args.renderView)) {
-            setPersistentMessage(Message::eMessageError, "", "Inconsistent view to render requested");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, "Inconsistent view to render requested");
         }
 
         if (viewToRender == kGenericWriterViewAll) {
@@ -1176,10 +1135,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
             }
             dstNCompsStartIndex = 0;
             if ((dstNComps < 1) || (dstNComps > 4)) {
-                setPersistentMessage(Message::eMessageError, "", "Input image could not be fetched");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "Input image could not be fetched");
             }
             data.bounds = args.renderWindow;
             data.rowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * dstNComps * getComponentBytes(eBitDepthFloat);
@@ -1202,10 +1158,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
                     if (abort()) {
                         return;
                     }
-                    setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
+                    persistentErrorAndThrow(*this, "Output image could not be fetched");
                 }
                 fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
             }
@@ -1281,10 +1234,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
                 if (abort()) { // not an error: the host is aborting the render
                     return;
                 }
-                setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "Failed to fetch input layers");
             }
             int pixelBytes = nChannels * getComponentBytes(eBitDepthFloat);
             int tmpRowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * pixelBytes;
@@ -1382,10 +1332,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
                     if (abort()) { // not an error: the host is aborting the render
                         return;
                     }
-                    setPersistentMessage(Message::eMessageError, "", "Failed to fetch input layers");
-                    throwSuiteStatusException(kOfxStatFailed);
-
-                    return;
+                    persistentErrorAndThrow(*this, "Failed to fetch input layers");
                 }
                 int pixelBytes = nChannels * getComponentBytes(eBitDepthFloat);
                 int tmpRowBytes = (args.renderWindow.x2 - args.renderWindow.x1) * pixelBytes;
@@ -1832,8 +1779,7 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& arg
     {
         string ext = extension(filename);
         if (!checkExtension(ext)) {
-            setPersistentMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
-            throwSuiteStatusException(kOfxStatErrImageFormat);
+            persistentErrorAndThrow(*this, string("Unsupported file extension: ") + ext, kOfxStatErrImageFormat);
         }
     }
 
@@ -1998,7 +1944,7 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxTime time,
             // its RoD
             const OfxRectD inputRoD = _inputClip->getRegionOfDefinition(time, view);
             const OfxPointD renderScale = { 1., 1. };
-            Coords::toPixelEnclosing(inputRoD, renderScale, inputPar > 0. ? inputPar : 1., &inputFormat);
+            Coords::toPixelEnclosing(inputRoD, renderScale, validPixelAspectRatio(inputPar), &inputFormat);
         }
         format->x1 = inputFormat.x1;
         format->x2 = inputFormat.x2;
@@ -2036,9 +1982,7 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxTime time,
     }
     // the PAR is divided by (Coords::toPixelEnclosing()): a PAR of 0 or less (the range of the Fixed format's
     // PAR param starts at 0) is invalid
-    if (*par <= 0.) {
-        *par = 1.;
-    }
+    *par = validPixelAspectRatio(*par);
 } // getSelectedOutputFormat
 
 void
@@ -2484,7 +2428,7 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
         msg += "\n";
         sendMessage(Message::eMessageMessage, "", msg);
 #ifdef OFX_IO_USING_OCIO
-    } else if (((paramName == kOCIOParamOutputSpace) || (paramName == kOCIOParamOutputSpaceChoice)) && (args.reason == eChangeUserEdit) && !_ocio->isSettingColorspaces()) {
+    } else if (_ocio->isUserOutputColorspaceEdit(args, paramName)) {
         // set the outputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
         // (not when GenericOCIO deletes a key, which Natron reports as a user edit)
         colorspaceSetByUser = true;

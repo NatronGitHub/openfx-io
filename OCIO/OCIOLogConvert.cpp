@@ -113,14 +113,6 @@ private:
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
 
-    // a copy of _config, taken under _configMutex
-    OCIO::ConstConfigRcPtr getConfig() const
-    {
-        GenericOCIO::AutoMutex guard(_configMutex);
-
-        return _config;
-    }
-
     void copyPixelData(bool unpremult,
                        bool premult,
                        bool maskmix,
@@ -206,10 +198,8 @@ private:
 
     // Thread safety: render() runs concurrently in several threads (eRenderFullySafe), and concurrently with
     // changedParam() (main thread), which loads a new config. _ocioConfigFileName is only used by the main thread.
-    // _configMutex guards _config: getConfig() takes a copy. _procCache has its own mutex; the two are never held at
-    // the same time.
-    mutable GenericOCIO::Mutex _configMutex;
-    OCIO::ConstConfigRcPtr _config; // guarded by _configMutex
+    // _config and _procCache have their own mutexes; the two are never held at the same time.
+    OCIOSharedConfig _config;
 
     // everything that the processor depends on
     struct ProcKey {
@@ -292,12 +282,9 @@ OCIOLogConvertPlugin::loadConfig(double time)
         setPersistentMessage(Message::eMessageError, "", string("OpenColorIO error: ") + e.what());
         config = OCIO::GetCurrentConfig();
     }
-    {
-        GenericOCIO::AutoMutex guard(_configMutex);
-        std::swap(_config, config);
-    }
-    // config is now the old one: it is released here, without the lock (its processors are not used again: the
-    // key of _procCache compares the config)
+    // the old config is released here, without the lock (its processors are not used again: the key of _procCache
+    // compares the config)
+    (void)_config.exchange(std::move(config));
 }
 
 /* set up and run a copy processor */
@@ -451,11 +438,12 @@ OCIOLogConvertPlugin::getProcessor(OfxTime time)
 {
     const int mode_i = _mode->getValueAtTime(time);
 
-    try {
-        const OCIO::ConstConfigRcPtr config = getConfig();
-        if (!config) {
-            throw std::runtime_error("OCIO: no config");
-        }
+    const OCIO::ConstConfigRcPtr config = _config.get();
+    if (!config) {
+        persistentErrorAndThrow(*this, "No OCIO config");
+    }
+
+    return processorOrFail([&] {
         const ProcKey key { OCIOConfigContextKey(config), mode_i };
 
         return _procCache.get(key, [&] {
@@ -474,12 +462,7 @@ OCIOLogConvertPlugin::getProcessor(OfxTime time)
 
             return config->getProcessor(src, dst);
         });
-    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
-        setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-    }
-
-    return OCIO::ConstProcessorRcPtr();
+    });
 } // getProcessor
 
 void
@@ -801,7 +784,7 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
     clearPersistentMessage();
     if (paramName == kOCIOParamConfigFile) {
         loadConfig(args.time); // re-load the new OCIO config
-        if (!getConfig() && (args.reason == eChangeUserEdit)) {
+        if (!_config.get() && (args.reason == eChangeUserEdit)) {
             string filename;
             _ocioConfigFile->getValue(filename);
             sendMessage(Message::eMessageError, "", string("Cannot load OCIO config file \"") + filename + '"');
@@ -812,7 +795,7 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
                      "OpenColorIO version (compiled with / running with): " OCIO_VERSION "/";
         msg += OCIO::GetVersion();
         msg += '\n';
-        if (const OCIO::ConstConfigRcPtr config = getConfig()) {
+        if (const OCIO::ConstConfigRcPtr config = _config.get()) {
             const char* configdesc = config->getDescription();
             int configdesclen = std::strlen(configdesc);
             if (configdesclen > 0) {
@@ -864,7 +847,7 @@ OCIOLogConvertPlugin::changedParam(const InstanceChangedArgs& args,
         }
         sendMessage(Message::eMessageMessage, "", msg);
 #ifdef OFX_SUPPORTS_OPENGLRENDER
-    } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+    } else if (paramEffectsOpenGLAndTileSupport(paramName)) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     }

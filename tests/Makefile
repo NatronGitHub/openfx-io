@@ -74,6 +74,11 @@ TBBMALLOC_LIBS := $(if $(and $(TBB_LIBDIR),$(wildcard $(TBB_LIBDIR)/libtbbmalloc
 OFX_CXXFLAGS := $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) $(shell $(PKGCONF) --cflags $(OFX_PKGS)) $(FMT_INC) $(OMP_CFLAGS)
 OFX_LIBS  := $(shell $(PKGCONF) --libs $(OFX_PKGS)) $(OMP_LDLIBS) $(TBBMALLOC_LIBS)
 
+# AddressSanitizer, and the same with UBSan's signed-integer-overflow check, stopping at the first error: none with
+# MinGW (MS Windows), which doesn't have them
+ASAN_FLAGS := $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer)
+ASAN_SIO_FLAGS := $(if $(ASAN_FLAGS),$(ASAN_FLAGS) -fsanitize=signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow)
+
 # OFX C++ Support library (host-facing plugin runtime), as in openfx's Makefile.master: ofxsDrawContextOpenGL.cpp
 # (DrawArgs::isOpenGLContextCurrent, used by SupportExt's OverlayDraw) loads OpenGL at run time; ofxsHWNDInteract.cpp
 # is Windows-only.
@@ -88,9 +93,7 @@ OFX_SUPPORT := \
     ../openfx/Support/Library/ofxsPropertyValidation.cpp \
     ../openfx/Support/Library/ofxsDrawContextOpenGL.cpp
 
-# The reader/writer plugin translation units + their in-repo dependencies.
-# (LibRaw/RAW support is left out of the test build to avoid an OpenMP dependency;
-#  it is not needed to exercise the OFX entry points.)
+# The reader/writer plugin translation units + their in-repo dependencies (ReadOIIO's RAW support with WITH_LIBRAW=1).
 PLUGIN_SRCS := \
     ../FFmpeg/ReadFFmpeg.cpp ../FFmpeg/WriteFFmpeg.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp \
     ../OIIO/ReadOIIO.cpp ../OIIO/WriteOIIO.cpp ../OIIO/OIIOGlobal.cpp \
@@ -185,11 +188,10 @@ ocio_cdl_test: ocio_cdl_test.cpp ofx_test_host.h $(OCIO_CDL_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 
 # OCIOFileTransform's CCC Id param, with AddressSanitizer (an out-of-bounds read of the file name), with the OpenGL
-# sources of ocio_cdl_test. No ASan with MinGW (MS Windows), which doesn't have it. (Added to test and clean here.)
+# sources of ocio_cdl_test (ASAN_FLAGS: not on MS Windows).
 OCIO_FT_SRCS := ../OCIO/OCIOFileTransform.cpp $(filter-out ../OCIO/OCIOCDLTransform.cpp,$(OCIO_CDL_SRCS))
-OCIO_FT_ASAN := $(if $(filter Windows_NT,$(OS)),,-fsanitize=address -fno-omit-frame-pointer)
 ocio_filetransform_test: ocio_filetransform_test.cpp ofx_test_host.h $(OCIO_FT_SRCS) $(OFX_SUPPORT)
-	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(OCIO_FT_ASAN) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
+	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) $(ASAN_FLAGS) $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 
 .PHONY: test-ocio-filetransform clean-ocio-filetransform
 test: test-ocio-filetransform
@@ -201,7 +203,7 @@ clean-ocio-filetransform:
 
 # the processor caches of the OCIO plug-ins (#282, #283, #284) and GenericOCIO's config (#275): concurrent renders, and a
 # changed config or context, with the OpenGL sources of ocio_cdl_test; and the same with ThreadSanitizer, not in
-# `make test` (as test-oiio-threads-tsan; no TSan with MinGW). (Added to test and clean here.)
+# `make test` (as test-oiio-threads-tsan; no TSan with MinGW).
 OCIO_PC_SRCS := ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIODisplay.cpp ../OCIO/OCIOFileTransform.cpp \
     ../OCIO/OCIOLogConvert.cpp ../OCIO/OCIOLookTransform.cpp $(OCIO_CDL_SRCS)
 ocio_processor_cache_test: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_PC_SRCS) $(OFX_SUPPORT)
@@ -273,8 +275,7 @@ clean-sequence-parsing:
 	rm -rf sequence_parsing_test sequence_parsing_test.dSYM sequence_parsing_utf8_test sequence_parsing_utf8_test.dSYM
 
 # OIIOResize and OIIOText with degenerate inputs (an empty source, huge or infinite RoDs, huge text positions), with
-# the OIIO plug-ins (OIIOGlobal), and OpenGL (OIIOText's interact; OCIO_CDL_LIBS). (Added to test and clean here, on
-# lines of their own.)
+# the OIIO plug-ins (OIIOGlobal), and OpenGL (OIIOText's interact; OCIO_CDL_LIBS).
 oiio_edge_test: oiio_edge_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../OIIO/OIIOResize.cpp ../OIIO/OIIOText.cpp \
     ../SupportExt/ofxsOGLTextRenderer.cpp ../SupportExt/ofxsOGLFontData.cpp $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -I../openfx/Support/Plugins/include $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
@@ -341,9 +342,8 @@ clean-ofx14:
 # The same tests after a plug-in scan (--scan: Load and Describe every plug-in, then Unload them all, as a host that
 # unloads the binary after its scan, HostSupport's default since openfx #174), in the OFX 1.4-only host and in the
 # full host; then the same with AddressSanitizer (not on MS Windows).
-OFX14_ASAN := -fsanitize=address -fno-omit-frame-pointer
 ofx14_host_test_asan: ofx14_host_test.cpp ofx_test_host.h ofx14_names.h $(OFX14_SRCS) $(OFX_SUPPORT)
-	$(CXX) $(OFX_CXXFLAGS) $(OFX14_CXXFLAGS) $(OFX14_ASAN) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OFX14_LIBS) $(OCIO_CDL_LIBS) -o $@
+	$(CXX) $(OFX_CXXFLAGS) $(OFX14_CXXFLAGS) $(ASAN_FLAGS) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OFX14_LIBS) $(OCIO_CDL_LIBS) -o $@
 
 .PHONY: test-ofx14-scan test-ofx14-scan-asan clean-ofx14-scan
 test: test-ofx14-scan
@@ -392,13 +392,11 @@ clean-exr-ubsan:
 
 # ReadOIIO, ReadPFM and ReadPNG (if pkg-config finds libpng): render windows narrower than the image, render scale
 # 1/2, files rewritten while rendering (#160, #163), PNG offsets near the limits of an int at scales 1/2 and 1/4
-# (#371). With AddressSanitizer and UBSan's signed-integer-overflow check, stopping at the first error (not on MS
-# Windows, as OCIO_FT_ASAN), and guard pages around the output image. -pthread: the test uses std::thread. (Added to
-# test and clean here, on lines of their own.)
+# (#371). With AddressSanitizer and UBSan's signed-integer-overflow check, stopping at the first error (ASAN_SIO_FLAGS:
+# not on MS Windows), and guard pages around the output image. -pthread: the test uses std::thread.
 READER_WINDOW_SRCS := ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp ../PFM/ReadPFM.cpp $(if $(HAVE_PNG),../PNG/ReadPNG.cpp,) \
     $(READER_HOOKS_SRCS)
-READER_WINDOW_CXXFLAGS := -I../PFM -I../PNG -pthread \
-    $(if $(filter Windows_NT,$(OS)),,-fsanitize=address,signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow -fno-omit-frame-pointer) \
+READER_WINDOW_CXXFLAGS := -I../PFM -I../PNG -pthread $(ASAN_SIO_FLAGS) \
     $(if $(HAVE_PNG),-DHAVE_PNG $(shell $(PKGCONF) --cflags libpng),)
 READER_WINDOW_LIBS := $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,)
 
@@ -418,7 +416,7 @@ clean-reader-window:
 # ReadOIIO's output-layer menu rebuilt on the main thread while render threads render the same instance and call
 # isIdentity (#298), in a Natron-like host: with assert() (the menu's size in decodePlane), and with ThreadSanitizer
 # (test-oiio-layer-menu-tsan, not in make test; without assert(), which would stop it before the data race report).
-# -pthread: the test uses std::thread. (Added to test and clean here, on lines of their own.)
+# -pthread: the test uses std::thread.
 OIIO_LAYER_MENU_SRCS := ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp $(READER_HOOKS_SRCS)
 
 oiio_layer_menu_test: oiio_layer_menu_test.cpp ofx_test_host.h $(OIIO_LAYER_MENU_SRCS) $(OFX_SUPPORT)
@@ -443,11 +441,10 @@ clean-oiio-layer-menu:
 # ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files (made from valid ones that the test writes with
 # libpng) must fail cleanly, without a crash, an AddressSanitizer report, or a leak (of memory or of a file
 # descriptor); also an image offset out of range and a huge image (#276, #297). With AddressSanitizer and UBSan's
-# signed-integer-overflow check, which aborts (not on MS Windows, as OCIO_FT_ASAN). Only if pkg-config finds libpng.
+# signed-integer-overflow check, which aborts (ASAN_SIO_FLAGS: not on MS Windows). Only if pkg-config finds libpng.
 ifneq ($(HAVE_PNG),)
 PNG_CORRUPT_SRCS := ../PNG/ReadPNG.cpp ../PNG/WritePNG.cpp ../IOSupport/GenericWriter.cpp $(READER_HOOKS_SRCS)
-PNG_CORRUPT_CXXFLAGS := -I../PNG -pthread \
-    $(if $(filter Windows_NT,$(OS)),,-fsanitize=address,signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow -fno-omit-frame-pointer) \
+PNG_CORRUPT_CXXFLAGS := -I../PNG -pthread $(ASAN_SIO_FLAGS) \
     $(shell $(PKGCONF) --cflags libpng)
 
 png_corrupt_test: png_corrupt_test.cpp ofx_test_host.h ../PNG/PNGError.h $(PNG_CORRUPT_SRCS) $(OFX_SUPPORT)
@@ -468,7 +465,7 @@ endif
 # here (ReaderWindow.ofx.bundle, like IO.ofx but with the readers only). hostdemo/reader_window.sh writes the files
 # with oiiotool and ffmpeg, and renders windows in the image and partly or entirely out of its RoD, at scale 1 and
 # 1/2, with both filePremult paths. It is skipped (exit status 77) without oiiotool. CMake's io-reader-window runs the
-# same script on the installed IO.ofx bundle. (Added to test and clean here, on lines of their own.)
+# same script on the installed IO.ofx bundle.
 RW_HOST_SRCS := hostdemo/reader_window.cpp $(wildcard ../openfx/HostSupport/src/*.cpp) \
     ../openfx/HostSupport/examples/hostDemoClipInstance.cpp ../openfx/HostSupport/examples/hostDemoEffectInstance.cpp \
     ../openfx/HostSupport/examples/hostDemoHostDescriptor.cpp ../openfx/HostSupport/examples/hostDemoParamInstance.cpp
@@ -578,7 +575,7 @@ else
   SEEXPR_LIBS += -Wl,-rpath,$(SEEXPR_LIBDIR) -lGL
 endif
 
-seexpr_test: seexpr_test.cpp seexpr_test_master.inc ofx_test_host.h $(SEEXPR_SRCS) $(OFX_SUPPORT)
+seexpr_test: seexpr_test.cpp seexpr_test_pre176.inc ofx_test_host.h $(SEEXPR_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(SEEXPR_CXXFLAGS) $(filter-out %.h %.inc,$^) $(OFX_LIBS) $(SEEXPR_LIBS) -o $@
 
 # (added to test and clean here, on lines of their own)
@@ -705,6 +702,7 @@ test-swscale-exact: ofx_render_test
 test-writeffmpeg-param-change: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i304.mov --param-change
 
+# #343: WriteFFmpeg: the settings and pixel formats of each encoder, and its movies
 test-writeffmpeg-codec-params: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i343 --codec-params
 
@@ -831,7 +829,7 @@ clean:
 	rm -rf ffmpeg_read_test ffmpeg_read_test.dSYM \
 	       ofx_entrypoints_test ofx_entrypoints_test.dSYM \
 	       ofx_actions_test ofx_actions_test.dSYM \
-	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM .render_out.mov .render_out.mov.i291.mov .render_out.mov.i291.tsan.mov .render_out.mov.i79.jpg .render_out.mov.i79.png .render_out.mov.i90a.png .render_out.mov.i90b.png .render_out.mov.i90c.mov .render_out.mov.i71.mp4 .render_out.mov.i71.mp4.avi .render_out.mov.i78.mov .render_out.mov.i78.mp4 .render_out.mov.i110.mov .render_out.mov.i110.mp4v.mov .render_out.mov.i110.3gp .render_out.mov.i135.prores.mov .render_out.mov.i135.dnxhd.mov .render_out.mov.i267.dnxhr444.mov .render_out.mov.i288.mov .render_out.mov.i288.mov.other.mov .render_out.mov.i288-disk-full.mov .render_out.mov.i290.mov .render_out.mov.i294.pfm .render_out.mov.i296.pfm .render_out.mov.i438.pfm .render_out.mov.i289-interlaced.mov .render_out.mov.i289-dnxhd.mov .render_out.mov.i305.mov .render_out.mov.i136.mp4 .render_out.mov.i217.mp4 .render_out.mov.i137.mov .render_out.mov.i137.mov.lnk .render_out.mov.i137.mov.other.mov .render_out.mov.i134.mov .render_out.mov.i134trunc.mov .render_out.mov.24fps.mkv ofxPluginLog.txt .render_out.mov.i319.mov \
+	       ofx_render_test ofx_render_test.dSYM ofx_render_test_tsan ofx_render_test_tsan.dSYM ofxPluginLog.txt .render_out* \
 	       oiio_layers_test oiio_layers_test.dSYM \
 	       reader_hooks_test reader_hooks_test.dSYM .reader_hooks.still.tst .reader_hooks.video.tst .reader_hooks.big.tst .reader_hooks.wide.tst \
 	       ocio_cdl_test ocio_cdl_test.dSYM \

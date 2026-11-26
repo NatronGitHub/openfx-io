@@ -26,7 +26,7 @@
 #include <cfloat> // DBL_MAX
 #include <climits> // INT_MAX
 #include <cmath>
-#include <cstring> // memset
+#include <cstring> // strcmp
 #include <limits>
 #include <memory>
 
@@ -456,16 +456,7 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
         // ImageBufAlgo::resize() with OpenImageIO 2.4. The render window is black. (Only this path honours the render
         // window: the resize below renders the whole output image, which is the render window, since kSupportsTiles
         // is 0.)
-        OfxRectI window;
-        if (Coords::rectIntersection(args.renderWindow, dstImgBounds, &window)) {
-            const std::size_t rowSize = (std::size_t)(window.x2 - window.x1) * nComps * sizeof(PIX);
-            for (int y = window.y1; y < window.y2; ++y) {
-                void* row = dstImg->getPixelAddress(window.x1, y);
-                if (row) {
-                    std::memset(row, 0, rowSize);
-                }
-            }
-        }
+        fillBlackNT(args.renderWindow, args.renderScale, dstImg);
 
         return;
     }

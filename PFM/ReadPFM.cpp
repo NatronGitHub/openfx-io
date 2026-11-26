@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdio> // fopen, fread...
 #include <limits>
+#include <memory> // std::unique_ptr
 #if !defined(_WIN32)
 #include <sys/types.h> // off_t, fseeko
 #endif
@@ -222,6 +223,27 @@ invalidDimensionsMessage(const string& filename)
     return string("invalid WIDTH or HEIGHT fields in file \"") + filename + "\".";
 }
 
+// Closes a file opened by fopen_utf8()
+struct PFMFileCloser {
+    void operator()(std::FILE* f) const { std::fclose(f); }
+};
+typedef std::unique_ptr<std::FILE, PFMFileCloser> PFMFile;
+
+// Read the next line of the header that is not a comment ('#') into item (at most 1023 characters), skipping the
+// comments and the empty lines. Leading whitespace is skipped, except on the first line of the file (first). At the
+// end of the file, item is left unchanged.
+static void
+readPFMToken(std::FILE* file,
+             char (&item)[1024],
+             bool first)
+{
+    int err;
+    while ((err = std::fscanf(file, first ? "%1023[^\n]" : " %1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
+        int c = std::fgetc(file);
+        (void)c;
+    }
+}
+
 void
 ReadPFMPlugin::decode(const string& filename,
                       OfxTime /*time*/,
@@ -237,62 +259,35 @@ ReadPFMPlugin::decode(const string& filename,
     assert(renderScale.x == 1. && renderScale.y == 1.);
     unused(renderScale);
     if ((pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentAlpha)) {
-        setPersistentMessage(Message::eMessageError, "", "PFM: can only read RGBA, RGB or Alpha components images");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+        persistentErrorAndThrow(*this, "PFM: can only read RGBA, RGB or Alpha components images", kOfxStatErrFormat);
     }
 
     // read PFM header
-    std::FILE* const nfile = fopen_utf8(filename.c_str(), "rb");
+    const PFMFile file(fopen_utf8(filename.c_str(), "rb")); // closed on every path
+    std::FILE* const nfile = file.get();
     if (!nfile) {
-        setPersistentMessage(Message::eMessageError, "", string("Cannot open file \"") + filename + "\".");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, string("Cannot open file \"") + filename + "\".");
     }
 
     char pfm_type, item[1024] = { 0 };
     int W = 0;
     int H = 0;
     int C = 0;
-    int err = 0;
     double scale = 0.0;
-    while ((err = std::fscanf(nfile, "%1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-        int c = std::fgetc(nfile);
-        (void)c;
-    }
+    readPFMToken(nfile, item, /*first=*/true);
     if (std::sscanf(item, " P%c", &pfm_type) != 1) {
-        std::fclose(nfile);
-        setPersistentMessage(Message::eMessageError, "", string("PFM header not found in file \"") + filename + "\".");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, string("PFM header not found in file \"") + filename + "\".");
     }
-    while ((err = std::fscanf(nfile, " %1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-        int c = std::fgetc(nfile);
-        (void)c;
-    }
+    readPFMToken(nfile, item, /*first=*/false);
     if (std::sscanf(item, " %d %d", &W, &H) != 2) {
-        std::fclose(nfile);
-        setPersistentMessage(Message::eMessageError, "", string("WIDTH and HEIGHT fields are undefined in file \"") + filename + "\".");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, string("WIDTH and HEIGHT fields are undefined in file \"") + filename + "\".");
     }
     if (!validDimensions(W, H)) {
-        std::fclose(nfile);
-        setPersistentMessage(Message::eMessageError, "", invalidDimensionsMessage(filename));
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, invalidDimensionsMessage(filename));
     }
 
     clearPersistentMessage();
-    while ((err = std::fscanf(nfile, " %1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-        int c = std::fgetc(nfile);
-        (void)c;
-    }
+    readPFMToken(nfile, item, /*first=*/false);
     if (std::sscanf(item, "%lf", &scale) != 1) {
         setPersistentMessage(Message::eMessageWarning, "", string("SCALE field is undefined in file \"") + filename + "\".");
     }
@@ -317,8 +312,6 @@ ReadPFMPlugin::decode(const string& filename,
     const OfxRectI fileBounds = { 0, 0, W, H };
     OfxRectI window;
     if (!clipToFile(renderWindow, fileBounds, pixelData, bounds, pixelComponentCount, eBitDepthFloat, rowBytes, &window)) {
-        std::fclose(nfile);
-
         return;
     }
     const int x1 = window.x1;
@@ -327,20 +320,12 @@ ReadPFMPlugin::decode(const string& filename,
     // the lines are stored from bottom (y = 0) to top: skip those below the window, in one seek (64-bit: up to
     // 65535 lines of 65535 RGB pixels)
     if ((window.y1 > 0) && !seekForward(nfile, (unsigned long long)window.y1 * numpixels * 4)) {
-        std::fclose(nfile);
-        setPersistentMessage(Message::eMessageError, "", "could not read all the image samples needed");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, "could not read all the image samples needed");
     }
     for (int y = window.y1; y < window.y2; ++y) {
         std::size_t numread = std::fread(&image.front(), 4, numpixels, nfile);
         if (numread < numpixels) {
-            std::fclose(nfile);
-            setPersistentMessage(Message::eMessageError, "", "could not read all the image samples needed");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, "could not read all the image samples needed");
         }
 
         if (is_inverted) {
@@ -385,7 +370,6 @@ ReadPFMPlugin::decode(const string& filename,
             }
         }
     }
-    std::fclose(nfile);
 } // ReadPFMPlugin::decode
 
 bool
@@ -401,7 +385,8 @@ ReadPFMPlugin::getFrameBounds(const string& filename,
 {
     assert(bounds && par);
     // read PFM header
-    std::FILE* const nfile = fopen_utf8(filename.c_str(), "rb");
+    const PFMFile file(fopen_utf8(filename.c_str(), "rb")); // closed on every path
+    std::FILE* const nfile = file.get();
     if (!nfile) {
         if (error) {
             *error = string("Cannot open file \"") + filename + "\".";
@@ -413,26 +398,17 @@ ReadPFMPlugin::getFrameBounds(const string& filename,
     char pfm_type, item[1024] = { 0 };
     int W = 0;
     int H = 0;
-    int err = 0;
     double scale = 0.0;
-    while ((err = std::fscanf(nfile, "%1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-        int c = std::fgetc(nfile);
-        (void)c;
-    }
+    readPFMToken(nfile, item, /*first=*/true);
     if (std::sscanf(item, " P%c", &pfm_type) != 1) {
-        std::fclose(nfile);
         if (error) {
             *error = string("PFM header not found in file \"") + filename + "\".";
         }
 
         return false;
     }
-    while ((err = std::fscanf(nfile, " %1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-        int c = std::fgetc(nfile);
-        (void)c;
-    }
-    if ((err = std::sscanf(item, " %d %d", &W, &H)) < 2) {
-        std::fclose(nfile);
+    readPFMToken(nfile, item, /*first=*/false);
+    if (std::sscanf(item, " %d %d", &W, &H) != 2) {
         if (error) {
             *error = string("WIDTH and HEIGHT fields are undefined in file \"") + filename + "\".";
         }
@@ -440,24 +416,17 @@ ReadPFMPlugin::getFrameBounds(const string& filename,
         return false;
     }
     if (!validDimensions(W, H)) {
-        std::fclose(nfile);
         if (error) {
             *error = invalidDimensionsMessage(filename);
         }
 
         return false;
     }
-    if (err == 2) {
-        clearPersistentMessage();
-        while ((err = std::fscanf(nfile, " %1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-            int c = std::fgetc(nfile);
-            (void)c;
-        }
-        if (std::sscanf(item, "%lf", &scale) != 1) {
-            setPersistentMessage(Message::eMessageWarning, "", string("SCALE field is undefined in file \"") + filename + "\".");
-        }
+    clearPersistentMessage();
+    readPFMToken(nfile, item, /*first=*/false);
+    if (std::sscanf(item, "%lf", &scale) != 1) {
+        setPersistentMessage(Message::eMessageWarning, "", string("SCALE field is undefined in file \"") + filename + "\".");
     }
-    std::fclose(nfile);
 
     bounds->x1 = 0;
     bounds->x2 = W;
@@ -510,25 +479,19 @@ ReadPFMPlugin::guessParamsFromFilename(const string& newFile,
     stringstream ss;
 
     // read PFM header
-    std::FILE* const nfile = fopen_utf8(filename.c_str(), "rb");
+    const PFMFile file(fopen_utf8(filename.c_str(), "rb")); // closed on every path
+    std::FILE* const nfile = file.get();
     if (!nfile) {
         return false;
     }
 
     char pfm_type = 0;
     char item[1024] = { 0 };
-    int err = 0;
-    while ((err = std::fscanf(nfile, "%1023[^\n]", item)) != EOF && (*item == '#' || !err)) {
-        int c = std::fgetc(nfile);
-        (void)c;
-    }
+    readPFMToken(nfile, item, /*first=*/true);
     if (std::sscanf(item, " P%c", &pfm_type) != 1) {
-        std::fclose(nfile);
-
         // setPersistentMessage(Message::eMessageWarning, "", string("PFM header not found in file \"") + filename + "\".");
         return false;
     }
-    std::fclose(nfile);
 
     // set the components of _outputClip
     *components = ePixelComponentNone;

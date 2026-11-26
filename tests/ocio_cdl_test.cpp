@@ -59,28 +59,6 @@ const double kOffset[3] = { 0.0625, -0.03125, 0.1 };
 const double kPower[3] = { 1.1, 0.9, 1.2 };
 const double kSaturation = 0.7;
 
-int gFailures = 0;
-
-void
-check(bool cond, const char* fmt, ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 void
 setOverrideDoubles(Effect* ctx, const char* name, std::vector<double> v)
 {
@@ -95,42 +73,12 @@ setOverrideDoubles(Effect* ctx, const char* name, std::vector<double> v)
     it->second.ov.d = v;
 }
 
-bool
-fileExists(const std::string& path)
-{
-    std::FILE* f = std::fopen(path.c_str(), "r");
-    if (f) {
-        std::fclose(f);
-    }
-
-    return f != nullptr;
-}
-
-std::string
-fileContents(const std::string& path)
-{
-    std::ifstream ifs(path.c_str(), std::ios::binary);
-    std::ostringstream os;
-    os << ifs.rdbuf();
-
-    return os.str();
-}
-
 // The user sets the Export param to filename: kOfxActionInstanceChanged (user edit)
 OfxStatus
 exportTo(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& filename)
 {
     setOverrideString(&ctx, kParamExport, filename);
-    PropSet a;
-    OfxPropertySetHandle ap = PH(&a);
-    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-    pSetString(ap, kOfxPropName, 0, kParamExport);
-    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-    pSetDouble(ap, kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. };
-    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-    return p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr);
+    return instanceChanged(p, inst, kParamExport);
 }
 
 std::string
@@ -181,7 +129,7 @@ testExport(OfxPlugin* p, Effect& ctx, Effect& inst, const std::string& dir)
     check(ok(st), "instanceChanged(export) returns OK (status %d)", st);
     check(gMessages.empty(), "no error message (got \"%s\")", gMessages.c_str());
     check(gPersistentError.empty(), "no persistent error (got \"%s\")", gPersistentError.c_str());
-    check(fileExists(filename), "%s exists", filename.c_str());
+    check(fileSize(filename) >= 0, "%s exists", filename.c_str());
     const std::string xml = fileContents(filename);
     check(xml.find("<ColorCorrection") != std::string::npos, "the file is a ColorCorrection XML (%zu bytes)", xml.size());
     std::string error;
@@ -428,22 +376,6 @@ paramsAre(Effect& ctx, const Grade& g)
     return same && closeEnough(paramDouble(&ctx.params["saturation"], 0), g.saturation);
 }
 
-// kOfxActionInstanceChanged on param name (a user edit)
-OfxStatus
-instanceChanged(OfxPlugin* p, Effect& inst, const char* name)
-{
-    PropSet a;
-    OfxPropertySetHandle ap = PH(&a);
-    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-    pSetString(ap, kOfxPropName, 0, name);
-    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-    pSetDouble(ap, kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. };
-    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-    return p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr);
-}
-
 const int kW = 4;
 const int kH = 2;
 const float kInputRGB[3] = { 0.2f, 0.4f, 0.6f };
@@ -468,7 +400,7 @@ render(OfxPlugin* p, Effect& ctx, Effect& inst)
     fillUnwritten(reinterpret_cast<float*>(dst->buffer.data()), (size_t)4 * kW * kH);
     PropSet a = makeRenderInArgs(1., kW, kH);
 
-    return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
 }
 
 // kOfxImageEffectActionIsIdentity at time 1: kOfxStatOK if identity, kOfxStatReplyDefault if not
@@ -485,7 +417,7 @@ isIdentity(OfxPlugin* p, Effect& inst)
     pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     PropSet o;
 
-    return p->mainEntry(kOfxImageEffectActionIsIdentity, H(inst), PH(&a), PH(&o));
+    return p->mainEntry(kOfxImageEffectActionIsIdentity, EH(inst), PH(&a), PH(&o));
 }
 
 // a new instance, in a new context descriptor ctx, with "Read from file" on, the File param set to filename and the
@@ -496,7 +428,7 @@ createReadFromFileInstance(OfxPlugin* p, Effect& ctx, Effect& inst, const std::s
 {
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
         std::printf("  FAIL: describeInContext\n");
         ++gFailures;
 
@@ -508,7 +440,7 @@ createReadFromFileInstance(OfxPlugin* p, Effect& ctx, Effect& inst, const std::s
     inst.delegate = &ctx;
     setInstanceProps(inst, kW, kH, 1, kOfxImageEffectContextFilter);
     gPersistentError.clear();
-    *st = p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr);
+    *st = p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr);
 
     return true;
 }
@@ -561,7 +493,7 @@ testMissingFile(OfxPlugin* p, const std::string& dir)
 
     // the user opens the node's UI, then presses Reload: the error is reported, the grade params are unchanged
     before = setValueCount(ctx);
-    p->mainEntry(kOfxActionBeginInstanceEdit, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionBeginInstanceEdit, EH(inst), nullptr, nullptr);
     check(setValueCount(ctx) == before, "beginInstanceEdit sets no param (%d paramSetValue calls)", setValueCount(ctx) - before);
     gPersistentError.clear();
     gMessages.clear();
@@ -584,9 +516,9 @@ testMissingFile(OfxPlugin* p, const std::string& dir)
     }
     check(ctx.params["slope"].nSet == 0 && ctx.params["offset"].nSet == 0 && ctx.params["power"].nSet == 0 && ctx.params["saturation"].nSet == 0,
           "instanceChanged(reload) leaves the grade params unchanged");
-    p->mainEntry(kOfxActionEndInstanceEdit, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionEndInstanceEdit, EH(inst), nullptr, nullptr);
 
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
 }
 
 void
@@ -624,7 +556,7 @@ testRenderFromFile(OfxPlugin* p, const std::string& dir)
     const bool loaded = (ctx.params["slope"].nSet > slopeSets) && (ctx.params["saturation"].nSet > saturationSets) && paramsAre(ctx, kGrade);
     check(loaded, "instanceChanged(reload) loads the grade of the file into the params");
 
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     std::remove(filename.c_str());
 }
 
@@ -647,7 +579,7 @@ testReadFromFileOff(OfxPlugin* p, const std::string& dir)
     check(ok(st), "instanceChanged(readFromFile) returns OK (status %d)", st);
     check(paramsAre(ctx, kGrade), "the params have the grade of the file, so the output doesn't change");
     checkRenderApplies(p, ctx, inst, kGrade, "render from the params");
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     std::remove(filename.c_str());
 }
 
@@ -681,7 +613,7 @@ testExportFromFile(OfxPlugin* p, const std::string& dir)
         }
         check(same, "the exported grade is the file's (not the params')");
     }
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     std::remove(filename.c_str());
     std::remove(exported.c_str());
 }
@@ -700,7 +632,7 @@ testCCC(OfxPlugin* p, const std::string& dir)
             st = instanceChanged(p, inst, "cccId");
             check(ok(st), "instanceChanged(cccId) returns OK (status %d)", st);
             check(paramsAre(ctx, kGrade2), "instanceChanged(cccId) loads the grade of \"second\" into the params");
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         } else {
             check(false, "createInstance (status %d)", st);
         }
@@ -713,7 +645,7 @@ testCCC(OfxPlugin* p, const std::string& dir)
             st = render(p, ctx, inst);
             check(!ok(st), "cccId \"third\" (not in the file): render fails (status %d)", st);
             check(!gPersistentError.empty(), "cccId \"third\": persistent error (\"%s\")", gPersistentError.c_str());
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         } else {
             check(false, "createInstance (status %d)", st);
         }
@@ -738,7 +670,7 @@ testFileAppears(OfxPlugin* p, const std::string& dir)
     check(!ok(st), "the file is missing: render fails (status %d)", st);
     writeCC(filename, kGrade2);
     checkRenderApplies(p, ctx, inst, kGrade2, "the file was created");
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     std::remove(filename.c_str());
 }
 
@@ -771,7 +703,7 @@ main(int, char**)
     setOverrideDoubles(&ctx, "saturation", { kSaturation });
     inst.delegate = &ctx;
     setInstanceProps(inst, 8, 8, 1, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         std::printf("FAIL: createInstance\n");
 
         return 1;
@@ -803,7 +735,7 @@ main(int, char**)
     testCCC(p, dir);
     testFileAppears(p, dir);
 
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     std::filesystem::remove_all(dirPath, ec);
 

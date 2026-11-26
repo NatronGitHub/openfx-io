@@ -528,60 +528,12 @@ ReadOIIOPlugin::~ReadOIIOPlugin()
 {
 }
 
-static string
-oiio_versions()
-{
-    std::ostringstream oss;
-    int ver = openimageio_version();
-    oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
-    oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100) << std::endl;
-    string libs = OIIO::get_string_attribute("library_list");
-    if (libs.size()) {
-        oss << std::endl
-            << "Dependent libraries:" << std::endl;
-        std::istringstream f(libs);
-        string s;
-        while (getline(f, s, ';')) {
-            size_t pos = s.find(':');
-            oss << s.substr(pos + 1) << std::endl;
-        }
-    }
-
-    return oss.str();
-}
-
 void
 ReadOIIOPlugin::changedParam(const InstanceChangedArgs& args,
                              const string& paramName)
 {
     if (paramName == kParamLibraryInfo) {
-        string extensions_list;
-        getattribute("extension_list", extensions_list);
-
-        string extensions_pretty;
-        {
-            stringstream formatss(extensions_list);
-            string format;
-            vector<string> extensions;
-            while (std::getline(formatss, format, ';')) {
-                stringstream extensionss(format);
-                string extension;
-                std::getline(extensionss, extension, ':'); // extract the format
-                extensions_pretty += extension;
-                extensions_pretty += ": ";
-                bool first = true;
-                while (std::getline(extensionss, extension, ',')) {
-                    if (!first) {
-                        extensions_pretty += ", ";
-                    }
-                    first = false;
-                    extensions_pretty += extension;
-                }
-                extensions_pretty += "; ";
-            }
-        }
-        string msg = oiio_versions() + "\nAll supported formats and extensions: " + extensions_pretty;
-        sendMessage(Message::eMessageMessage, "", msg);
+        sendMessage(Message::eMessageMessage, "", oiioLibraryInfo());
     } else if (paramName == kParamShowMetadata) {
         string filename;
         OfxStatus st = getFilenameAtTime(args.time, &filename);
@@ -1686,6 +1638,29 @@ sameLayout(const ImageSpec& a,
         && a.alpha_channel == b.alpha_channel && a.channelnames == b.channelnames && a.deep == b.deep;
 }
 
+// The data window of a subimage in OFX pixel coordinates (y up), without the black border of the edge pixels mode,
+// and the X offset of the data (dataOffset, also used to read it): with offsetNegativeDisplayWindow, or a positive
+// display window origin, the data and the display window are shifted so that the display window starts at x = 0.
+static OfxRectI
+specDataWindow(const ImageSpec& spec,
+               bool offsetNegativeDisplayWindow,
+               int* dataOffset)
+{
+    *dataOffset = 0;
+    if ((spec.full_x != 0) && (offsetNegativeDisplayWindow || (spec.full_x >= 0))) {
+        *dataOffset = -spec.full_x;
+    }
+    // Remember that exr boxes start at top left, and OpenFX at bottom left
+    // so we need to flip the bbox relative to the frame.
+    OfxRectI specBounds;
+    specBounds.x1 = spec.x + *dataOffset;
+    specBounds.y1 = spec.full_y + spec.full_height - (spec.y + spec.height);
+    specBounds.x2 = spec.x + spec.width + *dataOffset;
+    specBounds.y2 = spec.full_y + spec.full_height - spec.y;
+
+    return specBounds;
+}
+
 // The frame bounds and the format of an image whose subimages are specs (see ReadOIIOPlugin::getFrameBounds()): the
 // union of the data windows (with the black border of edgePixelsMode), and the intersection of the display windows.
 static void
@@ -1712,26 +1687,19 @@ getFrameBoundsOfSpecs(const vector<ImageSpec>& specs,
         // keep data where it is and set spec.full_height at y = 0
         specFormat.y2 = spec.full_height;
 
-        int dataOffset = 0;
         if (spec.full_x != 0) {
             if (!offsetNegativeDisplayWindow && (spec.full_x < 0)) {
                 // Leave data where it is and shrink the format by the negative
                 // amount on both sides so that it starts at (0,0)
                 specFormat.x2 = spec.full_width + spec.full_x - (-spec.full_x);
             } else {
-                // Shift both to get dispwindow over to 0,0.
-                dataOffset = -spec.full_x;
+                // Shift both to get dispwindow over to 0,0 (the data is shifted by specDataWindow()).
                 specFormat.x2 = spec.full_width;
             }
         }
 
-        // Remember that exr boxes start at top left, and OpenFX at bottom left
-        // so we need to flip the bbox relative to the frame.
-        OfxRectI specBounds;
-        specBounds.x1 = spec.x + dataOffset;
-        specBounds.y1 = spec.full_y + spec.full_height - (spec.y + spec.height);
-        specBounds.x2 = spec.x + spec.width + dataOffset;
-        specBounds.y2 = spec.full_y + spec.full_height - spec.y;
+        int dataOffset;
+        OfxRectI specBounds = specDataWindow(spec, offsetNegativeDisplayWindow, &dataOffset);
 
         switch (edgePixelsMode) {
         case eEdgePixelsAuto:
@@ -1783,14 +1751,8 @@ getFrameBoundsOfSpecs(const vector<ImageSpec>& specs,
             Coords::rectIntersection(specFormat, formatIntersection, &formatIntersection);
         }
     }
-    bounds->x1 = mergeBounds.x1;
-    bounds->x2 = mergeBounds.x2;
-    bounds->y1 = mergeBounds.y1;
-    bounds->y2 = mergeBounds.y2;
-    format->x1 = formatIntersection.x1;
-    format->x2 = formatIntersection.x2;
-    format->y1 = formatIntersection.y1;
-    format->y2 = formatIntersection.y2;
+    *bounds = mergeBounds;
+    *format = formatIntersection;
 }
 
 void
@@ -1999,22 +1961,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     // Non const because ImageSpec::valid_tile_range is not const...
     ImageSpec& spec = subimages[subImageIndex];
 
-    // Compute X offset as done in getFrameBounds
-    int dataOffset = 0;
-    if (spec.full_x != 0) {
-        if (offsetNegativeDisplayWindow || (spec.full_x >= 0)) {
-            dataOffset = -spec.full_x;
-        }
-    }
-
-    // Compute specBounds as done in getFrameBounds
-    // Remember that exr boxes start at top left, and OpenFX at bottom left
-    // so we need to flip the bbox relative to the frame.
-    OfxRectI specBounds;
-    specBounds.x1 = spec.x + dataOffset;
-    specBounds.y1 = spec.full_y + spec.full_height - (spec.y + spec.height);
-    specBounds.x2 = spec.x + spec.width + dataOffset;
-    specBounds.y2 = spec.full_y + spec.full_height - spec.y;
+    // The data window and the X offset, as in getFrameBounds()
+    int dataOffset;
+    const OfxRectI specBounds = specDataWindow(spec, offsetNegativeDisplayWindow, &dataOffset);
 
     // Where to write the data in the buffer, everything outside of that is black (including the extra padding we
     // added in getFrameBounds). The render window may be any part of bounds (e.g. a few columns or rows), and may not

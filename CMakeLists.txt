@@ -588,8 +588,8 @@ ofx_deploy_bundle(IO)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tests (ctest):
-# - io-load: loads the IO.ofx of the build tree with tests/verify_plugin_loads.cpp (RTLD_NOW, as in
-#   CI) and checks the number of plug-ins against the groups built;
+# - io-load: loads the IO.ofx of the build tree with io_verify_plugin_loads (tests/verify_plugin_loads.cpp, with
+#   RTLD_NOW; CI's load checks of the bundles use it too) and checks the number of plug-ins against the groups built;
 # - io-icons: each plug-in of the build tree's bundle has its icon, Contents/Resources/<identifier>.png
 #   (tests/check_icons.cmake);
 # - io-load-installed (macOS, OFX_DEPLOY_BUNDLES): the same on the installed, deployed bundle, without DYLD_*
@@ -659,18 +659,18 @@ if(BUILD_TESTING)
   if(APPLE)
     set_tests_properties(io-icons PROPERTIES ENVIRONMENT "DYLD_FALLBACK_LIBRARY_PATH=${_io_dirs}")
   endif()
+  # the installed bundle (io-load-installed, io-hostdemo...)
+  if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
+    set(_io_installed_bundle "${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
+  else()
+    set(_io_installed_bundle "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
+  endif()
   # io-load-installed: the installed bundle (macOS: deployed, OFX_DEPLOY_BUNDLES; Linux, FreeBSD: with its install
   # rpath, before any patchelf) loads without DYLD_*/LD_LIBRARY_PATH; skipped if it was not installed yet
   if((APPLE AND OFX_DEPLOY_BUNDLES) OR (UNIX AND NOT APPLE))
-    if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
-      set(_io_installed "${PLUGIN_INSTALLDIR}")
-    else()
-      set(_io_installed "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}")
-    endif()
-    set(_io_installed "${_io_installed}/IO.ofx.bundle/Contents/${ARCHDIR}/IO.ofx")
     add_test(NAME io-load-installed
              COMMAND sh -c "test -f \"$1\" || { echo \"not installed: $1\"; exit 77; }; exec \"$0\" \"$1\""
-                     "$<TARGET_FILE:io_verify_plugin_loads>" "${_io_installed}")
+                     "$<TARGET_FILE:io_verify_plugin_loads>" "${_io_installed_bundle}/Contents/${ARCHDIR}/IO.ofx")
     set_tests_properties(io-load-installed PROPERTIES PASS_REGULAR_EXPRESSION "Num_plugins: ${_io_nplugins}\n"
       FAIL_REGULAR_EXPRESSION "error|Failed" SKIP_RETURN_CODE 77
       ENVIRONMENT "DYLD_LIBRARY_PATH=;DYLD_FALLBACK_LIBRARY_PATH=;DYLD_FRAMEWORK_PATH=;LD_LIBRARY_PATH=")
@@ -700,11 +700,6 @@ if(BUILD_TESTING)
       endif()
       set(_io_hd_host "${OPENFX_PATH}/HostSupport/examples/python/hostdemo-inprocess")
       set(_io_hd_env "OFXHOST_PYTHON=${_io_python}" "PYTHONPATH=$<TARGET_FILE_DIR:ofxh>")
-      if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
-        set(_io_installed_bundle "${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
-      else()
-        set(_io_installed_bundle "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
-      endif()
       add_test(NAME io-hostdemo
                COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "${_io_hd_host}"
                        "${_io_installed_bundle}" "$<TARGET_FILE:io_verify_plugin_loads>"

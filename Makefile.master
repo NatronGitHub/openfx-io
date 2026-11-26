@@ -14,7 +14,7 @@ include $(PATHTOROOT)/Plugins/Makefile.master
 CXXFLAGS += -DOFX_EXTENSIONS_VEGAS -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE -DOFX_EXTENSIONS_NATRON -I$(TOP_SRCDIR)/IOSupport -I$(OFXSEXTPATH) -I$(OFXSEXTPATH)/glad
 VPATH += $(TOP_SRCDIR)/IOSupport $(TOP_SRCDIR)/IOSupport/SequenceParsing $(OFXSEXTPATH) $(OFXSEXTPATH)/glad
 
-# Comment the following two lines to disable OpenGL support in OpenColorIO plugins
+# Comment the following line to disable OpenGL support in OpenColorIO plugins
 OCIO_OPENGL_CXXFLAGS += -DOFX_SUPPORTS_OPENGLRENDER
 # Comment the following lines (OCIO_CXXFLAGS, OCIO_LINKFLAGS) to disable OpenColorIO support (this also skips the
 # OpenColorIO version check below)
@@ -33,7 +33,7 @@ endif
 endif
 
 # OpenEXR
-# OpenImageIO includes OpenEXR as #include <OpenEXR/ImathVec.h>, to we also add the
+# OpenImageIO includes OpenEXR as #include <OpenEXR/ImathVec.h>, so we also add the
 # include dir itself to avoid confusion with a system-installed OpenEXR.
 # OpenEXR 2 has IlmBase, OpenEXR 3 has Imath, so we ask for both, but it will always cause harmless errors.
 OPENEXR_CXXFLAGS = -I`pkg-config --variable=prefix OpenEXR`/include `pkg-config --cflags IlmBase 2>/dev/null` `pkg-config --cflags Imath 2>/dev/null` `pkg-config --cflags OpenEXR`
@@ -45,11 +45,11 @@ OPENEXR_LINKFLAGS =`pkg-config --libs IlmBase 2>/dev/null` `pkg-config --libs Im
 FFMPEG_PKG_CONFIG_PATH ?=
 FFMPEG_PKG_CONFIG = $(if $(FFMPEG_PKG_CONFIG_PATH),PKG_CONFIG_PATH="$(FFMPEG_PKG_CONFIG_PATH):$$PKG_CONFIG_PATH" ,)pkg-config
 FFMPEG_CXXFLAGS = `$(FFMPEG_PKG_CONFIG) --cflags libavformat libavcodec libswscale libavutil`
-FFMPEG_LIBDIR := $(shell $(if $(FFMPEG_PKG_CONFIG_PATH),PKG_CONFIG_PATH="$(FFMPEG_PKG_CONFIG_PATH):$$PKG_CONFIG_PATH" ,)pkg-config --variable=libdir libavcodec 2>/dev/null)
+FFMPEG_LIBDIR := $(shell $(FFMPEG_PKG_CONFIG) --variable=libdir libavcodec 2>/dev/null)
 ifneq ($(FFMPEG_PKG_CONFIG_PATH),)
 # Link these libraries by full path: with -L/-l, another -L earlier on the link line (e.g. -L/opt/local/lib from
 # OpenColorIO) would make the linker pick a different FFmpeg.
-FFMPEG_LINKFLAGS = $(foreach l,avformat avcodec swscale avutil,$(FFMPEG_LIBDIR)/lib$(l)$(if $(filter Darwin,$(shell uname -s)),.dylib,.so))
+FFMPEG_LINKFLAGS = $(foreach l,avformat avcodec swscale avutil,$(FFMPEG_LIBDIR)/lib$(l)$(if $(filter Darwin,$(OS)),.dylib,.so))
 else
 FFMPEG_LINKFLAGS = `$(FFMPEG_PKG_CONFIG) --libs libavformat libavcodec libswscale libavutil`
 endif
@@ -64,7 +64,7 @@ $(error The FFmpeg plugins require FFmpeg 8.0.1 or later ($(FFMPEG_MIN_MODULES))
 endif
 endif
 # (only on macOS, for the plugins that link FFmpeg, and not for "make clean")
-FFMPEG_CHECK_BUNDLE := $(and $(filter Darwin,$(shell uname -s)),$(filter IO FFmpeg,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes))
+FFMPEG_CHECK_BUNDLE := $(and $(filter Darwin,$(OS)),$(filter IO FFmpeg,$(PLUGINNAME)),$(if $(filter clean%,$(MAKECMDGOALS)),,yes))
 ifneq ($(FFMPEG_CHECK_BUNDLE),)
 # Guard: if OpenImageIO and the plugins link two different FFmpeg builds with the same soname (e.g. MacPorts' ffmpeg8
 # in /opt/local/libexec/ffmpeg8 and Natron's ffmpeg in /opt/local/lib, both libavcodec.62.dylib), the deployment

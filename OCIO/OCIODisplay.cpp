@@ -575,12 +575,13 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
     double gain = _gain->getValueAtTime(time);
     double gamma = _gamma->getValueAtTime(time);
 
-    try {
-        AutoSetAndRestoreThreadLocale locale;
-        OCIO::ConstConfigRcPtr config = _ocio->getConfig();
-        if (!config) {
-            throw std::runtime_error("OCIO: no current config");
-        }
+    AutoSetAndRestoreThreadLocale locale;
+    const OCIO::ConstConfigRcPtr config = _ocio->getConfig();
+    if (!config) {
+        persistentErrorAndThrow(*this, "No OCIO config");
+    }
+
+    return processorOrFail([&] {
         const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(config, time);
         const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, channel, display, view, gain, gamma };
 
@@ -669,12 +670,7 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
 
             return transform->getProcessor(config, context);
         });
-    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
-        setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-    }
-
-    return OCIO::ConstProcessorRcPtr();
+    });
 } // OCIODisplayPlugin::getProcessor
 
 void

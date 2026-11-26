@@ -537,16 +537,6 @@ hasListChanged(const std::list<string>& oldList,
 }
 }
 
-// "major.minor.patch" of an OpenImageIO version number (openimageio_version(): 10000 * major + 100 * minor + patch)
-static string
-oiioVersionString(int ver)
-{
-    std::ostringstream oss;
-    oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100);
-
-    return oss.str();
-}
-
 // The version of the OpenEXR library of OpenImageIO, e.g. "3.5.4" from "openexr:OpenEXR 3.5.4" in its "library_list"
 // attribute (OIIO v3.2.1.0 exroutput.cpp:295-298, openexr_imageio_library_version()); empty if it is not there.
 static string
@@ -589,59 +579,12 @@ oiioWritesEXRZstd()
     return writesZstd;
 }
 
-static string
-oiio_versions()
-{
-    std::ostringstream oss;
-    oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
-    oss << oiioVersionString(openimageio_version()) << std::endl;
-    string libs = OIIO::get_string_attribute("library_list");
-    if (libs.size()) {
-        oss << std::endl
-            << "Dependent libraries:" << std::endl;
-        std::istringstream f(libs);
-        string s;
-        while (getline(f, s, ';')) {
-            size_t pos = s.find(':');
-            oss << s.substr(pos + 1) << std::endl;
-        }
-    }
-
-    return oss.str();
-}
-
 void
 WriteOIIOPlugin::changedParam(const InstanceChangedArgs& args,
                               const string& paramName)
 {
     if (paramName == kParamLibraryInfo) {
-        string extensions_list;
-        getattribute("extension_list", extensions_list);
-
-        string extensions_pretty;
-        {
-            stringstream formatss(extensions_list);
-            string format;
-            vector<string> extensions;
-            while (std::getline(formatss, format, ';')) {
-                stringstream extensionss(format);
-                string extension;
-                std::getline(extensionss, extension, ':'); // extract the format
-                extensions_pretty += extension;
-                extensions_pretty += ": ";
-                bool first = true;
-                while (std::getline(extensionss, extension, ',')) {
-                    if (!first) {
-                        extensions_pretty += ", ";
-                    }
-                    first = false;
-                    extensions_pretty += extension;
-                }
-                extensions_pretty += "; ";
-            }
-        }
-        string msg = oiio_versions() + "\nAll supported formats and extensions: " + extensions_pretty;
-        sendMessage(Message::eMessageMessage, "", msg);
+        sendMessage(Message::eMessageMessage, "", oiioLibraryInfo());
     } else if ((paramName == kParamOutputCompression) && (args.reason == eChangeUserEdit)) {
         string filename;
         _fileParam->getValue(filename);
@@ -1143,29 +1086,20 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     if (!data->output.get()) {
         // output is NULL: retrieve OpenImageIO's error (#228)
         const string reason = OIIO::geterror();
-        setPersistentMessage(Message::eMessageError, "", string("Cannot create output file ") + filename + (reason.empty() ? string() : ": " + reason));
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, string("Cannot create output file ") + filename + (reason.empty() ? string() : ": " + reason));
     }
 
     if (!data->output->supports("multiimage") && (partsSplitting != eLayerViewsSinglePart)) {
         stringstream ss;
         ss << data->output->format_name() << " does not support writing multiple views/layers into a single file.";
-        setPersistentMessage(Message::eMessageError, "", ss.str());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, ss.str());
     }
 
     bool isEXR = strcmp(data->output->format_name(), "openexr") == 0;
     if (!isEXR && (viewsToRender.size() > 1)) {
         stringstream ss;
         ss << data->output->format_name() << " format cannot render multiple views in a single file, use %v or %V in filename to render separate files per view";
-        setPersistentMessage(Message::eMessageError, "", ss.str());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, ss.str());
     }
 
     OIIO::TypeDesc oiioBitDepth;
@@ -1328,10 +1262,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         // OpenImageIO < 2.6.2 reads out of bounds when writing decreasingY EXR files
         // (fixed by https://github.com/AcademySoftwareFoundation/OpenImageIO/pull/4215)
         if (isEXR) {
-            setPersistentMessage(Message::eMessageError, "", "Line Order decreasingY requires OpenImageIO 2.6.2 or later.");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, "Line Order decreasingY requires OpenImageIO 2.6.2 or later.");
         }
 #endif
         lineOrder = "decreasingY";
@@ -1693,8 +1624,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         string err;
         bool ok = Filesystem::remove(filename, err);
         if (!ok) {
-            setPersistentMessage(Message::eMessageError, "", err);
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, err);
         }
     }
     int textureformat_i = eParamTextureformatNone;
@@ -1705,10 +1635,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
         // Textures are written by ImageBufAlgo::make_texture() in encodePart(), which
         // creates the tiled, MIP-mapped file itself.
         if (data->specs.size() != 1) {
-            setPersistentMessage(Message::eMessageError, "", "Texture output only supports writing a single layer and view.");
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, "Texture output only supports writing a single layer and view.");
         }
         data->makeTexture = true;
         switch ((EParamTextureformat)textureformat_i) {
@@ -1717,10 +1644,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
             break;
         case eParamTextureformatShadow:
             if (data->specs[0].nchannels != 1) {
-                setPersistentMessage(Message::eMessageError, "", "Shadow maps require a single-channel image (e.g. depth or alpha).");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "Shadow maps require a single-channel image (e.g. depth or alpha).");
             }
             data->textureMode = ImageBufAlgo::MakeTxShadow;
             break;
@@ -1760,9 +1684,7 @@ void
 WriteOIIOPlugin::reportWriteError(const string& filename,
                                   const string& error)
 {
-    setPersistentMessage(Message::eMessageError, "", "Cannot write " + filename + (error.empty() ? string() : ": " + error));
-    // not throwSuiteStatusException(), which is not [[noreturn]]
-    throw OFX::Exception::Suite(kOfxStatFailed);
+    persistentErrorAndThrow(*this, "Cannot write " + filename + (error.empty() ? string() : ": " + error));
 }
 
 void
@@ -1793,10 +1715,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
                             (const char*)pixelData + (ptrdiff_t)(outSpec.height - 1) * (ptrdiff_t)rowBytes, // invert y
                             sizeof(float) * pixelDataNComps, // xstride
                             -rowBytes)) { // ystride
-            setPersistentMessage(Message::eMessageError, "", src.geterror());
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, src.geterror());
         }
         // The output spec carries the data format, tile size, compression and metadata.
         ImageSpec config = outSpec;
@@ -1813,8 +1732,7 @@ WriteOIIOPlugin::encodePart(void* user_data,
             if (msg.empty()) {
                 msg = err.str();
             }
-            setPersistentMessage(Message::eMessageError, "", msg.empty() ? string("Could not write the texture file.") : msg);
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, msg.empty() ? string("Could not write the texture file.") : msg);
         }
 
         return;

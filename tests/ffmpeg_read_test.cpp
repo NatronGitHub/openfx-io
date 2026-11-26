@@ -100,7 +100,7 @@
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--max-random-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]
+ * Usage: ffmpeg_read_test <file> [options] (kUsage, below)
  * Exit status: 0 = all checks passed, 77 = skipped (--skip-without-decoder), other = failure.
  */
 
@@ -171,6 +171,18 @@ meanFirstComponent(const unsigned char* buf, int w, int h, int nComps, int sizeO
 
 // Exit status of a skipped check (--skip-without-decoder), as in automake and ctest's SKIP_RETURN_CODE.
 constexpr int kExitSkipped = 77;
+
+// The arguments (the checks are described at the top of this file)
+constexpr const char* kUsage = "--image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--max-random-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]";
+
+// Whether v contains x
+template <typename T>
+bool
+contains(const std::vector<T>& v,
+         const T& x)
+{
+    return std::find(v.begin(), v.end(), x) != v.end();
+}
 
 // --skip-without-decoder, after FFmpegFile failed to open the file: whether the linked libavcodec has a decoder for
 // none of its video streams (avcodec_find_decoder() fails, or the decoder could not tell the pixel format, e.g. a
@@ -262,7 +274,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--max-random-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s %s\n", argv[0], kUsage);
         return 2;
     }
     if (std::string(argv[1]) == "--image-files") {
@@ -528,6 +540,20 @@ main(int argc, char** argv)
         std::fprintf(stderr, "FAIL: implausible stream info\n");
         return 1;
     }
+    // the size of a decoded frame
+    const size_t frameBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
+    // Decodes the 1-based frame f of movie into buf: false if it failed or threw, and then *error (if not null) is
+    // the error message of the frame, or the exception
+    auto tryDecode = [loadNearest](FFmpegFile& movie, int f, std::vector<unsigned char>& buf, std::string* error = nullptr) -> bool {
+        try {
+            return movie.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data(), error);
+        } catch (const std::exception& e) {
+            if (error) {
+                *error = e.what();
+            }
+            return false;
+        }
+    };
 
     if (expectedFrames >= 0 && frames != expectedFrames) {
         std::fprintf(stderr, "FAIL: getInfo reports %d frames, expected %d\n", frames, expectedFrames);
@@ -552,14 +578,9 @@ main(int argc, char** argv)
         }
     }
     if (seekBytesFrame >= 1) {
-        std::vector<unsigned char> seekBuf(static_cast<size_t>(w) * h * nComps * sizeOfData);
+        std::vector<unsigned char> seekBuf(frameBytes);
         const long long bytes0 = file.getBytesRead();
-        bool ok = false;
-        try {
-            ok = file.decode(nullptr, /*streamIndex=*/0, seekBytesFrame, loadNearest, seekBuf.data());
-        } catch (const std::exception& e) {
-            ok = false;
-        }
+        const bool ok = tryDecode(file, seekBytesFrame, seekBuf);
         const long long bytes = file.getBytesRead() - bytes0;
         std::printf("  decoding frame %d after the open read %lld bytes\n", seekBytesFrame, bytes);
         if (!ok || (bytes > maxSeekBytes)) {
@@ -573,16 +594,10 @@ main(int argc, char** argv)
     }
     if ((expectedRgb[0] >= 0.) || (expectedAlpha >= 0.)) {
         // --rgb and --alpha: the first frame, then the last one (after a seek)
-        std::vector<unsigned char> rgbBuf(static_cast<size_t>(w) * h * nComps * sizeOfData);
+        std::vector<unsigned char> rgbBuf(frameBytes);
         for (int f : { 1, frames }) {
-            bool ok = false;
             std::string error;
-            try {
-                ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, rgbBuf.data(), &error);
-            } catch (const std::exception& e) {
-                error = e.what();
-            }
-            if (!ok) {
+            if (!tryDecode(file, f, rgbBuf, &error)) {
                 std::fprintf(stderr, "FAIL: --rgb/--alpha: frame %d failed to decode: %s\n", f, error.c_str());
                 return 1;
             }
@@ -616,15 +631,9 @@ main(int argc, char** argv)
     }
     if (fineRampMaxStep > 0.) {
         const size_t samples = static_cast<size_t>(w) * h * nComps;
-        std::vector<unsigned char> rampBuf(samples * sizeOfData);
-        bool ok = false;
+        std::vector<unsigned char> rampBuf(frameBytes);
         std::string error;
-        try {
-            ok = file.decode(nullptr, /*streamIndex=*/0, 1, loadNearest, rampBuf.data(), &error);
-        } catch (const std::exception& e) {
-            error = e.what();
-        }
-        if (!ok) {
+        if (!tryDecode(file, 1, rampBuf, &error)) {
             if (skipWithoutDecoder && isNotImplementedError(error)) {
                 std::printf("SKIPPED: no decoder in the linked libavcodec: %s\n", error.c_str());
                 return kExitSkipped;
@@ -684,7 +693,7 @@ main(int argc, char** argv)
     // --order-seek and --order-no-seek frames must be --order frames.
     for (const std::vector<int>* list : { &orderSeek, &orderNoSeek }) {
         for (int f : *list) {
-            if (std::find(renderOrder.begin(), renderOrder.end(), f) == renderOrder.end()) {
+            if (!contains(renderOrder, f)) {
                 std::fprintf(stderr, "--order-seek/--order-no-seek: frame %d is not an --order frame\n", f);
                 return 2;
             }
@@ -709,13 +718,12 @@ main(int argc, char** argv)
                 std::fprintf(stderr, "--fail: frame %d is not in 1..%d\n", f, frames);
                 return 2;
             }
-            if (std::find(referenceFrames.begin(), referenceFrames.end(), f) != referenceFrames.end()) {
+            if (contains(referenceFrames, f)) {
                 std::fprintf(stderr, "--fail: frame %d is also in --reference-frames\n", f);
                 return 2;
             }
         }
-        const size_t refBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
-        std::vector<unsigned char> refBuf(refBytes);
+        std::vector<unsigned char> refBuf(frameBytes);
         std::vector<std::vector<unsigned char>> ref(frames + 1);
         {
             FFmpegFile clean(referenceFile.c_str());
@@ -746,14 +754,9 @@ main(int argc, char** argv)
                 if ((o.first == "reopen") && (f > 1)) {
                     file.reset(new FFmpegFile(filename));
                 }
-                bool ok = false;
-                std::memset(refBuf.data(), 0, refBytes);
-                try {
-                    ok = file->decode(nullptr, /*streamIndex=*/0, f, loadNearest, refBuf.data());
-                } catch (const std::exception& e) {
-                    ok = false;
-                }
-                if (std::find(mustFail.begin(), mustFail.end(), f) != mustFail.end()) {
+                std::memset(refBuf.data(), 0, frameBytes);
+                const bool ok = tryDecode(*file, f, refBuf);
+                if (contains(mustFail, f)) {
                     if (ok && (++refErrors <= 20)) {
                         std::printf("  REFERENCE %s order: frame %d decoded, but must fail\n", o.first.c_str(), f);
                     }
@@ -782,7 +785,7 @@ main(int argc, char** argv)
     const bool rampAtPosition = !gaps.empty();
     if (rampAtPosition) {
         for (int f = 1; f <= frames; ++f) {
-            if (std::find(gaps.begin(), gaps.end(), f) == gaps.end()) {
+            if (!contains(gaps, f)) {
                 positions.push_back(f - 1);
             }
         }
@@ -791,7 +794,7 @@ main(int argc, char** argv)
             return 2;
         }
     }
-    auto isConcealed = [&concealed](int f) -> bool { return std::find(concealed.begin(), concealed.end(), f) != concealed.end(); };
+    auto isConcealed = [&concealed](int f) -> bool { return contains(concealed, f); };
 
     // the content check: the ramp frame displayed at frame f (1-based), and the ramp frame (1-based)
     // whose content is closest to the signature s
@@ -813,20 +816,13 @@ main(int argc, char** argv)
     const double rampTol = 0.4 * rampStep;
     int contentErrors = 0;
 
-    const size_t bufBytes = static_cast<size_t>(w) * h * nComps * sizeOfData;
-    std::vector<unsigned char> buf(bufBytes);
+    std::vector<unsigned char> buf(frameBytes);
 
     // A frame that must fail to decode (--fail): returns true if it did fail, with an error message.
-    auto isMustFail = [&mustFail](int f) -> bool { return std::find(mustFail.begin(), mustFail.end(), f) != mustFail.end(); };
+    auto isMustFail = [&mustFail](int f) -> bool { return contains(mustFail, f); };
     int failErrors = 0;
     auto checkFails = [&](int f, const char* phase) {
-        bool ok = false;
-        try {
-            ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
-        } catch (const std::exception& e) {
-            ok = false;
-        }
-        if (ok) {
+        if (tryDecode(file, f, buf)) {
             std::printf("  FAIL-CHECK %s frame %d decoded, but must fail\n", phase, f);
             ++failErrors;
             return;
@@ -849,20 +845,14 @@ main(int argc, char** argv)
     // 1) Sequential decode -> ground-truth signatures (1-based frame indices).
     std::vector<double> seqSig(static_cast<size_t>(frames) + 1, -1.0);
     for (int f = 1; f <= frames; ++f) {
-        std::memset(buf.data(), 0, bufBytes);
+        std::memset(buf.data(), 0, frameBytes);
         if (isMustFail(f)) {
             checkFails(f, "sequential");
             continue;
         }
-        bool ok = false;
-        try {
-            ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "FAIL: sequential decode frame %d threw: %s\n", f, e.what());
-            return 1;
-        }
-        if (!ok) {
-            std::fprintf(stderr, "FAIL: sequential decode frame %d returned false (%s)\n", f, file.getError().c_str());
+        std::string error;
+        if (!tryDecode(file, f, buf, &error)) {
+            std::fprintf(stderr, "FAIL: sequential decode frame %d failed (%s)\n", f, error.c_str());
             return 1;
         }
         seqSig[f] = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
@@ -943,21 +933,14 @@ main(int argc, char** argv)
     int mismatches = 0;
     const auto seekStart = std::chrono::steady_clock::now();
     for (int f : order) {
-        std::memset(buf.data(), 0, bufBytes);
+        std::memset(buf.data(), 0, frameBytes);
         if (isMustFail(f)) {
             checkFails(f, "out-of-order");
             continue;
         }
-        bool ok = false;
-        try {
-            ok = file.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
-        } catch (const std::exception& e) {
-            std::printf("  OUT-OF-ORDER decode frame %d threw: %s\n", f, e.what());
-            ++mismatches;
-            continue;
-        }
-        if (!ok) {
-            std::printf("  OUT-OF-ORDER decode frame %d returned false (%s)\n", f, file.getError().c_str());
+        std::string error;
+        if (!tryDecode(file, f, buf, &error)) {
+            std::printf("  OUT-OF-ORDER decode frame %d failed (%s)\n", f, error.c_str());
             ++mismatches;
             continue;
         }
@@ -969,7 +952,7 @@ main(int argc, char** argv)
         }
         const double s = meanFirstComponent(buf.data(), w, h, nComps, sizeOfData);
         const double diff = std::fabs(s - seqSig[f]);
-        const bool seekCheck = (std::find(noSeekCheck.begin(), noSeekCheck.end(), f) == noSeekCheck.end()) && !isConcealed(f);
+        const bool seekCheck = !contains(noSeekCheck, f) && !isConcealed(f);
         if (seekCheck && (diff > tol)) {
             std::printf("  MISMATCH frame %d: sequential=%.3f out-of-order=%.3f diff=%.3f (tol=%.3f)\n",
                         f, seqSig[f], s, diff, tol);
@@ -988,19 +971,14 @@ main(int argc, char** argv)
     if (!renderOrder.empty()) {
         FFmpegFile orderFile(filename);
         for (int f : renderOrder) {
-            std::memset(buf.data(), 0, bufBytes);
-            bool ok = false;
+            std::memset(buf.data(), 0, frameBytes);
             const unsigned long seeks0 = orderFile.getSeekCount();
             const unsigned long startSeeks0 = orderFile.getStartSeekCount();
-            try {
-                ok = orderFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
-            } catch (const std::exception& e) {
-                ok = false;
-            }
+            const bool ok = tryDecode(orderFile, f, buf);
             const unsigned long seeks = orderFile.getSeekCount() - seeks0;
             const unsigned long startSeeks = orderFile.getStartSeekCount() - startSeeks0;
-            const bool mustSeek = std::find(orderSeek.begin(), orderSeek.end(), f) != orderSeek.end();
-            const bool mustNotSeek = std::find(orderNoSeek.begin(), orderNoSeek.end(), f) != orderNoSeek.end();
+            const bool mustSeek = contains(orderSeek, f);
+            const bool mustNotSeek = contains(orderNoSeek, f);
             if (verbose || mustSeek || mustNotSeek) {
                 std::printf("  --order frame %d: %lu seeks (%lu to the start of the file)\n", f, seeks, startSeeks);
             }
@@ -1044,10 +1022,7 @@ main(int argc, char** argv)
         FFmpegFile orderFile(filename);
         const long long bytes0 = orderFile.getBytesRead();
         for (int f : order) {
-            try {
-                (void)orderFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
-            } catch (const std::exception& e) {
-            }
+            (void)tryDecode(orderFile, f, buf);
         }
         const long long bytes = orderFile.getBytesRead() - bytes0;
         std::printf("  %s decode: read %lld bytes\n", label, bytes);
@@ -1066,13 +1041,8 @@ main(int argc, char** argv)
     // Each --fresh frame, decoded first in a newly opened file.
     for (int f : fresh) {
         FFmpegFile freshFile(filename);
-        std::memset(buf.data(), 0, bufBytes);
-        bool ok = false;
-        try {
-            ok = freshFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
-        } catch (const std::exception& e) {
-            ok = false;
-        }
+        std::memset(buf.data(), 0, frameBytes);
+        const bool ok = tryDecode(freshFile, f, buf);
         if (isMustFail(f)) {
             if (ok || freshFile.isInvalid() || freshFile.getError().empty()) {
                 std::printf("  FAIL-CHECK fresh frame %d: %s\n", f, ok ? "decoded, but must fail" : "failed without an error message, or made the file invalid");

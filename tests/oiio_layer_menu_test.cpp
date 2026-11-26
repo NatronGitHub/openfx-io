@@ -46,28 +46,6 @@
 
 namespace {
 
-int gFailures = 0;
-
-void
-check(bool cond, const char* fmt, ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-inline OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 const int kW = 32;
 const int kH = 32;
 
@@ -119,21 +97,6 @@ writeFile(const std::string& path, const std::vector<std::string>& layers)
     return true;
 }
 
-OfxStatus
-instanceChanged(Effect& inst, OfxPlugin* p, const char* param, const char* reason)
-{
-    PropSet a;
-    OfxPropertySetHandle ap = PH(&a);
-    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-    pSetString(ap, kOfxPropName, 0, param);
-    pSetString(ap, kOfxPropChangeReason, 0, reason);
-    pSetDouble(ap, kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. };
-    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-    return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
-}
-
 // the number of options of the output-layer menu
 int
 nLayerOptions(Effect& ctx)
@@ -159,8 +122,7 @@ main(int argc,
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // (the output before a crash)
     initHost();
     // a Natron-like host: ReadOIIO has the output-layer menu if the host supports dynamic choices and the plane suite
-    pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
-    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+    setMultiPlanarHost();
 
     const std::string files[2] = { dir + "/layers2.exr", dir + "/layers3.exr" };
     const int nLayers[2] = { 2, 3 }; // Color and the other layers
@@ -188,15 +150,15 @@ main(int argc,
         setOverrideString(&ctx, kOfxImageEffectFileParamName, files[0]);
         inst.delegate = &ctx;
         setInstanceProps(inst, kW, kH, 1, kOfxImageEffectContextReader);
-        bool created = ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr));
+        bool created = ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr));
         Clip* out = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
-        bool ready = created && out && ok(instanceChanged(inst, p, kOfxImageEffectFileParamName, kOfxChangeUserEdited));
+        bool ready = created && out && ok(instanceChanged(p, inst, kOfxImageEffectFileParamName));
         if (ready) {
             setOverrideInt(&ctx, "outputComponents", 0); // RGBA
             out->connected = true;
             setupClipImage(out, kW, kH, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
             PropSet o;
-            ready = ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&o)));
+            ready = ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&o)));
         }
         check(ready, "create the instance, read %s", files[0].c_str());
         if (ready) {
@@ -226,7 +188,7 @@ main(int argc,
                 pSetInt(iap, kFnOfxImageEffectPropView, 0, 0);
                 pSetString(iap, kOfxImageEffectPropIdentityPlane, 0, kFnOfxImagePlaneColour);
 
-                return p->mainEntry(kOfxImageEffectActionIsIdentity, H(inst), iap, PH(&io));
+                return p->mainEntry(kOfxImageEffectActionIsIdentity, EH(inst), iap, PH(&io));
             };
             // the main thread: the user switches files while the renders run (instanceChanged rebuilds the menu)
             ParamRec& fileParam = ctx.params.at(kOfxImageEffectFileParamName);
@@ -238,7 +200,7 @@ main(int argc,
                         HostWrite lock;
                         fileParam.ov.s = { files[next] };
                     }
-                    if (!ok(instanceChanged(inst, p, kOfxImageEffectFileParamName, kOfxChangeUserEdited)) || (nLayerOptions(ctx) != nLayers[next])) {
+                    if (!ok(instanceChanged(p, inst, kOfxImageEffectFileParamName)) || (nLayerOptions(ctx) != nLayers[next])) {
                         ++wrongMenus;
                     }
                     ++rebuilds;
@@ -259,7 +221,7 @@ main(int argc,
                         PropSet ra = makeRenderInArgs(1., kW, kH);
                         int win[4] = { 0, y1, kW, y2 };
                         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
-                        if (!ok(p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr))) {
+                        if (!ok(p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr))) {
                             ++failedRenders;
                         }
                         ++renders;
@@ -324,7 +286,7 @@ main(int argc,
                   (int)identities, rebuilds - before, (int)wrongIdentities, wrongMenus);
         }
         if (created) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         }
         p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
     }

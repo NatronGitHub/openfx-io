@@ -74,6 +74,32 @@ namespace FFmpeg {
         return depth;
     } // pixelFormatBitDepth
 
+    // The bit depth of the samples of a decoded pixel format (issue #213): the largest depth of its components
+    // (AVComponentDescriptor::depth, libavutil/pixdesc.h:55-57 at n9.0.2). Not AVCodecContext::bits_per_raw_sample, which
+    // the vp9, hevc, av1 and libdav1d decoders leave at 0 (h264 sets it, libavcodec/h264_slice.c:1009), nor
+    // av_get_bits_per_pixel() / nb_components, the mean bits per pixel, which chroma subsampling lowers
+    // (libavutil/pixdesc.c:3408-3419): yuv420p10 gave 15 / 3 = 5, and was decoded to 8 bits.
+    // A Bayer format has one sample per pixel, whose depth is split among the components (BAYER16_DESC_COMMON gives them
+    // 4, 8 and 4 bits, libavutil/pixdesc.c:2159-2167): its bit depth is the bits per pixel (16 for bayer_rggb16, which
+    // the ffv1 and cfhd decoders output, libavcodec/ffv1_parse.c:443 and cfhd.c:567). 0 for an unknown pixel format.
+    int
+    pixelFormatMaxComponentDepth(const AVPixelFormat pixelFormat)
+    {
+        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixelFormat);
+        if (!desc) {
+            return 0;
+        }
+        if (desc->flags & AV_PIX_FMT_FLAG_BAYER) {
+            return av_get_bits_per_pixel(desc);
+        }
+        int depth = 0;
+        for (int c = 0; c < desc->nb_components; ++c) {
+            depth = (std::max)(depth, desc->comp[c].depth);
+        }
+
+        return depth;
+    } // pixelFormatMaxComponentDepth
+
     // The coding of a pixel format, from its descriptor (FFmpeg n9.0 libavutil/pixdesc.h:69-110 and :116-163, the same
     // in n8.0), so that every pixel format that FFmpeg knows is classified, without a list of names (#403):
     // the palette, Bayer, XYZ and RGB flags, then gray (one color component, maybe with alpha), then the chroma

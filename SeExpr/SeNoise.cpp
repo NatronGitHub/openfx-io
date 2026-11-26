@@ -105,6 +105,7 @@ Vec3d pvoronoiFn(VoronoiPointData& data, int n, const Vec3d* args);
 #endif
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
+#include "IOUtility.h" // validRenderScale()
 #include "ofxsCoords.h"
 #include "ofxsMaskMix.h"
 #include "ofxsMatrix2D.h"
@@ -906,8 +907,9 @@ SeNoisePlugin::setupAndProcess(SeNoiseProcessorBase& processor,
 
     double par = _dstClip->getPixelAspectRatio();
     // a render scale of 0 or less, NaN or infinite is invalid (it is divided by)
-    const double rsx = (!OFX::IsNaN(args.renderScale.x) && !OFX::IsInfinite(args.renderScale.x) && (args.renderScale.x > 0.)) ? args.renderScale.x : 1.;
-    const double rsy = (!OFX::IsNaN(args.renderScale.y) && !OFX::IsInfinite(args.renderScale.y) && (args.renderScale.y > 0.)) ? args.renderScale.y : 1.;
+    const OfxPointD rs = OFX::IO::validRenderScale(args.renderScale);
+    const double rsx = rs.x;
+    const double rsy = rs.y;
     Matrix3x3 toCanonicalMat(par / rsx, 0., 0.5 * par / rsx,
                              0., 1. / rsy, 0.5 / rsy,
                              0., 0., 1);

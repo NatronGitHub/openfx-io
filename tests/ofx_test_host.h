@@ -1,6 +1,6 @@
 /*
- * ofx_test_host.h — a minimal in-process OFX host for the direct-link plugin tests
- * (ofx_render_test.cpp, reader_hooks_test.cpp).
+ * ofx_test_host.h — a minimal in-process OFX host for the test programs that link the plug-in sources
+ * directly (ofx_render_test.cpp, reader_hooks_test.cpp, ofx14_host_test.cpp, ...).
  *
  * Implements the Property, ImageEffect, Parameter, Memory, MultiThread, Message and
  * Interact suites, plus FnOfxImageEffectPlaneSuiteV2, over a generic property bag:
@@ -11,11 +11,13 @@
  * OFX 1.4-only mode (gOfx14Only = true, before initHost()): the host is one that supports
  * OFX 1.4 and nothing newer, and no extension. fetchSuite returns NULL for every suite but
  * the mandatory ones of OFX 1.4 (Property, ImageEffect, Parameter, Memory, MultiThread V1,
- * Message V1 and V2, Interact V1), and every property suite function fails with
+ * Message V1 and V2, Interact V1; Message V2 only from OFX 1.2, see OFX14_LEVEL), and every property suite function
+ * fails with
  * kOfxStatErrUnknown on a property that is not defined in the OFX 1.4 headers
  * (ofx14_names.h), on any property set (host, effect, clip, param, image, action
  * arguments): reading it fails, and setting it stores nothing. The host has no Natron,
- * Nuke, Vegas or other extension property, and no OpenGL render suite.
+ * Nuke, Vegas or other extension property, and no OpenGL render suite (unless OFX14_GL is set: it is optional in
+ * OFX 1.4).
  * Param values are not animated: getValueAtTime() ignores the time, except for a string
  * param whose stringAtTime is set (e.g. a file param naming each frame of an image sequence), and a one-dimensional
  * double, integer, boolean or choice param whose numberAtTime is set.
@@ -38,6 +40,7 @@
 #include "nuke/fnOfxExtensions.h" // kOfxImageEffectPropRenderPlanes, kFnOfxImagePlaneColour, kFnOfxImageEffectPropView
 #include "ofxNatron.h" // kNatronOfxParamProcessR/G/B/A
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstdarg>
@@ -45,13 +48,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <shared_mutex>
+#include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 #include "ofx14_names.h"
@@ -252,6 +258,7 @@ using HostWrite = HostDataLock<true>;
 inline PropSet* PS(OfxPropertySetHandle h) { return reinterpret_cast<PropSet*>(h); }
 inline Effect* EF(OfxImageEffectHandle h) { return reinterpret_cast<Effect*>(h); }
 inline OfxPropertySetHandle PH(PropSet* ps) { return reinterpret_cast<OfxPropertySetHandle>(ps); }
+inline OfxImageEffectHandle EH(Effect& e) { return reinterpret_cast<OfxImageEffectHandle>(&e); }
 
 // ------------------------------------------------------------------ property suite
 OfxStatus pSetPointer(OfxPropertySetHandle h, const char* n, int idx, void* v)
@@ -336,7 +343,12 @@ struct ThreadImageGuard {
 OfxStatus ieClipGetImage(OfxImageClipHandle c, OfxTime, const OfxRectD*, OfxPropertySetHandle* out) { if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(tThreadImage ? tThreadImage : &reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
 OfxStatus ieClipReleaseImage(OfxPropertySetHandle) { return kOfxStatOK; }
 OfxStatus ieClipGetRoD(OfxImageClipHandle c, OfxTime, OfxRectD* rod)
-{ Clip* clip = reinterpret_cast<Clip*>(c); double v; if (pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &v) == kOfxStatOK) { pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 0, &rod->x1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 1, &rod->y1); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 2, &rod->x2); pGetDouble(PH(&clip->props), kOfxImageEffectPropRegionOfDefinition, 3, &rod->y2); return kOfxStatOK; } return kOfxStatFailed; }
+{
+    double r[4];
+    if (pGetDoubleN(PH(&reinterpret_cast<Clip*>(c)->props), kOfxImageEffectPropRegionOfDefinition, 4, r) != kOfxStatOK) return kOfxStatFailed;
+    *rod = { r[0], r[1], r[2], r[3] };
+    return kOfxStatOK;
+}
 std::atomic<int> gAbort { 0 }; // what ieAbort() returns (a render the host is aborting); read by the render threads
 int ieAbort(OfxImageEffectHandle) { return gAbort; }
 OfxStatus ieMemAlloc(OfxImageEffectHandle, size_t n, OfxImageMemoryHandle* h) { *h = reinterpret_cast<OfxImageMemoryHandle>(malloc(n)); return *h ? kOfxStatOK : kOfxStatErrMemory; }
@@ -478,38 +490,41 @@ OfxMultiThreadSuiteV1 gMTSuite = { mtRun, mtNum, mtIdx, mtSpawned, mxC, mxD, mxL
 std::mutex gMessagesMutex;
 
 // All the messages sent by the plug-ins, as "type: text\n" lines (cleared by the tests that check them).
-// (called with gMessagesMutex locked)
 std::string gMessages;
-void recordMessage(const char* type, const char* fmt, va_list a)
-{
-    char buf[4096];
-    std::vsnprintf(buf, sizeof(buf), fmt, a);
-    gMessages += std::string(type ? type : "?") + ": " + buf + "\n";
-}
-
-OfxStatus msg(void*, const char* type, const char*, const char* fmt, ...)
-{ va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx msg/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
-  std::lock_guard<std::mutex> lock(gMessagesMutex);
-  va_start(a, fmt); recordMessage(type, fmt, a); va_end(a); return kOfxStatOK; }
-OfxMessageSuiteV1 gMsgSuite = { msg };
-
 // The current persistent error message of the plug-in, if any (cleared by clearPersistentMessage).
 std::string gPersistentError;
 // The current persistent warning message of the plug-in, if any (cleared by clearPersistentMessage).
 std::string gPersistentWarning;
+
+// Prints the message on stderr, with its kind ("msg" or "persist") and type, and appends it to gMessages (called
+// with gMessagesMutex locked)
+void recordMessage(const char* kind, const char* type, const char* text)
+{
+    std::fprintf(stderr, "[ofx %s/%s] %s\n", kind, type ? type : "?", text);
+    gMessages += std::string(type ? type : "?") + ": " + text + "\n";
+}
+
+OfxStatus msg(void*, const char* type, const char*, const char* fmt, ...)
+{ char buf[4096]; va_list a; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a);
+  std::lock_guard<std::mutex> lock(gMessagesMutex);
+  recordMessage("msg", type, buf); return kOfxStatOK; }
+OfxMessageSuiteV1 gMsgSuite = { msg };
+
 // A test's hook, called first by setPersistentMessage with its type, before any lock is taken (nullptr: none). Set and
 // reset while no other thread calls the host. (e.g. it stops a render thread there, without synchronizing with the
 // main thread, so that ThreadSanitizer sees a data race of the plug-in between them: #319)
 inline void (*gPersistentMessageHook)(const char* type) = nullptr;
 OfxStatus msgPersist(void*, const char* type, const char*, const char* fmt, ...)
 { if (gPersistentMessageHook) gPersistentMessageHook(type);
-  va_list a; va_start(a, fmt); std::fprintf(stderr, "[ofx persist/%s] ", type ? type : "?"); std::vfprintf(stderr, fmt, a); std::fprintf(stderr, "\n"); va_end(a);
+  char buf[4096]; va_list a; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a);
   std::lock_guard<std::mutex> lock(gMessagesMutex);
-  va_start(a, fmt); recordMessage(type, fmt, a); va_end(a);
-  if (type && !std::strcmp(type, kOfxMessageError)) { char buf[4096]; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a); gPersistentError = buf; } else { gPersistentError.clear(); }
-  if (type && !std::strcmp(type, kOfxMessageWarning)) { char buf[4096]; va_start(a, fmt); std::vsnprintf(buf, sizeof(buf), fmt, a); va_end(a); gPersistentWarning = buf; } else { gPersistentWarning.clear(); }
+  recordMessage("persist", type, buf);
+  gPersistentError = (type && !std::strcmp(type, kOfxMessageError)) ? buf : "";
+  gPersistentWarning = (type && !std::strcmp(type, kOfxMessageWarning)) ? buf : "";
   return kOfxStatOK; }
 OfxStatus msgClear(void*) { std::lock_guard<std::mutex> lock(gMessagesMutex); gPersistentError.clear(); gPersistentWarning.clear(); return kOfxStatOK; }
+// gPersistentError, read under gMessagesMutex (e.g. while a render thread may set it)
+inline std::string persistentError() { std::lock_guard<std::mutex> lock(gMessagesMutex); return gPersistentError; }
 OfxMessageSuiteV2 gMsgSuiteV2 = { msg, msgPersist, msgClear };
 
 OfxStatus itSwap(OfxInteractHandle) { return kOfxStatOK; }
@@ -519,13 +534,20 @@ OfxStatus itGetPropSet(OfxInteractHandle h, OfxPropertySetHandle* ps) { if (!h |
 OfxInteractSuiteV1 gInteractSuite = { itSwap, itRedraw, itGetPropSet };
 
 // ------------------------------------------------------------------ FnOfx multi-plane suite v2
-OfxStatus fnClipGetImagePlaneV2(OfxImageClipHandle c, OfxTime, int, const char*, const OfxRectD*, OfxPropertySetHandle* out)
-{ if (reinterpret_cast<Clip*>(c)->noImage) return kOfxStatFailed; if (out) *out = PH(tThreadImage ? tThreadImage : &reinterpret_cast<Clip*>(c)->image); return kOfxStatOK; }
+OfxStatus fnClipGetImagePlaneV2(OfxImageClipHandle c, OfxTime t, int, const char*, const OfxRectD*, OfxPropertySetHandle* out)
+{ return ieClipGetImage(c, t, nullptr, out); }
 OfxStatus fnClipGetRoDV2(OfxImageClipHandle c, OfxTime t, int, OfxRectD* b) { return ieClipGetRoD(c, t, b); }
 // the views of the project: getViewCount returns gViewCount (1 or 2), and getViewName the name of a view in
 // gViewNames, "main" for an index out of it. Tests that set other names (e.g. { "left", "right" }) restore them.
 int gViewCount = 1;
 std::vector<std::string> gViewNames = { "main", "right" };
+// Sets gViewCount for its lifetime (e.g. a stereo project), then restores 1
+struct ViewCountGuard {
+    explicit ViewCountGuard(int n) { gViewCount = n; }
+    ~ViewCountGuard() { gViewCount = 1; }
+    ViewCountGuard(const ViewCountGuard&) = delete;
+    ViewCountGuard& operator=(const ViewCountGuard&) = delete;
+};
 OfxStatus fnGetViewName(OfxImageEffectHandle, int v, const char** n) { if (n) *n = (v >= 0 && v < (int)gViewNames.size()) ? gViewNames[v].c_str() : "main"; return kOfxStatOK; }
 OfxStatus fnGetViewCount(OfxImageEffectHandle, int* n) { if (n) *n = gViewCount; return kOfxStatOK; }
 FnOfxImageEffectPlaneSuiteV2 gPlaneSuiteV2 = { fnClipGetImagePlaneV2, fnClipGetRoDV2, fnGetViewName, fnGetViewCount };
@@ -537,6 +559,9 @@ OfxStatus glFreeTexture(OfxPropertySetHandle) { return kOfxStatErrBadHandle; }
 OfxStatus glFlushResources() { return kOfxStatReplyDefault; }
 OfxImageEffectOpenGLRenderSuiteV1 gOpenGLSuite = { glLoadTexture, glFreeTexture, glFlushResources };
 
+// OFX14_KEEPMSG2: the Message suite V2 even with OFX14_LEVEL < 12 (read by initHost())
+bool gKeepMessageSuiteV2 = false;
+
 // The names of the suites that the plug-ins fetched (ofx14_host_test checks them in the OFX 1.4-only mode)
 std::set<std::string> gFetchedSuites;
 
@@ -546,7 +571,7 @@ const void* fetchSuite(OfxPropertySetHandle, const char* name, int v)
 {
     gFetchedSuites.insert(std::string(name) + " V" + std::to_string(v));
     if (gOfx14Only && (gNoSuites.count(name) || gNoSuites.count(std::string(name) + " V" + std::to_string(v)))) return nullptr;
-    if (gOfx14Only && gOfxLevel < 12 && !std::getenv("OFX14_KEEPMSG2") && !std::strcmp(name, kOfxMessageSuite) && v == 2) return nullptr; // V2: OFX 1.2
+    if (gOfx14Only && gOfxLevel < 12 && !gKeepMessageSuiteV2 && !std::strcmp(name, kOfxMessageSuite) && v == 2) return nullptr; // V2: OFX 1.2
     if (!std::strcmp(name, kOfxPropertySuite)) return v == 1 ? &gPropSuite : nullptr;
     if (!std::strcmp(name, kOfxImageEffectSuite)) return v == 1 ? &gEffectSuite : nullptr;
     if (!std::strcmp(name, kOfxParameterSuite)) return v == 1 ? &gParamSuite : nullptr;
@@ -567,6 +592,7 @@ void initHost()
     for (auto& x : splitc(std::getenv("OFX14_NOSUITE"))) gNoSuites.insert(x);
     if (const char* e = std::getenv("OFX14_SCALE")) gRS = std::atof(e);
     gOpenGLRender = std::getenv("OFX14_GL") != nullptr;
+    gKeepMessageSuiteV2 = std::getenv("OFX14_KEEPMSG2") != nullptr;
     {
         // from the headers of the upstream release tags (names-OFX_Release_*.txt diffs)
         const char* a11[] = { "OfxParamPropInteractSize" };
@@ -629,9 +655,9 @@ bool ok(OfxStatus s) { return s == kOfxStatOK || s == kOfxStatReplyDefault; }
 // memory (not with std::nanf() and std::isnan(), and never passed as a float value), so that the tests also work when
 // built with -ffast-math: the compiler then assumes that there are no NaNs, so std::isnan() is always false, and
 // clang marks float arguments and return values as never NaN (nofpclass), which also folds a test on their bits.
-void fillUnwritten(float* begin, size_t count)
+// (bits: another value, for a test that needs a value other than NaN, compared with hasBits())
+void fillUnwritten(float* begin, size_t count, uint32_t bits = 0x7fc00000u /* quiet NaN */)
 {
-    const uint32_t bits = 0x7fc00000u; // quiet NaN
     for (size_t i = 0; i < count; ++i) {
         std::memcpy(begin + i, &bits, sizeof(bits));
     }
@@ -644,6 +670,9 @@ bool isUnwritten(const float* p)
     return ((bits & 0x7f800000u) == 0x7f800000u) && ((bits & 0x007fffffu) != 0); // a NaN
 }
 
+// Are the bits of *p these bits (see fillUnwritten())?
+inline bool hasBits(const float* p, uint32_t bits) { return !std::memcmp(p, &bits, sizeof(bits)); }
+
 // ------------------------------------------------------------------ test helpers
 OfxPlugin* findPlugin(const char* id)
 {
@@ -652,19 +681,25 @@ OfxPlugin* findPlugin(const char* id)
     return nullptr;
 }
 
-// Set default value (int) on a param definition prop set so instance getValue works.
+// The host's value of the string param name (instead of its default), which getValue returns
 void setOverrideString(Effect* ctx, const char* name, const std::string& val)
 { auto it = ctx->params.find(name); if (it != ctx->params.end()) { it->second.hasOv = true; it->second.ov.s = { val }; } }
 
+// The host's value of the integer, boolean or choice param name (instead of its default)
 void setOverrideInt(Effect* ctx, const char* name, int val)
 { auto it = ctx->params.find(name); if (it != ctx->params.end()) { it->second.hasOv = true; it->second.ov.i = { val }; } }
 
-// Build an image property set for a clip: dims WxH, RGBA float, buffer allocated & pattern-filled optional.
+// The number of components of comps (RGBA, Alpha, else RGB), and the size of a component of depth (float, short,
+// else byte)
+inline int componentCount(const char* comps) { return !std::strcmp(comps, kOfxImageComponentRGBA) ? 4 : (!std::strcmp(comps, kOfxImageComponentAlpha) ? 1 : 3); }
+inline int bytesPerComponent(const char* depth) { return !std::strcmp(depth, kOfxBitDepthFloat) ? 4 : (!std::strcmp(depth, kOfxBitDepthShort) ? 2 : 1); }
+
+// The image of clip c (what clipGetImage returns): w x h pixels from (0, 0), with components comps and depth depth,
+// in a buffer of zeros; the clip's props are set to the same format, its RoD to the image and its frame range to
+// 1..1000. premultOpaque: Opaque, else PreMultiplied.
 void setupClipImage(Clip* c, int w, int h, const char* comps, const char* depth, bool premultOpaque)
 {
-    int nComps = (!std::strcmp(comps, kOfxImageComponentRGBA)) ? 4 : (!std::strcmp(comps, kOfxImageComponentAlpha) ? 1 : 3);
-    int bpc = (!std::strcmp(depth, kOfxBitDepthFloat)) ? 4 : (!std::strcmp(depth, kOfxBitDepthShort) ? 2 : 1);
-    int rowBytes = w * nComps * bpc;
+    int rowBytes = w * componentCount(comps) * bytesPerComponent(depth);
     c->buffer.assign((size_t)rowBytes * h, 0);
     OfxPropertySetHandle ip = PH(&c->image);
     pSetPointer(ip, kOfxImagePropData, 0, c->buffer.data());
@@ -736,6 +771,88 @@ int loadAndDescribe(OfxPlugin* p, Effect& describeEffect, Effect& ctxEffect, con
     if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, reinterpret_cast<OfxImageEffectHandle>(&ctxEffect), PH(&inArgs), nullptr))) return -1;
     return 0;
 }
+
+// kOfxActionInstanceChanged on the param (or, with type kOfxTypeClip, the clip) name, as the host calls it on its
+// main thread: by default a user edit at time 1, at render scale 1
+inline OfxStatus instanceChanged(OfxPlugin* p, Effect& inst, const char* name, const char* reason = kOfxChangeUserEdited,
+                                 const char* type = kOfxTypeParameter, double t = 1.)
+{
+    PropSet a;
+    OfxPropertySetHandle ap = PH(&a);
+    pSetString(ap, kOfxPropType, 0, type);
+    pSetString(ap, kOfxPropName, 0, name);
+    pSetString(ap, kOfxPropChangeReason, 0, reason);
+    pSetDouble(ap, kOfxPropTime, 0, t);
+    double rs[2] = { 1., 1. };
+    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
+    return p->mainEntry(kOfxActionInstanceChanged, EH(inst), ap, nullptr);
+}
+
+// A Natron-like host: dynamic choices (e.g. the output-layer menu of ReadOIIO, the Parts and Views params of
+// WriteOIIO) and multiple planes. Call it after initHost().
+inline void setMultiPlanarHost()
+{
+    pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+    pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+}
+
+// The size of the file, or -1 if there is none
+inline long fileSize(const std::string& path)
+{
+    struct stat st;
+    return (stat(path.c_str(), &st) == 0) ? (long)st.st_size : -1L;
+}
+
+// The contents of the file ("" if there is none)
+inline std::string fileContents(const std::string& path)
+{
+    std::ifstream ifs(path.c_str(), std::ios::binary);
+    std::ostringstream os;
+    os << ifs.rdbuf();
+    return os.str();
+}
+
+// ------------------------------------------------------------------ checks
+int gFailures = 0; // the number of failed checks: the test program fails if it is not 0
+// Optional hooks (ocio_anim_fuzz): gQuiet: don't print the checks that pass; gOnFail: if set, called with the message
+// of a failed check, which is not printed
+bool gQuiet = false;
+std::function<void(const char*)> gOnFail;
+
+// the printf format checks of the compiler (-Wformat) for a function whose argument fmtIndex is a printf format, and
+// whose variable arguments start at argIndex (MinGW: the format of its C runtime)
+#if defined(__MINGW_PRINTF_FORMAT)
+#define IO_TEST_PRINTF_FORMAT(fmtIndex, argIndex) __attribute__((format(__MINGW_PRINTF_FORMAT, fmtIndex, argIndex)))
+#elif defined(__GNUC__)
+#define IO_TEST_PRINTF_FORMAT(fmtIndex, argIndex) __attribute__((format(printf, fmtIndex, argIndex)))
+#else
+#define IO_TEST_PRINTF_FORMAT(fmtIndex, argIndex)
+#endif
+
+// Prints "  PASS: message" or "  FAIL: message" (fmt: a printf format; a message that is not a literal goes through the
+// std::string overload), and counts a failure in gFailures.
+IO_TEST_PRINTF_FORMAT(2, 3) inline void check(bool cond, const char* fmt, ...)
+{
+    if (cond && gQuiet) {
+        return;
+    }
+    va_list a, b;
+    va_start(a, fmt);
+    va_copy(b, a);
+    std::vector<char> buf((size_t)(std::max)(0, std::vsnprintf(nullptr, 0, fmt, a)) + 1);
+    va_end(a);
+    std::vsnprintf(buf.data(), buf.size(), fmt, b);
+    va_end(b);
+    if (!cond) {
+        ++gFailures;
+        if (gOnFail) {
+            gOnFail(buf.data());
+            return;
+        }
+    }
+    std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", buf.data());
+}
+inline void check(bool cond, const std::string& what) { check(cond, "%s", what.c_str()); }
 
 } // namespace
 

@@ -75,12 +75,13 @@ The [CI workflow](.github/workflows/ci.yml) builds and tests the plug-ins on Lin
 on Windows with [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/), and on macOS with
 [Xcode](https://developer.apple.com/xcode/)'s clang and [MacPorts](https://www.macports.org). It is the reference for the
 packages to install and the commands to run on each platform. It builds with [CMake](https://cmake.org) and tests with
-[`ctest`](https://cmake.org/cmake/help/latest/manual/ctest.1.html): a Release C++17 build on every push and pull
-request, and weekly (on Saturdays) also a Debug C++20 build, with the same tests. The Makefiles are only checked weekly on
-Linux (a Release build of the plug-ins). The weekly run builds on Linux, Windows and macOS every week, since Ubuntu's
-updates, MSYS2 and MacPorts move, and builds Natron's Linux testing bundle (`linux-natron`) only if master changed since
-the last weekly run.
-[Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 9 (see [Linux runtime requirements](#linux-runtime-requirements)), on macOS 14 and later (arm64), and on
+[`ctest`](https://cmake.org/cmake/help/latest/manual/ctest.1.html): a Release C++17 build on every push to master,
+`RB-*` and tags, and on pull requests once they are ready for review (draft pull requests run no CI). Weekly (on
+Saturdays) and on demand, it also builds a Debug C++20 variant, with the same tests, and checks that the Makefiles build
+the plug-ins on Linux. The weekly run builds on Linux, Windows and macOS every week, since Ubuntu's updates, MSYS2 and
+MacPorts move. Natron's Linux testing bundle (`linux-natron`) is built on pushes to master, `RB-*` and tags, on demand,
+and in the weekly run only if master changed since the last one.
+[Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 9 (see [Linux runtime requirements](#linux-runtime-requirements)), on macOS 14 and later (arm64 and x86_64), and on
 MSYS2 UCRT64.
 
 ### Linux runtime requirements
@@ -183,12 +184,12 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
 | `OFX_PLUGIN_RPATH` | empty | Extra install rpath directories of the plug-in (`;`-separated; ignored on Windows). |
 | `OFX_USE_OPENMP` | ON | Link [OpenMP](https://www.openmp.org) when LibRaw's pkg-config file asks for it. |
-| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt), the same as [`tests/Makefile`](tests/Makefile)'s), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load`, `io-icons`, and `io-cmake-unknown-arch`: configuring for a system without an OFX bundle folder, `ARCHDIR`, must fail). See [tests/README.md](tests/README.md). |
+| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt), the same as [`tests/Makefile`](tests/Makefile)'s), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load`, `io-icons`, `io-load-installed`, and `io-cmake-unknown-arch`: configuring for a system without an OFX bundle folder, `ARCHDIR`, must fail). See [tests/README.md](tests/README.md). |
 | `IO_TESTS_WITH_LIBRAW` | ON | The tests that link ReadOIIO also build its RAW support, when the bundle has it (`tests/Makefile`'s `WITH_LIBRAW=1`). |
 | `IO_TESTS_TIMEOUT` | 1800 | Time limit of each `test-*` test, in seconds (`test-ffmpeg`: twice as much), so that a hung test fails. |
 | `IO_TESTS_FUZZ_OPS` | 2000 | Operations of each short fuzz run of `test-ocio-anim` (`tests/Makefile`'s `FUZZ_OPS`). |
 | `IO_TESTS_SANITIZERS` | OFF | Also build and run the ThreadSanitizer, AddressSanitizer and UBSan variants of the tests that `make test` doesn't run (14 tests, `*-tsan`, `*-asan`, `*-ubsan`...: the list is in [`tests/CMakeLists.txt`](tests/CMakeLists.txt) and [tests/README.md](tests/README.md); not with MinGW). CI's `linux-sanitizers` job builds with it and runs 10 of them, those that are reliable against Ubuntu's libraries, which are not built with TSan ([#471](https://github.com/NatronGitHub/openfx-io/issues/471)). |
-| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [Python host](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples/python) (the ofxh module: needs Python >= 3.10, [nanobind](https://github.com/wjakob/nanobind) and [NumPy](https://numpy.org); `Python_EXECUTABLE` chooses the Python); `ctest` renders every plug-in of the installed bundle with its hostDemo command line, `ofxhost.hostdemo` (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `--ofx14` (`io-hostdemo-ofx14`). Needs `BUILD_TESTING`. |
+| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [Python host](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples/python) (the ofxh module: needs Python >= 3.10, [nanobind](https://github.com/wjakob/nanobind) and [NumPy](https://numpy.org); `Python_EXECUTABLE` chooses the Python); `ctest` renders every plug-in of the installed bundle with its hostDemo command line, `ofxhost.hostdemo` (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `--ofx14` (`io-hostdemo-ofx14`); it also renders the readers of the installed bundle with render windows partly or entirely out of their RoD (`io-reader-window`, [`tests/hostdemo/reader_window.sh`](tests/hostdemo/reader_window.sh)). Needs `BUILD_TESTING`. |
 
 ## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
 
@@ -213,7 +214,7 @@ prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). On m
 environment variable) is the minimum macOS version of the plug-ins. The Makefiles compile as
 C++17 by default (`-std=c++17`, so plain `make CONFIG=release` works even
 with compilers that default to an older standard, such as Apple clang),
-unless `CXX`, `CXXFLAGS_ADD` or `CXXFLAGS_EXTRA` already contains a `-std=`
+unless `CXX`, `CXXFLAGS`, `CXXFLAGS_ADD` or `CXXFLAGS_EXTRA` already contains a `-std=`
 option (or set `CXXSTD`). To compile as
 C++20, use e.g. `make CONFIG=release CXXSTD=c++20` (or `CXXSTD=-std=c++20`) or
 `make CONFIG=release CXX="clang++ -std=c++20"`.

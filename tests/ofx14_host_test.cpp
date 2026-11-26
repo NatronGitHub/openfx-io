@@ -96,8 +96,46 @@ struct Spec {
     std::vector<std::pair<std::string, int>> ints;
 };
 
-int gFailures = 0;
 std::string gWork;
+
+// The host variant, from the environment (see tests/README.md; initHost() reads the others), read once by main()
+struct Variant {
+    const char* seqStatus = nullptr;  // OFX14_SEQSTATUS: kOfxImageEffectPropSequentialRenderStatus (default 1)
+    const char* skipParams = nullptr; // OFX14_SKIPPARAMS: the params without an InstanceChanged (comma-separated)
+    const char* setInt = nullptr;     // OFX14_SETINT: name=value of int params (comma-separated)
+    bool forceScale = false;          // OFX14_FORCESCALE: OFX14_SCALE also for the plug-ins without multi-resolution
+    bool scaleWriters1 = false;       // OFX14_SCALE_WRITERS1: the writers render at scale 1
+    bool noContexts = false;          // OFX14_NOCTX: no instance in every context
+    // (for the banner only: initHost() reads them)
+    const char* noSuite = nullptr;    // OFX14_NOSUITE
+    const char* depths = nullptr;     // OFX14_DEPTHS
+    const char* comps = nullptr;      // OFX14_COMPS
+    const char* hostName = nullptr;   // OFX14_HOSTNAME
+    bool noTiles = false;             // OFX14_NOTILES
+    bool noMultiRes = false;          // OFX14_NOMULTIRES
+    bool noOverlays = false;          // OFX14_NOOVERLAYS
+};
+Variant gVariant;
+
+Variant
+readVariant()
+{
+    Variant v;
+    v.seqStatus = std::getenv("OFX14_SEQSTATUS");
+    v.skipParams = std::getenv("OFX14_SKIPPARAMS");
+    v.setInt = std::getenv("OFX14_SETINT");
+    v.forceScale = std::getenv("OFX14_FORCESCALE") != nullptr;
+    v.scaleWriters1 = std::getenv("OFX14_SCALE_WRITERS1") != nullptr;
+    v.noContexts = std::getenv("OFX14_NOCTX") != nullptr;
+    v.noSuite = std::getenv("OFX14_NOSUITE");
+    v.depths = std::getenv("OFX14_DEPTHS");
+    v.comps = std::getenv("OFX14_COMPS");
+    v.hostName = std::getenv("OFX14_HOSTNAME");
+    v.noTiles = std::getenv("OFX14_NOTILES") != nullptr;
+    v.noMultiRes = std::getenv("OFX14_NOMULTIRES") != nullptr;
+    v.noOverlays = std::getenv("OFX14_NOOVERLAYS") != nullptr;
+    return v;
+}
 
 void
 fail(const char* fmt,
@@ -112,39 +150,18 @@ fail(const char* fmt,
     ++gFailures;
 }
 
-OfxImageEffectHandle
-EH(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
-long
-fileSize(const std::string& f)
-{
-    struct stat st;
-    return (stat(f.c_str(), &st) == 0) ? (long)st.st_size : -1;
-}
-
 std::string
 expand(const std::string& v)
 {
     return (!v.empty() && v[0] == '@') ? gWork + v.substr(1) : v;
 }
 
-int
-nComps(const std::string& comps)
-{
-    return comps == kOfxImageComponentRGBA ? 4 : (comps == kOfxImageComponentAlpha ? 1 : 3);
-}
-
 // the frame range of the clips: 1..gLastFrame (3 for the writers, whose default frame range is the time line's: in a
 // host without the optional TimeLine suite, it must be the input's)
 double gLastFrame = 1.;
 
-// The image of a clip: bounds b (x1, y1, x2, y2), components comps, float.
 double gReqScale = 1.; // requested OFX14_SCALE
 std::string gDepth = kOfxBitDepthFloat; // depth of the current images
-int bpc(const std::string& d) { return d == kOfxBitDepthFloat ? 4 : (d == kOfxBitDepthShort ? 2 : 1); }
 float getV(const std::vector<uint8_t>& buf, size_t i, const std::string& d)
 {
     if (d == kOfxBitDepthFloat) { float f; std::memcpy(&f, buf.data() + 4 * i, 4); return f; }
@@ -157,12 +174,23 @@ void setV(std::vector<uint8_t>& buf, size_t i, const std::string& d, float f)
     if (d == kOfxBitDepthShort) { uint16_t v = (uint16_t)std::lround(f * 65535.f); std::memcpy(buf.data() + 2 * i, &v, 2); return; }
     buf[i] = (uint8_t)std::lround(f * 255.f);
 }
+// The value of the byte and short components that the plug-in did not write (float: a NaN, see fillUnwritten())
+const int kUnwrittenInt = 7;
+void fillUnwrittenV(std::vector<uint8_t>& buf, size_t n, const std::string& d)
+{
+    if (d == kOfxBitDepthFloat) { fillUnwritten(reinterpret_cast<float*>(buf.data()), n); return; }
+    for (size_t i = 0; i < n; ++i) {
+        if (d == kOfxBitDepthShort) { const uint16_t v = kUnwrittenInt; std::memcpy(buf.data() + 2 * i, &v, 2); }
+        else buf[i] = kUnwrittenInt;
+    }
+}
 bool unwrittenV(const std::vector<uint8_t>& buf, size_t i, const std::string& d)
 {
     if (d == kOfxBitDepthFloat) return isUnwritten(reinterpret_cast<const float*>(buf.data()) + i);
-    if (d == kOfxBitDepthShort) { uint16_t v; std::memcpy(&v, buf.data() + 2 * i, 2); return v == 7; }
-    return buf[i] == 7;
+    if (d == kOfxBitDepthShort) { uint16_t v; std::memcpy(&v, buf.data() + 2 * i, 2); return v == kUnwrittenInt; }
+    return buf[i] == kUnwrittenInt;
 }
+// The image of a clip: bounds b (x1, y1, x2, y2, in pixels), components comps, depth depth (by default gDepth's)
 void
 setupImage(Clip* c,
            const int b[4],
@@ -183,9 +211,9 @@ void
 fillColour(Clip* c,
            const std::string& comps)
 {
-    const int n = nComps(comps);
+    const int n = componentCount(comps.c_str());
     const std::string d = gDepth;
-    const size_t npix = c->buffer.size() / (bpc(d) * n);
+    const size_t npix = c->buffer.size() / (bytesPerComponent(d.c_str()) * n);
     for (size_t i = 0; i < npix; ++i) {
         for (int k = 0; k < n; ++k) {
             setV(c->buffer, i * n + k, d, (n == 1) ? kColour[3] : kColour[k]);
@@ -219,8 +247,7 @@ sequenceArgs(double t)
     pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
     // OFX14_SEQSTATUS: the value of kOfxImageEffectPropSequentialRenderStatus (OFX 1.2; a 1.4 host may pass 0, and
     // with OFX14_LEVEL < 12 it is unknown, so absent)
-    const char* seq = std::getenv("OFX14_SEQSTATUS");
-    pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, seq ? std::atoi(seq) : 1);
+    pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, gVariant.seqStatus ? std::atoi(gVariant.seqStatus) : 1);
     pSetInt(ap, kOfxImageEffectPropInteractiveRenderStatus, 0, 0);
     return a;
 }
@@ -299,7 +326,7 @@ paramChanged(OfxPlugin* p, Effect& inst, const std::string& name, double t)
 {
     PropSet b; pSetString(PH(&b), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
     OfxStatus st = p->mainEntry(kOfxActionBeginInstanceChanged, EH(inst), PH(&b), nullptr);
-    if (!ok(st) && st != kOfxStatReplyDefault) fail("BeginInstanceChanged = %d", st);
+    if (!ok(st)) fail("BeginInstanceChanged = %d", st);
     PropSet a = timeArgs(t);
     pSetString(PH(&a), kOfxPropType, 0, kOfxTypeParameter);
     pSetString(PH(&a), kOfxPropName, 0, name.c_str());
@@ -356,7 +383,6 @@ checkHostQuirkParams(const std::string& c,
     }
 }
 
-const char* gSkipParams = std::getenv("OFX14_SKIPPARAMS"); // comma list
 // Every context: describe, instantiate, InstanceChanged on every param, clip preferences, destroy.
 void
 exerciseContext(OfxPlugin* p, const std::string& c, const std::string& file)
@@ -381,7 +407,7 @@ exerciseContext(OfxPlugin* p, const std::string& c, const std::string& file)
     int nchanged = 0;
     for (auto& kv : ce.params) {
         if (kv.second.type == kOfxParamTypePage || kv.second.type == kOfxParamTypeGroup) continue;
-        if (gSkipParams && std::strstr(gSkipParams, kv.first.c_str())) continue;
+        if (gVariant.skipParams && std::strstr(gVariant.skipParams, kv.first.c_str())) continue;
         std::string m; (void)errorMessages(&m);
         paramChanged(p, inst, kv.first, 1.);
         ++nchanged;
@@ -448,8 +474,8 @@ testPlugin(OfxPlugin* p,
         int mr = 1;
         auto it = desc.props.props.find(kOfxImageEffectPropSupportsMultiResolution);
         if (it != desc.props.props.end() && !it->second.i.empty()) mr = it->second.i[0];
-        gRS = (mr || std::getenv("OFX14_FORCESCALE")) ? gReqScale : 1.;
-        if (s.kind == eWriter && std::getenv("OFX14_SCALE_WRITERS1")) gRS = 1.;
+        gRS = (mr || gVariant.forceScale) ? gReqScale : 1.;
+        if (s.kind == eWriter && gVariant.scaleWriters1) gRS = 1.;
         gDepth = kOfxBitDepthFloat;
         if (gRS != 1.) std::printf("  render scale %g\n", gRS);
     }
@@ -482,7 +508,7 @@ testPlugin(OfxPlugin* p,
         if (!ok(st)) fail("DescribeInContext(%s) = %d", c.c_str(), st);
         checkHostQuirkParams(c, ce);
         if (c == wanted) context = c;
-        if (!std::getenv("OFX14_NOCTX")) exerciseContext(p, c, file.empty() ? std::string() : (s.kind == eWriter ? file + ".ctx." + c + file.substr(file.rfind('.')) : file));
+        if (!gVariant.noContexts) exerciseContext(p, c, file.empty() ? std::string() : (s.kind == eWriter ? file + ".ctx." + c + file.substr(file.rfind('.')) : file));
     }
     if (context.empty()) {
         fail("no %s context (contexts: %zu)", wanted, contexts.size());
@@ -512,8 +538,8 @@ testPlugin(OfxPlugin* p,
         if (!ctx.params.count(sp.first)) fail("no %s param", sp.first.c_str());
         setOverrideString(&ctx, sp.first.c_str(), expand(sp.second));
     }
-    if (const char* e = std::getenv("OFX14_SETINT")) {
-        for (auto& kv : splitc(e)) {
+    if (gVariant.setInt) {
+        for (auto& kv : splitc(gVariant.setInt)) {
             size_t q = kv.find('='); std::string n = kv.substr(0, q);
             if (ctx.params.count(n)) { setOverrideInt(&ctx, n.c_str(), std::atoi(kv.c_str() + q + 1)); std::printf("  set %s\n", kv.c_str()); }
         }
@@ -716,10 +742,9 @@ testPlugin(OfxPlugin* p,
         st = p->mainEntry(kOfxImageEffectActionBeginSequenceRender, EH(inst), PH(&a), nullptr);
         if (!ok(st)) fail("BeginSequenceRender = %d", st);
     }
-    const int on = nComps(outComps);
+    const int on = componentCount(outComps.c_str());
     const size_t npix = (size_t)(rod[2] - rod[0]) * (rod[3] - rod[1]);
-    if (gDepth == kOfxBitDepthFloat) fillUnwritten(reinterpret_cast<float*>(out->buffer.data()), npix * on);
-    else for (size_t i = 0; i < npix * on; ++i) { if (gDepth == kOfxBitDepthShort) { uint16_t v = 7; std::memcpy(out->buffer.data() + 2 * i, &v, 2); } else out->buffer[i] = 7; }
+    fillUnwrittenV(out->buffer, npix * on, gDepth);
     {
         PropSet a = makeRenderInArgs(t, kW, kH);
         int win[4] = { rod[0], rod[1], rod[2], rod[3] };
@@ -856,9 +881,11 @@ main(int argc,
 #endif
     std::printf("host: %s\n", gOfx14Only ? "OFX 1.4 only (no newer suite or property, no extension)" : "full");
     gHonourNormalisedDefaults = true; // as Natron and Nuke do (kOfxParamPropDefaultCoordinateSystem)
+    gVariant = readVariant();
     initHost();
     gReqScale = gRS;
-    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d, opengl=%d, seqstatus=%s\n", gOfxLevel, std::getenv("OFX14_NOSUITE") ? std::getenv("OFX14_NOSUITE") : "-", std::getenv("OFX14_DEPTHS") ? std::getenv("OFX14_DEPTHS") : "all", std::getenv("OFX14_COMPS") ? std::getenv("OFX14_COMPS") : "default", !std::getenv("OFX14_NOTILES"), !std::getenv("OFX14_NOMULTIRES"), gRS, !std::getenv("OFX14_NOOVERLAYS"), (int)gOpenGLRender, std::getenv("OFX14_SEQSTATUS") ? std::getenv("OFX14_SEQSTATUS") : "1");
+    const Variant& v = gVariant;
+    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d, opengl=%d, seqstatus=%s, hostname=%s\n", gOfxLevel, v.noSuite ? v.noSuite : "-", v.depths ? v.depths : "all", v.comps ? v.comps : "default", !v.noTiles, !v.noMultiRes, gRS, !v.noOverlays, (int)gOpenGLRender, v.seqStatus ? v.seqStatus : "1", v.hostName ? v.hostName : "-");
 
     // an identity 1D LUT for OCIOFileTransform (which has no default file)
     {

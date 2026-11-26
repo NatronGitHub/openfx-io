@@ -409,9 +409,8 @@ public:
     png_infop info;
     PNGError error;
 
-private:
-    PNGReadFile(const PNGReadFile&); // noncopyable (error is the error pointer of png)
-    PNGReadFile& operator=(const PNGReadFile&);
+    PNGReadFile(const PNGReadFile&) = delete; // noncopyable (error is the error pointer of png)
+    PNGReadFile& operator=(const PNGReadFile&) = delete;
 };
 
 /// Read the header of a PNG file opened by PNGReadFile::open() (8 bytes of signature already read), and, if
@@ -531,7 +530,7 @@ getPNGInfo(png_structp sp,
     if (static_cast<std::int64_t>(x1) + width >= INT_MAX || static_cast<std::int64_t>(y1) + height >= INT_MAX) {
         PNGError* e = static_cast<PNGError*>(png_get_error_ptr(sp));
         if (e) {
-            std::snprintf(e->message, sizeof(e->message), "invalid oFFs chunk: image offset out of range");
+            e->set("invalid oFFs chunk: image offset out of range");
         }
 
         return false;
@@ -1147,7 +1146,7 @@ ReadPNGPlugin::decode(const string& filename,
                       int rowBytes)
 {
     if ((pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentXY) && (pixelComponents != ePixelComponentAlpha)) {
-        setPersistentMessage(Message::eMessageError, "", "PNG: can only read RGBA, RGB or Alpha components images");
+        setPersistentMessage(Message::eMessageError, "", "ReadPNG: can only read RGBA, RGB, XY or Alpha components images");
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;

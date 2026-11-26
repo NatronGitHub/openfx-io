@@ -153,6 +153,12 @@ public:
     virtual void restoreStateFromParams() OVERRIDE FINAL;
 
 private:
+    // The stream of a view: the view, or the first stream if kParamFirstTrackOnly (which does not animate)
+    int streamIndexForView(int view) const
+    {
+        return _firstTrackOnly->getValue() ? 0 : view;
+    }
+
     virtual bool isVideoStream(const string& filename) OVERRIDE FINAL;
 
     /**
@@ -431,10 +437,8 @@ ReadFFmpegPlugin::decode(const string& filename,
         return;
     }
 
-    // kParamFirstTrackOnly does not animate (and time is the sequence time, not the host time)
-    bool firstTrackOnly = _firstTrackOnly->getValue();
     // the stream of the view, passed to each call: the file is shared by the renders of all the views (#291)
-    const int streamIndex = firstTrackOnly ? 0 : view;
+    const int streamIndex = streamIndexForView(view);
     // the params do not animate
     file->setColorOverrides((FFmpegFile::ColorMatrixEnum)_colorMatrix->getValue(), (FFmpegFile::ColorRangeEnum)_colorRange->getValue());
 
@@ -474,7 +478,6 @@ ReadFFmpegPlugin::decode(const string& filename,
 
         return;
     }
-    // this is the first stream (in fact the only one we consider for now), allocate the output buffer according to the bitdepth
 
     // Same semantics as GenericReaderPlugin::render() for an image sequence, where a frame is
     // missing if its file does not exist. Here, a frame is missing if it is outside of the movie:
@@ -587,9 +590,7 @@ ReadFFmpegPlugin::getFrameBounds(const string& filename,
         return false;
     }
 
-    // kParamFirstTrackOnly does not animate (and time is the sequence time, not the host time)
-    bool firstTrackOnly = _firstTrackOnly->getValue();
-    const int streamIndex = firstTrackOnly ? 0 : view;
+    const int streamIndex = streamIndexForView(view);
     int width, height, frames;
     double ap;
     if (!file->getInfo(streamIndex, width, height, ap, frames)) {

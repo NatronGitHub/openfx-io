@@ -536,8 +536,9 @@ namespace IO {
 
         void getPackingOptions(bool* allCheckboxHidden, std::vector<int>* packingMapping) const;
 
-        /// The render action, without the removal of a partial image file by render() if it fails.
-        void renderFile(const OFX::RenderArguments& args);
+        /// The render action of the file filename (the file param at args.time), without the removal of a partial
+        /// image file by render() if it fails.
+        void renderFile(const OFX::RenderArguments& args, const std::string& filename);
 
         void outputFileChanged(OFX::InstanceChangeReason reason, bool restoreExistingWriter, bool throwErrors);
     };

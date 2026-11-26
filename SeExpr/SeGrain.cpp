@@ -70,6 +70,7 @@ typedef SeVec3d Vec3d;
 #endif
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
+#include "IOUtility.h" // validRenderScale()
 #include "ofxsCoords.h"
 #include "ofxsMaskMix.h"
 #include "ofxsMatrix2D.h"
@@ -232,17 +233,6 @@ static struct PresetStruct gPresets[NUMPRESETS] = {
 
 static bool gHostIsNatron = false;
 
-// The render scale, with a component of 0 or less (invalid: it is divided by) replaced by 1
-static OfxPointD
-validRenderScale(const OfxPointD& rs)
-{
-    OfxPointD ret;
-    ret.x = (!OFX::IsNaN(rs.x) && !OFX::IsInfinite(rs.x) && (rs.x > 0.)) ? rs.x : 1.;
-    ret.y = (!OFX::IsNaN(rs.y) && !OFX::IsInfinite(rs.y) && (rs.y > 0.)) ? rs.y : 1.;
-
-    return ret;
-}
-
 class SeGrainProcessorBase
     : public ImageProcessor {
 protected:
@@ -271,7 +261,7 @@ public:
         , _doMasking(false)
         , _mix(1.)
         , _maskInvert(false)
-        , _renderScale(validRenderScale(args.renderScale))
+        , _renderScale(OFX::IO::validRenderScale(args.renderScale))
         , _time(args.time)
         , _seed(0.)
         , _colorCorr(0.)

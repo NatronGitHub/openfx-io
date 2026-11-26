@@ -21,6 +21,7 @@
 #define IO_OCIOPluginBase_h
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 #include "IOUtility.h"
@@ -51,6 +52,18 @@ protected:
     void setSupportsOpenGLAndTileInfoAtTime(double time);
 
     void changedSrcClip(Clip* srcClip);
+
+    // The processor that makeProcessor() returns, or, if it throws a std::runtime_error (an OCIO::Exception is one;
+    // not OFX::Exception::Suite), persistentErrorAndThrow() with its message.
+    template <typename F>
+    auto processorOrFail(F&& makeProcessor) -> decltype(makeProcessor())
+    {
+        try {
+            return makeProcessor();
+        } catch (const std::runtime_error& e) {
+            persistentErrorAndThrow(*this, e.what());
+        }
+    }
 
 private:
     void setSupportsOpenGLAndTileInfo_internal(bool premult, bool enableGPU);

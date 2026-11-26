@@ -1,4 +1,4 @@
-// Generated from the corpus of the review of #176: the frames needed on master (see kMasterFrames in seexpr_test.cpp).
+// Generated from the corpus of the review of #176: the frames needed before #176 (bc4c45c) (see kPre176Frames in seexpr_test.cpp).
     { "cpixel(1, frame + sqrt(frame), x, y)", 0, 0, { 0, 0 } },
     { "cpixel(1, frame + sqrt(frame), x, y)", 0, 10, { 10, 10, 13, 13 } },
     { "cpixel(1, frame + sqrt(frame), x, y)", 0, 3.5, { 3.5, 3.5, 5, 5 } },

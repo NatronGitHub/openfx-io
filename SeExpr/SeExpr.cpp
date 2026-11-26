@@ -49,6 +49,7 @@
 #endif
 #endif // defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 
+#include "IOUtility.h" // validRenderScale()
 #include "ofxsCoords.h"
 #include "ofxsCopier.h"
 #include "ofxsFilter.h"
@@ -366,7 +367,7 @@ pixelInputIndexIsValid(double v)
     if (OFX::IsNaN(v)) {
         return false;
     }
-    // compared once rounded, as master did (0.49999999999999994 rounds to 1 with SeExpr::round())
+    // compared once rounded, as before #176 (0.49999999999999994 rounds to 1 with SeExpr::round())
     const double r = SeExpr::round(v);
 
     return (1. <= r) && (r <= (double)kSourceClipCount);
@@ -876,6 +877,32 @@ pixelForDepth(const Image* img,
     }
 }
 
+// Check the arguments of cpixel() and apixel() (4 or 5 scalars) and prep them: the part of prep() shared by
+// PixelFuncX and StubPixelFuncX
+static bool
+prepPixelArgs(SeExpr2::ExprFuncNode* node)
+{
+    const int nargs = node->nargs();
+    if ((nargs < 4) || (5 < nargs)) {
+        node->addError("Wrong number of arguments, should be 4 or 5");
+
+        return false;
+    }
+
+    for (int i = 0; i < nargs; ++i) {
+        if (node->child(i)->isVec()) {
+            node->addError("Wrong arguments, should be all scalars");
+
+            return false;
+        }
+        if (!node->child(i)->prep(false)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 template <bool alpha>
 class PixelFuncX
     : public SeExpr2::ExprFuncX {
@@ -894,28 +921,8 @@ private:
     virtual bool prep(SeExpr2::ExprFuncNode* node,
                       bool /*wantVec*/)
     {
-        // check number of arguments
-#ifdef SEEXPR2
-        int nargs = node->nargs();
-#else
-        int nargs = node->numChildren();
-#endif
-
-        if ((nargs < 4) || (5 < nargs)) {
-            node->addError("Wrong number of arguments, should be 4 or 5");
-
+        if (!prepPixelArgs(node)) {
             return false;
-        }
-
-        for (int i = 0; i < nargs; ++i) {
-            if (node->child(i)->isVec()) {
-                node->addError("Wrong arguments, should be all scalars");
-
-                return false;
-            }
-            if (!node->child(i)->prep(false)) {
-                return false;
-            }
         }
 
         SeExpr2::Vec3d v;
@@ -943,16 +950,11 @@ private:
         node->child(3)->eval(v);
         double y = v[0];
         FilterEnum interp = eFilterImpulse;
-#ifdef SEEXPR2
-        int nargs = node->nargs();
-#else
-        int nargs = node->numChildren();
-#endif
-        if (nargs == 5) {
+        if (node->nargs() == 5) {
             node->child(4)->eval(v);
             // rounded and clamped to 0..eFilterNotch (without converting a value out of the range of int to int)
             const double interpArg = v[0];
-            // compared once rounded, as master did
+            // compared once rounded, as before #176
             const double r = OFX::IsNaN(interpArg) ? 0. : SeExpr::round(interpArg);
             if ((0. <= r) && (r <= (double)eFilterNotch)) {
                 interp = (FilterEnum)(int)r;
@@ -1150,6 +1152,10 @@ stubIsGuardedFunction(const string& name)
     return false;
 }
 
+// The largest magnitude of the values computed from the frame and constants that the frames-needed analysis accepts
+// as the arguments of a guarded function (see stubGuardedArgsAreValid())
+constexpr double kStubGuardLimit = 536870912.; // 2^29
+
 // The bound of |p| after the octaves of FBM() (SeNoise.cpp: p = p * lacunarity + 1234 at each octave), or more than
 // 2^29 if it is too large
 static double
@@ -1157,15 +1163,27 @@ stubFbmBound(double p,
              double octaves,
              double lacunarity)
 {
-    const double maxValue = 536870912.; // 2^29
     const int n = (int)((octaves < 1.) ? 1. : ((octaves > 8.) ? 8. : octaves)); // int(clamp(octaves, 1, 8))
     double bound = p;
-    for (int k = 1; (k < n) && (bound <= maxValue); ++k) {
+    for (int k = 1; (k < n) && (bound <= kStubGuardLimit); ++k) {
         bound = bound * ((lacunarity < 0.) ? -lacunarity : lacunarity) + 1234.;
     }
 
     return bound;
 }
+
+// Is a value computed from the frame and constants finite, and in [lo, 2^29]? (OFX::IsNaN() and OFX::IsInfinite()
+// test it, it is not a marker)
+static bool
+stubIsInGuardRange(double v,
+                   double lo)
+{
+    return !OFX::IsNaN(v) && !OFX::IsInfinite(v) && (v <= kStubGuardLimit) && (v >= lo);
+}
+
+// The name given to stubGuardedArgsAreValid() for the bounds of a range (pick() and cycle()): not a function, the
+// arguments are only checked to be finite and in [-2^29, 2^29]
+constexpr const char kStubGuardedRange[] = "range";
 
 // Are the values of the arguments of a guarded node (a function of stubIsGuardedFunction(), or a subscript, name "[]")
 // such that it is defined, and does not allocate too much? They are computed from the frame and constants
@@ -1185,17 +1203,16 @@ static bool
 stubGuardedArgsAreValid(const string& name,
                         const vector<SeVec3d>& args)
 {
-    const double maxValue = 536870912.; // 2^29
     if (name == "[]") {
         // v[index]: int(index)
-        return (args.size() == 2) && !OFX::IsNaN(args[1][0]) && !OFX::IsInfinite(args[1][0]) && (args[1][0] <= maxValue) && (args[1][0] >= -maxValue);
+        return (args.size() == 2) && stubIsInGuardRange(args[1][0], -kStubGuardLimit);
     }
     const bool nonNegative = (name == "cellnoise") || (name == "ccellnoise");
     double maxP = 0.;
     for (std::size_t i = 0; i < args.size(); ++i) {
         for (int c = 0; c < 3; ++c) {
             const double v = args[i][c];
-            if (OFX::IsNaN(v) || OFX::IsInfinite(v) || (v > maxValue) || (v < (nonNegative ? 0. : -maxValue))) {
+            if (!stubIsInGuardRange(v, nonNegative ? 0. : -kStubGuardLimit)) {
                 return false;
             }
             if (i == 0) {
@@ -1208,14 +1225,14 @@ stubGuardedArgsAreValid(const string& name,
         return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] <= 4096);
     }
     if (name == "cycle") {
-        return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] < (int)maxValue);
+        return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] < (int)kStubGuardLimit);
     }
     if ((name == "fbm") || (name == "vfbm") || (name == "cfbm") || (name == "turbulence") || (name == "vturbulence")
         || (name == "cturbulence")) {
         const double octaves = (args.size() >= 2) ? args[1][0] : 6.;
         const double lacunarity = (args.size() >= 3) ? args[2][0] : 2.;
 
-        return stubFbmBound(maxP, octaves, lacunarity) <= maxValue;
+        return stubFbmBound(maxP, octaves, lacunarity) <= kStubGuardLimit;
     }
     if (name == "pnoise") {
         if (args.size() < 2) {
@@ -1281,6 +1298,31 @@ stubIsPureExpression(const SeExprNode* node,
     }
 
     return true;
+}
+
+typedef double (*StubRoundingFunction)(double);
+
+// floor(), ceil(), round(), trunc() or abs() (SeExprBuiltins.cpp), by name; NULL for another function
+static StubRoundingFunction
+stubRoundingFunction(const string& name)
+{
+    if (name == "floor") {
+        return [](double x) { return std::floor(x); };
+    }
+    if (name == "ceil") {
+        return [](double x) { return std::ceil(x); };
+    }
+    if (name == "round") {
+        return [](double x) { return SeExpr::round(x); };
+    }
+    if (name == "trunc") {
+        return [](double x) { return std::trunc(x); };
+    }
+    if (name == "abs") {
+        return [](double x) { return std::fabs(x); };
+    }
+
+    return NULL;
 }
 
 // The name of a guarded node for stubGuardedArgsAreValid()
@@ -1516,13 +1558,12 @@ OFXSeExpression::OFXSeExpression(SeExprProcessorBase* processor,
     , _double2DParams()
     , _colorParams()
 {
-    _dstPixelRod = outputRod;
-
     // a render scale of 0 or less, NaN or infinite is invalid (x and y are divided by it)
-    _scalex._value = (!OFX::IsNaN(renderScale.x) && !OFX::IsInfinite(renderScale.x) && (renderScale.x > 0.)) ? renderScale.x : 1.;
+    const OfxPointD rs = OFX::IO::validRenderScale(renderScale);
+    _scalex._value = rs.x;
     _variables[kSeExprRenderScaleXVarName] = &_scalex;
 
-    _scaley._value = (!OFX::IsNaN(renderScale.y) && !OFX::IsInfinite(renderScale.y) && (renderScale.y > 0.)) ? renderScale.y : 1.;
+    _scaley._value = rs.y;
     _variables[kSeExprRenderScaleYVarName] = &_scaley;
 
     _curTime._value = time;
@@ -1626,24 +1667,8 @@ bool
 StubPixelFuncX::prep(SeExpr2::ExprFuncNode* node,
                      bool /*wantVec*/)
 {
-    // check number of arguments
-    int nargs = node->nargs();
-
-    if ((nargs < 4) || (5 < nargs)) {
-        node->addError("Wrong number of arguments, should be 4 or 5");
-
+    if (!prepPixelArgs(node)) {
         return false;
-    }
-
-    for (int i = 0; i < nargs; ++i) {
-        if (node->child(i)->isVec()) {
-            node->addError("Wrong arguments, should be all scalars");
-
-            return false;
-        }
-        if (!node->child(i)->prep(false)) {
-            return false;
-        }
     }
 
     // the input index is checked if it is a number (an input index that is computed is checked by the analysis, and
@@ -1726,7 +1751,7 @@ stubAddUnknown(int input,
 
 // A frame of an input: a NaN frame gives the default frame range (cpixel() gives black; the frame is computed from the
 // frame and constants, and tested with OFX::IsNaN()), the frame is clamped as in the render (clampPixelFrame()), and
-// rounded as on master
+// rounded as before #176 (bc4c45c)
 static void
 stubAddFrame(int input,
              double frame,
@@ -1769,12 +1794,9 @@ struct StubValues
 
     void add(const SeVec3d& v)
     {
-        for (std::size_t i = 0; i < values.size(); ++i) {
-            if ((values[i][0] == v[0]) && (values[i][1] == v[1]) && (values[i][2] == v[2])) {
-                return;
-            }
+        if (std::find(values.begin(), values.end(), v) == values.end()) {
+            values.push_back(v);
         }
-        values.push_back(v);
     }
 
     // add the values of another set (a union: not exact if either is not exact)
@@ -1801,12 +1823,8 @@ struct StubValues
         if ((known != other.known) || (values.size() != other.values.size())) {
             return false;
         }
-        for (std::size_t i = 0; i < values.size(); ++i) {
-            bool found = false;
-            for (std::size_t k = 0; !found && (k < other.values.size()); ++k) {
-                found = (values[i][0] == other.values[k][0]) && (values[i][1] == other.values[k][1]) && (values[i][2] == other.values[k][2]);
-            }
-            if (!found) {
+        for (const SeVec3d& v : values) {
+            if (std::find(other.values.begin(), other.values.end(), v) == other.values.end()) {
                 return false;
             }
         }
@@ -1943,7 +1961,7 @@ stubAssignedVariables(const string& text,
  * followed): the frames are a superset. A frame that is unknown gives the default frame range to its input (in
  * addition to its known frames), an input index that is unknown to all the inputs.
  * No value is a NaN marker, and nothing is sampled: the values that are not computable from the frame and constants
- * are unknown. Unlike master (which evaluated the expression with NaN for the other variables), a frame that depends
+ * are unknown. Unlike before #176 (bc4c45c evaluated the expression with NaN for the other variables), a frame that depends
  * on another variable (e.g. frame + (x != x) * 5, or frame + max(x, 0)) gives the default range, not the frame
  * computed with NaN.
  *
@@ -2385,7 +2403,7 @@ private:
                 vector<SeVec3d> args(2);
                 args[0] = lo.values[0];
                 args[1] = hi.values[0];
-                if (stubGuardedArgsAreValid("range", args)) {
+                if (stubGuardedArgsAreValid(kStubGuardedRange, args)) {
                     const int l = (int)lo.values[0][0];
                     const int h = (int)hi.values[0][0];
                     if (h - l <= kStubMaxValues) {
@@ -2399,7 +2417,8 @@ private:
                 }
             }
         }
-        if (((name == "floor") || (name == "ceil") || (name == "round") || (name == "trunc") || (name == "abs")) && (n == 1)) {
+        const StubRoundingFunction roundingFn = stubRoundingFunction(name);
+        if (roundingFn && (n == 1)) {
             const StubValues a = evaluate(func->child(0), state);
             if (a.values.empty() || (!uniform(a) && !func->isVec())) {
                 return StubValues();
@@ -2410,7 +2429,7 @@ private:
                 SeVec3d v;
                 for (int k = 0; k < 3; ++k) {
                     const double x = a.values[i][k];
-                    v[k] = (name == "floor") ? std::floor(x) : ((name == "ceil") ? std::ceil(x) : ((name == "round") ? SeExpr::round(x) : ((name == "trunc") ? ((x < 0.) ? std::ceil(x) : std::floor(x)) : std::fabs(x))));
+                    v[k] = roundingFn(x);
                 }
                 result.add(v);
             }
@@ -3745,6 +3764,21 @@ SeExprPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
     clipPreferences.setClipComponents(*_dstClip, outputComponents);
 } // SeExprPlugin::getClipPreferences
 
+// Add the frames of each input of src to dst, in order, those that are not already there
+static void
+mergeFrames(const FramesNeeded& src,
+            FramesNeeded* dst)
+{
+    for (FramesNeeded::const_iterator it = src.begin(); it != src.end(); ++it) {
+        vector<OfxTime>& frames = (*dst)[it->first];
+        for (OfxTime t : it->second) {
+            if (std::find(frames.begin(), frames.end(), t) == frames.end()) {
+                frames.push_back(t);
+            }
+        }
+    }
+}
+
 void
 SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
                               FramesNeededSetter& framesNeededSetter)
@@ -3789,21 +3823,7 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
                     return;
                 }
 
-                for (FramesNeeded::const_iterator it = rgbNeeded.begin(); it != rgbNeeded.end(); ++it) {
-                    vector<OfxTime>& frames = framesNeeded[it->first];
-                    for (std::size_t j = 0; j < it->second.size(); ++j) {
-                        bool found = false;
-                        for (std::size_t i = 0; i < frames.size(); ++i) {
-                            if (frames[i] == it->second[j]) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            frames.push_back(it->second[j]);
-                        }
-                    }
-                }
+                mergeFrames(rgbNeeded, &framesNeeded);
             }
         }
     }
@@ -3826,21 +3846,7 @@ SeExprPlugin::getFramesNeeded(const FramesNeededArguments& args,
                 return;
             }
 
-            for (FramesNeeded::const_iterator it = alphaNeeded.begin(); it != alphaNeeded.end(); ++it) {
-                vector<OfxTime>& frames = framesNeeded[it->first];
-                for (std::size_t j = 0; j < it->second.size(); ++j) {
-                    bool found = false;
-                    for (std::size_t i = 0; i < frames.size(); ++i) {
-                        if (frames[i] == it->second[j]) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        frames.push_back(it->second[j]);
-                    }
-                }
-            }
+            mergeFrames(alphaNeeded, &framesNeeded);
         }
     }
 
@@ -3943,8 +3949,8 @@ SeExprPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
             }
         }
 
-        // To determine the ROIs of the expression, we just execute the expression at the 4 corners of the render window
-        // and record what are the calls made to getPixel in order to figure out the Roi.
+        // The inputs read by cpixel() or apixel() in an expression (found by getStubFramesNeeded()) need their whole
+        // RoD: the coordinates are not analyzed.
 
         std::set<Clip*> processedClips;
 
@@ -3995,9 +4001,8 @@ SeExprPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
                 continue;
             }
 
-            // Now evaluate the expression and determine whether the user will call getPixel.
-            // If he/she does, then we have no choice but to ask for the entire input image because we do not know
-            // what the user may need (typically when applying UVMaps and stuff)
+            // The inputs of the calls to cpixel() and apixel() (getStubFramesNeeded()): we have no choice but to ask
+            // for the entire input image, since we do not know which pixels the expression reads (e.g. for UV maps)
             FramesNeeded framesNeeded;
             std::set<int> unknownFrames;
             string error;

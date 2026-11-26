@@ -23,6 +23,7 @@
  */
 
 #include "RunScript.h"
+#include "IOUtility.h" // persistentErrorAndThrow()
 #include "ofxsMacros.h"
 
 #include <cfloat> // DBL_MAX
@@ -415,12 +416,17 @@ RunScriptPlugin::render(const RenderArguments& args)
     const ScriptFileRemover scriptRemover(scriptname);
     string script;
     _script->getValue(script);
-    ssize_t s = write(fd.get(), script.c_str(), script.size());
+    // the whole script, or the render fails: a short write (e.g. disk full, or RLIMIT_FSIZE) would run a truncated
+    // script. A partial write is a failure, and it is not retried: the rest would usually fail too, with the error
+    // (and SIGXFSZ, which kills the host by default), although it may succeed after a signal interrupted the write.
+    ssize_t s;
+    do {
+        s = write(fd.get(), script.c_str(), script.size());
+    } while ((s < 0) && (errno == EINTR));
+    const int writeError = errno;
     fd.reset(); // closed before it is executed (else ETXTBSY on Linux)
-    if (s < 0) {
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+    if (s != (ssize_t)script.size()) {
+        OFX::IO::persistentErrorAndThrow(*this, string("RunScript: cannot write the script to ") + scriptname + ": " + ((s < 0) ? std::strerror(writeError) : "short write (disk full, or a file size limit)"));
     }
 
     // make the script executable

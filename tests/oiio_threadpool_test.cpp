@@ -47,16 +47,6 @@
 
 namespace {
 
-int gFailures = 0;
-
-void check(bool cond, const char* what)
-{
-    std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
 // the host has 4 CPUs: OIIOResize passes MultiThread::getNumCPUs() to ImageBufAlgo, which then uses the pool
 OfxStatus mtNum4(unsigned int* n) { *n = 4; return kOfxStatOK; }
 

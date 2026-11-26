@@ -222,9 +222,8 @@ public:
     png_infop info;
     PNGError error;
 
-private:
-    PNGWriteFile(const PNGWriteFile&); // noncopyable (error is the error pointer of png)
-    PNGWriteFile& operator=(const PNGWriteFile&);
+    PNGWriteFile(const PNGWriteFile&) = delete; // noncopyable (error is the error pointer of png)
+    PNGWriteFile& operator=(const PNGWriteFile&) = delete;
 };
 
 /// The gamma (gAMA, or sRGB and cHRM) chunks of the file
@@ -653,7 +652,7 @@ WritePNGPlugin::encode(const string& filename,
                        const int rowBytes)
 {
     if ((dstNComps != 4) && (dstNComps != 3) && (dstNComps != 2) && (dstNComps != 1)) {
-        setPersistentMessage(Message::eMessageError, "", "PFM: can only write RGBA, RGB, IA or Alpha components images");
+        setPersistentMessage(Message::eMessageError, "", "WritePNG: can only write RGBA, RGB, IA or Alpha components images");
         throwSuiteStatusException(kOfxStatErrFormat);
 
         return;
