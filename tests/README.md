@@ -29,15 +29,37 @@ files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 * `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
 * `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
 * `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
-  `test-exr-multiplanar-tsan`, `test-exr-multiplanar-ubsan`, `test-oiio-layer-menu-tsan`, `test-exr-tsan-debug`,
-  `test-reader-hooks-tsan-debug`, `test-readffmpeg-views-concurrent-tsan` and
-  `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test` doesn't run either.
+  `test-exr-multiplanar-tsan`, `test-exr-multiplanar-ubsan`, `test-oiio-layer-menu-tsan`, `test-oiio-threads-tsan`,
+  `test-ocio-processor-cache-tsan` (and `-renders-tsan`), `test-exr-tsan-debug`, `test-reader-hooks-tsan-debug`,
+  `test-readffmpeg-views-concurrent-tsan` and `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test`
+  doesn't run either: `ctest --test-dir build -R '[-](a|t|ub)san([-]|$)'` (`[-]`: a value of `-R` can't start with `-`).
+  CI's `linux-sanitizers` job (Ubuntu 26.04, #399) builds with it and runs those that are reliable against Ubuntu's
+  libraries, which are not built with TSan: the ASan and UBSan tests, and `test-readffmpeg-views-concurrent-tsan`,
+  `test-writeffmpeg-codec-edit-during-begin-tsan`, `test-oiio-threads-tsan`, `test-oiio-layer-menu-tsan`,
+  `test-ocio-processor-cache-renders-tsan` and `test-reader-hooks-tsan-debug` (10 tests). It excludes (`ctest -E`)
+  `test-ocio-processor-cache-tsan`, `test-exr-tsan`, `test-exr-multiplanar-tsan` and `test-exr-tsan-debug`: TSan
+  reports races that OpenColorIO's file cache (the purges during renders) and OpenEXR order with synchronisation it
+  can't see ([#471](https://github.com/NatronGitHub/openfx-io/issues/471)).
+  `test-ocio-processor-cache-renders-tsan` is `ocio_processor_cache_test_tsan --no-purge-during-renders` (`make
+  test-ocio-processor-cache-renders-tsan`): the same tests without the purges while 3 threads render, so that the
+  concurrent renders (e.g. the GetEnvVariable() race of OpenColorIO < 2.6) are checked in CI. The excluded tests stay
+  registered and run locally, e.g. on macOS, where TSan ignores uninstrumented libraries
+  (`ignore_noninstrumented_modules=1` by default on Darwin). The
+  ThreadSanitizer runs use [`tsan.supp`](tsan.supp) (`TSAN_OPTIONS=suppressions=...`, in CMake and the Makefile): one
+  entry, `called_from_lib:libOpenImageIO_Util.so` (OpenImageIO's thread pool), with its stacks, its reason and what it
+  hides. TSan then ignores the interceptors (allocation, `memcpy`, mutexes) called directly from that library, also
+  their synchronisation, while the accesses of instrumented code, ours included, are still checked. The same entries
+  for OpenEXR and OpenColorIO gave "unlock of an unlocked mutex" reports (their mutexes are also unlocked from code
+  that TSan sees), so the tests that need them are excluded instead.
 
 `ctest --output-on-failure` shows the output of the failing tests only: `tests/ctest_skips.sh build` lists what all
 tests of the last run skipped (e.g. the sections of `test-ffmpeg` whose encoder is missing; CI runs it after ctest,
 and adds one warning per test with skips). A test reports each part it does not run with a line that starts with
 `SKIP: ` or `SKIPPED: ` (after optional blanks), followed by what is not run and why; only those lines are counted, not
-summaries such as "3 plug-ins skipped". A test that can never run on a platform is not registered there.
+summaries such as "3 plug-ins skipped". A line that starts with `NOTE: ` reports something to look at that skipped
+nothing (e.g. a control clip of `test-ffmpeg` that no longer shows its bug): `ctest_skips.sh` lists and counts notes
+apart from the skips (a notice per test in CI), and they don't fail `FFMPEG_READ_TEST_STRICT=1`. A test that can never
+run on a platform is not registered there.
 
 `make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
 with `pkg-config`:
@@ -361,7 +383,7 @@ rendered to another file (it fails a check of `encode()`). The waiting renders m
 deadlock in Natron, which waits for its render threads before endSequenceRender): the test fails after 60 s.
 `test-writeffmpeg-encode-failure-disk-full` (`--encode-failure-disk-full`) does the same, with frame 1 failing to be
 written because the file can not grow (`RLIMIT_FSIZE`, as on a full disk: the real write error path of avio, the
-muxer and `writeToFile()`, without a test hook in the plug-in). It is skipped (exit status 77) on MS Windows, which
+muxer and `writeToFile()`, without a test hook in the plug-in). It is not run (not registered) on MS Windows, which
 has no `RLIMIT_FSIZE`.
 
 `test-writeoiio-disk-full` (issues #292, #362) runs `ofx_render_test OUT --writeoiio-disk-full`: WriteOIIO writes
@@ -372,7 +394,7 @@ ignores write errors, and its JPEG writer exits the process on them when it writ
 default `error_exit()`). An `atexit()` handler restores the limit, reports such an exit, removes the file and exits
 with status 3. The same instance must then write a file that OpenImageIO reads back, with the expected parts,
 channels and views, without the limit. A failed render leaves no partial file (#251,
-`test-writer-remove-partial-file`). It is skipped (exit status 77) on MS Windows.
+`test-writer-remove-partial-file`). It is not run on MS Windows.
 
 `test-writeoiio-files` (issue #362) runs `ofx_render_test OUT --writeoiio-files`: WriteOIIO writes files that
 OpenImageIO writes by name, although the plug-in gives it a proxy: a 2-view EXR (the test host has 2 views) with
@@ -495,7 +517,7 @@ on macOS), or, on MS Windows, a sharing violation when the test opens the file w
 that can not grow beyond 16 KB (`RLIMIT_FSIZE`, as on a full disk): the render must fail with an error that names the
 file (`fwrite()` or `fclose()` fails), and the same instance must then write the whole file without the limit. Then,
 with "Overwrite" unchecked, the file exists but can not be read (mode 000): the render must leave it as it is (this
-part is skipped when running as root). It is skipped (exit status 77) on MS Windows, which has no `RLIMIT_FSIZE`.
+part is skipped when running as root). It is not run on MS Windows, which has no `RLIMIT_FSIZE`.
 
 `test-pfm-read-errors` (issue #296) runs `ofx_render_test OUT --pfm-read-errors`: ReadPFM reads headers with an empty,
 negative or huge size (more than 65535, as in `decode()`): `getRegionOfDefinition` must fail with an error that names
@@ -953,10 +975,10 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   adds tasks could leave a task that no thread runs, and the render waiting forever.
 
 `make test-exr-tsan` builds and runs it with ThreadSanitizer (`-fsanitize=thread`,
-no suppressions). OpenEXR itself is not instrumented, so the race on a shared
+with the suppressions of [`tsan.supp`](tsan.supp)). OpenEXR itself is not instrumented, so the race on a shared
 `Imf::InputFile` is found by the image comparison, not by ThreadSanitizer.
 `make test-exr-tsan-debug` builds and runs this test and `test-reader-hooks` (which renders
-from two threads) with `-fsanitize=thread -DDEBUG`, also with `halt_on_error=1` and no
+from two threads) with `-fsanitize=thread -DDEBUG`, also with `halt_on_error=1` and the same
 suppressions (and `abort_on_error=0`: a race exits with an error, without a crash report). `DEBUG` enables the OFX Support library's property validation and logging,
 which run while other threads render: this catches races in the Support library itself, such as
 those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed by openfx #144.
@@ -1274,8 +1296,8 @@ H.264 with intra refresh in MP4 (libx264 `-intra-refresh 1`, 240 frames, 320x240
 MP4 muxer flags as sync samples, and whose frames the decoder only outputs from the recovery point on. After a seek to
 the ones whose frame_num is 0 (frames 97 and 193), the decoder lacks references, and the next 24 frames differed from
 the sequential ones. The script first checks that the `ffmpeg` CLI shows this (`-ss` at each keyframe compared with the
-sequential decode by pts, `-f framemd5`); otherwise it reports a SKIPPED line that names #442 (FFmpeg may have fixed its
-decoder), and still runs the other checks, which hold either way. Every frame must be the sequential one, in every
+sequential decode by pts, `-f framemd5`); otherwise it prints a `NOTE: ` line that names #442 (FFmpeg may have fixed its
+decoder; not a skip, so it neither counts nor fails strict mode), and still runs the other checks, which hold either way. Every frame must be the sequential one, in every
 order, with 1 and 8 decoder threads: a request whose seek lands on a keyframe whose frame the decoder does not output
 decodes from two keyframes before. Decoding every frame in reverse order must read at most 120 times the file (about
 85 measured; 54 before).
@@ -1422,6 +1444,18 @@ frame 1, so that every third frame could not be decoded), and the movie duration
 from the `ffmpeg` CLI are skipped, each with a `SKIPPED: ` line (also printed by the harness when it exits with status 77),
 and the last line gives their number: `ALL READ-PATH TESTS PASSED (N sections not run)`, or
 `READ-PATH TESTS FAILED (N sections not run)`. `FFMPEG_READ_TEST_KEEP=dir` keeps the clips.
+With `FFMPEG_READ_TEST_STRICT=1` (CI, #198), a skipped section fails the run, with a
+`FAIL: unexpected skip (FFMPEG_READ_TEST_STRICT=1): <reason>` line, unless its reason (the text after `SKIPPED: `)
+matches `FFMPEG_READ_TEST_EXPECTED_SKIPS`, a bash extended regular expression (each CI job lists the skips of its
+FFmpeg, e.g. `'^no hap encoder'` on MS Windows). A section that the harness skips (exit status 77) has the reason
+`no decoder in the linked libavcodec: <clip>`. An invalid expression is an error (exit status 2); one that never
+matches is allowed silently. Off by default, so that a minimal `ffmpeg` CLI still runs the rest.
+`make test-ffmpeg-strict` (ctest `test-ffmpeg-strict`, [`ffmpeg_read_strict_test.sh`](ffmpeg_read_strict_test.sh))
+checks the strict mode in a few seconds, with `ffmpeg`, `ffprobe` and harness stubs that make every section skip (one
+through the harness's exit status 77): the run must pass by default with at least today's number of skipped sections
+(so that a section that skips without a `SKIPPED` line is caught), fail with `FFMPEG_READ_TEST_STRICT=1` (one `FAIL`
+line per skip), pass when every reason is expected, fail the others when only the harness's is, and stop on an
+invalid expression.
 Y'CbCr matrix and range (`check_color`): clips of a constant Y'CbCr color (Y' 120, Cb 80,
 Cr 200, written as raw yuv444p bytes with `perl`, in lossless H.264 with the tags in the
 VUI, and in 10-bit FFV1 in Matroska with the tags in the container only), tagged bt709,
@@ -1443,22 +1477,32 @@ divide-by-zero guard. No performance claim is made.
 per-format tolerances. It exercises the OpenImageIO library the OIIO plugins wrap,
 not the plugin code itself (the OFX-level coverage is `test-ofx`).
 
-### 4. `io-hostdemo` — every plug-in of the installed bundle, rendered by openfx's hostDemo
+### 4. `io-hostdemo` — every plug-in of the installed bundle, rendered by openfx's Python host
 
 Not a `tests/Makefile` target: a ctest test of the CMake build, with `-DIO_HOSTDEMO_TESTS=ON` (CI turns it on),
-which builds openfx's example host `hostDemo` (`openfx/HostSupport/examples`, with HostSupport, which needs the
-system expat) from the `openfx` submodule. It runs after `cmake --install`, on the installed bundle (it is skipped if the
-bundle is not installed):
+which builds openfx's Python host from the `openfx` submodule: the ofxh module (`openfx/HostSupport/python`,
+`OFX_PYTHON_BINDINGS`, with HostSupport, which needs the system expat, and with Python >= 3.10,
+[nanobind](https://github.com/wjakob/nanobind) and [NumPy](https://numpy.org); `-DPython_EXECUTABLE=...` chooses the
+Python). The test runs its hostDemo command line, `python -m ofxhost.hostdemo` (openfx's
+`HostSupport/examples/python/hostdemo-inprocess`, with `OFXHOST_PYTHON` and `PYTHONPATH` set by ctest), which takes
+the same arguments as openfx's C++ `hostDemo` and writes the same images and `--report` fields (#261). It runs after
+`cmake --install`, on the installed bundle (it is skipped if the bundle is not installed):
 
 ```sh
-cmake -S . -B build -DIO_HOSTDEMO_TESTS=ON -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle ...
+cmake -S . -B build -DIO_HOSTDEMO_TESTS=ON -DPython_EXECUTABLE=/opt/local/bin/python3.11 \
+  -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle ...
 cmake --build build && cmake --install build
 ctest --test-dir build -R io-hostdemo --output-on-failure
 # or directly:
-tests/hostdemo/run.sh build/openfx/HostSupport/examples/hostDemo Bundle/IO.ofx.bundle build/io_verify_plugin_loads /tmp/hostdemo
+OFXHOST_PYTHON=/opt/local/bin/python3.11 PYTHONPATH=$PWD/build/openfx/HostSupport/python \
+  tests/hostdemo/run.sh openfx/HostSupport/examples/python/hostdemo-inprocess Bundle/IO.ofx.bundle \
+  build/io_verify_plugin_loads /tmp/hostdemo
 ```
 
-`io-hostdemo-ofx14` runs the same tests in `hostDemo --ofx14` (`HOSTDEMO_ARGS=--ofx14`, work directory
+`run.sh` also runs with openfx's C++ `hostDemo` as its first argument (built with `-DBUILD_EXAMPLE_HOSTS=ON` and
+`cmake --build build --target hostDemo`), as CI's Linux testing-bundle check does.
+
+`io-hostdemo-ofx14` runs the same tests with `--ofx14` (`HOSTDEMO_ARGS=--ofx14`, work directory
 `build/hostdemo-ofx14`), a host that implements only OFX 1.4: only the OFX 1.4 host properties and suites (no
 DrawSuite, plane suite V2 or Vegas suites), no `OfxSetHost`, no StrChoice or Bytes params, and one view (its output
 files are `<prefix>.<t>.ppm`, without the `l`/`r` suffix). Readers, writers and filters must work there as in the
@@ -1497,8 +1541,8 @@ in the bundle (their libraries were not found at build time) are reported, and a
 the test, unless `IO_HOSTDEMO_STRICT=1` (as in CI), which makes both fail. The script needs Python 3 (`PYTHON`). In
 CI, the outputs (`build/hostdemo/out`) are uploaded as an artifact when the job fails.
 
-With `-DIO_HOSTDEMO_TESTS=ON`, the CMake configuration fails if the test can't be added (no bash, no hostDemo, or
-`BUILD_TESTING=OFF`).
+With `-DIO_HOSTDEMO_TESTS=ON`, the CMake configuration fails if the test can't be added (no bash, no Python with
+nanobind, or `BUILD_TESTING=OFF`).
 
 Not tested: ReadOIIO's RAW support (LibRaw). No RAW file can be generated at test time (no writer makes camera RAW
 files), and real camera RAW or DNG files are much larger than the few KB a test file may take.
@@ -1556,15 +1600,17 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `ffmpeg_read_test.cpp`      | Standalone FFmpeg reader-core harness (links `FFmpegFile.cpp`). |
 | `ofx_stubs.cpp`             | Minimal OFX Support stub (`getNumCPUs`) for the reader-core harness. |
 | `run_ffmpeg_read_test.sh`   | Generates known clips and runs the reader harness. |
+| `tsan.supp`                 | ThreadSanitizer suppressions of the `*-tsan` tests: races ordered by uninstrumented libraries, each with its reason and what it hides. |
+| `ffmpeg_read_strict_test.sh` | The strict mode of `run_ffmpeg_read_test.sh` (`FFMPEG_READ_TEST_STRICT`), with `ffmpeg` stubs (`test-ffmpeg-strict`). |
 | `run_oiio_roundtrip_test.sh`| OpenImageIO format roundtrip sanity check. |
 | `ffmpeg_syntax_check.sh`    | Compile check of the FFmpeg plug-ins against the FFmpeg found by pkg-config (e.g. a given FFmpeg version). |
-| `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with openfx's hostDemo (ctest `io-hostdemo`). |
+| `hostdemo/run.sh`           | Renders every plug-in of the installed bundle with a host with hostDemo's command line: openfx's Python host, `ofxhost.hostdemo` (ctest `io-hostdemo`), or the C++ hostDemo (CI's Linux testing-bundle check). |
 | `verify_plugin_loads.cpp`   | Loads an `IO.ofx` with openfx's HostSupport and lists its plug-ins (ctest `io-load`, the CI load checks, `tools/compare_bundles.sh`); linked with a copy of openfx's `ofxhBinary.cpp` that uses `RTLD_NOW` instead of `RTLD_LAZY`, so that a missing symbol makes loading fail. |
 | `check_icons.cmake`         | Every plug-in of the CMake build tree's bundle has its icon, `Contents/Resources/<identifier>.png` (ctest `io-icons`). |
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
-| `ctest_skips.sh`            | Lists the `SKIP: `/`SKIPPED: ` lines of all tests of the last ctest run (`ctest_skips.sh build`), which `ctest --output-on-failure` hides, e.g. the sections of `test-ffmpeg` without their encoder; CI runs it after ctest (#309). |
+| `ctest_skips.sh`            | Lists the `SKIP: `/`SKIPPED: ` lines (and, apart, the `NOTE: ` lines) of all tests of the last ctest run (`ctest_skips.sh build`), which `ctest --output-on-failure` hides, e.g. the sections of `test-ffmpeg` without their encoder; CI runs it after ctest (#309). |
 | `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-writer-render-scale` / `test-writer-int-ranges` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
 
 ## Notes / limitations

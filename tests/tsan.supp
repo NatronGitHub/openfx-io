@@ -1,0 +1,39 @@
+# ThreadSanitizer suppressions for the *-tsan tests (TSAN_OPTIONS=suppressions=..., tests/CMakeLists.txt and
+# tests/Makefile). Only races that a library orders with its own synchronisation, which TSan can't see in code that is
+# not built with TSan. Races in openfx-io's code are fixed, not suppressed. Seen with Ubuntu 26.04's libraries (CI's
+# linux-sanitizers job, runs 45729104322, 45748061028 and 45748096175). macOS doesn't report them: TSan's
+# ignore_noninstrumented_modules defaults to 1 on Darwin, so accesses from uninstrumented libraries (MacPorts'
+# OpenImageIO, OpenEXR, OpenColorIO...) are ignored there.
+#
+# Every entry is called_from_lib:<pattern>. The pattern is a template matched as a substring of the full path of each
+# loaded module (sanitizer_common's TemplateMatch: no anchors or wildcards here), and it must match exactly one loaded
+# library: TSan stops with "called_from_lib suppression '...' is matched against 2 libraries" otherwise
+# (sanitizer_libignore.cpp). An interceptor called directly from that library (malloc/free, operator new/delete,
+# memcpy, pthread_mutex_lock/unlock...) then runs without TSan: ScopedInterceptor ignores its memory accesses
+# (ThreadIgnoreBegin), and SCOPED_TSAN_INTERCEPTOR returns REAL(func)() at once because the thread is in_ignored_lib,
+# so the Mutex*Lock/Unlock calls that record its synchronisation are not made either (GCC 15 libsanitizer
+# tsan/tsan_interceptors_posix.cpp ScopedInterceptor, tsan_interceptors.h SCOPED_TSAN_INTERCEPTOR and
+# MustIgnoreInterceptor). Accesses by instrumented code (openfx-io's, inline library code compiled into our
+# programs, and code of ours that runs on the library's threads) are still checked, but without the happens-before
+# edges of the library's mutexes: data of ours that relied on them would show as a race (none so far), and a mutex
+# that the library locks and code that TSan sees unlocks (or the reverse) is reported as "unlock of an unlocked mutex".
+# What it hides: a race of which one side is such an interceptor call, e.g. the library freeing memory that our code
+# still reads, or our code freeing memory that the library still uses. The libraries have no symbols in these
+# reports, so no entry can name a function.
+
+# OpenImageIO's thread pool: a task (a heap-allocated std::function) is allocated by one worker and deleted by another
+# (both stacks: operator new / operator delete called from libOpenImageIO_Util.so.2.5, no other frame). The queue that
+# passes it is guarded by OIIO::spin_mutex, an atomic flag compiled into the library (ThreadsafeQueue,
+# OpenImageIO src/libutil/thread.cpp: "typedef OIIO::spin_mutex Mutex").
+# (test-oiio-threads-tsan, test-oiio-layer-menu-tsan, test-exr-multiplanar-tsan)
+called_from_lib:libOpenImageIO_Util.so
+
+# Not suppressed (#461 review): OpenEXR's IlmThread task groups and OpenColorIO's file cache show the same kind of
+# false positives with Ubuntu's uninstrumented libraries, but called_from_lib:libOpenEXR- and
+# called_from_lib:libOpenColorIO.so hid those libraries' own mutex interceptors while the same mutexes were unlocked
+# from code that TSan sees (inline header code in our programs, or OpenImageIO), which TSan then reports as "unlock of
+# an unlocked mutex". So CI's linux-sanitizers job doesn't run the TSan tests that go through them
+# (test-ocio-processor-cache-tsan, whose purges during renders are run locally only: CI runs
+# test-ocio-processor-cache-renders-tsan instead; test-exr-tsan, test-exr-multiplanar-tsan, test-exr-tsan-debug:
+# ctest -E in .github/workflows/ci.yml). They still run locally, e.g. on macOS, where TSan ignores uninstrumented
+# libraries. Running them in CI: #471.

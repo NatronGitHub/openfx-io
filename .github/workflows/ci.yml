@@ -1,11 +1,12 @@
 name: Continuous Integration
 
 # Per push/PR: exactly three full CMake builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64): Release, C++17
-# (Natron's Qt5 builds). Extra variants (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests)
-# only run weekly or on demand. Every build, test and dependency build uses CMake (and ctest). The Makefiles stay
-# buildable (Natron's RB-2.6 build-plugins.sh uses them): a weekly Linux step only checks that they still build the
-# plug-ins. Natron's Linux testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes,
-# weekly and on demand, not for pull requests.
+# (Natron's Qt5 builds); and the sanitizer tests, on Linux (linux-sanitizers, in parallel with the others). Extra
+# variants (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests) only run weekly or on demand.
+# Every build, test and dependency build uses CMake (and ctest). The Makefiles stay buildable (Natron's RB-2.6
+# build-plugins.sh uses them): a weekly Linux step only checks that they still build the plug-ins. Natron's Linux
+# testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes, weekly and on demand, not
+# for pull requests.
 #
 # Weekly run (Saturdays): the jobs whose upstream moves (linux: Ubuntu 26.04's updates and runner image; windows:
 # MSYS2 UCRT64, a rolling distribution; macos: MacPorts, updated by "port selfupdate") run every week, even if master
@@ -120,6 +121,10 @@ jobs:
       OPENIMAGEIO_FONTS: /usr/share/fonts/truetype/freefont
       # seexpr211_build.sh's extra CMake arguments (part of the SeExpr cache key): none
       SEEXPR_CMAKE_ARGS: ""
+      # test-ffmpeg (tests/run_ffmpeg_read_test.sh) fails on a skipped section (#198), except this one: the FFV1 encoder
+      # of Ubuntu's FFmpeg 8.0.1 writes bgr0 instead of Bayer
+      FFMPEG_READ_TEST_STRICT: 1
+      FFMPEG_READ_TEST_EXPECTED_SKIPS: '^ffv1 wrote .*, not bayer_rggb16le$'
     defaults:
       run:
         shell: bash -eo pipefail {0}
@@ -132,10 +137,11 @@ jobs:
         run: |
           sudo apt-get update
           # fonts-freefont-ttf: FreeMono, one of the default fonts of OpenImageIO (DroidSans, cour, Courier New, FreeMono),
-          # for OIIOText (io-hostdemo)
+          # for OIIOText (io-hostdemo); python3-dev, nanobind and NumPy: openfx's ofxh module, the host of io-hostdemo
           sudo apt-get install -y cmake bison flex libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
             libgl-dev libegl-dev liblcms2-dev libraw-dev libwebp-dev libtiff-dev libopenjp2-7-dev libpng-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf libexpat1-dev fonts-freefont-ttf
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev ffmpeg patchelf libexpat1-dev fonts-freefont-ttf \
+            python3-dev python3-nanobind nanobind-dev python3-numpy
       - name: Configure a source archive (no .git, no submodules)
         # Like GitHub's source tarballs, git archive has no .git and empty submodule directories: the configure must
         # stop and say how to get the submodules without git (#224), not "git submodule update", which needs .git.
@@ -172,9 +178,11 @@ jobs:
           .github/workflows/seexpr211_build.sh "$GITHUB_WORKSPACE/SeExprBuild" LinuxSDK $SEEXPR_CMAKE_ARGS
       - name: Build (release, C++17, CMake)
         run: |
-          # IO_HOSTDEMO_TESTS: ctest renders every plug-in of the installed bundle with openfx's hostDemo (io-hostdemo)
+          # IO_HOSTDEMO_TESTS: ctest renders every plug-in of the installed bundle with openfx's Python host, with
+          # hostDemo's command line (io-hostdemo), with Ubuntu's Python
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild \
-            -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON
+            -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON \
+            -DPython_EXECUTABLE=/usr/bin/python3
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build
@@ -296,6 +304,59 @@ jobs:
           # testing assets are made from these bundles)
           retention-days: 90
 
+  linux-sanitizers:
+    # The sanitizer variants of the tests (IO_TESTS_SANITIZERS: ThreadSanitizer, AddressSanitizer and UBSan builds of
+    # the test programs, e.g. the race tests of #319 and #250), which no other job runs (#399). A job of its own, run
+    # when the "linux" job runs and in parallel with it, so that the required jobs don't wait for it, and nothing waits
+    # for it (macos needs linux and windows only). It builds the plug-ins and the tests (without SeExpr, which no
+    # sanitizer test uses: no SeExpr build) and runs only the sanitizer tests (not all of them: see below). Ubuntu
+    # runners are not the scarce ones (macOS and Windows are).
+    name: Linux sanitizers (Ubuntu 26.04)
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      # OIIOText's default font (see the "linux" job)
+      OPENIMAGEIO_FONTS: /usr/share/fonts/truetype/freefont
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4.1.1
+        with:
+          submodules: recursive
+      - name: Install Ubuntu system packages
+        run: |
+          sudo apt-get update
+          # ffmpeg: test-readffmpeg-views-concurrent-tsan makes its clip with the ffmpeg CLI; openimageio-tools: the
+          # imported targets of OpenImageIO's CMake package (OpenImageIO::iconvert...) need its programs;
+          # fonts-freefont-ttf: OIIOText's default font (test-ofx14-scan-asan renders it), as in the "linux" job
+          sudo apt-get install -y cmake libopencolorio-dev libopenimageio-dev openimageio-tools libfmt-dev libopenexr-dev libimath-dev \
+            libgl-dev libegl-dev liblcms2-dev libraw-dev libpng-dev libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libexpat1-dev ffmpeg fonts-freefont-ttf
+      - name: Build (C++17, CMake, IO_TESTS_SANITIZERS)
+        run: |
+          # OFX_IO_REQUIRE_ALL: a missing library fails here, instead of silently dropping its sanitizer tests
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON -DOFX_IO_WITH_SEEXPR=OFF \
+            -DIO_TESTS_SANITIZERS=ON
+          cmake --build build -j4
+      - name: Sanitizer tests
+        run: |
+          # ThreadSanitizer's shadow memory needs at most 28 bits of mmap randomization: the runners' kernels may use
+          # more (vm.mmap_rnd_bits=32), and the TSan programs then fail at start ("unexpected memory mapping")
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          # the tests that IO_TESTS_SANITIZERS adds, named *-tsan, *-asan, *-ubsan, *-tsan-debug, *-asan-full...
+          # (tests/CMakeLists.txt); no match fails. ([-], not -: ctest takes a value that starts with - for an option)
+          # Not in CI (#471): the ThreadSanitizer tests whose OpenColorIO or OpenEXR calls give false races with
+          # Ubuntu's uninstrumented libraries (their own synchronisation is invisible to TSan), which tests/tsan.supp
+          # can't suppress without "unlock of an unlocked mutex" reports (see there): test-ocio-processor-cache-tsan (its
+          # purges during renders; test-ocio-processor-cache-renders-tsan runs the rest) and the exr-*-tsan tests. They
+          # stay registered and run locally (e.g. macOS, where TSan ignores uninstrumented libraries). Runs here: the ASan
+          # and UBSan tests, and 6 TSan tests (10 tests).
+          ctest --test-dir build --output-on-failure --no-tests=error -R '[-](a|t|ub)san([-]|$)' \
+            -E '^test-(ocio-processor-cache-tsan|exr-tsan|exr-multiplanar-tsan|exr-tsan-debug)$'
+
   linux-natron:
     # Natron's Linux testing bundle. Natron's CI (RB-2.6 .github/workflows/ci.yml) runs its Linux tests on
     # ubuntu-24.04 (there is no pyside2 on 26.04), with the openfx-io-build-ubuntu_24-testing.zip asset of the
@@ -374,12 +435,14 @@ jobs:
           .github/workflows/seexpr211_build.sh "$GITHUB_WORKSPACE/SeExprBuild" LinuxSDK $SEEXPR_CMAKE_ARGS
       - name: Build (release, C++17, CMake)
         run: |
-          # IO_HOSTDEMO_TESTS: builds openfx's hostDemo and io_verify_plugin_loads, for the checks below (only the
-          # load checks of ctest are run: the other tests are the "linux" job's)
+          # BUILD_EXAMPLE_HOSTS: openfx's C++ hostDemo (not built by default: openfx is EXCLUDE_FROM_ALL), and
+          # io_verify_plugin_loads, for the checks below (only the load checks of ctest are run: the other tests,
+          # including io-hostdemo, on openfx's Python host, are the "linux" job's)
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON -DSEEXPR_HOME=$PWD/SeExprBuild \
             -DFFMPEG_PKG_CONFIG_PATH="$PWD/FFmpegBuild/lib/pkgconfig" -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle \
-            -DIO_HOSTDEMO_TESTS=ON
+            -DBUILD_EXAMPLE_HOSTS=ON
           cmake --build build -j4
+          cmake --build build -j4 --target hostDemo
           # installs Bundle/IO.ofx.bundle
           cmake --install build
       - name: Load the build-tree and installed IO.ofx (ctest io-load, io-icons, io-load-installed)
@@ -502,6 +565,12 @@ jobs:
       # ffprobe8), which the tests call as ffmpeg and ffprobe.
       FFMPEG_PKG_CONFIG_PATH: /opt/local/libexec/ffmpeg8/lib/pkgconfig
       FFMPEG_BIN_SUFFIX: "8"
+      # test-ffmpeg (tests/run_ffmpeg_read_test.sh) fails on a skipped section (#198), except these, which depend on
+      # the options and version of MacPorts' ffmpeg8 (hap: libsnappy; FFV1 Bayer: bgr0, as Ubuntu's FFmpeg 8.0.1) or
+      # on the runner (VideoToolbox's HEVC encoder, which a virtual machine may not have). Not yet seen in a run: to
+      # be narrowed from the first ones.
+      FFMPEG_READ_TEST_STRICT: 1
+      FFMPEG_READ_TEST_EXPECTED_SKIPS: '^(no hap encoder|ffv1 wrote .*, not bayer_rggb16le$|no hevc_videotoolbox encoder|the ffmpeg CLI could not encode .* with hevc_videotoolbox:|hevc_videotoolbox wrote )'
     defaults:
       run:
         shell: bash -eo pipefail {0}
@@ -520,7 +589,9 @@ jobs:
           # Use only MacPorts tools and libraries: take Homebrew out of PATH.
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           sudo port -N selfupdate
-          sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng expat
+          # python311, py311-nanobind, py311-numpy: openfx's ofxh module, the host of io-hostdemo
+          sudo port -N install pkgconfig cmake bison flex gsed libomp openimageio opencolorio openexr libraw ffmpeg8 libpng expat \
+            python311 py311-nanobind py311-numpy
           port installed
       - name: Target the runner's macOS
         # CI bundles aren't shipped: target the runner's macOS (e.g. 15.0 on macos-15), for the later steps (SeExpr,
@@ -553,7 +624,7 @@ jobs:
           # for release builds. The tests that link ReadOIIO build its RAW support, as the bundle (IO_TESTS_WITH_LIBRAW).
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DOFX_CXX_STANDARD=17 \
             -DSEEXPR_HOME=$SEEXPR_HOME -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DOFX_DEPLOY_BUNDLES=ON \
-            -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON
+            -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON -DPython_EXECUTABLE=/opt/local/bin/python3.11
           cmake --build build -j3
           # installs Bundle/IO.ofx.bundle
           cmake --install build
@@ -632,6 +703,10 @@ jobs:
     env:
       # pkg-config directory of the FFmpeg to build against (an MSYS2 path); empty: MSYS2's (ffmpeg:p)
       FFMPEG_PKG_CONFIG_PATH: ""
+      # test-ffmpeg (tests/run_ffmpeg_read_test.sh) fails on a skipped section (#198), except this one: MSYS2's FFmpeg
+      # has no hap encoder (no libsnappy)
+      FFMPEG_READ_TEST_STRICT: 1
+      FFMPEG_READ_TEST_EXPECTED_SKIPS: '^no hap encoder'
     defaults:
       run:
         shell: msys2 {0}
@@ -650,9 +725,10 @@ jobs:
           install: >-
             git base-devel unzip perl
           # pacboy's "name:p" is ${MINGW_PACKAGE_PREFIX}-name for the msystem above: no hard-coded environment
-          # (gdb: tests/hostdemo/hang.sh dumps the stacks of a hung hostDemo or reader_window, #244)
+          # (gdb: tests/hostdemo/hang.sh dumps the stacks of a hung hostDemo or reader_window, #244; python, nanobind,
+          # python-numpy: openfx's ofxh module, the host of io-hostdemo)
           pacboy: >-
-            cc:p pkgconf:p python:p cmake:p ninja:p
+            cc:p pkgconf:p python:p python-numpy:p nanobind:p cmake:p ninja:p
             openimageio:p opencolorio:p openexr:p libraw:p ffmpeg:p seexpr:p libpng:p fmt:p expat:p
             gdb:p
       - name: Build (release, C++17, CMake)
@@ -662,7 +738,8 @@ jobs:
           ffpc=; [ -z "$FFMPEG_PKG_CONFIG_PATH" ] || ffpc="$(cygpath -m "$FFMPEG_PKG_CONFIG_PATH")"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON \
             -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")" -DFFMPEG_PKG_CONFIG_PATH="$ffpc" \
-            -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON
+            -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$PWD")" -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON \
+            -DPython_EXECUTABLE="$(cygpath -m "$MINGW_PREFIX/bin/python.exe")"
           cmake --build build -j4
           # installs Bundle/IO.ofx.bundle
           cmake --install build

@@ -183,12 +183,12 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
 | `OFX_PLUGIN_RPATH` | empty | Extra install rpath directories of the plug-in (`;`-separated; ignored on Windows). |
 | `OFX_USE_OPENMP` | ON | Link [OpenMP](https://www.openmp.org) when LibRaw's pkg-config file asks for it. |
-| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt), the same as [`tests/Makefile`](tests/Makefile)'s), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load` and `io-icons`). See [tests/README.md](tests/README.md). |
+| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt), the same as [`tests/Makefile`](tests/Makefile)'s), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load`, `io-icons`, and `io-cmake-unknown-arch`: configuring for a system without an OFX bundle folder, `ARCHDIR`, must fail). See [tests/README.md](tests/README.md). |
 | `IO_TESTS_WITH_LIBRAW` | ON | The tests that link ReadOIIO also build its RAW support, when the bundle has it (`tests/Makefile`'s `WITH_LIBRAW=1`). |
 | `IO_TESTS_TIMEOUT` | 1800 | Time limit of each `test-*` test, in seconds (`test-ffmpeg`: twice as much), so that a hung test fails. |
 | `IO_TESTS_FUZZ_OPS` | 2000 | Operations of each short fuzz run of `test-ocio-anim` (`tests/Makefile`'s `FUZZ_OPS`). |
-| `IO_TESTS_SANITIZERS` | OFF | Also build and run the sanitizer variants that `make test` doesn't run: `test-ofx14-scan-asan`, `test-exr-tsan`, `test-exr-ubsan` and `test-exr-tsan-debug` (not with MinGW). |
-| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [hostDemo](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples); `ctest` renders every plug-in of the installed bundle with it (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `hostDemo --ofx14` (`io-hostdemo-ofx14`). Needs `BUILD_TESTING`. |
+| `IO_TESTS_SANITIZERS` | OFF | Also build and run the ThreadSanitizer, AddressSanitizer and UBSan variants of the tests that `make test` doesn't run (14 tests, `*-tsan`, `*-asan`, `*-ubsan`...: the list is in [`tests/CMakeLists.txt`](tests/CMakeLists.txt) and [tests/README.md](tests/README.md); not with MinGW). CI's `linux-sanitizers` job builds with it and runs 10 of them, those that are reliable against Ubuntu's libraries, which are not built with TSan ([#471](https://github.com/NatronGitHub/openfx-io/issues/471)). |
+| `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [Python host](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples/python) (the ofxh module: needs Python >= 3.10, [nanobind](https://github.com/wjakob/nanobind) and [NumPy](https://numpy.org); `Python_EXECUTABLE` chooses the Python); `ctest` renders every plug-in of the installed bundle with its hostDemo command line, `ofxhost.hostdemo` (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `--ofx14` (`io-hostdemo-ofx14`). Needs `BUILD_TESTING`. |
 
 ## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
 
@@ -238,12 +238,13 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
 - **Linux**: install the development packages of the libraries above from the distribution. On [Ubuntu
   26.04](https://packages.ubuntu.com/resolute/) (whose [FFmpeg](https://packages.ubuntu.com/resolute/libavcodec-dev) is 8.0.1): `cmake libgl-dev libegl-dev libopencolorio-dev libopenimageio-dev libopenexr-dev libimath-dev libraw-dev
   libpng-dev libwebp-dev libtiff-dev libopenjp2-7-dev libavcodec-dev libavformat-dev libavutil-dev
-  libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools` for the tests and hostDemo.
+  libswscale-dev`, plus `libfmt-dev libexpat1-dev ffmpeg openimageio-tools python3-dev python3-nanobind nanobind-dev python3-numpy` for the tests and
+  openfx's Python host.
   Ubuntu doesn't package SeExpr 2.11: CI builds it from source (with [`bison`](https://www.gnu.org/software/bison/) and [`flex`](https://github.com/westes/flex)) and passes its
   prefix in `SEEXPR_HOME`.
 - **macOS**: CI uses MacPorts and Xcode's clang (`/usr/bin/clang++`), with `/opt/local/bin` first in
   `PATH` so that MacPorts' `pkg-config` and `cmake` are used:
-  `port install pkgconfig cmake openimageio opencolorio openexr libraw ffmpeg8 libpng libomp`.
+  `port install pkgconfig cmake openimageio opencolorio openexr libraw ffmpeg8 libpng libomp` (and `python311 py311-nanobind py311-numpy` for `IO_HOSTDEMO_TESTS`).
   Link the FFmpeg plug-ins with the FFmpeg that OpenImageIO links
   (`FFMPEG_PKG_CONFIG_PATH=/opt/local/libexec/ffmpeg8/lib/pkgconfig`). If they would link two different
   FFmpeg builds with the same library names, the build stops, because the bundle could only contain one of

@@ -14,7 +14,7 @@
 #   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
 #   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
 #                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug,
-#                         test-ocio-processor-cache-tsan, test-oiio-layer-menu-tsan,
+#                         test-ocio-processor-cache-tsan (and -renders-tsan), test-oiio-layer-menu-tsan,
 #                         test-readffmpeg-views-concurrent-tsan, test-writeffmpeg-codec-edit-during-begin-tsan
 #                         (needs a compiler with -fsanitize=thread,undefined; not with MinGW); default OFF
 # (tests/Makefile's bench-exr is not a test: run it with make.)
@@ -146,7 +146,8 @@ function(io_test_program name)
 endfunction()
 
 # io_test(<name> [DIR <work directory>] [TIMEOUT <seconds>] [ENV <var=value>...] COMMAND <program> [<arguments>...])
-# A ctest test, run in build/tests. DIR: removed and created again before the run (tests/run_test.cmake). TIMEOUT
+# A ctest test, run in build/tests. DIR: removed and created again before the run (tests/run_test.cmake), which fails
+# on any non-zero exit status, so that a DIR test can't be skipped with SKIP_RETURN_CODE (77 fails too). TIMEOUT
 # (default IO_TESTS_TIMEOUT): a hung test fails instead of running into the CI job's time limit.
 set(IO_TESTS_TIMEOUT 1800 CACHE STRING "Time limit of each test-* ctest test, in seconds (test-ffmpeg: twice as much)")
 function(io_test name)
@@ -169,6 +170,10 @@ endfunction()
 set(_io_ocio_env "OCIO=${T}/test.ocio")
 set(_io_swap_env "OCIO=${T}/swap.ocio")
 set(_io_asan_env "ASAN_OPTIONS=detect_leaks=0 $ENV{ASAN_OPTIONS}")
+# the options of the ThreadSanitizer runs: stop at the first report, and the suppressions of tsan.supp (the races that
+# uninstrumented libraries order themselves)
+set(_io_tsan_options "halt_on_error=1 suppressions='${T}/tsan.supp'")
+set(_io_tsan_opt_env "TSAN_OPTIONS=${_io_tsan_options} $ENV{TSAN_OPTIONS}")
 find_program(IO_BASH NAMES bash)
 
 # ---- test-ffmpeg: the FFmpeg reader-core harness (FFmpegFile.cpp), on clips that the ffmpeg CLI generates
@@ -184,6 +189,8 @@ if(_io_t_ffmpeg)
     math(EXPR _io_t "${IO_TESTS_TIMEOUT} * 2")
     io_test(test-ffmpeg TIMEOUT ${_io_t} ENV "FFMPEG_READ_TEST_BIN=$<TARGET_FILE:ffmpeg_read_test>"
             COMMAND "${IO_BASH}" "${T}/run_ffmpeg_read_test.sh")
+    # test-ffmpeg-strict: its strict mode (FFMPEG_READ_TEST_STRICT, #198), with ffmpeg stubs (no clip, a few seconds)
+    io_test(test-ffmpeg-strict COMMAND "${IO_BASH}" "${T}/ffmpeg_read_strict_test.sh")
   endif()
 endif()
 
@@ -270,7 +277,7 @@ if(TARGET io_tests_ofx)
   if(IO_TESTS_SANITIZERS)
     # test-readffmpeg-views-concurrent-tsan: the same with ThreadSanitizer
     io_test_program(ofx_render_test_tsan OFX THREADS SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs} SANITIZE -fsanitize=thread)
-    io_test(test-readffmpeg-views-concurrent-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+    io_test(test-readffmpeg-views-concurrent-tsan ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
             COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i291.tsan.mov" --views-concurrent)
   endif()
   # test-writeffmpeg-dnxhd-profiles (#305): each DNxHD/DNxHR Codec Profile in 1080p and 720p at 23.976 to 60 fps: the
@@ -279,14 +286,14 @@ if(TARGET io_tests_ofx)
   # test-writeffmpeg-encode-failure (#288): frame 1 is aborted or fails a check of encode() while other threads wait
   # for their turn: they fail instead of waiting forever (the test exits after 60 s; the ctest time limit is a backstop)
   io_test(test-writeffmpeg-encode-failure TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288.mov" --encode-failure)
-  # test-writeffmpeg-encode-failure-disk-full (#288): the same, frame 1 fails to be written (RLIMIT_FSIZE); skipped
-  # (exit status 77) on MS Windows
-  io_test(test-writeffmpeg-encode-failure-disk-full TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288-disk-full.mov" --encode-failure-disk-full)
-  set_tests_properties(test-writeffmpeg-encode-failure-disk-full PROPERTIES SKIP_RETURN_CODE 77)
-  # test-writeoiio-disk-full (#292, #362): WriteOIIO, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
-  # disk): the render fails, and the process survives; skipped (exit status 77) on MS Windows
-  io_test(test-writeoiio-disk-full ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i292" --writeoiio-disk-full)
-  set_tests_properties(test-writeoiio-disk-full PROPERTIES SKIP_RETURN_CODE 77)
+  if(NOT WIN32)
+    # test-writeffmpeg-encode-failure-disk-full (#288): the same, frame 1 fails to be written (RLIMIT_FSIZE: not on MS
+    # Windows, where it would always be skipped)
+    io_test(test-writeffmpeg-encode-failure-disk-full TIMEOUT 300 ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i288-disk-full.mov" --encode-failure-disk-full)
+    # test-writeoiio-disk-full (#292, #362): WriteOIIO, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
+    # disk): the render fails, and the process survives (not on MS Windows)
+    io_test(test-writeoiio-disk-full ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i292" --writeoiio-disk-full)
+  endif()
   # test-writeoiio-files (#362, #171): WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which
   # OpenImageIO writes by name, are written and read back; a zstd EXR must warn if the file is not zstd
   io_test(test-writeoiio-files ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i362" --writeoiio-files)
@@ -309,16 +316,17 @@ if(TARGET io_tests_ofx)
   if(IO_TESTS_SANITIZERS AND NOT WIN32)
     # test-writeffmpeg-codec-edit-during-begin-tsan: the same with ThreadSanitizer (ofx_render_test_tsan, above), no
     # data race in WriteFFmpeg
-    io_test(test-writeffmpeg-codec-edit-during-begin-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+    io_test(test-writeffmpeg-codec-edit-during-begin-tsan ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
             COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i319tsan.mov" --codec-edit-during-begin)
   endif()
   # test-writeffmpeg-pixfmt-choice (#218): the pixel format that WriteFFmpeg selects fits the Pref. Pixel Coding
   # (FFV1: yuv422p, not yuv440p, for 4:2:2)
   io_test(test-writeffmpeg-pixfmt-choice ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i218" --pixfmt-choice)
-  # test-pfm-write-errors (#294): WritePFM fails the render when the file can not grow (RLIMIT_FSIZE), and keeps an
-  # unreadable file when "Overwrite" is unchecked; skipped (exit status 77) on MS Windows
-  io_test(test-pfm-write-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-write-errors)
-  set_tests_properties(test-pfm-write-errors PROPERTIES SKIP_RETURN_CODE 77)
+  if(NOT WIN32)
+    # test-pfm-write-errors (#294): WritePFM fails the render when the file can not grow (RLIMIT_FSIZE), and keeps an
+    # unreadable file when "Overwrite" is unchecked (not on MS Windows)
+    io_test(test-pfm-write-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-write-errors)
+  endif()
   # test-pfm-read-errors (#296): ReadPFM's getRegionOfDefinition fails on a header with an empty, negative or huge size
   io_test(test-pfm-read-errors ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --pfm-read-errors)
   # test-writer-render-scale (#438): a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render
@@ -386,8 +394,14 @@ if(TARGET io_tests_ofx)
     io_test_program(ocio_processor_cache_test_tsan OFX THREADS SOURCES ${T}/ocio_processor_cache_test.cpp ${_io_ocio_pc_srcs}
                     DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} SANITIZE -fsanitize=thread LIBS ${_io_gl_libs})
     io_test(test-ocio-processor-cache-tsan DIR "${B}/.ocio_processor_cache_tsan"
-            ENV "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+            ENV "${_io_tsan_opt_env}"
             COMMAND $<TARGET_FILE:ocio_processor_cache_test_tsan> "${B}/.ocio_processor_cache_tsan")
+    # test-ocio-processor-cache-renders-tsan: the same without the purges during renders, whose only reports with
+    # uninstrumented OpenColorIO libraries are false positives (CI runs this one, not the one above: #471)
+    io_test(test-ocio-processor-cache-renders-tsan DIR "${B}/.ocio_processor_cache_renders_tsan"
+            ENV "${_io_tsan_opt_env}"
+            COMMAND $<TARGET_FILE:ocio_processor_cache_test_tsan> --no-purge-during-renders
+                    "${B}/.ocio_processor_cache_renders_tsan")
   endif()
 
   # test-ocio-anim: the animated colorspaces of GenericOCIO, in a host that animates strings and choices like Natron,
@@ -419,7 +433,7 @@ if(TARGET io_tests_ofx)
     # test-oiio-threads-tsan: the same with ThreadSanitizer (the instances are counted from several threads, #250)
     io_test_program(oiio_threadpool_test_tsan OFX THREADS SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs}
                     ${S}/OIIO/OIIOResize.cpp INCLUDES ${S}/openfx/Support/Plugins/include SANITIZE -fsanitize=thread)
-    io_test(test-oiio-threads-tsan ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+    io_test(test-oiio-threads-tsan ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
             COMMAND oiio_threadpool_test_tsan)
   endif()
 
@@ -464,7 +478,7 @@ if(TARGET io_tests_ofx)
     io_test_program(oiio_layer_menu_test_tsan OFX THREADS SOURCES ${_io_layer_menu_srcs} DEFINITIONS NDEBUG
                     SANITIZE -fsanitize=thread)
     io_test(test-oiio-layer-menu-tsan DIR "${B}/.oiio_layer_menu_tsan" ENV "${_io_ocio_env}"
-            "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}" COMMAND $<TARGET_FILE:oiio_layer_menu_test_tsan> "${B}/.oiio_layer_menu_tsan")
+            "${_io_tsan_opt_env}" COMMAND $<TARGET_FILE:oiio_layer_menu_test_tsan> "${B}/.oiio_layer_menu_tsan")
   endif()
 
   # test-png-corrupt: ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files fail cleanly (no crash, no
@@ -615,21 +629,23 @@ if(TARGET io_tests_ofx)
             COMMAND ${_p} --full --scan "${B}/.ofx14scanfull")
 
     if(IO_TESTS_SANITIZERS AND NOT WIN32)
-      # test-ofx14-scan-asan: the same with AddressSanitizer
+      # test-ofx14-scan-asan: the same with AddressSanitizer (without LeakSanitizer, as the other ASan tests: the
+      # OfxPlugin structs of the Support library's generatePlugInfo() are only deleted when a plug-in is unloaded,
+      # never at exit)
       io_test_program(ofx14_host_test_asan OFX THREADS SOURCES ${_io_ofx14_srcs}
                       DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_ofx14_incs} SANITIZE ${_io_asan} LIBS ${_io_libs})
       set(_p $<TARGET_FILE:ofx14_host_test_asan>)
-      io_test(test-ofx14-scan-asan DIR "${B}/.ofx14scanasan" ENV "${_io_ocio_env}"
+      io_test(test-ofx14-scan-asan DIR "${B}/.ofx14scanasan" ENV "${_io_ocio_env}" "${_io_asan_env}"
               COMMAND ${_p} --scan "${B}/.ofx14scanasan")
-      io_test(test-ofx14-scan-asan-full DIR "${B}/.ofx14scanasanfull" ENV "${_io_ocio_env}"
+      io_test(test-ofx14-scan-asan-full DIR "${B}/.ofx14scanasanfull" ENV "${_io_ocio_env}" "${_io_asan_env}"
               COMMAND ${_p} --full --scan "${B}/.ofx14scanasanfull")
       # test-exr-tsan: test-exr with ThreadSanitizer
       io_test_program(exr_read_test_tsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       SANITIZE -fsanitize=thread)
-      io_test(test-exr-tsan DIR "${B}/.exr_read_tsan" ENV "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+      io_test(test-exr-tsan DIR "${B}/.exr_read_tsan" ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> "${B}/.exr_read_tsan")
       io_test(test-exr-multiplanar-tsan DIR "${B}/.exr_read_multiplanar_tsan" ENV "${_io_ocio_env}"
-              "TSAN_OPTIONS=halt_on_error=1 $ENV{TSAN_OPTIONS}"
+              "${_io_tsan_opt_env}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> --multiplanar "${B}/.exr_read_multiplanar_tsan")
       # test-exr-ubsan: with UndefinedBehaviorSanitizer, stopping at the first error, with an allocator that fills new
       # memory with a pattern (tests/Makefile's test-exr-ubsan)
@@ -642,7 +658,7 @@ if(TARGET io_tests_ofx)
               COMMAND $<TARGET_FILE:exr_read_test_ubsan> --multiplanar "${B}/.exr_read_multiplanar_ubsan")
       # test-exr-tsan-debug: test-exr and test-reader-hooks, DEBUG builds (the Support library's property validation
       # and logging) with ThreadSanitizer
-      set(_io_tsan_env "${_io_ocio_env}" "TSAN_OPTIONS=halt_on_error=1 abort_on_error=0 $ENV{TSAN_OPTIONS}")
+      set(_io_tsan_env "${_io_ocio_env}" "TSAN_OPTIONS=${_io_tsan_options} abort_on_error=0 $ENV{TSAN_OPTIONS}")
       io_test_program(exr_read_test_tsan_debug OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       DEFINITIONS DEBUG
                       SANITIZE -fsanitize=thread)

@@ -1252,6 +1252,23 @@ GenericOCIO::apply(double time,
 }
 
 #ifdef OFX_IO_USING_OCIO
+#if OCIO_VERSION_HEX < 0x02060000
+// the mutex of OCIOOptimizedProcessorLock (GenericOCIO.h): it guards OpenColorIO's static GetEnvVariable() string
+static std::mutex&
+ocioOptimizedProcessorMutex()
+{
+    static std::mutex m; // (a function-local static: initialized once, thread-safely, C++11 [stmt.dcl]/4)
+    return m;
+}
+#endif
+
+OCIOOptimizedProcessorLock::OCIOOptimizedProcessorLock()
+#if OCIO_VERSION_HEX < 0x02060000
+    : _lock(ocioOptimizedProcessorMutex())
+#endif
+{
+}
+
 void
 OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxPointD& renderScale)
 {
@@ -1292,8 +1309,11 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
             OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels,
                                       OCIO::BIT_DEPTH_F32, // For now, only float
                                       sizeof(float), pixelBytes, _dstRowBytes);
-            OCIO::ConstCPUProcessorRcPtr cpuproc = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32,
-                                                                                   OCIO::OPTIMIZATION_DEFAULT);
+            OCIO::ConstCPUProcessorRcPtr cpuproc;
+            {
+                OCIOOptimizedProcessorLock lock;
+                cpuproc = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32, OCIO::OPTIMIZATION_DEFAULT);
+            }
             cpuproc->apply(img);
         }
     } catch (OCIO::Exception& e) {

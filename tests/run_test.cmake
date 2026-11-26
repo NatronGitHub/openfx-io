@@ -3,7 +3,9 @@
 #
 #   cmake -DDIR=<dir> -P run_test.cmake -- <program> [<arguments>...]
 #
-# removes DIR, creates it, then runs the program, and fails if the program fails (or doesn't exit).
+# removes DIR, creates it, then runs the program, and fails if the program fails (or doesn't exit). Every non-zero exit
+# status fails, also 77: cmake -P can't exit with the program's status (cmake_language(EXIT) needs CMake 3.29), so a
+# test run by this script can't use ctest's SKIP_RETURN_CODE.
 
 set(_cmd "")
 set(_found OFF)
@@ -23,6 +25,8 @@ if(DIR)
   file(MAKE_DIRECTORY "${DIR}")
 endif()
 execute_process(COMMAND ${_cmd} RESULT_VARIABLE _status)
-if(NOT _status EQUAL 0)
+if(_status EQUAL 77)
+  message(FATAL_ERROR "${_cmd}: exit status 77 (skipped), which run_test.cmake can't pass to ctest: a failure")
+elseif(NOT _status EQUAL 0)
   message(FATAL_ERROR "${_cmd}: ${_status}")
 endif()

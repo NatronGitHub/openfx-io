@@ -133,6 +133,10 @@ ofx_render_test: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) ../PFM/ReadP
 	$(CXX) $(OFX_CXXFLAGS) $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) $(filter-out %.h,$^) $(OFX_LIBS) \
 	    $(if $(HAVE_PNG),$(shell $(PKGCONF) --libs libpng) -lz,) -o $@
 
+# the options of the ThreadSanitizer runs (the -tsan targets): stop at the first report, and the suppressions of
+# tsan.supp (the races that uninstrumented libraries order themselves)
+TSAN_RUN_OPTIONS := halt_on_error=1 suppressions='$(CURDIR)/tsan.supp'
+
 # the same with ThreadSanitizer (test-readffmpeg-views-concurrent-tsan, test-writeffmpeg-codec-edit-during-begin-tsan)
 ofx_render_test_tsan: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) -fsanitize=thread -pthread $(filter-out %.h,$^) $(OFX_LIBS) -o $@
@@ -142,7 +146,7 @@ ofx_render_test_tsan: ofx_render_test.cpp ofx_test_host.h $(PLUGIN_SRCS) $(OFX_S
 .PHONY: test-writeffmpeg-codec-edit-during-begin-tsan clean-writeffmpeg-codec-edit-during-begin-tsan
 clean: clean-writeffmpeg-codec-edit-during-begin-tsan
 test-writeffmpeg-codec-edit-during-begin-tsan: ofx_render_test_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./ofx_render_test_tsan $(CURDIR)/.render_out.mov.i319tsan.mov --codec-edit-during-begin
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./ofx_render_test_tsan $(CURDIR)/.render_out.mov.i319tsan.mov --codec-edit-during-begin
 clean-writeffmpeg-codec-edit-during-begin-tsan:
 	rm -rf .render_out.mov.i319tsan.mov
 
@@ -205,16 +209,19 @@ ocio_processor_cache_test: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_
 ocio_processor_cache_test_tsan: ocio_processor_cache_test.cpp ofx_test_host.h $(OCIO_PC_SRCS) $(OFX_SUPPORT)
 	$(CXX) $(OFX_CXXFLAGS) $(OCIO_CDL_CXXFLAGS) -fsanitize=thread -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OCIO_CDL_LIBS) -o $@
 
-.PHONY: test-ocio-processor-cache test-ocio-processor-cache-tsan clean-ocio-processor-cache
+.PHONY: test-ocio-processor-cache test-ocio-processor-cache-tsan test-ocio-processor-cache-renders-tsan clean-ocio-processor-cache
 test: test-ocio-processor-cache
 clean: clean-ocio-processor-cache
 test-ocio-processor-cache: ocio_processor_cache_test
 	rm -rf .ocio_processor_cache && ./ocio_processor_cache_test $(CURDIR)/.ocio_processor_cache
 test-ocio-processor-cache-tsan: ocio_processor_cache_test_tsan
-	rm -rf .ocio_processor_cache_tsan && TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./ocio_processor_cache_test_tsan $(CURDIR)/.ocio_processor_cache_tsan
+	rm -rf .ocio_processor_cache_tsan && TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./ocio_processor_cache_test_tsan $(CURDIR)/.ocio_processor_cache_tsan
+# the same without the purges during renders (ctest's test-ocio-processor-cache-renders-tsan, the one CI runs)
+test-ocio-processor-cache-renders-tsan: ocio_processor_cache_test_tsan
+	rm -rf .ocio_processor_cache_renders_tsan && TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./ocio_processor_cache_test_tsan --no-purge-during-renders $(CURDIR)/.ocio_processor_cache_renders_tsan
 clean-ocio-processor-cache:
 	rm -rf ocio_processor_cache_test ocio_processor_cache_test.dSYM ocio_processor_cache_test_tsan ocio_processor_cache_test_tsan.dSYM \
-	       .ocio_processor_cache .ocio_processor_cache_tsan
+	       .ocio_processor_cache .ocio_processor_cache_tsan .ocio_processor_cache_renders_tsan
 
 # OCIOColorSpace (with the OpenGL sources of ocio_cdl_test) and the reader/writer plug-ins
 OCIO_ANIM_SRCS := ../OCIO/OCIOColorSpace.cpp ../OCIO/OCIOPluginBase.cpp \
@@ -240,7 +247,7 @@ oiio_threadpool_test_tsan: oiio_threadpool_test.cpp ofx_test_host.h $(PLUGIN_SRC
 .PHONY: test-oiio-threads-tsan clean-oiio-threads-tsan
 clean: clean-oiio-threads-tsan
 test-oiio-threads-tsan: oiio_threadpool_test_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./oiio_threadpool_test_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./oiio_threadpool_test_tsan
 clean-oiio-threads-tsan:
 	rm -rf oiio_threadpool_test_tsan oiio_threadpool_test_tsan.dSYM
 
@@ -347,8 +354,8 @@ test-ofx14-scan: ofx14_host_test
 	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test --full --scan $(CURDIR)/.ofx14scanfull
 test-ofx14-scan-asan: ofx14_host_test_asan
 	rm -rf .ofx14scanasan .ofx14scanasanfull
-	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test_asan --scan $(CURDIR)/.ofx14scanasan
-	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test_asan --full --scan $(CURDIR)/.ofx14scanasanfull
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" ./ofx14_host_test_asan --scan $(CURDIR)/.ofx14scanasan
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" ./ofx14_host_test_asan --full --scan $(CURDIR)/.ofx14scanasanfull
 clean-ofx14-scan:
 	rm -rf ofx14_host_test_asan ofx14_host_test_asan.dSYM .ofx14scan .ofx14scanfull .ofx14scanasan .ofx14scanasanfull
 
@@ -428,7 +435,7 @@ test-oiio-layer-menu: oiio_layer_menu_test
 	OCIO=$(CURDIR)/test.ocio ./oiio_layer_menu_test $(CURDIR)/.oiio_layer_menu
 test-oiio-layer-menu-tsan: oiio_layer_menu_test_tsan
 	rm -rf .oiio_layer_menu_tsan && mkdir -p .oiio_layer_menu_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./oiio_layer_menu_test_tsan $(CURDIR)/.oiio_layer_menu_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./oiio_layer_menu_test_tsan $(CURDIR)/.oiio_layer_menu_tsan
 clean-oiio-layer-menu:
 	rm -rf oiio_layer_menu_test oiio_layer_menu_test.dSYM oiio_layer_menu_test_tsan oiio_layer_menu_test_tsan.dSYM \
 	       .oiio_layer_menu .oiio_layer_menu_tsan
@@ -602,10 +609,17 @@ runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-write-errors test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
+
+# test-ffmpeg-strict: the strict mode of run_ffmpeg_read_test.sh (FFMPEG_READ_TEST_STRICT, #198), with ffmpeg stubs (no
+# clip, a few seconds). (Added to test here.)
+.PHONY: test-ffmpeg-strict
+test: test-ffmpeg-strict
+test-ffmpeg-strict:
+	./ffmpeg_read_strict_test.sh
 
 test-oiio:
 	./run_oiio_roundtrip_test.sh
@@ -649,23 +663,26 @@ test-readffmpeg-views-concurrent: ofx_render_test
 
 # the same with ThreadSanitizer (needs a compiler that supports -fsanitize=thread)
 test-readffmpeg-views-concurrent-tsan: ofx_render_test_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./ofx_render_test_tsan $(CURDIR)/.render_out.mov.i291.tsan.mov --views-concurrent
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./ofx_render_test_tsan $(CURDIR)/.render_out.mov.i291.tsan.mov --views-concurrent
 
 # #288: WriteFFmpeg, frame 1 is aborted or fails a check of encode() while other threads wait for their turn: they fail
 # instead of waiting forever (the test fails after 60 s). By itself, so that a deadlock only fails this test.
 test-writeffmpeg-encode-failure: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288.mov --encode-failure
 
-# #288: the same, frame 1 fails to be written (RLIMIT_FSIZE, as on a full disk). Skipped (exit status 77) on MS Windows.
+# The tests that need RLIMIT_FSIZE (a full disk), which MS Windows doesn't have: not in `make test` there, where they
+# would always be skipped. (Added to test here.)
+RLIMIT_FSIZE_TESTS := test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-pfm-write-errors
+test: $(if $(filter Windows_NT,$(OS)),,$(RLIMIT_FSIZE_TESTS))
+
+# #288: the same, frame 1 fails to be written (RLIMIT_FSIZE, as on a full disk; not on MS Windows).
 test-writeffmpeg-encode-failure-disk-full: ofx_render_test
-	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288-disk-full.mov --encode-failure-disk-full; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-writeffmpeg-encode-failure-disk-full"; else exit $$st; fi
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov.i288-disk-full.mov --encode-failure-disk-full
 
 # #292, #362: WriteOIIO, EXR, TIFF, DPX, PNG and JPEG files can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full
-# disk): the render fails, and the process survives. Skipped (exit status 77) on MS Windows.
+# disk): the render fails, and the process survives (not on MS Windows).
 test-writeoiio-disk-full: ofx_render_test
-	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i292 --writeoiio-disk-full; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-writeoiio-disk-full"; else exit $$st; fi
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i292 --writeoiio-disk-full
 # #251: a failed or aborted render of an image file leaves no partial file (a test writer; WritePNG and RLIMIT_FSIZE,
 # as on a full disk, except on MS Windows and without libpng), and a render that fails before the file is written
 # keeps the previous one.
@@ -699,11 +716,9 @@ test-writeffmpeg-codec-edit-during-begin: ofx_render_test
 test-writeffmpeg-pixfmt-choice: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i218 --pixfmt-choice
 
-# #294: WritePFM fails the render when the file can not grow (RLIMIT_FSIZE, as on a full disk). Skipped (exit status
-# 77) on MS Windows.
+# #294: WritePFM fails the render when the file can not grow (RLIMIT_FSIZE, as on a full disk; not on MS Windows).
 test-pfm-write-errors: ofx_render_test
-	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --pfm-write-errors; \
-	    st=$$?; if [ $$st -eq 77 ]; then echo "SKIPPED: test-pfm-write-errors"; else exit $$st; fi
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --pfm-write-errors
 
 # #296: ReadPFM's getRegionOfDefinition fails on a header with an empty, negative or huge size
 test-pfm-read-errors: ofx_render_test
@@ -798,14 +813,14 @@ test-exr: exr_read_test
 # the same with ThreadSanitizer (needs a compiler that supports -fsanitize=thread)
 test-exr-tsan: exr_read_test_tsan
 	rm -rf .exr_read_tsan && mkdir -p .exr_read_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" ./exr_read_test_tsan --multiplanar $(CURDIR)/.exr_read_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./exr_read_test_tsan $(CURDIR)/.exr_read_tsan
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) $(TSAN_OPTIONS)" ./exr_read_test_tsan --multiplanar $(CURDIR)/.exr_read_tsan
 
-# test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer (no suppressions)
+# test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer (with tsan.supp, as the other -tsan targets)
 test-exr-tsan-debug: exr_read_test_tsan_debug reader_hooks_test_tsan_debug
 	rm -rf .exr_read_tsan_debug && mkdir -p .exr_read_tsan_debug
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 abort_on_error=0 $(TSAN_OPTIONS)" ./exr_read_test_tsan_debug $(CURDIR)/.exr_read_tsan_debug
-	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="halt_on_error=1 abort_on_error=0 $(TSAN_OPTIONS)" ./reader_hooks_test_tsan_debug $(CURDIR)/.reader_hooks_tsan_debug
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) abort_on_error=0 $(TSAN_OPTIONS)" ./exr_read_test_tsan_debug $(CURDIR)/.exr_read_tsan_debug
+	OCIO=$(CURDIR)/test.ocio TSAN_OPTIONS="$(TSAN_RUN_OPTIONS) abort_on_error=0 $(TSAN_OPTIONS)" ./reader_hooks_test_tsan_debug $(CURDIR)/.reader_hooks_tsan_debug
 
 # ReadEXR's render time on 2048x1556 RGBA half files, ZIP, PIZ and DWAA (EXR_THREADS: OpenEXR's thread count)
 bench-exr: exr_read_bench

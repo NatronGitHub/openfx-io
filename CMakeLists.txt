@@ -35,10 +35,11 @@
 #   OFX_IO_WITH_<group>     build the group if its libraries are found (default ON): OCIO EXR FFMPEG OIIO LIBRAW
 #                           PNG SEEXPR RUNSCRIPT
 #   OFX_IO_REQUIRE_ALL      fail if a group that is not disabled can't be built (default OFF; for packagers)
-#   IO_HOSTDEMO_TESTS       build openfx's hostDemo; ctest renders every plug-in of the installed bundle with it
-#                           (io-hostdemo, tests/hostdemo/run.sh), and again with hostDemo --ofx14 (io-hostdemo-ofx14);
-#                           and renders its readers with narrow render windows, and windows out of their RoD, in a
-#                           host built on HostSupport (io-reader-window, tests/hostdemo/reader_window.sh)
+#   IO_HOSTDEMO_TESTS       build openfx's Python host (the ofxh module, OFX_PYTHON_BINDINGS: needs nanobind and
+#                           NumPy); ctest renders every plug-in of the installed bundle with its hostDemo command line,
+#                           ofxhost.hostdemo (io-hostdemo, tests/hostdemo/run.sh), and again with --ofx14
+#                           (io-hostdemo-ofx14); and renders its readers with narrow render windows, and windows out
+#                           of their RoD, in a host built on HostSupport (io-reader-window, tests/hostdemo/reader_window.sh)
 # The C++ standard is OFX_CXX_STANDARD (default: CMAKE_CXX_STANDARD, or 17).
 
 cmake_minimum_required(VERSION 3.21...3.31)
@@ -88,11 +89,12 @@ if(NOT DEFINED CACHE{OFX_CXX_STANDARD} OR "${OFX_CXX_STANDARD}" STREQUAL "${_OFX
   set(_OFX_IO_CXX_STANDARD_AUTO ${_io_std} CACHE INTERNAL "")
 endif()
 
-# IO_HOSTDEMO_TESTS: build openfx's hostDemo (HostSupport/examples, which needs HostSupport and the system expat, found by
-# openfx) for the io-hostdemo test (below)
-option(IO_HOSTDEMO_TESTS "Build openfx's hostDemo and test rendering every plug-in of the installed bundle with it" OFF)
+# IO_HOSTDEMO_TESTS: build openfx's Python host, the ofxh module (HostSupport/python, which needs HostSupport, the system
+# expat, Python >= 3.10, nanobind and NumPy, found by openfx; Python_EXECUTABLE chooses the Python), for the io-hostdemo
+# tests (below), which run its hostDemo command line, ofxhost.hostdemo (#261)
+option(IO_HOSTDEMO_TESTS "Build openfx's Python host (ofxh) and test rendering every plug-in of the installed bundle with it" OFF)
 if(IO_HOSTDEMO_TESTS)
-  set(BUILD_EXAMPLE_HOSTS ON CACHE BOOL "Build the example hosts (HostSupport/examples: hostDemo, cacheDemo, propsetDump)" FORCE)
+  set(OFX_PYTHON_BINDINGS ON CACHE BOOL "HostSupport Python bindings (nanobind)" FORCE)
 endif()
 
 set(OPENFX_PATH "${PROJECT_SOURCE_DIR}/openfx")
@@ -592,6 +594,8 @@ ofx_deploy_bundle(IO)
 #   (tests/check_icons.cmake);
 # - io-load-installed (macOS, OFX_DEPLOY_BUNDLES): the same on the installed, deployed bundle, without DYLD_*
 #   variables: run it after cmake --install;
+# - io-cmake-unknown-arch: configuring for a system without an OFX bundle folder (CMAKE_SYSTEM_NAME Generic) fails
+#   (cmake/OpenFXLocal.cmake, #106);
 # - test-*: the tests of tests/Makefile, built by CMake in build/tests with this build's compiler, C++ standard and
 #   FFmpeg, when the libraries they link were found (tests/CMakeLists.txt: the same programs, sources and flags as
 #   tests/Makefile, one ctest test per run of `make test`).
@@ -624,7 +628,7 @@ if(BUILD_TESTING)
   endif()
   target_include_directories(io_verify_plugin_loads PRIVATE "${OPENFX_PATH}/HostSupport/include" "${OPENFX_PATH}/include")
   target_link_libraries(io_verify_plugin_loads PRIVATE ${CMAKE_DL_LIBS})
-  set_target_properties(io_verify_plugin_loads PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+  set_target_properties(io_verify_plugin_loads PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 
   add_test(NAME io-load COMMAND io_verify_plugin_loads "$<TARGET_FILE:IO>")
   set_tests_properties(io-load PROPERTIES PASS_REGULAR_EXPRESSION "Num_plugins: ${_io_nplugins}\n"
@@ -672,26 +676,37 @@ if(BUILD_TESTING)
       ENVIRONMENT "DYLD_LIBRARY_PATH=;DYLD_FALLBACK_LIBRARY_PATH=;DYLD_FRAMEWORK_PATH=;LD_LIBRARY_PATH=")
   endif()
 
-  # io-hostdemo (IO_HOSTDEMO_TESTS): openfx's hostDemo loads the installed bundle and renders each of its plug-ins
-  # (tests/hostdemo/run.sh, which lists what is tested and what is skipped); skipped if it was not installed yet
-  # (FATAL_ERROR if it can't be: a CI build with IO_HOSTDEMO_TESTS=ON must not pass without the test)
+  # io-hostdemo (IO_HOSTDEMO_TESTS): openfx's Python host, with hostDemo's command line (ofxhost.hostdemo, run by
+  # openfx's HostSupport/examples/python/hostdemo-inprocess), loads the installed bundle and renders each of its
+  # plug-ins (tests/hostdemo/run.sh, which lists what is tested and what is skipped); skipped if it was not installed
+  # yet (FATAL_ERROR if it can't be: a CI build with IO_HOSTDEMO_TESTS=ON must not pass without the test)
   if(IO_HOSTDEMO_TESTS)
     find_program(IO_BASH NAMES bash)
-    if(NOT TARGET hostDemo)
-      message(FATAL_ERROR "IO_HOSTDEMO_TESTS: openfx's hostDemo is not built (OFX_SUPPORTS_MULTITHREAD?)")
+    if(NOT TARGET ofxh)
+      message(FATAL_ERROR "IO_HOSTDEMO_TESTS: openfx's ofxh module is not built (OFX_PYTHON_BINDINGS)")
     elseif(NOT IO_BASH)
       message(FATAL_ERROR "IO_HOSTDEMO_TESTS: bash not found")
     else()
-      # openfx is EXCLUDE_FROM_ALL: build hostDemo with the default target
+      # openfx is EXCLUDE_FROM_ALL: build the ofxh module with the default target
       add_custom_target(io_hostdemo ALL)
-      add_dependencies(io_hostdemo hostDemo)
+      add_dependencies(io_hostdemo ofxh)
+      # the host: the Python that openfx built the ofxh module for (OFXHOST_PYTHON), with the module on PYTHONPATH
+      # (hostdemo-inprocess adds the ofxhost package next to it)
+      get_directory_property(_io_python DIRECTORY "${OPENFX_PATH}/HostSupport/python" DEFINITION Python_EXECUTABLE)
+      if(NOT _io_python)
+        # (hostdemo-inprocess would run python3 from PATH, which may not be the one of the module)
+        message(FATAL_ERROR "IO_HOSTDEMO_TESTS: the Python of openfx's ofxh module is unknown (no Python_EXECUTABLE in "
+                            "${OPENFX_PATH}/HostSupport/python): set Python_EXECUTABLE")
+      endif()
+      set(_io_hd_host "${OPENFX_PATH}/HostSupport/examples/python/hostdemo-inprocess")
+      set(_io_hd_env "OFXHOST_PYTHON=${_io_python}" "PYTHONPATH=$<TARGET_FILE_DIR:ofxh>")
       if(IS_ABSOLUTE "${PLUGIN_INSTALLDIR}")
         set(_io_installed_bundle "${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
       else()
         set(_io_installed_bundle "${CMAKE_INSTALL_PREFIX}/${PLUGIN_INSTALLDIR}/IO.ofx.bundle")
       endif()
       add_test(NAME io-hostdemo
-               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "$<TARGET_FILE:hostDemo>"
+               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "${_io_hd_host}"
                        "${_io_installed_bundle}" "$<TARGET_FILE:io_verify_plugin_loads>"
                        "${CMAKE_CURRENT_BINARY_DIR}/hostdemo")
       set(_io_env "OCIO=${PROJECT_SOURCE_DIR}/tests/test.ocio")
@@ -704,16 +719,16 @@ if(BUILD_TESTING)
       # TIMEOUT: more than run.sh's HOSTDEMO_TOTAL_TIMEOUT (600 s), so that it reports what hung
       # RESOURCE_LOCK: io-hostdemo and io-hostdemo-ofx14 render every plug-in of the same bundle, each of them
       # loads the machine: not at the same time under ctest -j
-      set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env}"
+      set_tests_properties(io-hostdemo PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "${_io_env};${_io_hd_env}"
                            RESOURCE_LOCK openfx-io-hostdemo)
-      # io-hostdemo-ofx14: the same tests in hostDemo --ofx14, a host that implements only OFX 1.4 (its host
-      # properties and suites, no OfxSetHost, no StrChoice or Bytes params, one view)
+      # io-hostdemo-ofx14: the same tests with --ofx14, a host that implements only OFX 1.4 (its host properties and
+      # suites, no OfxSetHost, no StrChoice or Bytes params, one view)
       add_test(NAME io-hostdemo-ofx14
-               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "$<TARGET_FILE:hostDemo>"
+               COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/run.sh" "${_io_hd_host}"
                        "${_io_installed_bundle}" "$<TARGET_FILE:io_verify_plugin_loads>"
                        "${CMAKE_CURRENT_BINARY_DIR}/hostdemo-ofx14")
       set_tests_properties(io-hostdemo-ofx14 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
-                           ENVIRONMENT "${_io_env};HOSTDEMO_ARGS=--ofx14" RESOURCE_LOCK openfx-io-hostdemo)
+                           ENVIRONMENT "${_io_env};${_io_hd_env};HOSTDEMO_ARGS=--ofx14" RESOURCE_LOCK openfx-io-hostdemo)
       # io-reader-window: the readers of the installed bundle, with render windows in the image and partly or
       # entirely out of the RoD, in reader_window (tests/hostdemo/reader_window.cpp), a host built on HostSupport
       # and hostDemo's host classes (hostDemo renders the whole RoD of a plug-in without tiles, whatever --window)
@@ -723,6 +738,8 @@ if(BUILD_TESTING)
                      "${_io_hd}/hostDemoHostDescriptor.cpp" "${_io_hd}/hostDemoParamInstance.cpp")
       target_include_directories(io_reader_window PRIVATE "${_io_hd}")
       target_link_libraries(io_reader_window PRIVATE OfxHost)
+      # the C++ standard of OfxHost (C++17, cmake/OpenFXLocal.cmake), not the compiler's default (gnu++20 with GCC 16)
+      set_target_properties(io_reader_window PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
       get_filename_component(_io_installed_dir "${_io_installed_bundle}" DIRECTORY)
       add_test(NAME io-reader-window
                COMMAND "${IO_BASH}" "${PROJECT_SOURCE_DIR}/tests/hostdemo/reader_window.sh" "$<TARGET_FILE:io_reader_window>"
@@ -731,8 +748,25 @@ if(BUILD_TESTING)
     endif()
   endif()
 
+  # io-cmake-unknown-arch: a configure for a system that OpenFX.cmake has no ARCHDIR for (Generic: "unknown-arch") stops
+  # with an error, instead of installing the plug-ins into Contents/unknown-arch, where no host looks (#106). In an
+  # empty build directory each time (tests/run_test.cmake, whose failure doesn't matter: the error message passes).
+  # Single-config generators only (Makefiles, Ninja): Xcode and Visual Studio have no Generic platform.
+  get_property(_io_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+  if(NOT _io_multi_config)
+    set(_io_ua "${CMAKE_CURRENT_BINARY_DIR}/cmake-unknown-arch")
+    add_test(NAME io-cmake-unknown-arch
+             COMMAND "${CMAKE_COMMAND}" "-DDIR=${_io_ua}" -P "${PROJECT_SOURCE_DIR}/tests/run_test.cmake" --
+                     "${CMAKE_COMMAND}" -S "${PROJECT_SOURCE_DIR}" -B "${_io_ua}" -G "${CMAKE_GENERATOR}"
+                     "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}" -DCMAKE_SYSTEM_NAME=Generic
+                     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+                     "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}" "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
+    set_tests_properties(io-cmake-unknown-arch PROPERTIES
+                         PASS_REGULAR_EXPRESSION "No OFX bundle architecture folder \\(ARCHDIR\\) for Generic")
+  endif()
+
   # (a few seconds each: a hung load fails)
-  foreach(_t io-load io-icons io-load-installed)
+  foreach(_t io-load io-icons io-load-installed io-cmake-unknown-arch)
     if(TEST ${_t})
       set_tests_properties(${_t} PROPERTIES TIMEOUT 300)
     endif()

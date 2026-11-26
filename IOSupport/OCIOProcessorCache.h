@@ -70,7 +70,8 @@ struct OCIOConfigContextKey {
 // (C++ Core Guidelines CP.2, CP.31): the caller owns a reference, and another thread may replace the cached one
 // meanwhile. An OCIO processor is safe to use from several threads once built: its const methods
 // (getOptimizedCPUProcessor(), getDefaultGPUProcessor(), ...) guard their caches with a mutex (OpenColorIO 2.6
-// src/OpenColorIO/Processor.cpp).
+// src/OpenColorIO/Processor.cpp). Except, before OpenColorIO 2.6, the environment variable that getOptimized*Processor()
+// read: hold an OCIOOptimizedProcessorLock (GenericOCIO.h) around them, which orders this bundle's calls only.
 template <class Key>
 class OCIOProcessorCache {
 public:
