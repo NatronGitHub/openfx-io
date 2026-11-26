@@ -85,7 +85,7 @@ createFormatOutput(const string& filename)
 #define kPluginDescription "Write images using OpenImageIO."
 #define kPluginIdentifier "fr.inria.openfx.WriteOIIO"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 91 // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated
 
 #define kSupportsRGBA true
@@ -1744,15 +1744,25 @@ WriteOIIOPlugin::encodePart(void* user_data,
     }
 
     TypeDesc format = TypeDesc::FLOAT;
+    const ImageSpec& spec = data->specs[planeIndex];
+    const char* firstRow = (const char*)pixelData + (ptrdiff_t)(spec.height - 1) * (ptrdiff_t)rowBytes; // invert y
 
     // do not use auto-stride as the buffer may have more components that what we want to write
     std::size_t xStride = format.size() * pixelDataNComps;
+#if OIIO_VERSION < 30201
+    // #476: before OpenImageIO 3.2.1, write_image() writes a scanline file in chunks of about 64 MiB, each with a
+    // write_scanlines() call, and a writer that reverses the rows of each call (PNMOutput::write_scanlines(), for PFM,
+    // which is stored bottom row first) writes the rows of a larger file rotated. One write_scanlines() call for the
+    // whole image has no chunks. Fixed in OpenImageIO 3.2.1 by AcademySoftwareFoundation/OpenImageIO#5492 and #5644.
+    // (Not a format-specific case: every scanline file is written so; tiled files still use write_image().)
+    const bool written = (spec.tile_width > 0)
+        ? data->output->write_image(format, firstRow, xStride, -rowBytes, AutoStride)
+        : data->output->write_scanlines(spec.y, spec.y + spec.height, spec.z, format, firstRow, xStride, -rowBytes);
+#else
+    const bool written = data->output->write_image(format, firstRow, xStride, -rowBytes, AutoStride);
+#endif
     // A failed write (e.g. a full disk) must fail the render, or the host reports a truncated file as written (#292).
-    if (!data->output->write_image(format,
-                                   (char*)pixelData + (ptrdiff_t)(data->specs[planeIndex].height - 1) * (ptrdiff_t)rowBytes, // invert y
-                                   xStride, // xstride
-                                   -rowBytes, // ystride
-                                   AutoStride)) { // zstride
+    if (!written) {
         reportOutputError(*data);
     }
 }

@@ -78,7 +78,7 @@ make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
-make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171)
+make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171); PFM row order (#476)
 make test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
@@ -93,12 +93,17 @@ make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes th
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
 make test-writer-render-scale # a writer at a render scale other than 1 fails with an error message (#438)
+make test-writer-no-overwrite # WriteFFmpeg, Overwrite unchecked: a new movie is written; an existing one fails the render and is kept (#470)
+make test-writer-image-overlapping-begins # two overlapping one-frame sequence renders of an image writer both succeed (#470)
+make test-writer-file-change-during-render # WriteFFmpeg: a file change from .mov to .png during a render doesn't block the next one (#470)
+make test-writeffmpeg-interactive # WriteFFmpeg writes a movie when the host sets kOfxPropIsInteractive for several frames (#460)
+make test-writer-input-connect # connecting the input keeps the Input Premult that the user set (#457)
 make test-writer-int-ranges # GenericWriter and WriteFFmpeg with host values out of the range of int, with UBSan (#184)
 make test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
 make test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
 make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
-make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back
+make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back; the premult checkbox and the input (#457)
 make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
 make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context, Reload, purge caches (#275, #282-#284, #361, #402)
 make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
@@ -406,6 +411,10 @@ It then writes an EXR file with the zstd compression (issue #171). OpenImageIO <
 < 3.5, writes zip instead without an error: if the file read back is not zstd, the render must end with a persistent
 warning that names zstd, and otherwise with no warning. The next render of the same instance, with the zip
 compression, must end with no warning.
+Last, it writes a 4096x1500 RGB float PFM file (73.7 MB, issue #476) whose rows hold their row and column numbers,
+and reads it back as bytes: row k of the file (PFM is stored bottom row first) must hold row k of the image. With
+OpenImageIO < 3.2.1, `write_image()` wrote the file in chunks of about 64 MiB, each stored bottom row first on its
+own, and the rows of the file were rotated: WriteOIIO now writes scanline files with one `write_scanlines()` call.
 
 `test-writer-remove-partial-file` (issue #251) runs `ofx_render_test OUT --writer-remove-partial-file`. With
 "Overwrite" unchecked, a render takes an existing file for a written frame and skips it, so a failed or aborted render
@@ -530,6 +539,37 @@ plug-in supports render scales. At scale 1, the same instance writes the file. `
 message for RunScript's render (`runscript_render_test`, POSIX only), which also checks that a short write of the
 script file (RLIMIT_FSIZE of 64 bytes) fails the render with an error message instead of running the truncated script.
 
+`test-writer-no-overwrite` (issue #470) runs `ofx_render_test OUT --writer-no-overwrite`: WriteFFmpeg with
+"Overwrite" unchecked renders 3 frames to a new movie, which must have 3 frames (on master, `beginEncode()` created
+the file, which `renderFile()` took for an existing one: every frame was skipped and the render failed). A second
+`beginSequenceRender` during that render must fail with "Another render is currently active", and the first render
+must still write its 3 frames. A second instance renders another image to the same movie: its `beginSequenceRender` must
+fail, with an error that says that the movie exists and "Overwrite" is unchecked, and the movie must be unchanged
+byte for byte. With "Overwrite" checked, the movie is written again.
+
+`test-writer-image-overlapping-begins` (issue #470) runs `ofx_render_test OUT --writer-image-overlapping-begins`:
+the guard against overlapping sequence renders is for movies only. A host renders each frame of an image writer as
+a sequence render of one frame, `beginSequenceRender(t, t)` ... `endSequenceRender`, and Natron renders them
+concurrently. On one WritePFM instance, `begin(1, 1)`, `begin(2, 2)`, both renders and both ends must succeed, and
+both files must be written.
+
+`test-writer-file-change-during-render` (issue #470) runs `ofx_render_test OUT --writer-file-change-during-render`:
+WriteFFmpeg begins a sequence render of a `.mov`, the file param is changed to a `.png` (an image file for
+WriteFFmpeg), the render ends, and the file is set back to the `.mov`. The next `beginSequenceRender` must succeed
+and write the movie: `endSequenceRender` releases the guard against overlapping movie renders whatever the file is
+then.
+
+`test-writeffmpeg-interactive` (issue #460) runs `ofx_render_test OUT --writeffmpeg-interactive`: WriteFFmpeg with
+`kOfxPropIsInteractive` set in `beginSequenceRender`, as Resolve, Fusion and Flame set it for final renders. Frames
+1 to 3 must write a movie of 3 frames; a single frame (a viewer render) must fail with the "non-interactive" error and
+create no file.
+
+`test-writer-input-connect` (issue #457) runs `ofx_render_test OUT --writer-input-connect`: the Source clip of
+WritePFM (GenericWriter) is connected with a user edit (`kOfxActionInstanceChanged`, `kOfxChangeUserEdited`), as some
+hosts do when they load a project. On a new instance, its premultiplication sets Input Premult, also for another
+input; once the user set Input Premult (a user edit of the param), connecting an input keeps it. An instance created
+with the saved values of a project in which the user set it (`inputPremultSet`) keeps it when the input is connected.
+
 `test-writer-int-ranges` (issue #184) runs `ofx_render_test_ubsan OUT --int-ranges`: `ofx_render_test` built with
 UBSan's `float-cast-overflow` and `signed-integer-overflow` checks, stopping at the first error (on MS Windows, where
 MinGW has no UBSan runtime, `ofx_render_test` itself). Values from the host that are out of the range of int, or NaN,
@@ -645,6 +685,10 @@ of `ofx_test_host.h`, in the Filter context:
 * exporting with the param's default file name (empty) must report an error, without a
   persistent message, and write no file, in an empty current directory: the default used
   to be a placeholder text, written as a file of that name (#302).
+* the premult checkbox (`OCIOPluginBase`, shared by the six OCIO plug-ins) when the Source clip is
+  connected with a user edit, as some hosts do when they load a project (#457): on a new instance,
+  it follows the premultiplication of the input; once the user set it, or in an instance created
+  with the saved `premultSet` of a project in which the user set it, it is kept.
 
 The test itself needs OCIO >= 2 (it reads the file back with `Processor::createGroupTransform()`).
 

@@ -56,7 +56,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription "Uses the OpenColorIO library to apply a colorspace conversion to an image sequence, so that it can be accurately represented on a specific display device."
 #define kPluginIdentifier "fr.inria.openfx.OCIODisplay"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -954,6 +954,7 @@ OCIODisplayPlugin::changedParam(const InstanceChangedArgs& args,
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
+    changedPremultParam(args, paramName); // (#457)
 
     AutoSetAndRestoreThreadLocale locale;
     OCIO::ConstConfigRcPtr config = _ocio->getConfig();
@@ -1202,6 +1203,7 @@ OCIODisplayPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     }
 
     ofxsPremultDescribeParams(desc, page);
+    OCIOPluginBase::definePremultSetParam(desc, page);
 } // OCIODisplayPluginFactory::describeInContext
 
 /** @brief The create instance function, the plugin must return an object derived from the \ref ImageEffect class */

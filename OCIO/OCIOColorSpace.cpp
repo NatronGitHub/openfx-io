@@ -53,7 +53,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription "ColorSpace transformation using OpenColorIO configuration file."
 #define kPluginIdentifier "fr.inria.openfx.OCIOColorSpace"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 3 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -679,6 +679,7 @@ OCIOColorSpacePlugin::changedParam(const InstanceChangedArgs& args,
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
+    changedPremultParam(args, paramName); // (#457)
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     if (paramEffectsOpenGLAndTileSupport(paramName)) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
@@ -782,6 +783,7 @@ OCIOColorSpacePluginFactory::describeInContext(ImageEffectDescriptor& desc,
 #endif
 
     ofxsPremultDescribeParams(desc, page);
+    OCIOPluginBase::definePremultSetParam(desc, page);
     ofxsMaskMixDescribeParams(desc, page);
 } // OCIOColorSpacePluginFactory::describeInContext
 

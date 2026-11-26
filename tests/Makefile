@@ -115,7 +115,7 @@ RUNSCRIPT_RENDER_TEST := $(if $(filter Windows_NT,$(OS)),,runscript_render_test)
 # runscript_win32_test: MS Windows only (elsewhere, it would pass without testing anything, #309)
 RUNSCRIPT_WIN32_TEST := $(if $(filter Windows_NT,$(OS)),runscript_win32_test,)
 
-.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
+.PHONY: all test test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writeffmpeg-encode-failure-disk-full test-writeoiio-disk-full test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-pfm-write-errors test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-exr-tsan test-exr-tsan-debug bench-exr clean test-readffmpeg-views-concurrent test-readffmpeg-views-concurrent-tsan test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder test-writer-no-overwrite test-writer-image-overlapping-begins test-writer-file-change-during-render test-writeffmpeg-interactive test-writer-input-connect
 all: ffmpeg_read_test ofx_entrypoints_test ofx_actions_test ofx_render_test oiio_layers_test reader_hooks_test ocio_cdl_test ocio_colorspace_anim_test ocio_anim_fuzz $(RUNSCRIPT_WIN32_TEST) runscript_output_test $(RUNSCRIPT_RENDER_TEST) oiio_threadpool_test exr_read_test
 
 # ---- build rules ----
@@ -606,7 +606,7 @@ runscript_render_test: runscript_render_test.cpp ofx_test_host.h ofx14_names.h $
 	$(CXX) $(CXXSTD) -O0 -g $(OFX_DEFS) $(OFX_INC) -pthread $(filter %.cpp,$^) -o $@
 
 # ---- run targets ----
-test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder
+test: test-ffmpeg test-oiio test-ofx test-render test-dnxhr444-noise test-writeffmpeg-begin-failure test-writeffmpeg-dnxhd-profiles test-writeffmpeg-encode-failure test-writer-remove-partial-file test-swscale-exact test-writeffmpeg-param-change test-writeffmpeg-codec-params test-writeffmpeg-selected-encoder test-writeffmpeg-format-from-filename test-readffmpeg-destroy-closes-file test-readffmpeg-views-concurrent test-pfm-read-errors test-writer-render-scale test-layers test-reader-hooks test-ocio-cdl test-ocio-anim test-runscript test-oiio-threads test-exr test-writeoiio-files test-writeffmpeg-codec-edit-during-begin test-writeffmpeg-pixfmt-choice test-writeffmpeg-missing-encoder test-writer-no-overwrite test-writer-image-overlapping-begins test-writer-file-change-during-render test-writeffmpeg-interactive test-writer-input-connect
 
 test-ffmpeg: ffmpeg_read_test
 	./run_ffmpeg_read_test.sh
@@ -725,6 +725,26 @@ test-pfm-read-errors: ofx_render_test
 # #438: a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render fail with an error message
 test-writer-render-scale: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --writer-render-scale
+
+# #470: WriteFFmpeg with "Overwrite" unchecked writes a new movie; an existing one fails the render and is kept
+test-writer-no-overwrite: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --writer-no-overwrite
+
+# #470: two overlapping one-frame sequence renders on one WritePFM instance (as Natron renders image files) both succeed
+test-writer-image-overlapping-begins: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out --writer-image-overlapping-begins
+
+# #470: WriteFFmpeg, the file changes from a movie to an image during a render: the next movie render begins
+test-writer-file-change-during-render: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out --writer-file-change-during-render
+
+# #460: WriteFFmpeg writes a movie of several frames when the host sets kOfxPropIsInteractive; refuses a single frame
+test-writeffmpeg-interactive: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --writeffmpeg-interactive
+
+# #457: connecting the input sets a writer's Input Premult, unless the user set it (also in a loaded project)
+test-writer-input-connect: ofx_render_test
+	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.mov --writer-input-connect
 
 # #184: GenericWriter's Project format and WriteFFmpeg's frame range, step, frames and fps, with host values out of the
 # range of int (or NaN): ofx_render_test built with UBSan's float-cast-overflow and signed-integer-overflow checks,

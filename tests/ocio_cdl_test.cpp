@@ -38,7 +38,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <locale>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -674,6 +676,66 @@ testFileAppears(OfxPlugin* p, const std::string& dir)
     std::remove(filename.c_str());
 }
 
+// #457: the premult checkbox (OCIOPluginBase, shared by the six OCIO plug-ins) follows the premultiplication of the
+// input when the input is connected, unless the user set it: some hosts connect the input of a loaded project with a
+// user edit (kOfxChangeUserEdited), which overwrote the saved value. The saved premultSet param tells that the user set
+// it.
+void
+testPremultFromInput(OfxPlugin* p)
+{
+    std::printf("==== Premult: set from the input when it is connected, unless the user set it (issue #457) ====\n");
+    // The premult checkbox after the source clip of a new instance is connected (premultiplied RGBA if
+    // premultipliedInput, else opaque RGBA), or nothing if the instance could not be created; premult and premultSet:
+    // their saved values, if any; edit: called before the input is connected
+    auto connect = [p](bool premultipliedInput, std::optional<bool> premult, std::optional<bool> premultSet,
+                       const std::function<void(Effect&, Effect&)>& edit) -> std::optional<bool> {
+        Effect ctx, inst;
+        PropSet inArgs;
+        pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
+        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
+            check(false, "describeInContext");
+
+            return std::nullopt;
+        }
+        if (premult) setOverrideInt(&ctx, "premult", *premult);
+        if (premultSet) setOverrideInt(&ctx, "premultSet", *premultSet);
+        inst.delegate = &ctx;
+        setInstanceProps(inst, kW, kH, 1, kOfxImageEffectContextFilter);
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
+            check(false, "createInstance");
+
+            return std::nullopt;
+        }
+        // the instance is destroyed on every return from here
+        struct Destroy {
+            OfxPlugin* p;
+            Effect& inst;
+            ~Destroy() { p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr); }
+        } destroy { p, inst };
+        if (edit) edit(ctx, inst);
+        Clip* src = ctx.clips[kOfxImageEffectSimpleSourceClipName];
+        src->connected = true;
+        setupClipImage(src, kW, kH, kOfxImageComponentRGBA, kOfxBitDepthFloat, !premultipliedInput);
+        const OfxStatus st = instanceChanged(p, inst, kOfxImageEffectSimpleSourceClipName, kOfxChangeUserEdited, kOfxTypeClip);
+        check(ok(st), "instanceChanged(Source clip) returns OK (status %d)", st);
+
+        return paramInt(&ctx.params["premult"], 0) != 0;
+    };
+    // a new instance: the checkbox follows the input (as before)
+    check(connect(true, std::nullopt, std::nullopt, nullptr) == true, "a new instance, premultiplied input: premult is checked");
+    check(connect(false, true, std::nullopt, nullptr) == false, "premult checked, never set by the user, opaque input: premult is unchecked");
+    // the user unchecks premult, then connects a premultiplied input: premult stays unchecked
+    check(connect(true, std::nullopt, std::nullopt, [p](Effect& ctx, Effect& inst) {
+              setOverrideInt(&ctx, "premult", 0);
+              instanceChanged(p, inst, "premult");
+              check(ctx.params.count("premultSet") && (paramInt(&ctx.params["premultSet"], 0) == 1), "the user sets premult: premultSet is set");
+          }) == false,
+          "the user unchecked premult, then connects a premultiplied input: premult stays unchecked");
+    // a loaded project in which the user checked premult (premultSet saved): the input, opaque, is connected with a
+    // user edit, and premult stays checked
+    check(connect(false, true, true, nullptr) == true, "a loaded project with premult set by the user, opaque input connected: premult stays checked");
+}
+
 } // namespace
 
 int
@@ -734,6 +796,7 @@ main(int, char**)
     testExportFromFile(p, dir);
     testCCC(p, dir);
     testFileAppears(p, dir);
+    testPremultFromInput(p);
 
     p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);

@@ -79,7 +79,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 
 #define kPluginIdentifier "fr.inria.openfx.OCIOCDLTransform"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -1152,6 +1152,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
+    changedPremultParam(args, paramName); // (#457)
 
     if ((paramName == kParamReadFromFile) || (paramName == kParamFile) || (paramName == kParamCCCID) || (paramName == kParamReload)) {
         if (paramName == kParamReload) {
@@ -1382,6 +1383,7 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor& desc,
 #endif
 
     ofxsPremultDescribeParams(desc, page);
+    OCIOPluginBase::definePremultSetParam(desc, page);
     ofxsMaskMixDescribeParams(desc, page);
 } // OCIOCDLTransformPluginFactory::describeInContext
 
