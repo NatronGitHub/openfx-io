@@ -273,6 +273,7 @@ extern "C" {
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <random>
 #include <set>
@@ -2979,13 +2980,28 @@ public:
     // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
     void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
 
-    OfxStatus begin(int nFrames, double renderScale = 1.) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, nFrames, renderScale); }
-    OfxStatus end(int nFrames) { return sequenceAction(kOfxImageEffectActionEndSequenceRender, nFrames); }
+    OfxStatus begin(int nFrames, double renderScale = 1.) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, 1., nFrames, 1., renderScale); }
+    OfxStatus end(int nFrames) { return sequenceAction(kOfxImageEffectActionEndSequenceRender, 1., nFrames, 1.); }
+    // the same with the host's frame range and frame step
+    OfxStatus begin(double first, double last, double step) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, first, last, step); }
+    OfxStatus end(double first, double last, double step) { return sequenceAction(kOfxImageEffectActionEndSequenceRender, first, last, step); }
+
+    // the project size, offset and pixel aspect ratio (kOfxImageEffectPropProjectSize, ...), in canonical coordinates
+    void setProject(const OfxPointD& size, const OfxPointD& offset, double par)
+    {
+        OfxPropertySetHandle ep = PH(&_inst.props);
+        const double sz[2] = { size.x, size.y };
+        const double off[2] = { offset.x, offset.y };
+        pSetDoubleN(ep, kOfxImageEffectPropProjectSize, 2, sz);
+        pSetDoubleN(ep, kOfxImageEffectPropProjectExtent, 2, sz);
+        pSetDoubleN(ep, kOfxImageEffectPropProjectOffset, 2, off);
+        pSetDouble(ep, kOfxImageEffectPropProjectPixelAspectRatio, 0, par);
+    }
 
     // May be called concurrently. renderScale: if not 0, the render scale (else makeRenderInArgs()'s)
-    OfxStatus render(int t, double renderScale = 0.)
+    OfxStatus render(double t, double renderScale = 0.)
     {
-        PropSet a = makeRenderInArgs((double)t, _W, _H);
+        PropSet a = makeRenderInArgs(t, _W, _H);
         if (renderScale != 0.) {
             double rs[2] = { renderScale, renderScale };
             pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
@@ -2993,8 +3009,8 @@ public:
         return _p->mainEntry(kOfxImageEffectActionRender, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), nullptr);
     }
 
-    // kOfxImageEffectActionGetRegionOfDefinition at time 1 and the given render scale
-    OfxStatus regionOfDefinition(double renderScale)
+    // kOfxImageEffectActionGetRegionOfDefinition at time 1 and the given render scale; rod: if not null, the RoD
+    OfxStatus regionOfDefinition(double renderScale, OfxRectD* rod = nullptr)
     {
         PropSet a;
         pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
@@ -3002,7 +3018,12 @@ public:
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        return _p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), PH(&o));
+        const OfxStatus st = _p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, reinterpret_cast<OfxImageEffectHandle>(&_inst), PH(&a), PH(&o));
+        if (rod) {
+            const auto& v = o.props[kOfxImageEffectPropRegionOfDefinition].d;
+            *rod = (v.size() == 4) ? OfxRectD { v[0], v[1], v[2], v[3] } : OfxRectD { 0., 0., 0., 0. };
+        }
+        return st;
     }
 
     // begin, render each frame in order, end: 0 if all succeeded
@@ -3027,13 +3048,13 @@ public:
     }
 
 private:
-    OfxStatus sequenceAction(const char* action, int nFrames, double renderScale = 1.)
+    OfxStatus sequenceAction(const char* action, double first, double last, double step, double renderScale = 1.)
     {
         PropSet a;
         OfxPropertySetHandle ap = PH(&a);
-        double fr[2] = { 1., (double)nFrames };
+        double fr[2] = { first, last };
         pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
-        pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, 1.);
+        pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, step);
         pSetInt(ap, kOfxPropIsInteractive, 0, 0);
         double rs[2] = { renderScale, renderScale };
         pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
@@ -3830,6 +3851,141 @@ int testWriterRenderScale(const std::string& outFile)
     error = WriterSession::persistentError();
     check(error.empty(), "after the render at scale 1, no error: \"" + error + "\"");
     std::remove(file.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #184: values from the host out of the range of int, which GenericWriter and WriteFFmpeg convert to int. Out of that
+// range (or NaN), the conversion is undefined behaviour: test-writer-int-ranges runs this in ofx_render_test_ubsan
+// (-fsanitize=float-cast-overflow,signed-integer-overflow, stopping at the first error), except with MinGW (no UBSan).
+//  - the Project format of a huge project, or of a tiny pixel aspect ratio (GenericWriter::getSelectedOutputFormat()):
+//    the RoD is clamped to the range of int
+//  - WriteFFmpeg, frames up to INT_MAX (the last frame plus the step overflowed an int, which gave the "failed" value);
+//    frames beyond the range of int, and a NaN frame range and step: beginSequenceRender fails with an error; fielded
+//    renders (a frame step of 0.5, which was 0: the second frame waited forever), for positive and negative frames: the
+//    movie has the images of the whole frames; an fps of 1e12 (from the input clip)
+int testWriterIntRanges(const std::string& outFile)
+{
+    int failures = 0;
+    auto check = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "ok" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    // a frame that never comes to encode() would wait forever (the fielded render on master): fail instead
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::minutes(5));
+        std::printf("  FAIL: timeout, a render waits forever\n");
+        std::_Exit(1);
+    }).detach();
+
+    std::printf("==== GenericWriter (WritePFM), Project format out of the range of int: the RoD is clamped (issue #184) ====\n");
+    {
+        const std::string file = outFile + ".i184.pfm";
+        WriterSession s;
+        if (s.create(file, 8, 4, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
+        const struct {
+            OfxPointD size;
+            OfxPointD offset;
+            double par;
+            OfxRectD rod; // the expected RoD: the format in pixels, clamped, times the PAR
+        } cases[] = {
+            { { 8., 4. }, { 0., 0. }, 1., { 0., 0., 8., 4. } }, // unchanged
+            { { 1e10, 1e10 }, { 0., 0. }, 1., { 0., 0., (double)INT_MAX, (double)INT_MAX } },
+            { { 3e10, 3e10 }, { -2e10, -2e10 }, 1., { (double)INT_MIN, (double)INT_MIN, (double)INT_MAX, (double)INT_MAX } },
+            { { 768., 576. }, { 0., 0. }, 1e-300, { 0., 0., INT_MAX * 1e-300, 576. } },
+        };
+        for (const auto& c : cases) {
+            s.setProject(c.size, c.offset, c.par);
+            OfxRectD rod;
+            const OfxStatus st = s.regionOfDefinition(1., &rod);
+            char what[256];
+            std::snprintf(what, sizeof(what), "project %gx%g at (%g, %g), PAR %g: RoD (%g, %g)-(%g, %g), status %d (expected (%g, %g)-(%g, %g))",
+                          c.size.x, c.size.y, c.offset.x, c.offset.y, c.par, rod.x1, rod.y1, rod.x2, rod.y2, st, c.rod.x1, c.rod.y1, c.rod.x2, c.rod.y2);
+            check(ok(st) && (rod.x1 == c.rod.x1) && (rod.y1 == c.rod.y1) && (rod.x2 == c.rod.x2) && (rod.y2 == c.rod.y2), what);
+        }
+        std::remove(file.c_str());
+    }
+
+    std::printf("==== WriteFFmpeg, frames near and out of the range of int, a frame step of 0.5, a NaN frame range (issue #184) ====\n");
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const char* const kOutOfRange = "is out of the range of frame numbers";
+    // fielded renders: the images rendered at the whole frames are grey levels 0.2, 0.5 and 0.8, at the half frames white
+    const std::vector<float> fieldGreys = { 0.2f, 1.f, 0.5f, 1.f, 0.8f };
+    const struct {
+        const char* what;
+        double first, last, step;
+        std::vector<double> times; // the render times, in order
+        int frames; // the frames written; 0: not checked
+        const char* error; // if not null: beginSequenceRender fails with this error
+        std::vector<float> greys; // if not empty: the grey level of the image of each render (else 0.5)
+        double fps; // if not 0: the fps param
+    } cases[] = {
+        { "frames INT_MAX - 2 to INT_MAX", INT_MAX - 2., (double)INT_MAX, 1., { INT_MAX - 2., INT_MAX - 1., (double)INT_MAX }, 3, nullptr, {}, 0. },
+        { "frames INT_MIN + 1 to INT_MIN + 3", INT_MIN + 1., INT_MIN + 3., 1., { INT_MIN + 1., INT_MIN + 2., INT_MIN + 3. }, 3, nullptr, {}, 0. },
+        { "frames 3e9 to 3e9 + 2 (above INT_MAX)", 3e9, 3e9 + 2., 1., {}, 0, kOutOfRange, {}, 0. },
+        { "frames INT_MIN to INT_MIN + 2 (INT_MIN is not a frame)", (double)INT_MIN, INT_MIN + 2., 1., {}, 0, kOutOfRange, {}, 0. },
+#if defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+        // with -ffinite-math-only, the comparisons that reject a NaN may be folded (no NaN test, by rule): only no
+        // undefined behaviour
+        { "a NaN frame range and step (-ffinite-math-only)", nan, nan, nan, {}, 0, nullptr, {}, 0. },
+#else
+        { "a NaN frame range and step", nan, nan, nan, {}, 0, kOutOfRange, {}, 0. },
+#endif
+        { "a fielded render, frames 1 to 3 at a step of 0.5", 1., 3., 0.5, { 1., 1.5, 2., 2.5, 3. }, 3, nullptr, fieldGreys, 0. },
+        { "a fielded render, frames -3 to -1 at a step of 0.5", -3., -1., 0.5, { -3., -2.5, -2., -1.5, -1. }, 3, nullptr, fieldGreys, 0. },
+        { "an fps of 1e12", 1., 2., 1., { 1., 2. }, 0, nullptr, {}, 1e12 },
+    };
+    for (const auto& c : cases) {
+        const std::string file = outFile + ".i184.mov";
+        std::remove(file.c_str());
+        WriterSession s;
+        if (s.create(file, 16, 16, 3, WriterParams())) return failures + 1;
+        if (c.fps != 0.) {
+            s.setFps(c.fps);
+        }
+        msgClear(nullptr);
+        const OfxStatus beginStatus = s.begin(c.first, c.last, c.step);
+        if (c.error) {
+            const std::string error = WriterSession::persistentError();
+            check(!ok(beginStatus) && (error.find(c.error) != std::string::npos),
+                  std::string(c.what) + ": beginSequenceRender = " + std::to_string(beginStatus) + ", error: \"" + error + "\"");
+            s.end(c.first, c.last, c.step);
+            std::remove(file.c_str());
+            continue;
+        }
+        bool rendered = ok(beginStatus);
+        for (size_t k = 0; k < c.times.size(); ++k) {
+            const float grey = c.greys.empty() ? 0.5f : c.greys[k];
+            float* pix = s.sourcePixels();
+            for (int i = 0; i < 16 * 16; ++i) {
+                pix[4 * i] = pix[4 * i + 1] = pix[4 * i + 2] = grey;
+                pix[4 * i + 3] = 1.f;
+            }
+            rendered = rendered && ok(s.render(c.times[k]));
+        }
+        rendered = ok(s.end(c.first, c.last, c.step)) && rendered;
+        if (c.frames == 0) {
+            check(true, std::string(c.what) + ": no undefined behaviour (render " + (rendered ? "succeeded" : "failed") + ")");
+            std::remove(file.c_str());
+            continue;
+        }
+        int nFrames = 0, nIFrames = 0;
+        const bool probed = rendered && !probeVideoFrames(file, &nFrames, &nIFrames);
+        check(probed && (nFrames == c.frames), std::string(c.what) + ": " + std::to_string(nFrames) + " frames written, expected " +
+              std::to_string(c.frames) + (rendered ? "" : " (error: \"" + WriterSession::persistentError() + "\")"));
+        if (probed && !c.greys.empty()) {
+            // the images of the whole frames (increasing grey levels), not the white images of the half frames
+            int w = 0, h = 0, depth = 0;
+            std::vector<std::vector<int>> values;
+            // (a white image, which would be the brightest, can't be followed by a brighter one)
+            const bool read = !probePixels(file, { { 8, 8 } }, &w, &h, &depth, &values) && (values.size() == 3);
+            const bool order = read && (values[0][0] < values[1][0]) && (values[1][0] < values[2][0]);
+            std::string got;
+            for (const auto& v : values) got += " " + std::to_string(v.empty() ? -1 : v[0]);
+            check(order, std::string(c.what) + ": the luma of the frames is" + got + " (expected increasing: the images of the whole frames)");
+        }
+        std::remove(file.c_str());
+    }
     if (!failures) std::printf("  PASS\n");
     return failures;
 }
@@ -5919,6 +6075,8 @@ main(int argc, char** argv)
             failures = testWritePFMDiskFull(outFile);
         } else if (mode == "--writer-render-scale") {
             failures = testWriterRenderScale(outFile);
+        } else if (mode == "--int-ranges") {
+            failures = testWriterIntRanges(outFile);
         } else if (mode == "--pfm-read-errors") {
             failures = testReadPFMHeaderSize(outFile);
         } else if (mode == "--views-concurrent") {

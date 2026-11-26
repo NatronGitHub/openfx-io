@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstring> // memset
 #include <limits>
+#include <memory>
 
 #include "ofxsMacros.h"
 
@@ -61,20 +62,12 @@ using namespace OFX;
 
 using std::string;
 
-// A size in pixels, converted to int after clamping it to [0, INT_MAX] (0 for NaN), without undefined behaviour
+// A size in pixels, converted to int after clamping it to [0, INT_MAX] (0 for NaN, see OFX::IO::clampToInt()), without
+// undefined behaviour
 static int
 sizeToInt(double v)
 {
-    // OFX::IsNaN() and OFX::IsInfinite() test the bits: they work even if the compiler assumes that there are no NaNs
-    // or infinities (-ffast-math), unlike comparisons
-    if (OFX::IsNaN(v) || (v <= 0.)) {
-        return 0;
-    }
-    if (OFX::IsInfinite(v) || (v >= (double)INT_MAX)) {
-        return INT_MAX;
-    }
-
-    return (int)v;
+    return OFX::IO::clampToInt(v, 0, INT_MAX);
 }
 
 // A coordinate of a RoD from the host, clamped to +-5e289 (0 for NaN): the size of a clamped RoD is at most 1e290, so
@@ -279,7 +272,7 @@ OIIOResizePlugin::~OIIOResizePlugin()
 void
 OIIOResizePlugin::render(const RenderArguments& args)
 {
-    auto_ptr<Image> dst(_dstClip->fetchImage(args.time));
+    std::unique_ptr<Image> dst(_dstClip->fetchImage(args.time));
     if (!dst.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -287,7 +280,7 @@ OIIOResizePlugin::render(const RenderArguments& args)
     }
     checkBadRenderScaleOrField(dst, args);
 
-    auto_ptr<const Image> src(_srcClip->fetchImage(args.time));
+    std::unique_ptr<const Image> src(_srcClip->fetchImage(args.time));
     if (src.get()) {
         BitDepthEnum dstBitDepth = dst->getPixelDepth();
         PixelComponentEnum dstComponents = dst->getPixelComponents();
@@ -544,7 +537,7 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
         }
         float w = fd.width * (std::max)(1.0f, wratio);
         float h = fd.width * (std::max)(1.0f, hratio);
-        auto_ptr<Filter2D> filter(Filter2D::create(fd.name, w, h));
+        std::unique_ptr<Filter2D> filter(Filter2D::create(fd.name, w, h));
 
         if (!ImageBufAlgo::resize(dstBuf, srcBuf, filter.get(), ROI::All(), MultiThread::getNumCPUs())) {
             setPersistentMessage(Message::eMessageError, "", dstBuf.geterror());

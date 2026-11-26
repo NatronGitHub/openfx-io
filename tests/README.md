@@ -71,6 +71,7 @@ make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes th
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
 make test-writer-render-scale # a writer at a render scale other than 1 fails with an error message (#438)
+make test-writer-int-ranges # GenericWriter and WriteFFmpeg with host values out of the range of int, with UBSan (#184)
 make test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
 make test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
 make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
@@ -506,6 +507,19 @@ file; `getRegionOfDefinition` must fail without a message, since Natron calls it
 plug-in supports render scales. At scale 1, the same instance writes the file. `test-runscript` checks the same
 message for RunScript's render (`runscript_render_test`, POSIX only).
 
+`test-writer-int-ranges` (issue #184) runs `ofx_render_test_ubsan OUT --int-ranges`: `ofx_render_test` built with
+UBSan's `float-cast-overflow` and `signed-integer-overflow` checks, stopping at the first error (on MS Windows, where
+MinGW has no UBSan runtime, `ofx_render_test` itself). Values from the host that are out of the range of int, or NaN,
+and that the plug-ins converted to int (undefined behaviour):
+* GenericWriter's Project format (WritePFM) of a 1e10 x 1e10 project, of a 3e10 x 3e10 one at -2e10, or with a PAR
+  of 1e-300: the RoD is the format clamped to `INT_MIN`/`INT_MAX` (times the PAR); an 8x4 project is unchanged.
+* WriteFFmpeg: frames `INT_MAX - 2` to `INT_MAX` (the last frame plus the step overflowed an int, and gave the value
+  that means "failed") and `INT_MIN + 1` to `INT_MIN + 3` write 3 frames; frames 3e9 to 3e9 + 2, `INT_MIN` to
+  `INT_MIN + 2`, and a NaN frame range and step: `beginSequenceRender` fails with "... is out of the range of frame
+  numbers"; fielded renders (a frame step of 0.5, rendered at 1, 1.5, ..., 3 and at -3, -2.5, ..., -1; the step was 0,
+  and the second frame waited forever: the test fails after 5 minutes) write the 3 images rendered at the whole frames
+  (grey levels 0.2, 0.5 and 0.8; the half frames are white), checked on the luma of the movie; an fps of 1e12.
+
 `test-readffmpeg-views-concurrent` (issue #291) runs `ofx_render_test OUT --views-concurrent`: the ffmpeg CLI writes a
 movie with two matching video streams (MPEG-4 with B-frames, 64x48, 20 frames), the second one the negative of the
 first, which ReadFFmpeg reads as views 0 and 1. One instance renders every frame of view 0, then of view 1, on one
@@ -522,6 +536,9 @@ because the plugins' GenericOCIO layer requires a loadable config. The test
 generates its own media (WriteFFmpeg), so it needs no external clip.
 
 ### 1c. `test-reader-hooks` — GenericReader's hooks for animated reader params
+
+`reader_hooks_test` is built with UBSan's `float-cast-overflow` and `signed-integer-overflow` checks, stopping at the
+first error (not on MS Windows), for the cases near the limits of an int (#184).
 
 `reader_hooks_test.cpp` defines three minimal test readers (`GenericReaderPlugin`
 subclasses reading fake files that only need to exist: still images, or "video"
@@ -572,6 +589,13 @@ host of `ofx_test_host.h`, linked with `GenericReader.cpp` and its dependencies 
   clamps the bounds one pixel inside the flags).
 * **An output image without pixel data** (#278): a host whose `clipGetImage` succeeds with a NULL `kOfxImagePropData`:
   the render fails with kOfxStatFailed and an error message, and `decode()` is not called.
+* **Tiles near the limits of an int** (#184): a test reader with 64x64 tiles (top-down) and frame bounds of 100 rows
+  from y = -2147483600: the render window, rounded to the tiles with Y inverted (`frameHeight - y`, above `INT_MAX`),
+  is the exact window (it was computed in int), and the window's pixels are the file's.
+* **Loop, Bounce and Hold with 4e9 frames** (#184): the frame range params from -2e9 to 2e9, rendered at -2.1e9 and
+  2.1e9 (Loop and Bounce: the offset and the number of frames overflowed an int) and at +-1e12 (Hold, and Loop: the
+  time was converted to int): the sequence frame that `decode()` gets is exact, or in the frame range.
+* **`getLevelFromScale()` of a NaN scale** (#184): 0 (the full resolution), without converting NaN to int.
 
 Like `test-render`, it sets `OCIO=test.ocio`.
 
@@ -1079,7 +1103,9 @@ with the SeExpr of the CMake build), in the Filter context:
   cases that this build of SeExpr can not parse or prep are skipped (with MacPorts' SeExpr 2.11, 533 are checked, 1
   is a NaN artifact and 30 are skipped).
 * **render**: `cpixel()` with coordinates of 1e9, 1e12 or -1e300 gives the edge pixel, as before (they are clamped to
-  +-1e9 before their conversion to int); a finite frame (1e12) is used as is, an infinite one is clamped; a NaN
+  +-1e9 before their conversion to int); the frame is clamped to the range of int (1e12 and infinite frames; and in
+  the frames needed, `frame + 1e12`, `frame + 1e400` and `frame - 1e12` give `INT_MAX` or `INT_MIN`, since hosts
+  convert frames to int, #184; `frame + 2e9` is an int frame, used as is); a NaN
   coordinate or frame (`sqrt(x - 100)`) gives black. The parameter variables (`x1`, `pos1`, `color1`) and `mix`,
   animated by a param suite whose `paramGetValueAtTime(t)` gives their value at `t` and `paramGetValue()` their
   value at another time (70), have their value at the render time (10, then 20), even when the variable is only
@@ -1503,7 +1529,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
 | `ctest_skips.sh`            | Lists the `SKIP: `/`SKIPPED: ` lines of all tests of the last ctest run (`ctest_skips.sh build`), which `ctest --output-on-failure` hides, e.g. the sections of `test-ffmpeg` without their encoder; CI runs it after ctest (#309). |
-| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-writer-render-scale` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
+| `Makefile`                  | `make test` / `test-ffmpeg` / `test-oiio` / `test-ofx` / `test-render` / `test-dnxhr444-noise` / `test-writeffmpeg-begin-failure` / `test-writeffmpeg-dnxhd-profiles` / `test-writeffmpeg-encode-failure` / `test-writeffmpeg-encode-failure-disk-full` / `test-writeoiio-disk-full` / `test-writeoiio-files` / `test-writer-remove-partial-file` / `test-writeffmpeg-param-change` / `test-writeffmpeg-codec-params` / `test-writeffmpeg-selected-encoder` / `test-writeffmpeg-format-from-filename` / `test-readffmpeg-destroy-closes-file` / `test-pfm-write-errors` / `test-pfm-read-errors` / `test-writer-render-scale` / `test-writer-int-ranges` / `test-layers` / `test-reader-hooks` / `test-ocio-cdl` / `test-ocio-anim` / ... (without CMake). / `test-writeffmpeg-codec-edit-during-begin` / `test-writeffmpeg-pixfmt-choice` / `test-writeffmpeg-missing-encoder` |
 
 ## Notes / limitations
 

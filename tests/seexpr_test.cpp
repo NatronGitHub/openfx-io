@@ -10,8 +10,9 @@
  *    default range, tested with OFX::IsNaN()): the frames are at least those of master (checked on the corpus of the
  *    review, seexpr_test_master.inc).
  *  - render: the coordinates of cpixel() may be out of the range of int (or infinite): they are clamped to +-1e9
- *    before their conversion to int, which gives the edge pixel, as before; a finite frame is used as is, an infinite
- *    one is clamped; a NaN coordinate or frame gives black.
+ *    before their conversion to int, which gives the edge pixel, as before; the frame is clamped to the range of int,
+ *    in the render and in getFramesNeeded(), since hosts convert frames to int (#184); a NaN coordinate or frame gives
+ *    black.
  *  - render: the parameter variables (x1, pos1, color1) and mix have their value at the render time
  *    (paramGetValueAtTime), not at the host's current time (paramGetValue), from the first evaluation of the
  *    expression on (it returned an uninitialized value when the variable was first read at a pixel, in a branch that
@@ -36,6 +37,7 @@
 #include <cmath>
 #include <cstring>
 #include <chrono>
+#include <climits> // INT_MIN, INT_MAX
 #include <string>
 #include <utility>
 #include <vector>
@@ -731,7 +733,7 @@ main(int /*argc*/,
         { "x > 1e6 ? cpixel(1, frame + 3, x, y) : cpixel(1, frame, x, y)", { 10., 10., 13., 13. } },
         { "if (x > 1e6) { c = cpixel(1, frame + 4, x, y); } else { c = cpixel(1, frame, x, y); } c", { 10., 10., 14., 14. } },
         { "cpixel(1, sqrt(frame - 20), x, y)", { 5., 15., 10., 10. } }, // NaN: the default range, as on master
-        { "cpixel(1, frame + 2e9, x, y)", { 10., 10., 2000000010., 2000000010. } }, // a finite frame is used as is
+        { "cpixel(1, frame + 2e9, x, y)", { 10., 10., 2000000010., 2000000010. } }, // an int frame is used as is
         // getVar() of a local variable (assigned before the call), and of the external frame (in the assignment of f)
         { "f = frame - 1; g = getVar(\"f\", 0) - 1; cpixel(1, g, x, y)", { 8., 8., 10., 10. } },
         { "frame = getVar(\"frame\", 0) - 4; cpixel(1, frame, x, y)", { 6., 6., 10., 10. } },
@@ -972,6 +974,23 @@ main(int /*argc*/,
         check(r == std::vector<double>({ 5., 15., 7., 7., 10., 10. }), "%s at 10: %s (expected [5,15] [7,7] [10,10])", script, rangesString(r).c_str());
     }
 
+    std::printf("==== getFramesNeeded(): frames out of the range of int are clamped to it, as hosts convert frames to int (#184) ====\n");
+    {
+        const struct {
+            const char* script;
+            double frame; // the clamped frame
+        } cases[] = {
+            { "cpixel(1, frame + 1e12, x, y)", (double)INT_MAX },
+            { "cpixel(1, frame - 1e12, x, y)", (double)INT_MIN },
+            { "cpixel(1, frame + 1e400, x, y)", (double)INT_MAX },
+        };
+        for (const auto& c : cases) {
+            const std::vector<double> r = framesNeeded(p, ctx, inst, c.script, 10.);
+            const bool inRange = std::all_of(r.begin(), r.end(), [](double f) { return ((double)INT_MIN <= f) && (f <= (double)INT_MAX); });
+            check(inRange && covers(r, { c.frame, c.frame }), "%s at 10: %s (expected [%.17g,%.17g], and no frame out of the range of int)", c.script, rangesString(r).c_str(), c.frame, c.frame);
+        }
+    }
+
     std::printf("==== render: cpixel() coordinates far out of the image give the edge pixel, NaN gives black ====\n");
     {
         const char* const nanScripts[] = { "cpixel(1, frame, sqrt(x - 100), y)", "cpixel(1, sqrt(frame - 20), x, y)" };
@@ -985,8 +1004,8 @@ main(int /*argc*/,
         "cpixel(1, frame, x + 1e12, y)",
         "cpixel(1, frame, x, y + 1e9)",
         "cpixel(1, frame, x - 1e300, y)",
-        "cpixel(1, frame + 1e12, x, y)", // a finite frame is used as is (the test host has every frame)
-        "cpixel(1, frame + 1e400, x, y)", // an infinite frame is clamped
+        "cpixel(1, frame + 1e12, x, y)", // the frame is clamped to INT_MAX (the test host has every frame)
+        "cpixel(1, frame + 1e400, x, y)", // an infinite frame too
     };
     for (const char* script : renderScripts) {
         const float v = renderRed(p, ctx, inst, out, script, 10., W, H8, 3, 3);

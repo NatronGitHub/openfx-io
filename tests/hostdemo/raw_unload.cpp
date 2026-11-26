@@ -41,6 +41,7 @@
 #include <cstring>
 #include <list>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -409,7 +410,7 @@ main(int argc, char** argv)
     int threadsAfterRender = -1;
     std::string runtimeAfterRender;
     {
-        OFX::Host::auto_ptr<OFX::Host::ImageEffect::Instance> instance(plugin->createInstance(kOfxImageEffectContextReader, NULL));
+        std::unique_ptr<OFX::Host::ImageEffect::Instance> instance(plugin->createInstance(kOfxImageEffectContextReader, NULL));
         MyHost::MyEffectInstance* myInstance = dynamic_cast<MyHost::MyEffectInstance*>(instance.get());
         if (!myInstance) {
             std::fprintf(stderr, "Error: could not create an instance\n");

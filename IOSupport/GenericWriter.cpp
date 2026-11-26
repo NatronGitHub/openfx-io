@@ -30,6 +30,7 @@
 #include <cstdint> // uint64_t
 #include <cstring> // memset
 #include <locale>
+#include <memory>
 #include <sstream>
 #include <sys/types.h>
 #include <sys/stat.h> // stat, _wstat64
@@ -487,7 +488,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
         // copy to dstImg if necessary
         if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
-            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+            std::unique_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
                 setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                 throwSuiteStatusException(kOfxStatFailed);
@@ -646,7 +647,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
 
             // copy to dstImg if necessary
             if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+                std::unique_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
                 if (!dstImg.get()) {
                     setPersistentMessage(Message::eMessageError, "", "Output image could not be fetched");
                     throwSuiteStatusException(kOfxStatFailed);
@@ -703,7 +704,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         } else if ((renderRequestedView == view) && _outputClip && _outputClip->isConnected()) {
             // The render window does not intersect the source image: the temporary buffer is
             // black (it was zeroed above), and so is the output image (the writer is a no-op).
-            auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
+            std::unique_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, renderRequestedView, plane.c_str()));
             if (!dstImg.get()) {
                 if (abort()) {
                     // no data: the callers write nothing when aborted (they check abort() before encoding)
@@ -958,7 +959,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
         if ( OFX::exists_utf8( filename.c_str() ) ) {
             // file exists
             if (_outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(_outputClip->fetchImage(time));
+                std::unique_ptr<Image> dstImg(_outputClip->fetchImage(time));
                 // fill output with black
                 fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
             }
@@ -1194,7 +1195,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args)
 
             // the writer is a no-op: the output image is black too
             if (_outputClip && _outputClip->isConnected()) {
-                auto_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, args.renderView, args.planes.front().c_str()));
+                std::unique_ptr<Image> dstImg(_outputClip->fetchImagePlane(time, args.renderView, args.planes.front().c_str()));
                 if (!dstImg.get()) {
                     if (abort()) {
                         return;
@@ -1592,7 +1593,7 @@ packPixelBufferForDepth(ImageEffect* instance,
                         void* dstPixelData)
 {
     assert(channelsMapping.size() <= 4);
-    auto_ptr<PackPixelsProcessorBase> p;
+    std::unique_ptr<PackPixelsProcessorBase> p;
     int srcNComps = 0;
     switch (srcPixelComponents) {
     case ePixelComponentAlpha:
@@ -1752,7 +1753,7 @@ interleavePixelBuffersForDepth(ImageEffect* instance,
                                PIX* dstPixelData)
 {
     assert((dstPixelComponentStartIndex + desiredSrcNComps) <= dstPixelComponentCount);
-    auto_ptr<InterleaveProcessorBase> p;
+    std::unique_ptr<InterleaveProcessorBase> p;
     switch (srcPixelComponentCount) {
     case 1:
         p.reset(new InterleaveProcessor<PIX, maxValue, 1>(*instance));
@@ -2013,11 +2014,12 @@ GenericWriterPlugin::getSelectedOutputFormat(OfxTime time,
             projectPar = 1.;
         }
         *par = projectPar;
-        // the project size and offset are in canonical coordinates (a PAL SD project is 768x576, 720x576 pixels)
-        format->x1 = std::floor(offset.x / projectPar + 0.5);
-        format->y1 = offset.y;
-        format->x2 = std::floor((offset.x + size.x) / projectPar + 0.5);
-        format->y2 = offset.y + size.y;
+        // the project size and offset are in canonical coordinates (a PAL SD project is 768x576, 720x576 pixels),
+        // clamped to the range of int: a huge project, or a tiny PAR, would overflow it (#184)
+        format->x1 = Coords::pixelToIntClamped(std::floor(offset.x / projectPar + 0.5), kOfxFlagInfiniteMin);
+        format->y1 = Coords::pixelToIntClamped(offset.y, kOfxFlagInfiniteMin);
+        format->x2 = Coords::pixelToIntClamped(std::floor((offset.x + size.x) / projectPar + 0.5), kOfxFlagInfiniteMax);
+        format->y2 = Coords::pixelToIntClamped(offset.y + size.y, kOfxFlagInfiniteMax);
         break;
     }
     case eFormatTypeFixed: {
@@ -2178,31 +2180,24 @@ GenericWriterPlugin::getTimeLineBounds(double* first,
 }
 
 // A frame number as an int. The bounds of the frame range may be infinite ("infinite if there are no non optional
-// input clips", kOfxImageEffectPropFrameRange) or NaN: they are clamped to +-INT_MAX/2, and a NaN, tested on its bits
-// (which works even if the compiler assumes that there are no NaNs), gives 0.
+// input clips", kOfxImageEffectPropFrameRange) or NaN: they are clamped to +-INT_MAX/2, and a NaN, which fails every
+// comparison, gives 0. This is not a NaN test: the comparisons are in clampToInt()'s order, so that with
+// -ffinite-math-only (which may fold them) a NaN still gives a bound, never the conversion.
 static int
 frameToInt(double frame)
 {
-    uint64_t bits;
-    std::memcpy(&bits, &frame, sizeof(bits));
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__("" : "+r"(bits)); // an optimization barrier: the compiler can't know the bits
-#else
-    volatile uint64_t volatileBits = bits;
-    bits = volatileBits;
-#endif
-    if ( (bits & 0x7fffffffffffffffULL) > 0x7ff0000000000000ULL ) {
-        return 0; // NaN
-    }
     const int kMax = INT_MAX / 2;
-    if (frame <= -kMax) {
-        return -kMax;
-    }
     if (frame >= kMax) {
         return kMax;
     }
+    if (frame > -kMax) {
+        return (int)frame; // -kMax < frame < kMax
+    }
+    if (frame <= -kMax) {
+        return -kMax;
+    }
 
-    return (int)frame;
+    return 0; // NaN
 }
 
 bool

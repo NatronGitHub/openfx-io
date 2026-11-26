@@ -47,8 +47,8 @@ GCC_DIAG_ON(unused-parameter)
 #ifdef OFX_IO_USING_LIBRAW
 // clang-format off
 GCC_DIAG_OFF(deprecated-declarations)
-// libraw_datastream.h 0.18.3 uses auto_ptr (not C++17 compliant)
-// Prevent inclusion:
+// ReadOIIO uses none of LibRaw's datastreams: libraw_datastream.h is not included (it includes <winsock2.h> on MS
+// Windows, and still uses std::auto_ptr if LIBRAW_USE_AUTOPTR is defined)
 #define __LIBRAW_DATASTREAM_H
 class LibRaw_abstract_datastream;
 #include <libraw.h>
@@ -86,24 +86,11 @@ GCC_DIAG_ON(deprecated-declarations)
 
 #include "GenericOCIO.h"
 #include "GenericReader.h"
+#include "IOMutex.h"
 #include "IOUtility.h"
 
-#include "ofxsMultiThread.h"
 #include <ofxsCoords.h>
 #include <ofxsMultiPlane.h>
-#ifdef OFX_USE_MULTITHREAD_MUTEX
-namespace {
-typedef OFX::MultiThread::Mutex Mutex;
-typedef OFX::MultiThread::AutoMutex AutoMutex;
-}
-#else
-// some OFX hosts do not have mutex handling in the MT-Suite (e.g. Sony Catalyst Edit)
-#include <mutex>
-namespace {
-typedef std::mutex Mutex;
-typedef std::lock_guard<std::mutex> AutoMutex;
-}
-#endif
 
 #define OFX_READ_OIIO_SUPPORTS_SUBIMAGES
 
@@ -491,7 +478,7 @@ private:
     // setValue...; lock order: this mutex, then the host's), so the host must not wait for renders in them.
     // The lock removes the data race, not a render that started on one file using the menu of the next one: it then
     // fails with a message, and the host aborts it and renders again (ofxThreadSafety.rst).
-    Mutex _outputLayerMenuMutex;
+    IOMutex _outputLayerMenuMutex;
     LayersUnionVect _outputLayerMenu;
 };
 
@@ -662,7 +649,7 @@ ReadOIIOPlugin::getClipComponents(const ClipComponentsArguments& args,
     // (a copy: setClipPlanes() calls the host, without the lock)
     LayersUnionVect layers;
     {
-        AutoMutex lock(_outputLayerMenuMutex);
+        IOAutoMutex lock(_outputLayerMenuMutex);
         layers = _outputLayerMenu;
     }
     setClipPlanes(args, clipComponents, layers);
@@ -745,7 +732,7 @@ ReadOIIOPlugin::buildOutputLayerMenu(const vector<ImageSpec>& subimages)
     vector<string> options, optionsLabel;
 
     // Protect the map until we finished building the menu
-    AutoMutex lock(_outputLayerMenuMutex);
+    IOAutoMutex lock(_outputLayerMenuMutex);
     _outputLayerMenu.clear();
 
     ViewsLayersMap layersMap;
@@ -1923,7 +1910,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
             string layerName;
             bool found = false;
             {
-                AutoMutex lock(_outputLayerMenuMutex);
+                IOAutoMutex lock(_outputLayerMenuMutex);
                 // buildOutputLayerMenu keeps these in sync (under the lock)
                 assert(_outputLayer->getNOptions() == (int)_outputLayerMenu.size());
                 const int layer_i = _outputLayer->getValue();
@@ -2509,7 +2496,7 @@ ReadOIIOPlugin::isIdentity(const OFX::IsIdentityArguments& args, OFX::Clip*& ide
         string layerName;
         vector<string> channelNames;
         {
-            AutoMutex lock(_outputLayerMenuMutex);
+            IOAutoMutex lock(_outputLayerMenuMutex);
             if (layer_i < 0 || layer_i >= (int)_outputLayerMenu.size()) {
                 return false;
             }

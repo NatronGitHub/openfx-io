@@ -550,9 +550,11 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
                                            BeforeAfterEnum beforeChoice,
                                            double* sequenceTime) const
 {
-    /// get the offset from the starting time of the sequence in case we bounce or loop
-    int timeOffsetFromStart = (int)*sequenceTime - sequenceTimeDomain.min;
-    int seqFrames = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
+    /// get the offset from the starting time of the sequence in case we bounce or loop. In 64 bits: the time comes
+    /// from the host, and the frame range params go from INT_MIN to INT_MAX, so the offset and the number of frames
+    /// may be out of the range of int (#184).
+    long long timeOffsetFromStart = (long long)clampToInt(*sequenceTime) - sequenceTimeDomain.min;
+    const long long seqFrames = (long long)sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
 
     switch (beforeChoice) {
     case eBeforeAfterHold: // hold
@@ -576,7 +578,7 @@ GenericReaderPlugin::getSequenceTimeBefore(const OfxRangeI& sequenceTimeDomain,
             *sequenceTime = sequenceTimeDomain.min;
         } else {
             // number of frames in a loop
-            int loopFrames = seqFrames * 2 - 2;
+            const long long loopFrames = seqFrames * 2 - 2;
             // positive modulo
             timeOffsetFromStart = (timeOffsetFromStart % loopFrames + loopFrames) % loopFrames;
             // bounce
@@ -605,9 +607,10 @@ GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
                                           BeforeAfterEnum afterChoice,
                                           double* sequenceTime) const
 {
-    /// get the offset from the starting time of the sequence in case we bounce or loop
-    int timeOffsetFromStart = (int)*sequenceTime - sequenceTimeDomain.min;
-    int seqFrames = sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
+    /// get the offset from the starting time of the sequence in case we bounce or loop, in 64 bits (see
+    /// getSequenceTimeBefore())
+    long long timeOffsetFromStart = (long long)clampToInt(*sequenceTime) - sequenceTimeDomain.min;
+    const long long seqFrames = (long long)sequenceTimeDomain.max - sequenceTimeDomain.min + 1;
 
     switch (afterChoice) {
     case eBeforeAfterHold: { // hold
@@ -631,7 +634,7 @@ GenericReaderPlugin::getSequenceTimeAfter(const OfxRangeI& sequenceTimeDomain,
             *sequenceTime = sequenceTimeDomain.min;
         } else {
             // number of frames in a loop
-            int loopFrames = seqFrames * 2 - 2;
+            const long long loopFrames = seqFrames * 2 - 2;
             // positive modulo
             timeOffsetFromStart = (timeOffsetFromStart % loopFrames + loopFrames) % loopFrames;
             // bounce
@@ -1089,7 +1092,7 @@ buildMipMapLevelGeneric(ImageEffect* instance,
 
     // two temporary images, used alternately, so that each halving reads one buffer and writes the other (halving
     // in place would only work because of halveWindow's access order)
-    auto_ptr<ImageMemory> tmpMem[2];
+    std::unique_ptr<ImageMemory> tmpMem[2];
     size_t tmpMemSize[2] = { 0, 0 };
     PIX* nextImg = NULL;
     const PIX* previousImg = srcPixels;
@@ -1115,7 +1118,7 @@ buildMipMapLevelGeneric(ImageEffect* instance,
         /// Allocate a temporary image if necessary, or reuse the one allocated two levels before (which is larger)
         int nextRowBytes = (nextRenderWindow.x2 - nextRenderWindow.x1) * nComponents * sizeof(PIX);
         size_t newMemSize = (size_t)(nextRenderWindow.y2 - nextRenderWindow.y1) * (size_t)nextRowBytes;
-        auto_ptr<ImageMemory>& mem = tmpMem[i % 2];
+        std::unique_ptr<ImageMemory>& mem = tmpMem[i % 2];
         if (!mem.get() || tmpMemSize[i % 2] < newMemSize) {
             mem.reset(new ImageMemory(newMemSize, instance));
             tmpMemSize[i % 2] = newMemSize;
@@ -2085,33 +2088,31 @@ GenericReaderPlugin::render(const RenderArguments& args)
                    large enough to decode tiles. This is needed for OpenImageIO. Note that
                  */
                 if ((tile_width > 0) && (tile_height > 0)) {
-                    double frameHeight = frameBounds.y2 - frameBounds.y1;
+                    // In double, and clamped to the range of int when stored: Y inverted near the limits of an int,
+                    // or a window rounded to the tiles, may be out of it (#184). The results are the same as before
+                    // (in int) otherwise.
+                    const double tw = tile_width;
+                    const double th = tile_height;
+                    const OfxRectD rw = { (double)renderWindowFullRes.x1, (double)renderWindowFullRes.y1, (double)renderWindowFullRes.x2, (double)renderWindowFullRes.y2 };
+                    const OfxRectD fb = { (double)frameBounds.x1, (double)frameBounds.y1, (double)frameBounds.x2, (double)frameBounds.y2 };
+                    OfxRectD rounded;
                     if (isTileOrientationTopDown()) {
-                        // invert Y before rounding
-
-                        renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
-                        renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
-                        frameBounds.y1 = frameHeight - frameBounds.y1;
-                        frameBounds.y2 = frameHeight - frameBounds.y2;
-
-                        renderWindowFullRes.x1 = (std::min)((double)std::ceil((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
-                        renderWindowFullRes.y1 = (std::min)((double)std::ceil((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
-                        renderWindowFullRes.x2 = (std::max)((double)std::floor((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
-                        renderWindowFullRes.y2 = (std::max)((double)std::floor((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
+                        // invert Y before rounding, and back after
+                        const double frameHeight = fb.y2 - fb.y1;
+                        rounded.x1 = (std::min)(std::ceil(rw.x1 / tw) * tw, fb.x1);
+                        rounded.y1 = frameHeight - (std::min)(std::ceil((frameHeight - rw.y1) / th) * th, frameHeight - fb.y1);
+                        rounded.x2 = (std::max)(std::floor(rw.x2 / tw) * tw, fb.x2);
+                        rounded.y2 = frameHeight - (std::max)(std::floor((frameHeight - rw.y2) / th) * th, frameHeight - fb.y2);
                     } else {
-                        renderWindowFullRes.x1 = (std::max)((double)std::floor((double)renderWindowFullRes.x1 / tile_width) * tile_width, (double)frameBounds.x1);
-                        renderWindowFullRes.y1 = (std::max)((double)std::floor((double)renderWindowFullRes.y1 / tile_height) * tile_height, (double)frameBounds.y1);
-                        renderWindowFullRes.x2 = (std::min)((double)std::ceil((double)renderWindowFullRes.x2 / tile_width) * tile_width, (double)frameBounds.x2);
-                        renderWindowFullRes.y2 = (std::min)((double)std::ceil((double)renderWindowFullRes.y2 / tile_height) * tile_height, (double)frameBounds.y2);
+                        rounded.x1 = (std::max)(std::floor(rw.x1 / tw) * tw, fb.x1);
+                        rounded.y1 = (std::max)(std::floor(rw.y1 / th) * th, fb.y1);
+                        rounded.x2 = (std::min)(std::ceil(rw.x2 / tw) * tw, fb.x2);
+                        rounded.y2 = (std::min)(std::ceil(rw.y2 / th) * th, fb.y2);
                     }
-
-                    if (isTileOrientationTopDown()) {
-                        // invert back Y
-                        renderWindowFullRes.y1 = frameHeight - renderWindowFullRes.y1;
-                        renderWindowFullRes.y2 = frameHeight - renderWindowFullRes.y2;
-                        frameBounds.y1 = frameHeight - frameBounds.y1;
-                        frameBounds.y2 = frameHeight - frameBounds.y2;
-                    }
+                    renderWindowFullRes.x1 = Coords::pixelToIntClamped(rounded.x1, kOfxFlagInfiniteMin);
+                    renderWindowFullRes.y1 = Coords::pixelToIntClamped(rounded.y1, kOfxFlagInfiniteMin);
+                    renderWindowFullRes.x2 = Coords::pixelToIntClamped(rounded.x2, kOfxFlagInfiniteMax);
+                    renderWindowFullRes.y2 = Coords::pixelToIntClamped(rounded.y2, kOfxFlagInfiniteMax);
                 }
 
                 int tmpRowBytes = (renderWindowFullRes.x2 - renderWindowFullRes.x1) * pixelBytes;

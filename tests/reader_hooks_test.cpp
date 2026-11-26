@@ -29,6 +29,9 @@
  * And that a render into an output image without pixel data (a NULL kOfxImagePropData, #278) fails with an error
  * message, without calling decode().
  *
+ * And, near the limits of an int (#184), the render window rounded to 64x64 tiles for frame bounds near INT_MIN, and the
+ * sequence frame of Loop, Bounce and Hold for a frame range of 4e9 frames and times out of the range of int.
+ *
  * And getClipPreferences() for an image sequence whose starting time is not its first frame
  * (issue #147): the PAR must be read from the first file of the sequence, looked up at the
  * first frame of the sequence (not at the host time of that frame). A file with a PAR of 0
@@ -135,6 +138,8 @@ struct DecodeRecord {
 struct MipmapContent {
     OfxRectI bounds;
     std::function<float(int x, int y, int c)> value;
+    int tileWidth = 0; // the tile size that getFrameBounds() returns (0: no tiles)
+    int tileHeight = 0;
 };
 MipmapContent gMipmapContent; // read by the mipmap test reader instances
 
@@ -306,7 +311,8 @@ private:
         if (filename.find("par40_33") != std::string::npos) {
             *par = 40. / 33.;
         }
-        *tile_width = *tile_height = 0;
+        *tile_width = _content ? _content->tileWidth : 0;
+        *tile_height = _content ? _content->tileHeight : 0;
 
         return true;
     }
@@ -914,6 +920,9 @@ testIOUtility()
     const int fromNaN8 = floatToInt<256>(nan);
     const int fromNaN16 = floatToInt<65536>(nan);
     check(fromNaN8 == 0 && fromNaN16 == 0, "floatToInt(NaN) = %d, %d (expected 0, 0)", fromNaN8, fromNaN16);
+    // getLevelFromScale() of a NaN scale (from the host): the full resolution, without converting NaN to int (#184)
+    const unsigned int nanLevel = getLevelFromScale((double)nan);
+    check(nanLevel == 0, "getLevelFromScale(NaN) = %u (expected 0)", nanLevel);
     const struct { float v; int i8; int i16; } values[] = {
         { -1.f, 0, 0 }, { 0.f, 0, 0 }, { 0.5f, 128, 32768 }, { 1.f, 255, 65535 }, { 2.f, 255, 65535 }, { 1.f / 255.f, 1, 257 },
     };
@@ -1738,6 +1747,92 @@ testRefreshFrameBounds(OfxPlugin* pTiles, const std::string& still)
     check(ok(st) && r.plugin->refreshCalls == 0, "render window in the frame bounds: refreshFrameBounds() not called (%d calls)", r.plugin->refreshCalls);
 }
 
+// #184: the render window rounded to the file's tiles (tile_width, tile_height), with Y inverted before rounding (the
+// tiles start at the top: isTileOrientationTopDown()), was computed in int, and frame bounds near INT_MIN overflowed
+// it (frameHeight - y1 is above INT_MAX). It is computed in double: the rounded window, in the frame bounds, is exact.
+void
+testTilesNearIntLimits(OfxPlugin* pTiles, const std::string& still)
+{
+    std::printf("==== the render window rounded to the tiles, with frame bounds near INT_MIN (#184) ====\n");
+    const OfxRectI frame = { 0, -2147483600, 8, -2147483500 }; // 100 rows: frameHeight - frame.y1 is INT_MAX + 53
+    gMipmapContent.bounds = frame;
+    gMipmapContent.value = [frame](int x, int y, int c) -> float { return (c == 3) ? 1.f : (float)(x + 10 * (y - frame.y1) + 1000 * c); };
+    gMipmapContent.tileWidth = gMipmapContent.tileHeight = 64;
+    {
+        Reader r;
+        if (!r.create(pTiles, still)) {
+            ++gFailures;
+        } else {
+            // an UnPreMultiplied file: GenericReader decodes into its buffer (to premultiply it), whose window is
+            // rounded to the tiles (alpha is 1)
+            setParamInt(r.ctx, "filePremult", 2); // UnPreMultiplied
+            setParamInt(r.ctx, "outputPremult", 1); // PreMultiplied
+            const OfxRectI window = { 2, frame.y1 + 10, 6, frame.y1 + 20 };
+            r.plugin->records.clear();
+            const OfxStatus st = r.renderWithRoD(frame, window, window);
+            // in the inverted Y (frameHeight - y), the window is rounded to the tiles (64 rows) and to the frame
+            // bounds: y1 to -2147483600 (the frame's y1), y2 to frameHeight - 2^31 = -2147483548. The x of the window
+            // is the frame's (as before #184 for top-down tiles: min(ceil(x1)) and max(floor(x2)) of the frame bounds).
+            const OfxRectI expected = { 0, -2147483600, 8, -2147483548 };
+            const OfxRectI got = r.plugin->records.empty() ? OfxRectI { 0, 0, 0, 0 } : r.plugin->records.back().renderWindow;
+            check(ok(st) && (r.plugin->records.size() == 1) && (got.x1 == expected.x1) && (got.y1 == expected.y1) && (got.x2 == expected.x2) && (got.y2 == expected.y2),
+                  "render = %d, decode() window (%d, %d)-(%d, %d) (expected (%d, %d)-(%d, %d))", st, got.x1, got.y1, got.x2, got.y2,
+                  expected.x1, expected.y1, expected.x2, expected.y2);
+            int wrong = 0;
+            for (int y = window.y1; y < window.y2; ++y) {
+                for (int x = window.x1; x < window.x2; ++x) {
+                    for (int c = 0; c < 4; ++c) {
+                        wrong += (r.outputPixel(window, x, y, c) != gMipmapContent.value(x, y, c)) ? 1 : 0;
+                    }
+                }
+            }
+            check(ok(st) && (wrong == 0), "the window's pixels: %d wrong values", wrong);
+        }
+    }
+    gMipmapContent.tileWidth = gMipmapContent.tileHeight = 0;
+}
+
+// #184: the frame range params go from INT_MIN to INT_MAX, and the host's time is a double. In Loop and Bounce modes,
+// the offset of the time from the first frame and the number of frames were computed in int, and overflowed it; and
+// a time out of the range of int was converted to int (also in Hold mode). They are computed in 64 bits.
+void
+testSequenceTimeIntLimits(OfxPlugin* pDefault, const std::string& video)
+{
+    std::printf("==== Loop, Bounce and Hold with a frame range of 4e9 frames, and a time out of the range of int (#184) ====\n");
+    Reader r;
+    if (!r.create(pDefault, video)) {
+        ++gFailures;
+
+        return;
+    }
+    setParamInt(r.ctx, "firstFrame", -2000000000);
+    setParamInt(r.ctx, "lastFrame", 2000000000);
+    setParamInt(r.ctx, "timeOffset", 0);
+    const struct {
+        const char* param; // before or after
+        int mode; // GenericReaderPlugin::BeforeAfterEnum: 0 Hold, 1 Loop, 2 Bounce
+        double time;
+        double expected; // the sequence frame decoded
+    } cases[] = {
+        // 4000000001 frames; a loop of 8000000000 frames for Bounce
+        { "before", 1, -2.1e9, 1900000001. }, // -1e8 modulo 4000000001 = 3900000001
+        { "before", 2, -2.1e9, -1.9e9 }, // -1e8 modulo 8e9 = 7.9e9, bounced: 1e8
+        { "after", 1, 2.1e9, -1900000001. }, // 4.1e9 modulo 4000000001 = 99999999
+        { "after", 2, 2.1e9, 1.9e9 }, // 4.1e9, bounced: 3.9e9
+        { "after", 0, 1e12, 2e9 }, // Hold: the last frame
+        { "before", 0, -1e12, -2e9 }, // Hold: the first frame
+    };
+    for (const auto& c : cases) {
+        setParamInt(r.ctx, c.param, c.mode);
+        const double f = decodedFrame(r, c.time);
+        check(f == c.expected, "%s = %d, render at time %g decodes sequence frame %.17g (expected %.17g)", c.param, c.mode, c.time, f, c.expected);
+    }
+    // Loop with a time out of the range of int: a frame of the sequence (the time is clamped to the range of int)
+    setParamInt(r.ctx, "after", 1);
+    const double f = decodedFrame(r, 1e12);
+    check((-2e9 <= f) && (f <= 2e9), "after = Loop, render at time 1e12 decodes sequence frame %.17g (in the frame range)", f);
+}
+
 // The same, with a PAR of 40/33 and a width of 1920: the RoD that getRegionOfDefinition() returns, x * PAR, converted
 // back to pixels (x' / PAR) is not exactly 1920 (1920.0000000000002, so 1921 pixels): an up-to-date RoD, rendered
 // whole by the host, must not call refreshFrameBounds() (it read the file again for each render)
@@ -2247,6 +2342,8 @@ main(int argc, char** argv)
     testMipmap(pMipmap, still);
     testRefreshFrameBounds(pTiles, still);
     testRefreshFrameBoundsPar(pTiles, prefix);
+    testTilesNearIntLimits(pTiles, still);
+    testSequenceTimeIntLimits(pDefault, video);
     testClipToFileHelper();
     testOpaqueClip(pClip, still);
     testNullPixelData(pDefault, still);

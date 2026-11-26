@@ -18,8 +18,8 @@
  * ***** END LICENSE BLOCK ***** */
 
 /*
- * IOMutex: the mutex type of the IO plug-ins (GenericOCIO::Mutex), in its own header so that OCIOProcessorCache.h and
- * GenericOCIO.h can both use it.
+ * IOMutex: the mutex type of the IO plug-ins (GenericOCIO::Mutex, FFmpegFile::Mutex, and the mutexes of ReadOIIO,
+ * WriteFFmpeg and WritePNG), in its own header so that they can all use it without GenericOCIO.h.
  */
 
 #ifndef IO_IOMutex_h

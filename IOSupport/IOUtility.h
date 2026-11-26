@@ -42,9 +42,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <climits> // INT_MIN, INT_MAX
 #include <cmath>
 #include <cstdint>
-#include <cstring> // memcpy
 #include <functional>
 #include <locale>
 #include <string>
@@ -113,29 +113,34 @@ template <int numvals>
 int
 floatToInt(float value)
 {
-    if (value <= 0) {
-        return 0;
-    } else if (value >= 1.) {
-        return numvals - 1;
-    }
-    // A NaN pixel value (image data may contain NaNs) normally fails both comparisons above (with -ffast-math, the
-    // compiler may rewrite them so that a NaN takes the first branch, which also gives 0), and would reach the
-    // conversion to int, which is undefined behaviour: it gives 0. Its bits are tested (behind an optimization
-    // barrier), which works even if the compiler assumes that there are no NaNs, and is fast (the comparisons above
-    // come first, as before). The result is the same as before for every other value.
-    uint32_t bits;
-    std::memcpy(&bits, &value, sizeof(bits));
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__("" : "+r"(bits)); // an optimization barrier: the compiler can't know the bits
-#else
-    volatile uint32_t volatileBits = bits;
-    bits = volatileBits;
-#endif
-    if ((bits & 0x7fffffffU) > 0x7f800000U) {
-        return 0;
+    // A NaN pixel value (image data may contain NaNs) fails every comparison and gives 0, without a NaN test (as
+    // clampToInt() below: with -ffast-math, the compiler may assume that there is no NaN). Only a value in (0, 1)
+    // reaches the conversion to int.
+    if ((value > 0.f) && (value < 1.f)) {
+        return (int)(value * (numvals - 1) + 0.5);
     }
 
-    return (int)(value * (numvals - 1) + 0.5);
+    return (value >= 1.f) ? (numvals - 1) : 0; // value <= 0, or NaN
+}
+
+// v converted to int (rounded toward zero, as (int)v) after clamping it to [lo, hi], for a value that comes from the
+// host or from a file: out of the range of int, the conversion is undefined behaviour (#184). Values in [lo, hi] are
+// unchanged. A NaN fails both comparisons and gives lo; this is not a NaN test (as Coords::pixelToIntClamped(): with
+// -ffinite-math-only, the compiler may assume that there is no NaN).
+inline int
+clampToInt(double v,
+           int lo = INT_MIN,
+           int hi = INT_MAX)
+{
+    assert(lo <= hi);
+    if (v >= (double)hi) {
+        return hi;
+    }
+    if (v > (double)lo) {
+        return (int)v; // lo < v < hi
+    }
+
+    return lo; // v <= lo, or NaN
 }
 
 /**
@@ -218,8 +223,8 @@ getLevelFromScale(double s)
 {
     // a scale of 1 or more is level 0; a scale of 0 or less is invalid (std::log() would give -inf or NaN, which can
     // not be converted to int): use the full resolution
-    if ((s <= 0.) || (s >= 1.)) {
-        return 0;
+    if (!((s > 0.) && (s < 1.))) {
+        return 0; // also a NaN scale, which fails both comparisons (#184)
     }
     int retval = -(int)std::floor(std::log(s) / OFXS_LN2 + 0.5);
     assert(retval >= 0);

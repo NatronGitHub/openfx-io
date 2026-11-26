@@ -25,6 +25,7 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdlib>
+#include <memory>
 #include <stdexcept> // std::runtime_error
 #include <tuple> // std::tie
 #include <utility> // std::swap
@@ -327,10 +328,10 @@ OCIOLogConvertPlugin::setupAndCopy(PixelProcessorFilterBase& processor,
         return;
     }
 
-    auto_ptr<const Image> orig((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> orig((_srcClip && _srcClip->isConnected()) ? _srcClip->fetchImage(time) : nullptr);
 
     bool doMasking = ((!_maskApply || _maskApply->getValueAtTime(time)) && _maskClip && _maskClip->isConnected());
-    auto_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : 0);
+    std::unique_ptr<const Image> mask(doMasking ? _maskClip->fetchImage(time) : nullptr);
     if (doMasking) {
         bool maskInvert;
         _maskInvert->getValueAtTime(time, maskInvert);
@@ -578,7 +579,7 @@ OCIOLogConvertPlugin::contextDetached(void* contextData)
 void
 OCIOLogConvertPlugin::renderGPU(const RenderArguments& args)
 {
-    auto_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
+    std::unique_ptr<Texture> srcImg(_srcClip->loadTexture(args.time));
     if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -587,7 +588,7 @@ OCIOLogConvertPlugin::renderGPU(const RenderArguments& args)
 
     checkBadRenderScaleOrField(srcImg, args);
 
-    auto_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
+    std::unique_ptr<Texture> dstImg(_dstClip->loadTexture(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -683,7 +684,7 @@ OCIOLogConvertPlugin::render(const RenderArguments& args)
         return;
     }
     assert(_srcClip);
-    auto_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
+    std::unique_ptr<const Image> srcImg(_srcClip->fetchImage(args.time));
     if (!srcImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -700,7 +701,7 @@ OCIOLogConvertPlugin::render(const RenderArguments& args)
         return;
     }
     assert(_dstClip);
-    auto_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
+    std::unique_ptr<Image> dstImg(_dstClip->fetchImage(args.time));
     if (!dstImg.get()) {
         throwSuiteStatusException(kOfxStatFailed);
 

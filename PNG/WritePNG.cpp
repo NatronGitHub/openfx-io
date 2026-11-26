@@ -23,7 +23,6 @@
  */
 
 #include <algorithm>
-#include <mutex>
 #include <cstdio> // fopen, fwrite...
 #include <vector>
 
@@ -33,10 +32,10 @@
 #include "GenericOCIO.h"
 
 #include "GenericWriter.h"
+#include "IOMutex.h"
 #include "ofxsFileOpen.h"
 #include "ofxsLut.h"
 #include "ofxsMacros.h"
-#include "ofxsMultiThread.h"
 
 #include "PNGError.h"
 
@@ -108,15 +107,7 @@ enum PNGBitDepthEnum {
 #define kParamLibraryInfo "libraryInfo"
 #define kParamLibraryInfoLabel "libpng Info...", "Display information about the underlying library."
 
-#ifdef OFX_USE_MULTITHREAD_MUTEX
-typedef MultiThread::Mutex Mutex;
-typedef MultiThread::AutoMutex AutoMutex;
-#else
-typedef std::mutex Mutex;
-typedef std::lock_guard<std::mutex> AutoMutex;
-#endif
-
-static Color::LutManager<Mutex>* gLutManager;
+static Color::LutManager<IOMutex>* gLutManager;
 
 // Try to deduce endianness
 #if (defined(_WIN32) || defined(__i386__) || defined(__x86_64__))
@@ -882,7 +873,7 @@ WritePNGPluginFactory::load()
 {
     _extensions.clear();
     _extensions.push_back("png");
-    gLutManager = new Color::LutManager<Mutex>;
+    gLutManager = new Color::LutManager<IOMutex>;
 }
 
 void

@@ -55,6 +55,7 @@
 #include <cstring>
 #include <list>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -354,7 +355,7 @@ main(int argc, char** argv)
 
     int failures = 0;
     {
-        OFX::Host::auto_ptr<OFX::Host::ImageEffect::Instance> instance(plugin->createInstance(kOfxImageEffectContextReader, NULL));
+        std::unique_ptr<OFX::Host::ImageEffect::Instance> instance(plugin->createInstance(kOfxImageEffectContextReader, NULL));
         if (!instance.get()) {
             instance.reset(plugin->createInstance(kOfxImageEffectContextGeneral, NULL));
         }
