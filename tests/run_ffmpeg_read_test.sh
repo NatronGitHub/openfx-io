@@ -78,7 +78,15 @@
 #     table (every packet has the keyframe flag) with a damaged first keyframe: the P-frames up
 #     to the next keyframe must fail (not decode from a gray frame), the later frames must decode,
 #     in every order; and without damage, every frame must decode in every order, also with B-frames
-#     and in MPEG-2 (issue #366: a seek landed on a P-frame, decoded from a gray frame).
+#     and in MPEG-2 (issue #366: a seek landed on a P-frame, decoded from a gray frame). Longer ones (MPEG-4, H.264,
+#     MPEG-2), in reverse order, must not decode from the start of the file for each request, also with a GOP longer than
+#     the first retry (H.264, 5 s) (issue #440). HEVC in such a MOV with a damaged first
+#     IDR picture: the frames from the next IDR picture on must be those of the clean file (issue #441).
+#   * A ProRes run of 100 frames with damaged slices, which the decoder conceals: they fail as a run of damaged
+#     packets, and a random order must not decode the run again for each request (issue #434).
+#   * H.264 with intra refresh in MP4 (recovery points instead of IDR frames): every frame after seeks, and a bound on
+#     the bytes read in reverse order (issue #442). Edit-list pre-rolls (MP4, and a MOV stream copy): seeks into the
+#     first GOP do not decode from the start of the file.
 #   * Truncated ProRes, MJPEG and v210 in MOV (faststart), and MJPEG and H.264 with B-frames (also with AAC) in
 #     Matroska (#189): the missing frames fail with an error, sequentially and after a seek.
 #   * Intra-only codecs found from their codec descriptor (v210, rawvideo, HuffYUV, JPEG-LS, JPEG 2000,
@@ -799,6 +807,67 @@ check_damaged_long() {
     done
 }
 
+# check_concealed_run NAME DESCRIPTION FIRST LAST MAX_BYTES_FACTOR
+# The 300-frame ProRes MOV of check_damaged_long, whose packets FIRST to LAST (0-based) have damaged slices: 3 times 128
+# random bytes (perl, seeded) at 30, 50 and 70 % of each packet, which the decoder conceals (decode_error_flags; the
+# ffmpeg CLI must decode every frame, and warn "corrupt decoded frame" once per damaged packet, with 1 thread). Such a
+# frame counts as a damaged packet that the decoder rejected (issue #434): with more than 64 of them, the frames
+# FIRST+1 to LAST+1 (1-based) must fail, as for check_damaged_long, sequentially, after a seek and in a newly opened
+# file, with 1 and 8 decoder threads, and the other frames must decode. Decoding every frame sequentially, in reverse
+# order, and in a random order (--max-random-bytes) must read at most MAX_BYTES_FACTOR times the file: a request in the
+# run must not decode the run again.
+check_concealed_run() {
+    local name="$1" desc="$2" first="$3" last="$4" factor="$5"
+    echo "== $desc =="
+    if ! have_encoder prores_ks; then
+        skip "no prores_ks encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! command -v perl >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+        skip "no perl or ffprobe"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=25:d=12 -c:v prores_ks -profile:v 2 "$tmp/clean_$name" ||
+        ! ffprobe -v error -select_streams v:0 -show_entries packet=pos,size -of csv=p=0 "$tmp/clean_$name" >"$tmp/$name.packets" ||
+        ! perl -e '
+            my ($in, $out, $packets, $first, $last) = @ARGV;
+            srand(7);
+            local $/; open(my $f, "<:raw", $in) or die; my $d = <$f>; close($f);
+            open(my $p, "<", $packets) or die; my @lines = split(/\n/, <$p>); close($p);
+            for my $n ($first .. $last) {
+                my ($size, $pos) = split(/,/, $lines[$n]);  # (ffprobe prints size before pos)
+                for my $at (0.3, 0.5, 0.7) {
+                    substr($d, $pos + int($size * $at), 128) = join("", map { chr(int(rand(256))) } 1 .. 128);
+                }
+            }
+            open(my $o, ">:raw", $out) or die; print $o $d; close($o);' "$tmp/clean_$name" "$tmp/$name" "$tmp/$name.packets" "$first" "$last"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    local decoded corrupt
+    decoded=$(ffmpeg -v warning -threads 1 -i "$tmp/$name" -f framecrc - 2>"$tmp/$name.cli" | grep -c '^0,') || true
+    corrupt=$(grep -c 'corrupt decoded frame' "$tmp/$name.cli") || true
+    if [ "$decoded" != 300 ] || [ "$corrupt" != $((last - first + 1)) ]; then
+        echo "FAIL: the ffmpeg CLI decoded $decoded frames of $name, with $corrupt corrupt decoded frames (expected 300 frames, $((last - first + 1)) corrupt)"
+        rc=1
+        return
+    fi
+    local fail size threads
+    fail=$(seq -s, $((first + 1)) $((last + 1)))
+    size=$(wc -c < "$tmp/$name")
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --tol 3 --frames 300 --fail "$fail" --fresh "$((first + 1)),$((last + 1)),$((first + 50)),$((last + 2))" \
+            --max-seq-bytes $((size * factor)) --max-reverse-bytes $((size * factor)) --max-random-bytes $((size * factor)) \
+            ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+}
+
 # check_damaged_gop NAME DESCRIPTION FRAMES NOISE_AMOUNT FAIL_FROM FAIL_TO MAX_SEQ_BYTES_FACTOR FFMPEG_OUTPUT_ARGS...
 # A long-GOP H.264 clip (testsrc2, 25 fps, FRAMES frames) whose packets are damaged by the noise bitstream
 # filter (NOISE_AMOUNT, an expression of the packet number n): the frames FAIL_FROM to FAIL_TO (1-based)
@@ -1356,6 +1425,12 @@ check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed
     $X264 -output_ts_offset -0.041666666666666667
 check_frames ramp_preroll3.mp4 "MP4 (H.264, edit list, first 3 frames not displayed: negative timestamps)" libx264 24 37 3 \
     $X264 -output_ts_offset -0.125
+# (the same for the pre-roll of an edit list: no request decodes from the start of the file)
+if [ -f "$tmp/ramp_preroll3.mp4" ]; then
+    echo "== MP4 (H.264, edit list, first 3 frames not displayed): seeks into the first GOP =="
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/ramp_preroll3.mp4" --tol 3 --ramp 28,4 --frames 37 --order 36,2,30,1,20,4 --order-no-start-seek ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+fi
 check_frames ramp_preroll2.mov "MOV (H.264, edit list, first 2 frames not displayed: negative timestamps)" libx264 24 38 2 \
     $X264 -output_ts_offset -0.083333333333333333
 # AVI has no PTS: the decoder gives the frames the DTS of the packet after which they are output.
@@ -1444,6 +1519,53 @@ CHECK_OPEN_GOP_ORDERS="$(seq 96 -1 70 | paste -sd, -) 90,75,95,72,80" check_open
 check_open_gop_seek open_gop_seek_hevc_g2.mp4 "MP4 (HEVC, open GOPs of 2 frames): every frame after seeks" libx265 \
     "--order-no-start-seek --order-max-seeks 2" \
     -c:v libx265 -x265-params "keyint=2:min-keyint=2:scenecut=0:open-gop=1:log-level=error"
+# H.264 with intra refresh in MP4 (libx264 -intra-refresh 1, 240 frames, 320x240, GOP 24, no B-frames): only the first
+# keyframe is an IDR frame, the others are recovery points with a recovery frame count, which the MP4 muxer flags as sync
+# samples, and whose frames the decoder only outputs from the recovery point on. After a seek to the ones whose
+# frame_num is 0 (frames 97 and 193), the decoder lacks references, and the next 24 frames differed from the sequential
+# ones (issue #442). The script first checks that the ffmpeg CLI shows this (-ss at each keyframe, compared with the
+# sequential decode, by pts with -f framemd5), and otherwise reports a SKIPPED line (FFmpeg may have fixed its decoder,
+# or another libx264 numbers the frames differently), but still runs the checks below, which hold either way. A
+# request after such a seek decodes from two keyframes before: every frame must be the sequential one, in every order,
+# with 1 and 8 decoder threads, and decoding every frame in reverse order must read at most 120 times the file (about
+# 85 measured, with a margin for other encoders and platforms; 54 before, when these frames were wrong).
+echo "== MP4 (H.264, intra refresh, GOP 24): every frame after seeks =="
+if ! have_encoder libx264; then
+    skip "no libx264 encoder in the ffmpeg CLI"
+elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 240 -c:v libx264 -intra-refresh 1 -g 24 -bf 0 \
+    -pix_fmt yuv420p "$tmp/intra_refresh.mp4" ||
+    ! ffmpeg -v error -i "$tmp/intra_refresh.mp4" -f framemd5 - >"$tmp/intra_refresh.md5"; then
+    echo "FAIL: could not generate intra_refresh.mp4"
+    rc=1
+else
+    differing=0
+    for ss in 1 2 3 4 5 6 7 8 9; do
+        n=$(ffmpeg -v error -ss "$ss" -i "$tmp/intra_refresh.mp4" -copyts -f framemd5 - 2>/dev/null |
+            awk -F, 'NR == FNR { if ($0 !~ /^#/) { gsub(/ /, ""); a[$3] = $6 }; next } $0 !~ /^#/ { gsub(/ /, ""); if (($3 in a) && (a[$3] != $6)) ++n } END { print n + 0 }' \
+                "$tmp/intra_refresh.md5" -)
+        differing=$((differing + n))
+    done
+    if [ "$differing" -eq 0 ]; then
+        skip "this FFmpeg/libx264 no longer reproduces issue #442: the ffmpeg CLI decodes every frame of intra_refresh.mp4 after a seek as sequentially (the checks below still run)"
+    fi
+    size=$(wc -c < "$tmp/intra_refresh.mp4")
+    # shellcheck disable=SC2086
+    if ! FFMPEG_READ_TEST_THREADS=1 "$bin" "$tmp/intra_refresh.mp4" --frames 240 --max-reverse-bytes $((120 * size)) \
+        ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/intra_refresh.out" 2>&1; then
+        grep -E '^ *(FAIL|REVERSE-BYTES|MISMATCH)' "$tmp/intra_refresh.out" || echo "FAIL"
+        echo "(intra_refresh.mp4: decoding in reverse order must not read more than 120 times the file)"
+        rc=1
+    fi
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/intra_refresh.mp4" --reference "$tmp/intra_refresh.mp4" \
+            --reference-frames "$(seq -s, 1 240)" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/intra_refresh.err"; then
+            grep '^FAIL' "$tmp/intra_refresh.err" || echo "FAIL"
+            echo "(intra_refresh.mp4, with $threads decoder threads)"
+            rc=1
+        fi
+    done
+fi
 # Damaged packets (GOP 8: I0 P3 B1 B2 P6 B4 B5 P7 in decoding order, without scene cuts): the damaged
 # frame is a gap, and the frames of its GOP (and the last ones of the previous GOP, which the decoder
 # outputs after the next reference frame) show what the decoder conceals.
@@ -1545,11 +1667,110 @@ else
         done
     done
 fi
+# Longer MOVs without a sync-sample table (480 frames, 160x120, GOP 12): MPEG-4 Part 2 (no B-frames), H.264 and MPEG-2
+# (2 B-frames). Every sample is in the index as a keyframe: a backward request, whose seek lands on a P-frame, decodes
+# from 2 s before, and further back if needed, not from the start of the file (issue #440). The MPEG-4 Part 2 decoder
+# outputs that P-frame (decoded from a gray frame); the H.264 and MPEG-2 decoders output nothing until the next intra
+# frame. Decoding every frame in reverse order must read at most 100 times the file (about 49 for MPEG-4 and 62 for H.264
+# and MPEG-2; 209, 226 and 266 before), and every frame must be that of the clean file, in every order, with 1 and 8
+# decoder threads.
+for long in "mpeg4 -c:v mpeg4 -threads 1 -g 12 -bf 0 -q:v 3" "libx264 -c:v libx264 -g 12 -bf 2 -x264-params scenecut=0 -pix_fmt yuv420p" \
+    "mpeg2video -c:v mpeg2video -threads 1 -g 12 -bf 2 -q:v 3"; do
+    read -r encoder args <<<"$long"
+    echo "== MOV ($encoder, 480 frames, GOP 12, no sync-sample table): backward requests do not decode from the start =="
+    if ! have_encoder "$encoder" || ! command -v perl >/dev/null 2>&1; then
+        skip "no $encoder encoder in the ffmpeg CLI, or no perl"
+        continue
+    fi
+    # shellcheck disable=SC2086
+    if ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=160x120:r=24 -frames:v 480 $args -movflags faststart "$tmp/clean_${encoder}_long.mov" ||
+        ! perl -0777 -pe 's/stss/free/' "$tmp/clean_${encoder}_long.mov" > "$tmp/${encoder}_long_nostss.mov"; then
+        echo "FAIL: could not generate ${encoder}_long_nostss.mov"
+        rc=1
+        continue
+    fi
+    size=$(wc -c < "$tmp/${encoder}_long_nostss.mov")
+    # shellcheck disable=SC2086
+    if ! FFMPEG_READ_TEST_THREADS=1 "$bin" "$tmp/${encoder}_long_nostss.mov" --frames 480 --max-reverse-bytes $((100 * size)) \
+        ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/${encoder}_long_nostss.out" 2>&1; then
+        grep -E '^ *(FAIL|REVERSE-BYTES|MISMATCH)' "$tmp/${encoder}_long_nostss.out" || echo "FAIL"
+        echo "(${encoder}_long_nostss.mov: decoding in reverse order must not decode from the start of the file for each request)"
+        rc=1
+    fi
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/${encoder}_long_nostss.mov" --reference "$tmp/clean_${encoder}_long.mov" \
+            --reference-frames "$(seq -s, 1 480)" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/${encoder}_long_nostss.err"; then
+            grep '^FAIL' "$tmp/${encoder}_long_nostss.err" || echo "FAIL"
+            echo "(${encoder}_long_nostss.mov, with $threads decoder threads)"
+            rc=1
+        fi
+    done
+done
+# H.264 with a 5 s GOP (-g 120, 2 B-frames, 480 frames) in a MOV without a sync-sample table: the keyframe interval seen
+# is one packet (every packet has the keyframe flag), so a backward request goes back 2, then 4, then 8 s
+# (earlierRestartTs()) before it reaches a keyframe: none of the requests 470, 400, 399, 300, 250, 239 (in a newly opened
+# file) may decode from the start of the file (--order-no-start-seek, issue #440), and every frame must be that of the
+# clean file, in every order, with 1 and 8 decoder threads.
+echo "== MOV (H.264, 480 frames, GOP 120, no sync-sample table): backward requests go back further, not to the start =="
+if ! have_encoder libx264 || ! command -v perl >/dev/null 2>&1; then
+    skip "no libx264 encoder in the ffmpeg CLI, or no perl"
+elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=160x120:r=24 -frames:v 480 -c:v libx264 -g 120 -bf 2 \
+    -x264-params scenecut=0 -pix_fmt yuv420p -movflags faststart "$tmp/clean_h264_g120.mov" ||
+    ! perl -0777 -pe 's/stss/free/' "$tmp/clean_h264_g120.mov" > "$tmp/h264_g120_nostss.mov"; then
+    echo "FAIL: could not generate h264_g120_nostss.mov"
+    rc=1
+else
+    # shellcheck disable=SC2086
+    if ! FFMPEG_READ_TEST_THREADS=1 "$bin" "$tmp/h264_g120_nostss.mov" --frames 480 --order 470,400,399,300,250,239 \
+        --order-no-start-seek ${FFMPEG_READ_TEST_ARGS:-} >"$tmp/h264_g120_nostss.out" 2>&1; then
+        grep -E '^ *(FAIL|ORDER|MISMATCH)' "$tmp/h264_g120_nostss.out" || echo "FAIL"
+        echo "(h264_g120_nostss.mov: backward requests must not decode from the start of the file)"
+        rc=1
+    fi
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/h264_g120_nostss.mov" --reference "$tmp/clean_h264_g120.mov" \
+            --reference-frames "$(seq -s, 1 480)" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/h264_g120_nostss.err"; then
+            grep '^FAIL' "$tmp/h264_g120_nostss.err" || echo "FAIL"
+            echo "(h264_g120_nostss.mov, with $threads decoder threads)"
+            rc=1
+        fi
+    done
+fi
+# HEVC (GOP 24, B-frames) in MOV without a sync-sample table, with its first packet (the first IDR picture) damaged
+# (issue #441): the decoder restarts at the next packet, and outputs nothing until the next IDR picture (frame 25), whose
+# frame comes after the next packets, which also have the keyframe flag. These must not restart the decoder before it
+# comes: frames 1-24 must fail, and frames 25-48 must be those of the clean file (as the ffmpeg CLI decodes them), in
+# every order, with 1 and 8 decoder threads.
+echo "== MOV (HEVC, GOP 24, no sync-sample table, damaged first IDR picture) =="
+if ! have_encoder libx265 || ! command -v perl >/dev/null 2>&1; then
+    skip "no libx265 encoder in the ffmpeg CLI, or no perl"
+elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 48 -c:v libx265 \
+    -x265-params keyint=24:min-keyint=24:scenecut=0:log-level=error -tag:v hvc1 -movflags faststart "$tmp/clean_hevc.mov" ||
+    ! perl -0777 -pe 's/stss/free/' "$tmp/clean_hevc.mov" > "$tmp/hevc_nostss.mov" ||
+    ! ffmpeg -y -loglevel error -i "$tmp/hevc_nostss.mov" -c copy -bsf:v "noise=amount='if(eq(n,0),1,0)'" "$tmp/damaged_hevc_nostss.mov"; then
+    echo "FAIL: could not generate damaged_hevc_nostss.mov"
+    rc=1
+else
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/damaged_hevc_nostss.mov" --reference "$tmp/clean_hevc.mov" \
+            --reference-frames "$(seq -s, 25 48)" --fail "$(seq -s, 1 24)" ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/damaged_hevc_nostss.err"; then
+            grep '^FAIL' "$tmp/damaged_hevc_nostss.err" || echo "FAIL"
+            echo "(damaged_hevc_nostss.mov, with $threads decoder threads)"
+            rc=1
+        fi
+    done
+fi
 check_ts_cc ramp_cc_error.ts "MPEG-TS (H.264 and MP2, a continuity counter error in frame 18, not a truncated file)"
 check_damaged_av1 ramp_damaged_av1.mkv "MKV (AV1 with libdav1d, 24 fps, two damaged frames)" libsvtav1 -c:v libsvtav1 -g 8 -preset 8
 # Longer damaged runs in ProRes: frames after a run of 100 damaged packets must decode (in any order), and a
 # file damaged from some point on must not be read again for each frame.
 check_damaged_long ramp_damaged_run100.mov "MOV (ProRes, 300 frames, packets 100-199 damaged)" "between(n,100,199)" 101 200 201,202,203,204,150 12
+# The same run of 100 frames, with damaged slices that the decoder conceals (issue #434: each request in the run, in a
+# random order, decoded the run again).
+check_concealed_run ramp_concealed_run100.mov "MOV (ProRes, 300 frames, packets 100-199 with damaged slices)" 100 199 12
 check_damaged_long ramp_damaged_from6.mov "MOV (ProRes, 300 frames, damaged from the 7th packet on)" "gte(n,6)" 7 300 7,8,100 12
 # A good frame (181) between two damaged runs must not join a damaged range, whatever the order (with frame
 # threads, the error of a packet comes with a later one).
@@ -1760,6 +1981,14 @@ else
 fi
 # A stream copy from a non-keyframe: fewer samples than frame times.
 check_ss_copy ramp_ss_copy.mov "MOV (stream copy from 0.6 s, edit list)" 43 0.6
+# Its first packet, before the edit list starts, has AV_PKT_FLAG_DISCARD (an edit-list pre-roll), and libavcodec drops its
+# frame: a seek to a frame of the first GOP, which lands there, is a restart point, and no request decodes from the start
+# of the file (the frame of the first packet after a seek is not checked when it is dropped).
+if [ -f "$tmp/ramp_ss_copy.mov" ]; then
+    echo "== MOV (stream copy from 0.6 s, edit list): seeks into the first GOP =="
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/ramp_ss_copy.mov" --tol 3 --frames 43 --order 40,3,20,2,30,5 --order-no-start-seek ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+fi
 check_ss_copy ramp_ss_copy.mp4 "MP4 (stream copy from 1.3 s, no edit list)" 53 1.3 -use_editlist 0
 # VFR MP4 with a one-frame gap, in the middle and before the last frame: the last frame must be counted.
 check_vfr ramp_one_gap.mp4 "VFR MP4 (H.264, 24 fps, a one-frame gap)" 41 20 2 1 0 42

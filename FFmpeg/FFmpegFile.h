@@ -198,6 +198,57 @@ public:
     using AutoMutex = OFX::IO::IOAutoMutex;
 
 private:
+    // The attempts of a decode() request, in that order: from the seek to the requested frame (if it needed one), from
+    // earlier points (Stream::earlierRestartTs()), and from the start of the file (long-GOP codecs only).
+    enum class Attempt {
+        eAtFrame,
+        eEarlier,
+        eFromStart,
+    };
+
+    // A set of PTS, bounded: adding one to a full set drops the oldest one (AV_NOPTS_VALUE is never added). Small sets,
+    // searched linearly, in the order the PTS were added.
+    class BoundedPtsSet {
+    public:
+        explicit BoundedPtsSet(size_t bound)
+            : _bound(bound)
+        {
+        }
+
+        bool contains(int64_t pts) const
+        {
+            return std::find(_pts.begin(), _pts.end(), pts) != _pts.end();
+        }
+
+        void add(int64_t pts)
+        {
+            if ((pts == int64_t(AV_NOPTS_VALUE)) || contains(pts)) {
+                return;
+            }
+            if (_pts.size() >= _bound) {
+                _pts.erase(_pts.begin());
+            }
+            _pts.push_back(pts);
+        }
+
+        void erase(int64_t pts)
+        {
+            _pts.erase(std::remove(_pts.begin(), _pts.end(), pts), _pts.end());
+        }
+
+        void clear()
+        {
+            _pts.clear();
+        }
+
+    private:
+        size_t _bound;
+        std::vector<int64_t> _pts;
+    };
+    static constexpr size_t kMaxDamagedPts = 1024; // Stream::_damagedPts
+    static constexpr size_t kMaxSuspectKeyPts = 1024; // Stream::_suspectKeyPts
+    static constexpr size_t kMaxTaintedPts = 4096; // Stream::_taintedPts
+
     struct Stream {
         int _idx; // stream index
         AVStream* _avstream; // video stream
@@ -224,14 +275,14 @@ private:
         bool _decodingFromStart; // the decoder has decoded every frame since the start of the stream (no seek since
         // decode() retried from the start): a corrupt held frame cannot be better, and may be used in a gap
         int _invalidDataSkipped; // the error of the last damaged packet dropped during the current decode() (0 if none)
-        std::vector<int64_t> _damagedPts; // the PTS of the damaged packets dropped so far (bounded)
+        BoundedPtsSet _damagedPts; // the PTS of the damaged packets dropped so far
         int _truncatedFrame; // the frame of the partial last packet of a truncated file, from which frames fail (-1 if none)
         int _firstOutputFrame; // the first frame decoded by the last demuxAndDecode() (-1 if none)
         int _firstFrameAfter; // the first frame after the requested one decoded by the last demuxAndDecode() (-1 if none)
         bool _reachedEnd; // the last demuxAndDecode() drained the decoder at the end of the file, without a frame to hold
         bool _endTainted; // the last demuxAndDecode() reached the end of the file while tainted (see demuxAndDecode())
         bool _drainedEarly; // the decoder was drained after too many damaged packets: decoding further needs a seek
-        bool _damageSeen; // a damaged packet was dropped in this file (see seekToFrame())
+        bool _damageSeen; // a damaged packet was dropped in this file (see seek())
         bool _damagedSinceOpen; // a damaged packet was dropped since the decoder was opened (see flushDecoder())
         bool _singleThreaded; // long-GOP codecs: damage was found with frame threads, the decoder now has 1 thread
         int64_t _keyFrames; // the keyframes decoded without an error
@@ -242,12 +293,13 @@ private:
         int64_t _restartPts; // the PTS of the keyframe where the decoder restarted, until it decodes (AV_NOPTS_VALUE if none)
         bool _verifyNextPacket; // the next packet sent is a restart keyframe, to verify (see verifyRestart())
         std::vector<int64_t> _candidatePts; // the PTS of the packets sent since the restart keyframe, until it is verified
-        std::vector<int64_t> _suspectKeyPts; // the PTS of the packets with a keyframe flag that did not decode as a clean keyframe
+        BoundedPtsSet _suspectKeyPts; // the PTS of the packets with a keyframe flag that did not decode as a clean keyframe
         std::vector<int64_t> _recentPts; // the PTS of the last packets sent (as many as the frame threads)
         bool _tainted; // long-GOP codecs: damage was found since the last restart of the decoder (see taint())
-        std::vector<int64_t> _taintedPts; // the PTS of the packets sent since the damage (see taint())
+        BoundedPtsSet _taintedPts; // the PTS of the packets sent since the damage (see taint())
         int _lastDamagedFrame; // the largest frame of the damaged packets found by the current decode() (-1 if none)
         int _requestDroppedPackets; // the packets dropped by all the attempts of the current decode()
+        bool _lastDamageConcealed; // the last damage found by the current decode() was a frame that conceals it (intra-only)
         bool _noTimestamps; // the current decode() found a decoded frame without a timestamp, and stopped
         std::vector<std::pair<int, int>> _damagedRanges; // ranges of frames found to fail because of damage (sorted, disjoint)
         int _damagedRangeError;
@@ -257,13 +309,13 @@ private:
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         // For decodeForwardIsCheaper():
-        bool _indexReliable; // the format has no timestamp discontinuities (not AVFMT_TS_DISCONT), set at open, and no
-        // seek landed on a predicted frame (see demuxAndDecode()). Cleared for the lifetime of the stream by one such
-        // seek: the frames are still right, but later backward requests that land after the requested frame (e.g. on
-        // a leading picture of an open-GOP keyframe) retry from a fixed number of frames before instead of from the
-        // keyframe before (earlierRestartTs()), and decodeForwardIsCheaper() decodes forward within its window without
-        // the index.
-        // The check of the frame of the first packet sent since the last seek (see demuxAndDecode()): a seek may land
+        bool _indexReliable; // the format has no timestamp discontinuities (not AVFMT_TS_DISCONT), set at open, no
+        // seek landed on a predicted frame (see checkSeekFrame()), and the index keyframes around a request are not one
+        // frame apart (see indexKeyframesEveryFrame(), in decode()). Cleared for the lifetime of the stream: the frames
+        // are still right, but later backward requests that land after the requested frame (e.g. on a leading picture
+        // of an open-GOP keyframe) retry from a number of frames before instead of from the keyframe before
+        // (earlierRestartTs()), and decodeForwardIsCheaper() decodes forward within its window without the index.
+        // The check of the frame of the first packet sent since the last seek (see checkSeekFrame()): a seek may land
         // on a packet that the demuxer flags as a keyframe, but that is not one.
         enum class SeekFrameCheck {
             eNone, // no check (not since a seek, or that frame was checked, or its packet had no PTS)
@@ -273,6 +325,16 @@ private:
         };
         SeekFrameCheck _seekFrameCheck;
         int64_t _seekFramePts; // eAwaitFrame: the PTS of the first packet sent since the last seek
+        bool _seekFrameKey; // eAwaitFrame: that packet has the keyframe flag
+        // Whether the last demuxAndDecode() stopped because its seek did not land on a restart point (see
+        // checkSeekFrame()), and why; reset by each demuxAndDecode()
+        enum class SeekLanding {
+            eRestartPoint, // (or not checked)
+            ePredicted, // the frame of the first packet was a predicted frame
+            eHeldBack, // a frame displayed after it came first
+        };
+        SeekLanding _seekLanding;
+        bool _intraOnlyCodec; // the codec only has keyframes (IsIntraOnly() in FFmpegFile.cpp), set at open
         int64_t _maxReadTs; // the largest timestamp (PTS, or DTS without one) of the packets of this stream sent to the
         // decoder since the last seek (AV_NOPTS_VALUE if none)
         int64_t _lastReadTs; // the timestamp of the last packet sent with one since the last seek (AV_NOPTS_VALUE if none)
@@ -346,7 +408,7 @@ private:
             , _heldFrameIsLast(false)
             , _decodingFromStart(false)
             , _invalidDataSkipped(0)
-            , _damagedPts()
+            , _damagedPts(kMaxDamagedPts)
             , _truncatedFrame(-1)
             , _firstOutputFrame(-1)
             , _firstFrameAfter(-1)
@@ -364,12 +426,13 @@ private:
             , _restartPts(AV_NOPTS_VALUE)
             , _verifyNextPacket(false)
             , _candidatePts()
-            , _suspectKeyPts()
+            , _suspectKeyPts(kMaxSuspectKeyPts)
             , _recentPts()
             , _tainted(false)
-            , _taintedPts()
+            , _taintedPts(kMaxTaintedPts)
             , _lastDamagedFrame(-1)
             , _requestDroppedPackets(0)
+            , _lastDamageConcealed(false)
             , _noTimestamps(false)
             , _damagedRanges()
             , _damagedRangeError(0)
@@ -380,6 +443,9 @@ private:
             , _indexReliable(false)
             , _seekFrameCheck(SeekFrameCheck::eNone)
             , _seekFramePts(AV_NOPTS_VALUE)
+            , _seekFrameKey(false)
+            , _seekLanding(SeekLanding::eRestartPoint)
+            , _intraOnlyCodec(false)
             , _maxReadTs(AV_NOPTS_VALUE)
             , _lastReadTs(AV_NOPTS_VALUE)
             , _packetsSinceKey(-1)
@@ -552,7 +618,7 @@ private:
                         addTaintedPts(pts);
                     }
                 }
-                _suspectKeyPts.erase(std::remove(_suspectKeyPts.begin(), _suspectKeyPts.end(), _restartPts), _suspectKeyPts.end());
+                _suspectKeyPts.erase(_restartPts);
             } else {
                 for (int64_t pts : _candidatePts) {
                     addTaintedPts(pts);
@@ -571,29 +637,23 @@ private:
             return _damageSeen && (_nonKeyFrames == 0) && (_keyFrames >= kMinKeyframesAllIntra);
         }
 
+        // Each frame is decoded from its own packet: an intra-only codec, or a stream whose frames decoded so far without
+        // an error are all keyframes (e.g. all-intra H.264, -g 1), once damage was found: each frame is then decoded from
+        // the previous keyframes (the back-off of decode(), bounded), instead of restarting the decoder at each keyframe
+        // and decoding from the start of the file.
+        bool decodesAsIntraOnly() const
+        {
+            return _intraOnlyCodec || allKeyframesAfterDamage();
+        }
+
         bool isCandidatePts(int64_t pts) const
         {
             return std::find(_candidatePts.begin(), _candidatePts.end(), pts) != _candidatePts.end();
         }
 
-        bool isSuspectKeyPts(int64_t pts) const
-        {
-            return std::find(_suspectKeyPts.begin(), _suspectKeyPts.end(), pts) != _suspectKeyPts.end();
-        }
-
         void addTaintedPts(int64_t pts)
         {
-            if ((pts != int64_t(AV_NOPTS_VALUE)) && !isTaintedPts(pts)) {
-                if (_taintedPts.size() >= 4096) {
-                    _taintedPts.erase(_taintedPts.begin());
-                }
-                _taintedPts.push_back(pts);
-            }
-        }
-
-        bool isTaintedPts(int64_t pts) const
-        {
-            return std::find(_taintedPts.begin(), _taintedPts.end(), pts) != _taintedPts.end();
+            _taintedPts.add(pts);
         }
 
         void clearTaint()
@@ -671,8 +731,11 @@ private:
             trackReadPosition(pkt);
             if (_seekFrameCheck == SeekFrameCheck::eAwaitPacket) {
                 // the first packet since the seek, whatever its keyframe flag (see demuxAndDecode())
+                // (not a packet whose frame libavcodec drops: AV_PKT_FLAG_DISCARD, see checkSeekFrame())
                 _seekFramePts = pts;
-                _seekFrameCheck = (pts == int64_t(AV_NOPTS_VALUE)) ? SeekFrameCheck::eNone : SeekFrameCheck::eAwaitFrame;
+                _seekFrameKey = key;
+                const bool discard = (pkt.flags & AV_PKT_FLAG_DISCARD) != 0;
+                _seekFrameCheck = ((pts == int64_t(AV_NOPTS_VALUE)) || discard) ? SeekFrameCheck::eNone : SeekFrameCheck::eAwaitFrame;
             }
             if (pts == int64_t(AV_NOPTS_VALUE)) {
                 ++_packetsWithoutPts;
@@ -694,18 +757,10 @@ private:
                 } else {
                     addTaintedPts(pts);
                 }
-                if (key && !isSuspectKeyPts(pts)) {
-                    if (_suspectKeyPts.size() >= 1024) {
-                        _suspectKeyPts.erase(_suspectKeyPts.begin());
-                    }
-                    _suspectKeyPts.push_back(pts); // until it decodes as a clean keyframe (verifyRestart())
+                if (key) {
+                    _suspectKeyPts.add(pts); // until it decodes as a clean keyframe (verifyRestart())
                 }
             }
-        }
-
-        bool isDamagedPts(int64_t pts) const
-        {
-            return std::find(_damagedPts.begin(), _damagedPts.end(), pts) != _damagedPts.end();
         }
 
         static bool hasFrame(const AVFrame* f)
@@ -718,9 +773,9 @@ private:
             return p && (p->data || p->side_data_elems);
         }
 
-        // Forget the decoded frames kept since the last seek. Must be called whenever the
-        // demuxer or the decoder is repositioned.
-        void resetHeldFrames()
+        // Forget the state kept since the last seek: the decoded frames, the pending packet, the read position and the
+        // check of the first frame after the seek. Must be called whenever the demuxer or the decoder is repositioned.
+        void resetSeekState()
         {
             if (_avHeldFrame) {
                 av_frame_unref(_avHeldFrame);
@@ -741,6 +796,7 @@ private:
             _intervalDiscontinuous = false;
             _seekFrameCheck = SeekFrameCheck::eAwaitPacket;
             _seekFramePts = AV_NOPTS_VALUE;
+            _seekFrameKey = false;
         }
 
         // The position of the demuxer, and the keyframe interval, for decodeForwardIsCheaper(). The interval is counted
@@ -802,10 +858,24 @@ private:
         // The keyframe of the index at or before the timestamp, as a backward seek searches it, or nullptr.
         const AVIndexEntry* indexKeyframeAtOrBefore(int64_t ts) const;
 
-        // The timestamp from which to decode again when a backward seek to the 0-based frame landed after it: the
-        // keyframe of the index before the one that the seek finds, or without an index to trust a timestamp earlier by
-        // twice forwardWindow(); AV_NOPTS_VALUE if none (see FFmpegFile.cpp).
-        int64_t earlierRestartTs(int frame) const;
+        // The timestamp from which to decode again, at the retry-th retry (from 1), when a backward seek to the 0-based
+        // frame landed after it or not on a restart point: the keyframe of the index before the one that the seek finds
+        // (or the one before that, twoKeyframesBack; first retry only), or without an index to trust a timestamp earlier
+        // by 2^retry times forwardWindow(); AV_NOPTS_VALUE if none (see FFmpegFile.cpp).
+        int64_t earlierRestartTs(int frame, int retry, bool twoKeyframesBack) const;
+
+        // Whether the keyframe of the index at or before ts and the one before it are at most one frame apart: every
+        // sample is in the index as a keyframe (e.g. a MOV without a sync-sample table, see FFmpegFile.cpp)
+        bool indexKeyframesEveryFrame(int64_t ts) const;
+
+        // See FFmpegFile.cpp: the restart after damage, and the check of the frame of the first packet after a seek
+        void settleRestart(const AVFrame* f);
+        enum class SeekFrameVerdict {
+            eUse, // the frame is used as usual
+            eSkip, // the frame is not used, decoding goes on
+            eStop, // decoding stops without a picture (_seekLanding tells why)
+        };
+        SeekFrameVerdict checkSeekFrame(const AVFrame* f, int frame, bool decodeAsIntraOnly, Attempt attempt);
 
         // True if the 0-based frame can be obtained without seeking: from the decoded frames kept
         // since the last seek, by decoding the next frame, or by decoding forward to a later frame when this is
@@ -1236,13 +1306,18 @@ private:
     // flush the decoder, or open it again after damage
     // (these are called by decode(), with _lock held, on the stream that it decodes)
     void flushDecoder(Stream* stream);
-    bool seekToFrame(Stream* stream, int64_t frame, int seekFlags);
+    // seek to a timestamp of the stream (backward: at or before it), or to the start of the file; both use seek(),
+    // with the av_seek_frame() flags
+    bool seekToTimestamp(Stream* stream, int64_t ts);
+    bool seekToStart(Stream* stream);
+    bool seek(Stream* stream, int64_t ts, int seekFlags);
 
     // decodeAsIntraOnly: each frame is decoded from its own packet, as for an intra-only codec (IsIntraOnly()), or for a
     // stream found to be all keyframes after damage (Stream::allKeyframesAfterDamage(), e.g. all-intra H.264): no taint,
     // a held frame that conceals damage may be displayed in a timestamp gap, and decoding stops at damaged packets.
     // damagedFrom: intra-only, the first frame of the frames up to the requested one known to be damaged (-1 if none)
-    bool demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool decodeAsIntraOnly, int damagedFrom = -1);
+    // attempt: the attempt of decode() (the intra-only back-off of decode() decodes from earlier points, Attempt::eEarlier)
+    bool demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, bool decodeAsIntraOnly, Attempt attempt, int damagedFrom = -1);
     // Updates _packetsEnd with a packet read by demuxAndDecode() for stream (with _lock held).
     void notePacketEnd(const Stream& stream, const AVPacket& pkt);
 

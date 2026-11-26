@@ -61,7 +61,8 @@
  *  16. optionally (--max-seq-bytes N) checks that decoding every frame sequentially reads at most N
  *      bytes (e.g. a file damaged from some point on must not be read again for each frame), and
  *      (--max-reverse-bytes N) that decoding every frame in reverse order, in a newly opened file,
- *      reads at most N bytes,
+ *      reads at most N bytes, and (--max-random-bytes N) that decoding every frame in a fixed random order (the
+ *      random order of --reference), in a newly opened file, reads at most N bytes,
  *  17. optionally (--order F1,F2,...) decodes the 1-based frames Fi in that order in a newly opened
  *      file, and checks each one against the sequential decode (or that it fails, for a --fail
  *      frame): e.g. a render order that must not make a good frame fail, and that the requests of the
@@ -99,7 +100,7 @@
  * dropped the stream start PTS) makes seeked frames land on the wrong frame,
  * which this harness detects as a signature mismatch.
  *
- * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]
+ * Usage: ffmpeg_read_test <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--max-random-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]
  * Exit status: 0 = all checks passed, 77 = skipped (--skip-without-decoder), other = failure.
  */
 
@@ -122,6 +123,22 @@
 #include <vector>
 
 namespace {
+
+// The 1-based frames 1..frames in a fixed random order (an LCG: the same order on every platform)
+std::vector<int>
+randomOrder(int frames)
+{
+    std::vector<int> order;
+    for (int f = 1; f <= frames; ++f) {
+        order.push_back(f);
+    }
+    uint32_t seed = 5;
+    for (size_t i = order.size(); i > 1; --i) {
+        seed = seed * 1664525u + 1013904223u;
+        std::swap(order[i - 1], order[(seed >> 8) % i]);
+    }
+    return order;
+}
 
 double
 meanComponent(const unsigned char* buf, int w, int h, int nComps, int sizeOfData, int comp, double scale16)
@@ -245,7 +262,7 @@ int
 main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s --image-files NAME=0|1... | <file> [--tol N] [--monotonic] [--nearest] [--ramp OFFSET,STEP] [--frames N] [--fps F] [--positions P0,P1,...] [--max-seeks N] [--no-seek-check F1,F2,...] [--max-open-bytes N] [--open-only] [--seek-bytes F,N] [--max-indexed-frame N] [--fail F1,F2,...] [--gaps F1,F2,...] [--concealed F1,F2,...] [--fresh F1,F2,...] [--max-seq-bytes N] [--max-reverse-bytes N] [--max-random-bytes N] [--order F1,F2,...] [--order-seek F1,F2,...] [--order-no-seek F1,F2,...] [--order-no-start-seek] [--order-max-seeks N] [--reference CLEAN --reference-frames F1,F2,...] [--matrix N] [--range N] [--rgb R,G,B[,TOL]] [--bit-depth N] [--fine-ramp MAX_STEP,MIN_LEVELS] [--components N] [--alpha A[,TOL]] [--skip-without-decoder] [--verbose]\n", argv[0]);
         return 2;
     }
     if (std::string(argv[1]) == "--image-files") {
@@ -286,6 +303,7 @@ main(int argc, char** argv)
     std::vector<int> fresh; // 1-based frames to decode first in a newly opened file
     long long maxSeqBytes = -1;
     long long maxReverseBytes = -1;
+    long long maxRandomBytes = -1;
     std::vector<int> renderOrder; // 1-based frames to decode in that order in a newly opened file
     std::vector<int> orderSeek; // --order-seek: the 1-based frames whose --order request must seek
     std::vector<int> orderNoSeek; // --order-no-seek: the 1-based frames whose --order request must not seek
@@ -388,8 +406,8 @@ main(int argc, char** argv)
                     referenceFrames.push_back(std::atoi(item.c_str()));
                 }
             }
-        } else if (a == "--max-reverse-bytes" && i + 1 < argc) {
-            maxReverseBytes = std::atoll(argv[++i]);
+        } else if ((a == "--max-reverse-bytes" || a == "--max-random-bytes") && i + 1 < argc) {
+            ((a == "--max-reverse-bytes") ? maxReverseBytes : maxRandomBytes) = std::atoll(argv[++i]);
         } else if (a == "--order" && i + 1 < argc) {
             std::istringstream is(argv[++i]);
             std::string item;
@@ -676,7 +694,7 @@ main(int argc, char** argv)
     // --reference: the --reference-frames must be exactly those of the clean file, in every order.
     if (!referenceFile.empty()) {
         if (!orderSeek.empty() || !orderNoSeek.empty() || !gaps.empty() || !concealed.empty() || !fresh.empty() || !positions.empty() || (rampStep > 0) ||
-            (maxSeqBytes >= 0) || (maxReverseBytes >= 0) || checkMonotonic) {
+            (maxSeqBytes >= 0) || (maxReverseBytes >= 0) || (maxRandomBytes >= 0) || checkMonotonic) {
             std::fprintf(stderr, "--reference only checks the --reference-frames and --fail (with --order): it cannot be combined with the other checks\n");
             return 2;
         }
@@ -716,13 +734,7 @@ main(int argc, char** argv)
         }
         orders.push_back(std::make_pair(std::string("sequential"), all));
         orders.push_back(std::make_pair(std::string("reverse"), std::vector<int>(all.rbegin(), all.rend())));
-        std::vector<int> shuffled = all;
-        uint32_t seed = 5;
-        for (size_t i = shuffled.size(); i > 1; --i) {
-            seed = seed * 1664525u + 1013904223u; // LCG: the same order on every platform
-            std::swap(shuffled[i - 1], shuffled[(seed >> 8) % i]);
-        }
-        orders.push_back(std::make_pair(std::string("random"), shuffled));
+        orders.push_back(std::make_pair(std::string("random"), randomOrder(frames)));
         if (!renderOrder.empty()) {
             orders.push_back(std::make_pair(std::string("--order"), renderOrder));
         }
@@ -1023,23 +1035,33 @@ main(int argc, char** argv)
             }
         }
     }
-    // --max-reverse-bytes: every frame in reverse order, in a newly opened file.
-    if (maxReverseBytes >= 0) {
-        FFmpegFile reverseFile(filename);
-        const long long bytes0 = reverseFile.getBytesRead();
-        for (int f = frames; f >= 1; --f) {
+    // --max-reverse-bytes and --max-random-bytes: every frame in reverse order, or in a random order, in a newly opened
+    // file, reads at most that many bytes.
+    auto checkOrderBytes = [&](const char* label, const char* check, const std::vector<int>& order, long long maxBytes) {
+        if (maxBytes < 0) {
+            return;
+        }
+        FFmpegFile orderFile(filename);
+        const long long bytes0 = orderFile.getBytesRead();
+        for (int f : order) {
             try {
-                (void)reverseFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
+                (void)orderFile.decode(nullptr, /*streamIndex=*/0, f, loadNearest, buf.data());
             } catch (const std::exception& e) {
             }
         }
-        const long long bytes = reverseFile.getBytesRead() - bytes0;
-        std::printf("  reverse decode: read %lld bytes\n", bytes);
-        if (bytes > maxReverseBytes) {
-            std::printf("  REVERSE-BYTES reverse decode read %lld bytes, expected at most %lld\n", bytes, maxReverseBytes);
+        const long long bytes = orderFile.getBytesRead() - bytes0;
+        std::printf("  %s decode: read %lld bytes\n", label, bytes);
+        if (bytes > maxBytes) {
+            std::printf("  %s %s decode read %lld bytes, expected at most %lld\n", check, label, bytes, maxBytes);
             ++seekErrors;
         }
+    };
+    std::vector<int> reverseOrder;
+    for (int f = frames; f >= 1; --f) {
+        reverseOrder.push_back(f);
     }
+    checkOrderBytes("reverse", "REVERSE-BYTES", reverseOrder, maxReverseBytes);
+    checkOrderBytes("random", "RANDOM-BYTES", randomOrder(frames), maxRandomBytes);
 
     // Each --fresh frame, decoded first in a newly opened file.
     for (int f : fresh) {
