@@ -57,6 +57,21 @@ env:
   # sonames that match it as system libraries (OFX_ABI_SYSTEM_LIBS), so that it fails if one is bundled.
   DESKTOP_LIBS_RE: '^lib(X[A-Za-z0-9]*|X11-xcb|xcb|xcb-.*|SM|ICE|xkbcommon|xkbcommon-x11|asound)\.so\.[0-9]+$'
 
+  # SeExpr 2.11 is built (by seexpr211_build.sh) with the patches of Natron's SDKs, at this Natron commit, in this
+  # order: those of the MacPorts seexpr211 port (tools/MacPorts/graphics/seexpr211/Portfile) on macOS, and the same ones
+  # from the Linux SDK (tools/jenkins/include/patches/SeExpr, applied by tools/jenkins/include/scripts/pkg/seexpr211.sh)
+  # on Linux. The Linux SDK also applies 0003 (the Windows DLL install destination) and 0005 (no SeExprEditor and
+  # demos, which the script's sed removes too), which don't change libSeExpr on Linux. 0008 makes the parser build with
+  # flex >= 2.7.8. The SeExpr cache keys contain these two and the script's hash.
+  NATRON_SEEXPR_COMMIT: a659e93445b470d409eca37fdfc9fa8c923d80e6
+  NATRON_SEEXPR_PATCHES: >-
+    0001-seexpr-2.11-fix-cxxflags.patch
+    0002-seexpr-2.11-fix-inline-error.patch
+    0004-seexpr-2.11-c++98.patch
+    0006-seexpr-2.11-cstylecast.patch
+    0007-seexpr-2.11-float-to-unsigned-cast.patch
+    0008-seexpr-2.11-flex-buffer-state.patch
+
 jobs:
   # Skip linux-natron in the weekly run if master didn't change since the last completed weekly run (this job only
   # runs on schedule): once per commit, even if that run failed. Only runs that succeeded or failed count: a cancelled
@@ -103,6 +118,8 @@ jobs:
       # so not in /usr/share/fonts/truetype/freefont (enumerate_fonts(),
       # https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/v2.5.19.1/src/libOpenImageIO/imagebufalgo_draw.cpp#L790-L846)
       OPENIMAGEIO_FONTS: /usr/share/fonts/truetype/freefont
+      # seexpr211_build.sh's extra CMake arguments (part of the SeExpr cache key): none
+      SEEXPR_CMAKE_ARGS: ""
     defaults:
       run:
         shell: bash -eo pipefail {0}
@@ -146,19 +163,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: SeExprBuild
-          key: seexpr-2.11-ubuntu-26.04-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: seexpr-2.11-ubuntu-26.04-LinuxSDK-${{ hashFiles('.github/workflows/seexpr211_build.sh') }}-${{ env.NATRON_SEEXPR_COMMIT }}-${{ env.NATRON_SEEXPR_PATCHES }}-${{ env.SEEXPR_CMAKE_ARGS }}
       - name: Build SeExpr 2.11
         if: steps.cache-seexpr.outputs.cache-hit != 'true'
         run: |
-          git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
-          cd SeExprSrc
-          sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          cmake --build build -j4
-          cmake --install build
-          # its licence, for the testing bundle (copy_bundled_licenses.sh)
-          mkdir -p "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr"
-          cp LICENSE "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr/"
+          # with the patches of Natron's Linux SDK (see NATRON_SEEXPR_PATCHES)
+          # shellcheck disable=SC2086 # SEEXPR_CMAKE_ARGS: a space-separated list
+          .github/workflows/seexpr211_build.sh "$GITHUB_WORKSPACE/SeExprBuild" LinuxSDK $SEEXPR_CMAKE_ARGS
       - name: Build (release, C++17, CMake)
         run: |
           # IO_HOSTDEMO_TESTS: ctest renders every plug-in of the installed bundle with openfx's hostDemo (io-hostdemo)
@@ -308,6 +319,8 @@ jobs:
       # libx264, libx265 and libvpx, as WriteFFmpeg and ReadFFmpeg offer with Ubuntu's FFmpeg.
       FFMPEG_VERSION: n9.0.2
       FFMPEG_CONFIGURE: --enable-shared --disable-static --disable-programs --disable-doc --disable-autodetect --enable-gpl --enable-zlib --enable-libx264 --enable-libx265 --enable-libvpx
+      # seexpr211_build.sh's extra CMake arguments (part of the SeExpr cache key): none
+      SEEXPR_CMAKE_ARGS: ""
     defaults:
       run:
         shell: bash -eo pipefail {0}
@@ -352,19 +365,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: SeExprBuild
-          key: seexpr-2.11-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: seexpr-2.11-ubuntu-24.04-LinuxSDK-${{ hashFiles('.github/workflows/seexpr211_build.sh') }}-${{ env.NATRON_SEEXPR_COMMIT }}-${{ env.NATRON_SEEXPR_PATCHES }}-${{ env.SEEXPR_CMAKE_ARGS }}
       - name: Build SeExpr 2.11
         if: steps.cache-seexpr.outputs.cache-hit != 'true'
         run: |
-          git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
-          cd SeExprSrc
-          sed -i -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/SeExprBuild -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          cmake --build build -j4
-          cmake --install build
-          # its licence, for the testing bundle (copy_bundled_licenses.sh)
-          mkdir -p "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr"
-          cp LICENSE "$GITHUB_WORKSPACE/SeExprBuild/share/licenses/SeExpr/"
+          # with the patches of Natron's Linux SDK (see NATRON_SEEXPR_PATCHES)
+          # shellcheck disable=SC2086 # SEEXPR_CMAKE_ARGS: a space-separated list
+          .github/workflows/seexpr211_build.sh "$GITHUB_WORKSPACE/SeExprBuild" LinuxSDK $SEEXPR_CMAKE_ARGS
       - name: Build (release, C++17, CMake)
         run: |
           # IO_HOSTDEMO_TESTS: builds openfx's hostDemo and io_verify_plugin_loads, for the checks below (only the
@@ -486,6 +493,9 @@ jobs:
     env:
       MACPORTS_VERSION: 2.12.7
       SEEXPR_HOME: /opt/local/libexec/seexpr211
+      # seexpr211_build.sh's extra CMake arguments (part of the SeExpr cache key): the system (Xcode) clang, as for the
+      # plug-ins; no SSE4.1 (arm64)
+      SEEXPR_CMAKE_ARGS: -DUSE_SSE41=FALSE -DCMAKE_CXX_COMPILER=/usr/bin/clang++
       MACPORTS_PKG_SHA256: 87b2e87ed7adc4aca947b42eb7ff991614cc0edfccb486237f2bbc75f28aae63
       # The FFmpeg to build against (FFMPEG_PKG_CONFIG_PATH: CMake links it by full paths, plug-ins and tests): the
       # ffmpeg8 port, which MacPorts' OpenImageIO may link. FFMPEG_BIN_SUFFIX: the suffix of its tools (ffmpeg8,
@@ -526,29 +536,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SEEXPR_HOME }}
-          key: seexpr-2.11-natron-patches-macos-15-arm64-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: seexpr-2.11-macos-15-arm64-${{ env.MACOSX_DEPLOYMENT_TARGET }}-MacPorts-${{ hashFiles('.github/workflows/seexpr211_build.sh') }}-${{ env.NATRON_SEEXPR_COMMIT }}-${{ env.NATRON_SEEXPR_PATCHES }}-${{ env.SEEXPR_CMAKE_ARGS }}
       - name: Build SeExpr 2.11
         if: steps.cache-seexpr.outputs.cache-hit != 'true'
-        env:
-          # the system (Xcode) clang, as for the plug-ins
-          CXX: clang++ -std=c++17
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          git clone -q --depth 1 -b v2.11 https://github.com/wdas/SeExpr.git SeExprSrc
-          cd SeExprSrc
-          # Apply the patches of Natron's MacPorts seexpr211 port, which make SeExpr 2.11 build on arm64:
-          # -msse4.1 and the SSE intrinsics are gated behind USE_SSE41 / __SSE4_1__.
-          NATRON_PORT=https://raw.githubusercontent.com/NatronGitHub/Natron/84a303b3d7b14f92ab445e71a8c4f24eb9285478/tools/MacPorts/graphics/seexpr211/files
-          for p in 0001-seexpr-2.11-fix-cxxflags.patch 0002-seexpr-2.11-fix-inline-error.patch 0004-seexpr-2.11-c++98.patch 0006-seexpr-2.11-cstylecast.patch; do
-            curl -fsSL "${NATRON_PORT}/${p}" | patch -p1
-          done
-          sed -i '' -e "/SeExprEditor/d" -e "/demos/d" -e "/tests/d" -e "/doc/d" CMakeLists.txt
-          # Absolute install name (like MacPorts' libraries), so that osxDeploy.sh finds and bundles libSeExpr
-          cmake . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$SEEXPR_HOME -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_STANDARD=11 \
-            -DUSE_SSE41=FALSE -DCMAKE_INSTALL_NAME_DIR=$SEEXPR_HOME/lib \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBISON_EXECUTABLE=/opt/local/bin/bison -DFLEX_EXECUTABLE=/opt/local/bin/flex
-          cmake --build build -j3
-          cmake --install build
+          # with the patches of Natron's MacPorts seexpr211 port (see NATRON_SEEXPR_PATCHES), which make SeExpr 2.11
+          # build on arm64 (-msse4.1 and the SSE intrinsics are gated behind USE_SSE41 / __SSE4_1__) and with
+          # MacPorts' flex (>= 2.7.8)
+          # shellcheck disable=SC2086 # SEEXPR_CMAKE_ARGS: a space-separated list
+          .github/workflows/seexpr211_build.sh "$SEEXPR_HOME" MacPorts $SEEXPR_CMAKE_ARGS
       - name: Build (release, C++17, CMake)
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
