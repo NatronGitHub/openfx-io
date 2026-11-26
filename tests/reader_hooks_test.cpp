@@ -379,123 +379,71 @@ describeTestReaderInContext(ImageEffectDescriptor& desc, ContextEnum context, bo
     GenericReaderDescribeInContextEnd(desc, context, page, "scene_linear", "scene_linear");
 }
 
-mDeclareReaderPluginFactory(TestReaderPluginFactory, {}, false);
-void TestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
-void TestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksTest"); }
-void TestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
-ImageEffect*
-TestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
-{
-    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions);
-    ret->restoreStateFromParams();
+// The test readers, one factory each (as mDeclareReaderPluginFactory, but a template: each factory type has its own
+// main entry point)
+enum class TestReaderKind {
+    eDefault,
+    eFrameVarying,
+    eMultiPlanar,
+    eMipmap, // reads gMipmapContent (set before creating the instance) at full resolution
+    eTiles, // the same, supporting tiles: the host may give it an output image larger than the RoD (e.g. a display window)
+    eClip, // reads gMipmapContent with getFrameBounds(), and the smaller gClipContent in decode()
+};
 
-    return ret;
-}
+template <TestReaderKind Kind>
+class TestReaderPluginFactory
+    : public PluginFactoryHelper<TestReaderPluginFactory<Kind>> {
+public:
+    TestReaderPluginFactory(const std::string& id, const char* label)
+        : PluginFactoryHelper<TestReaderPluginFactory<Kind>>(id, 1, 0)
+        , _label(label)
+    {
+    }
+    virtual void load() OVERRIDE { _extensions.assign(1, "tst"); }
+    virtual void unload() OVERRIDE {}
+    virtual void describe(ImageEffectDescriptor& desc) OVERRIDE
+    {
+        describeTestReader(desc, _extensions, _label, Kind == TestReaderKind::eMultiPlanar, (Kind == TestReaderKind::eTiles) || kSupportsTiles);
+    }
+    virtual void describeInContext(ImageEffectDescriptor& desc, ContextEnum context) OVERRIDE
+    {
+        describeTestReaderInContext(desc, context, false, (Kind == TestReaderKind::eTiles) || kSupportsTiles);
+    }
+    virtual ImageEffect* createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/) OVERRIDE
+    {
+        TestReaderPlugin* ret = nullptr;
+        switch (Kind) {
+        case TestReaderKind::eDefault: ret = new TestReaderPlugin(handle, _extensions); break;
+        case TestReaderKind::eFrameVarying: ret = new FrameVaryingTestReaderPlugin(handle, _extensions); break;
+        case TestReaderKind::eMultiPlanar: ret = new MultiPlanarTestReaderPlugin(handle, _extensions); break;
+        case TestReaderKind::eMipmap: ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent); break;
+        case TestReaderKind::eTiles: ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent, true); break;
+        case TestReaderKind::eClip: ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent, false, &gClipContent); break;
+        }
+        ret->restoreStateFromParams();
 
-mDeclareReaderPluginFactory(FrameVaryingTestReaderPluginFactory, {}, false);
-void FrameVaryingTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
-void FrameVaryingTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksFrameVaryingTest"); }
-void FrameVaryingTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
-ImageEffect*
-FrameVaryingTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
-{
-    TestReaderPlugin* ret = new FrameVaryingTestReaderPlugin(handle, _extensions);
-    ret->restoreStateFromParams();
+        return ret;
+    }
 
-    return ret;
-}
+private:
+    std::vector<std::string> _extensions;
+    const char* _label;
+};
 
-mDeclareReaderPluginFactory(MultiPlanarTestReaderPluginFactory, {}, false);
-void MultiPlanarTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
-void MultiPlanarTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksMultiPlanarTest", true); }
-void MultiPlanarTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
-ImageEffect*
-MultiPlanarTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
-{
-    TestReaderPlugin* ret = new MultiPlanarTestReaderPlugin(handle, _extensions);
-    ret->restoreStateFromParams();
-
-    return ret;
-}
-
-// Reads gMipmapContent (set before creating the instance) at full resolution
-mDeclareReaderPluginFactory(MipmapTestReaderPluginFactory, {}, false);
-void MipmapTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
-void MipmapTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksMipmapTest"); }
-void MipmapTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
-ImageEffect*
-MipmapTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
-{
-    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent);
-    ret->restoreStateFromParams();
-
-    return ret;
-}
-
-// The same, supporting tiles: the host may give it an output image larger than the RoD (e.g. a display window)
-mDeclareReaderPluginFactory(TilesTestReaderPluginFactory, {}, false);
-void TilesTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
-void TilesTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksTilesTest", false, true); }
-void TilesTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin(), true); }
-ImageEffect*
-TilesTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
-{
-    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent, true);
-    ret->restoreStateFromParams();
-
-    return ret;
-}
-
-// Reads gMipmapContent with getFrameBounds(), and the smaller gClipContent in decode()
-mDeclareReaderPluginFactory(ClipTestReaderPluginFactory, {}, false);
-void ClipTestReaderPluginFactory::load() { _extensions.assign(1, "tst"); }
-void ClipTestReaderPluginFactory::describe(ImageEffectDescriptor& desc) { describeTestReader(desc, _extensions, "ReaderHooksClipTest"); }
-void ClipTestReaderPluginFactory::describeInContext(ImageEffectDescriptor& desc, ContextEnum context) { describeTestReaderInContext(desc, context, isVideoStreamPlugin()); }
-ImageEffect*
-ClipTestReaderPluginFactory::createInstance(OfxImageEffectHandle handle, ContextEnum /*context*/)
-{
-    TestReaderPlugin* ret = new TestReaderPlugin(handle, _extensions, false, &gMipmapContent, false, &gClipContent);
-    ret->restoreStateFromParams();
-
-    return ret;
-}
-
-TestReaderPluginFactory gDefaultFactory(kPluginIdentifierDefault, 1, 0);
+TestReaderPluginFactory<TestReaderKind::eDefault> gDefaultFactory(kPluginIdentifierDefault, "ReaderHooksTest");
 mRegisterPluginFactoryInstance(gDefaultFactory)
-FrameVaryingTestReaderPluginFactory gFrameVaryingFactory(kPluginIdentifierFrameVarying, 1, 0);
+TestReaderPluginFactory<TestReaderKind::eFrameVarying> gFrameVaryingFactory(kPluginIdentifierFrameVarying, "ReaderHooksFrameVaryingTest");
 mRegisterPluginFactoryInstance(gFrameVaryingFactory)
-MultiPlanarTestReaderPluginFactory gMultiPlanarFactory(kPluginIdentifierMultiPlanar, 1, 0);
+TestReaderPluginFactory<TestReaderKind::eMultiPlanar> gMultiPlanarFactory(kPluginIdentifierMultiPlanar, "ReaderHooksMultiPlanarTest");
 mRegisterPluginFactoryInstance(gMultiPlanarFactory)
-MipmapTestReaderPluginFactory gMipmapFactory(kPluginIdentifierMipmap, 1, 0);
+TestReaderPluginFactory<TestReaderKind::eMipmap> gMipmapFactory(kPluginIdentifierMipmap, "ReaderHooksMipmapTest");
 mRegisterPluginFactoryInstance(gMipmapFactory)
-TilesTestReaderPluginFactory gTilesFactory(kPluginIdentifierTiles, 1, 0);
+TestReaderPluginFactory<TestReaderKind::eTiles> gTilesFactory(kPluginIdentifierTiles, "ReaderHooksTilesTest");
 mRegisterPluginFactoryInstance(gTilesFactory)
-ClipTestReaderPluginFactory gClipFactory(kPluginIdentifierClip, 1, 0);
+TestReaderPluginFactory<TestReaderKind::eClip> gClipFactory(kPluginIdentifierClip, "ReaderHooksClipTest");
 mRegisterPluginFactoryInstance(gClipFactory)
 
 // ------------------------------------------------------------------ host side
-
-int gFailures = 0;
-
-void
-check(bool cond, const char* fmt, ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf(cond ? "  ok:   " : "  FAIL: ");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
 
 // Load and describe a plugin once; contexts and instances are created by Reader below.
 OfxPlugin*
@@ -506,7 +454,7 @@ loadPlugin(const char* id, Effect& describeEffect)
         return nullptr;
     }
     p->setHost(&gOfxHost);
-    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, H(describeEffect), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, EH(describeEffect), nullptr, nullptr))) {
         return nullptr;
     }
 
@@ -551,12 +499,12 @@ struct Reader {
         pSetDouble(ap, kOfxPropTime, 0, time);
         double rs[2] = { 1., 1. };
         pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        if (!ok(p->mainEntry(kOfxActionBeginInstanceChanged, H(inst), PH(&a), nullptr))) {
+        if (!ok(p->mainEntry(kOfxActionBeginInstanceChanged, EH(inst), PH(&a), nullptr))) {
             return false;
         }
-        const bool ret = ok(p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr));
+        const bool ret = ok(p->mainEntry(kOfxActionInstanceChanged, EH(inst), PH(&a), nullptr));
 
-        return ok(p->mainEntry(kOfxActionEndInstanceChanged, H(inst), PH(&a), nullptr)) && ret;
+        return ok(p->mainEntry(kOfxActionEndInstanceChanged, EH(inst), PH(&a), nullptr)) && ret;
     }
 
     // fileAtTime (optional): the value of the file param at each time, as for an image sequence
@@ -565,7 +513,7 @@ struct Reader {
         p = plugin_;
         PropSet inArgs;
         pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
             std::printf("  FAIL: describeInContext\n");
 
             return false;
@@ -579,7 +527,7 @@ struct Reader {
         }
         inst.delegate = &ctx;
         setInstanceProps(inst, kWidth, kHeight, kVideoRange.max, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
             std::printf("  FAIL: createInstance\n");
 
             return false;
@@ -609,7 +557,7 @@ struct Reader {
     int frameVarying()
     {
         PropSet outArgs;
-        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&outArgs)))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)))) {
             return -1;
         }
         int v = -1;
@@ -622,7 +570,7 @@ struct Reader {
     double outputPAR()
     {
         PropSet outArgs;
-        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&outArgs)))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs)))) {
             return -1.;
         }
         double v = -1.;
@@ -636,7 +584,7 @@ struct Reader {
     {
         PropSet outArgs;
         OfxRangeD range = { -1., -1. };
-        if (ok(p->mainEntry(kOfxImageEffectActionGetTimeDomain, H(inst), nullptr, PH(&outArgs)))) {
+        if (ok(p->mainEntry(kOfxImageEffectActionGetTimeDomain, EH(inst), nullptr, PH(&outArgs)))) {
             double r[2] = { -1., -1. };
             pGetDoubleN(PH(&outArgs), kOfxImageEffectPropFrameRange, 2, r);
             range = { r[0], r[1] };
@@ -653,13 +601,13 @@ struct Reader {
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
         if (!ok(st)) {
             return st;
         }
         PropSet r = makeRenderInArgs(t, kWidth, kHeight);
 
-        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&r), nullptr);
+        return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&r), nullptr);
     }
 
     // R of the first output pixel
@@ -688,7 +636,7 @@ struct Reader {
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
         if (!ok(st)) {
             return st;
         }
@@ -725,7 +673,7 @@ struct Reader {
         const bool colour = !std::strcmp(plane, kFnOfxImagePlaneColour);
         pSetString(ip, kOfxImageEffectPropComponents, 0, colour ? kOfxImageComponentRGBA : plane);
 
-        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr);
     }
 
     // a render at scale 1 of renderWindow into an output image of the given bounds, the output clip's RoD being
@@ -761,7 +709,7 @@ struct Reader {
         int win[4] = { renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2 };
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
 
-        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr);
     }
 
     // output pixel (x, y), channel c, after renderAtScale()
@@ -775,13 +723,42 @@ struct Reader {
     void destroy()
     {
         if (plugin) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
             plugin = nullptr;
         }
     }
 
     ~Reader() { destroy(); }
 };
+
+// Creates the empty file path (the test readers only check that their files exist); false (a failed check) if it
+// can't
+bool
+touch(const std::string& path)
+{
+    std::FILE* fp = std::fopen(path.c_str(), "wb");
+    if (!fp) {
+        check(false, "cannot create %s", path.c_str());
+
+        return false;
+    }
+    std::fclose(fp);
+
+    return true;
+}
+
+// The file of each frame of the image sequence prefix.name.####.tst
+std::function<std::string(double)>
+sequenceFileAt(const std::string& prefix,
+               const char* name)
+{
+    return [prefix, name](double t) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), ".%s.%04d.tst", name, (int)std::floor(t + 0.5));
+
+        return prefix + buf;
+    };
+}
 
 // 1. getClipPreferences sets kOfxImageEffectFrameVarying
 void
@@ -824,22 +801,13 @@ testClipPreferencesSequence(OfxPlugin* pDefault, const std::string& prefix)
     const int kFirst = 1, kLast = 5, kStartingTime = 101;
     std::printf("==== getClipPreferences(), image sequence %d..%d with PAR 2 and starting time %d (#147) ====\n", kFirst, kLast, kStartingTime);
     // prefix.par2seq.0001.tst ... prefix.par2seq.0005.tst
-    auto fileAt = [prefix](double t) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), ".par2seq.%04d.tst", (int)std::floor(t + 0.5));
-
-        return prefix + buf;
-    };
+    const auto fileAt = sequenceFileAt(prefix, "par2seq");
     std::vector<std::string> files;
     for (int f = kFirst; f <= kLast; ++f) {
         files.push_back(fileAt(f));
-        std::FILE* fp = std::fopen(files.back().c_str(), "wb");
-        if (!fp) {
-            check(false, "cannot create %s", files.back().c_str());
-
+        if (!touch(files.back())) {
             return;
         }
-        std::fclose(fp);
     }
     {
         Reader r;
@@ -873,13 +841,9 @@ testClipPreferencesPar0(OfxPlugin* pDefault, const std::string& prefix)
 {
     std::printf("==== getClipPreferences(), file with a PAR of 0 ====\n");
     const std::string file = prefix + ".par0.tst";
-    std::FILE* fp = std::fopen(file.c_str(), "wb");
-    if (!fp) {
-        check(false, "cannot create %s", file.c_str());
-
+    if (!touch(file)) {
         return;
     }
-    std::fclose(fp);
     {
         Reader r;
         if (r.create(pDefault, file)) {
@@ -977,18 +941,8 @@ testStartingTime(OfxPlugin* pDefault, const std::string& prefix)
 {
     std::printf("==== startingTime and timeOffset stay in sync (#154) ====\n");
     // two image sequences: prefix.stA.0001.tst ... prefix.stA.0010.tst and prefix.stB.0001.tst ... prefix.stB.0004.tst
-    auto fileAtA = [prefix](double t) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), ".stA.%04d.tst", (int)std::floor(t + 0.5));
-
-        return prefix + buf;
-    };
-    auto fileAtB = [prefix](double t) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), ".stB.%04d.tst", (int)std::floor(t + 0.5));
-
-        return prefix + buf;
-    };
+    const auto fileAtA = sequenceFileAt(prefix, "stA");
+    const auto fileAtB = sequenceFileAt(prefix, "stB");
     std::vector<std::string> files;
     for (int f = 1; f <= 10; ++f) {
         files.push_back(fileAtA(f));
@@ -997,13 +951,9 @@ testStartingTime(OfxPlugin* pDefault, const std::string& prefix)
         }
     }
     for (const std::string& f : files) {
-        std::FILE* fp = std::fopen(f.c_str(), "wb");
-        if (!fp) {
-            check(false, "cannot create %s", f.c_str());
-
+        if (!touch(f)) {
             return;
         }
-        std::fclose(fp);
     }
     {
         Reader r;
@@ -1094,15 +1044,8 @@ testTimeOffsetMode(OfxPlugin* pDefault, const std::string& prefix)
 {
     std::printf("==== Time Offset frame mode: the time offset is kept when the file changes (#260) ====\n");
     // prefix.toA.0001.tst ... 0010, prefix.toB.0001.tst ... 0010, prefix.toC.0021.tst ... 0023, prefix.toD.0021.tst ... 0023
-    auto fileAt = [prefix](const char* name) {
-        return [prefix, name](double t) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), ".%s.%04d.tst", name, (int)std::floor(t + 0.5));
-
-            return prefix + buf;
-        };
-    };
-    const std::function<std::string(double)> fileAtA = fileAt("toA"), fileAtB = fileAt("toB"), fileAtC = fileAt("toC"), fileAtD = fileAt("toD");
+    const std::function<std::string(double)> fileAtA = sequenceFileAt(prefix, "toA"), fileAtB = sequenceFileAt(prefix, "toB"),
+                                             fileAtC = sequenceFileAt(prefix, "toC"), fileAtD = sequenceFileAt(prefix, "toD");
     std::vector<std::string> files;
     for (int f = 1; f <= 10; ++f) {
         files.push_back(fileAtA(f));
@@ -1113,13 +1056,9 @@ testTimeOffsetMode(OfxPlugin* pDefault, const std::string& prefix)
         files.push_back(fileAtD(f));
     }
     for (const std::string& f : files) {
-        std::FILE* fp = std::fopen(f.c_str(), "wb");
-        if (!fp) {
-            check(false, "cannot create %s", f.c_str());
-
+        if (!touch(f)) {
             return;
         }
-        std::fclose(fp);
     }
     auto checkOffset = [](Reader& r, const char* what, int expected) {
         const int timeOffset = paramInt(&r.ctx.params["timeOffset"], 0);
@@ -1191,22 +1130,13 @@ testUnreadableFrame(OfxPlugin* pDefault, const std::string& prefix)
 
         return;
     }
-    auto fileAt = [prefix](double t) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), ".unreadable.%04d.tst", (int)std::floor(t + 0.5));
-
-        return prefix + buf;
-    };
+    const auto fileAt = sequenceFileAt(prefix, "unreadable");
     std::vector<std::string> files;
     for (int f = 1; f <= 3; ++f) {
         files.push_back(fileAt(f));
-        std::FILE* fp = std::fopen(files.back().c_str(), "wb");
-        if (!fp) {
-            check(false, "cannot create %s", files.back().c_str());
-
+        if (!touch(files.back())) {
             return;
         }
-        std::fclose(fp);
     }
     {
         Reader r;
@@ -1841,9 +1771,7 @@ testRefreshFrameBoundsPar(OfxPlugin* pTiles, const std::string& prefix)
 {
     std::printf("==== refreshFrameBounds(): not for an up-to-date RoD at a PAR of 40/33 ====\n");
     const std::string file = prefix + ".par40_33.tst";
-    if (std::FILE* fp = std::fopen(file.c_str(), "wb")) {
-        std::fclose(fp);
-    }
+    (void)touch(file);
     gMipmapContent.bounds = { 0, 0, 1920, 1080 };
     gMipmapContent.value = [](int x, int y, int c) -> float { return (float)(x + 2 * y + c); };
     {
@@ -1862,7 +1790,7 @@ testRefreshFrameBoundsPar(OfxPlugin* pTiles, const std::string& prefix)
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        OfxStatus st = r.p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(r.inst), PH(&a), PH(&o));
+        OfxStatus st = r.p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(r.inst), PH(&a), PH(&o));
         double rd[4] = { 0., 0., 0., 0. };
         pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rd);
         check(ok(st) && rd[2] == 1920. * (40. / 33.), "getRegionOfDefinition = %d, x2 = %.17g", st, rd[2]);
@@ -2299,13 +2227,9 @@ main(int argc, char** argv)
     const std::string big3 = prefix + ".big3.tst";
     const std::string wide = prefix + ".wide.tst";
     for (const std::string& f : { still, video, big, big3, wide }) {
-        std::FILE* fp = std::fopen(f.c_str(), "wb");
-        if (!fp) {
-            std::printf("FAIL: cannot create %s\n", f.c_str());
-
+        if (!touch(f)) {
             return 1;
         }
-        std::fclose(fp);
     }
 
     Effect descDefault, descFrameVarying, descMultiPlanar;

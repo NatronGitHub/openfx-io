@@ -36,12 +36,11 @@ class OIIOThreadsUser
 public:
     OIIOThreadsUser();
     ~OIIOThreadsUser();
+    OIIOThreadsUser(const OIIOThreadsUser&) = delete; // not copyable
+    OIIOThreadsUser& operator=(const OIIOThreadsUser&) = delete;
 
 private:
     ExrThreadsUser _exrThreads; // (constructed before, and destroyed after, the body of the constructor and destructor)
-
-    OIIOThreadsUser(const OIIOThreadsUser&); // not copyable
-    OIIOThreadsUser& operator=(const OIIOThreadsUser&);
 };
 
 // The number of live OIIOThreadsUser objects (for the tests)
@@ -68,5 +67,12 @@ void OIIOPluginUnloaded(const std::string& pluginUID);
 // dlopen()s its raw reader, and with it LibRaw and OpenMP, on the first RAW read. Every runtime present is pinned, once.
 // Thread-safe. Nothing is done if no OpenMP runtime is loaded (e.g. MacPorts' LibRaw).
 void pinOpenMPRuntime();
+
+// "major.minor.patch" of an OpenImageIO version number (openimageio_version(): 10000 * major + 100 * minor + patch)
+std::string oiioVersionString(int ver);
+
+// The message of the Library Info button of ReadOIIO and WriteOIIO: the OpenImageIO version (compiled with and
+// running with), its dependent libraries, and all the supported formats and extensions
+std::string oiioLibraryInfo();
 
 #endif /* IO_GLOBAL_OIIO_H*/

@@ -34,30 +34,6 @@
 
 namespace {
 
-int gFailures = 0;
-
-void
-check(bool cond,
-      const char* fmt,
-      ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 // the highest version of OIIOResize
 OfxPlugin*
 findResize()
@@ -87,18 +63,18 @@ struct Resize {
     {
         PropSet inArgs;
         pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
-        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
             return;
         }
         inst.delegate = &ctx;
         setInstanceProps(inst, 64, 64, 1, kOfxImageEffectContextFilter);
-        created = ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr));
+        created = ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr));
     }
 
     ~Resize()
     {
         if (created) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         }
     }
 
@@ -138,7 +114,7 @@ testEmptySource(OfxPlugin* p)
     r.ctx.params["size"].ov.i = { w, h };
     gPersistentError.clear();
     PropSet a = makeRenderInArgs(1., w, h);
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(r.inst), PH(&a), nullptr);
     int notBlack = 0;
     for (int i = 0; i < w * h * 4; ++i) {
         notBlack += (d[i] != 0.f) ? 1 : 0;
@@ -153,7 +129,7 @@ testEmptySource(OfxPlugin* p)
     PropSet a2 = makeRenderInArgs(1., w, h);
     int win[4] = { 0, 0, w, h / 2 };
     pSetIntN(PH(&a2), kOfxImageEffectPropRenderWindow, 4, win);
-    st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a2), nullptr);
+    st = p->mainEntry(kOfxImageEffectActionRender, EH(r.inst), PH(&a2), nullptr);
     int wrong = 0;
     for (int y = 0; y < h; ++y) {
         for (int i = 0; i < w * 4; ++i) {
@@ -165,7 +141,7 @@ testEmptySource(OfxPlugin* p)
     // an empty output image: nothing is rendered
     setupClipImage(dst, 0, 0, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
     PropSet a3 = makeRenderInArgs(1., 0, 0);
-    st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a3), nullptr);
+    st = p->mainEntry(kOfxImageEffectActionRender, EH(r.inst), PH(&a3), nullptr);
     check(ok(st), "empty output image: render = %d", st);
 }
 
@@ -201,7 +177,7 @@ testEmptyOutput(OfxPlugin* p)
         }
         gPersistentError.clear();
         PropSet a = makeRenderInArgs(1., 0, 0);
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&a), nullptr);
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(r.inst), PH(&a), nullptr);
         check(ok(st) && gPersistentError.empty(), "render = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
     }
 }
@@ -244,7 +220,7 @@ testPreserveParHugeRoD(OfxPlugin* p)
         double rs[2] = { 1., 1. };
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         PropSet o;
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(r.inst), PH(&a), PH(&o));
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(r.inst), PH(&a), PH(&o));
         double rod[4] = { -1., -1., -1., -1. };
         pGetDoubleN(PH(&o), kOfxImageEffectPropRegionOfDefinition, 4, rod);
         check(st == kOfxStatOK && rod[0] == 0. && rod[1] == 0. && rod[2] == c.w && rod[3] == c.h,
@@ -265,14 +241,7 @@ testChangedClipInfiniteRoD(OfxPlugin* p)
     r.src()->connected = true;
     setupClipImage(r.src(), 8, 8, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
     r.setSrcRoD(kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax);
-    PropSet a;
-    pSetString(PH(&a), kOfxPropType, 0, kOfxTypeClip);
-    pSetString(PH(&a), kOfxPropName, 0, kOfxImageEffectSimpleSourceClipName);
-    pSetString(PH(&a), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-    pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. };
-    pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
-    OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, H(r.inst), PH(&a), nullptr);
+    OfxStatus st = instanceChanged(p, r.inst, kOfxImageEffectSimpleSourceClipName, kOfxChangeUserEdited, kOfxTypeClip);
     const ParamRec& size = r.ctx.params["size"];
     const int w = size.ov.i.size() > 0 ? size.ov.i[0] : -1;
     const int h = size.ov.i.size() > 1 ? size.ov.i[1] : -1;
@@ -297,7 +266,7 @@ renderText(OfxPlugin* p,
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, w, h, 1, kOfxImageEffectContextFilter);
-    OfxStatus st = p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr);
+    OfxStatus st = p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr);
     if (!ok(st)) {
         return { st, -1 };
     }
@@ -317,12 +286,12 @@ renderText(OfxPlugin* p,
     for (int i = 0; i < w * h * 4; ++i) {
         d[i] = 0.5f; // not the source
     }
-    st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     int notSource = 0;
     for (int i = 0; i < w * h * 4; ++i) {
         notSource += (d[i] != 0.f) ? 1 : 0;
     }
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
 
     return { st, notSource };
 }
@@ -377,7 +346,7 @@ main()
     }
     Effect describeEffect;
     p->setHost(&gOfxHost);
-    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, H(describeEffect), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, EH(describeEffect), nullptr, nullptr))) {
         std::printf("FAIL: load/describe\n");
 
         return 1;

@@ -280,15 +280,8 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
     , _choiceFileName()
     , _choiceAnimSynced(true)
 #endif
-    , _contextKey1(NULL)
-    , _contextValue1(NULL)
-    , _contextKey2(NULL)
-    , _contextValue2(NULL)
-    , _contextKey3(NULL)
-    , _contextValue3(NULL)
-    , _contextKey4(NULL)
-    , _contextValue4(NULL)
-    , _config()
+    , _contextKeys()
+    , _contextValues()
 #endif
 {
 #ifdef OFX_IO_USING_OCIO
@@ -309,13 +302,13 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
         side.str = i ? _outputSpace : _inputSpace;
         side.choice = side.str ? _parent->fetchChoiceParam(i ? kOCIOParamOutputSpaceChoice : kOCIOParamInputSpaceChoice) : NULL;
         side.initialIndex = -1;
-        side.strExpression = -1;
-        side.choiceExpression = -1;
+        side.strExpression.reset();
+        side.choiceExpression.reset();
     }
 #endif
     loadConfig();
 #ifdef OFX_OCIO_CHOICE
-    if (!_config) {
+    if (!mainConfig()) {
 #ifndef OFX_OCIO_NOSECRET
         for (int i = 0; i < 2; ++i) {
             if (_sides[i].choice) {
@@ -326,16 +319,13 @@ GenericOCIO::GenericOCIO(ImageEffect* parent)
     }
 #endif
     if (_parent->paramExists(kOCIOParamContextKey1)) {
-        _contextKey1 = _parent->fetchStringParam(kOCIOParamContextKey1);
-        _contextValue1 = _parent->fetchStringParam(kOCIOParamContextValue1);
-        _contextKey2 = _parent->fetchStringParam(kOCIOParamContextKey2);
-        _contextValue2 = _parent->fetchStringParam(kOCIOParamContextValue2);
-        _contextKey3 = _parent->fetchStringParam(kOCIOParamContextKey3);
-        _contextValue3 = _parent->fetchStringParam(kOCIOParamContextValue3);
-        _contextKey4 = _parent->fetchStringParam(kOCIOParamContextKey4);
-        _contextValue4 = _parent->fetchStringParam(kOCIOParamContextValue4);
-        assert(_contextKey1 && _contextKey2 && _contextKey3 && _contextKey4);
-        assert(_contextValue1 && _contextValue2 && _contextValue3 && _contextValue4);
+        static const char* const keyNames[kContextVariables] = { kOCIOParamContextKey1, kOCIOParamContextKey2, kOCIOParamContextKey3, kOCIOParamContextKey4 };
+        static const char* const valueNames[kContextVariables] = { kOCIOParamContextValue1, kOCIOParamContextValue2, kOCIOParamContextValue3, kOCIOParamContextValue4 };
+        for (int i = 0; i < kContextVariables; ++i) {
+            _contextKeys[i] = _parent->fetchStringParam(keyNames[i]);
+            _contextValues[i] = _parent->fetchStringParam(valueNames[i]);
+            assert(_contextKeys[i] && _contextValues[i]);
+        }
     }
 #endif
     // setup the GUI
@@ -488,7 +478,7 @@ GenericOCIO::loadConfig()
         return;
     }
     AutoSetAndRestoreThreadLocale locale;
-    // the new config is built into config, then swapped in under the lock: renders keep using the copy of the old one
+    // the new config is built into config, then exchanged under the lock: renders keep using the copy of the old one
     // that they took (getConfig()), and the old one is released without the lock, here or by the last render using it
     OCIO::ConstConfigRcPtr config;
     try {
@@ -510,20 +500,16 @@ GenericOCIO::loadConfig()
         }
 #endif
     }
-    {
-        AutoMutex guard(_configMutex);
-        _config.swap(config);
-    }
-    config.reset(); // (the old one)
+    (void)_config.exchange(std::move(config)); // (the old one is released here)
 #ifdef OFX_OCIO_CHOICE
-    if (_config) {
+    if (mainConfig()) {
         if (gHostIsNatron) {
             // the choice menu can only be modified in Natron
             // Natron supports changing the entries in a choiceparam
             // Nuke (at least up to 8.0v3) does not
             for (int i = 0; i < 2; ++i) {
                 if (_sides[i].choice) {
-                    buildChoiceMenu(_config, _sides[i].choice, _sides[i].choice->getIsCascading());
+                    buildChoiceMenu(mainConfig(), _sides[i].choice, _sides[i].choice->getIsCascading());
                 }
             }
             _choiceFileName = _ocioConfigFileName;
@@ -560,56 +546,20 @@ GenericOCIO::getLocalContext(const OCIO::ConstConfigRcPtr& config,
     OCIO::ConstContextRcPtr context = config->getCurrentContext();
     OCIO::ContextRcPtr mutableContext;
 
-    if (_contextKey1) {
-        string contextKey1;
-        _contextKey1->getValueAtTime(time, contextKey1);
-        if (!contextKey1.empty()) {
-            string contextValue1;
-            _contextValue1->getValueAtTime(time, contextValue1);
-
-            if (!mutableContext) {
-                mutableContext = context->createEditableCopy();
-            }
-            mutableContext->setStringVar(contextKey1.c_str(), contextValue1.c_str());
+    for (int i = 0; i < kContextVariables; ++i) {
+        if (!_contextKeys[i]) {
+            continue;
         }
-    }
-    if (_contextKey2) {
-        string contextKey2;
-        _contextKey2->getValueAtTime(time, contextKey2);
-        if (!contextKey2.empty()) {
-            string contextValue2;
-            _contextValue2->getValueAtTime(time, contextValue2);
+        string contextKey;
+        _contextKeys[i]->getValueAtTime(time, contextKey);
+        if (!contextKey.empty()) {
+            string contextValue;
+            _contextValues[i]->getValueAtTime(time, contextValue);
 
             if (!mutableContext) {
                 mutableContext = context->createEditableCopy();
             }
-            mutableContext->setStringVar(contextKey2.c_str(), contextValue2.c_str());
-        }
-    }
-    if (_contextKey3) {
-        string contextKey3;
-        _contextKey3->getValueAtTime(time, contextKey3);
-        if (!contextKey3.empty()) {
-            string contextValue3;
-            _contextValue3->getValueAtTime(time, contextValue3);
-
-            if (!mutableContext) {
-                mutableContext = context->createEditableCopy();
-            }
-            mutableContext->setStringVar(contextKey3.c_str(), contextValue3.c_str());
-        }
-    }
-    if (_contextKey4) {
-        string contextKey4;
-        _contextKey4->getValueAtTime(time, contextKey4);
-        if (!contextKey4.empty()) {
-            string contextValue4;
-            _contextValue4->getValueAtTime(time, contextValue4);
-
-            if (!mutableContext) {
-                mutableContext = context->createEditableCopy();
-            }
-            mutableContext->setStringVar(contextKey4.c_str(), contextValue4.c_str());
+            mutableContext->setStringVar(contextKey.c_str(), contextValue.c_str());
         }
     }
 
@@ -631,10 +581,7 @@ GenericOCIO::isIdentity(double time) const
     if (!config) {
         string filename;
         _ocioConfigFile->getValue(filename);
-        _parent->setPersistentMessage(Message::eMessageError, "", "Invalid OCIO config. file \"" + filename + "\"");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return false;
+        persistentErrorAndThrow(*_parent, "Invalid OCIO config. file \"" + filename + "\"");
     }
     string inputSpace;
     string outputSpace;
@@ -643,16 +590,11 @@ GenericOCIO::isIdentity(double time) const
         return true;
     }
     try {
-        // maybe the names are not the same, but it's still a no-op (e.g. "scene_linear" and "linear")
-        OCIO::ConstContextRcPtr context = getLocalContext(config, time);
-        OCIO::ConstProcessorRcPtr proc = config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str());
-
-        return proc->isNoOp();
+        // maybe the names are not the same, but it's still a no-op (e.g. "scene_linear" and "linear"); the processor
+        // is cached: apply() then uses the same one
+        return processorFor(config, time, inputSpace, outputSpace)->isNoOp();
     } catch (const std::exception& e) {
-        _parent->setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return false;
+        persistentErrorAndThrow(*_parent, e.what());
     }
 #else
 
@@ -680,8 +622,8 @@ GenericOCIO::resetExpressionCache()
 {
 #if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
     for (int i = 0; i < 2; ++i) {
-        _sides[i].strExpression = -1;
-        _sides[i].choiceExpression = -1;
+        _sides[i].strExpression.reset();
+        _sides[i].choiceExpression.reset();
     }
 #endif
 }
@@ -699,6 +641,24 @@ containsTime(const std::vector<double>& times,
              double t)
 {
     return std::find(times.begin(), times.end(), t) != times.end();
+}
+
+// Natron's OFX key list only reports the first of the keys less than this apart (see above): the others are hidden
+// from GenericOCIO
+constexpr double kNatronKeyTimeEpsilon = 1e-6;
+
+// true if t is less than kNatronKeyTimeEpsilon from one of times
+bool
+nearAny(const std::vector<double>& times,
+        double t)
+{
+    for (double u : times) {
+        if (std::fabs(u - t) < kNatronKeyTimeEpsilon) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 template <typename ParamT>
@@ -823,23 +783,24 @@ getStringKeys(StringParam* str)
     return keys;
 }
 
-void
+ColorspaceAnimation
 getStringAnimation(StringParam* str,
-                   double time,
-                   ColorspaceAnimation& a)
+                   double time)
 {
+    ColorspaceAnimation a;
     str->getValueAtTime(time, a.value);
     a.keys = getStringKeys(str);
+
+    return a;
 }
 
 // the colorspaces of the choice's keys and value (those of the menu entries; a key without a menu entry is skipped)
-void
+ColorspaceAnimation
 getChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
                    ChoiceParam* choice,
-                   double time,
-                   ColorspaceAnimation& a)
+                   double time)
 {
-    a.keys.clear();
+    ColorspaceAnimation a;
     int index;
     choice->getValueAtTime(time, index);
     a.value = colorspaceOfIndex(config, index);
@@ -851,6 +812,8 @@ getChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
             a.keys.push_back(std::make_pair(times[i], v));
         }
     }
+
+    return a;
 }
 
 // true if two colorspaces are the same, or (if byMenu) have the same menu entry (e.g. the role "scene_linear" and its
@@ -872,9 +835,69 @@ sameColorspace(const OCIO::ConstConfigRcPtr& config,
     return (index >= 0) && (index == colorspaceIndex(config, b));
 }
 
+// The key time of an element of getKeyTimes() or getStringKeys()
+double
+keyTime(double t)
+{
+    return t;
+}
+
+double
+keyTime(const std::pair<double, string>& key)
+{
+    return key.first;
+}
+
+// the most passes of deleteKeysUntilStable()
+constexpr int kMaxRevealPasses = 100;
+
+// In Natron, deleting a key reveals the next key if it was less than kNatronKeyTimeEpsilon after it (it was hidden
+// from GenericOCIO), which may have to be deleted too. Delete the keys of p (keysOf(p), from the last one) for which
+// shouldDelete(key) is true, then again for the keys that are then reported, until none is deleted (at most
+// kMaxRevealPasses passes). Returns the keys that were read last. shouldDelete is called again for the same keys on
+// each pass: it may record the keys that it keeps (e.g. in applyStringKeys()), if recording a key twice is harmless.
+template <typename ParamT, typename Key, typename Pred>
+std::vector<Key>
+deleteKeysUntilStable(ParamT* p,
+                      std::vector<Key> (*keysOf)(ParamT*),
+                      Pred shouldDelete)
+{
+    std::vector<Key> keys;
+    for (int pass = 0; pass < kMaxRevealPasses; ++pass) {
+        keys = keysOf(p);
+        bool deleted = false;
+        for (size_t i = keys.size(); i > 0; --i) {
+            if (shouldDelete(keys[i - 1])) {
+                p->deleteKeyAtTime(keyTime(keys[i - 1]));
+                deleted = true;
+            }
+        }
+        if (!deleted) {
+            break;
+        }
+    }
+
+    return keys;
+}
+
+// the options of applyStringKeys() (a bitmask)
+enum class StringKeys : unsigned {
+    none = 0,
+    deleteOthers = 1, //< delete the param's keys at other times
+    fromMenu = 2, //< the keys come from the menu
+    exactTimes = 4, //< don't move a key to a nearby key of the param
+};
+
+} // namespace
+
+template <>
+struct IsFlagEnum<StringKeys> : std::true_type {}; // (in the namespace of IsFlagEnum)
+
+namespace {
+
 // Give the string param the keys of target (time, colorspace), or the colorspace value if target has no keys (it then
-// has no keys). If deleteOthers is set, its keys at other times are deleted, except, if fromMenu is set (target comes
-// from the menu), those whose colorspace has no menu entry (and thus no key in the menu); fromMenu also compares the
+// has no keys). With deleteOthers, its keys at other times are deleted, except, with fromMenu (target comes from the
+// menu), those whose colorspace has no menu entry (and thus no key in the menu); fromMenu also compares the
 // colorspaces by menu entry. The keys are deleted first, then set in time order: a key that is not in the param or
 // whose colorspace differs, and every key after the first key that is added or deleted, with the string it had (read
 // before any change; a key whose new colorspace is the same keeps its name, e.g. "x1" is not replaced by its role
@@ -889,10 +912,10 @@ void
 applyStringKeys(const OCIO::ConstConfigRcPtr& config,
                 StringParam* str,
                 const ColorspaceAnimation& target,
-                bool deleteOthers,
-                bool fromMenu,
-                bool nearest = true)
+                StringKeys options)
 {
+    const bool deleteOthers = has(options, StringKeys::deleteOthers);
+    const bool fromMenu = has(options, StringKeys::fromMenu);
     ColorspaceAnimation old;
     old.keys = getStringKeys(str);
     if (target.keys.empty()) {
@@ -913,10 +936,10 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
     for (size_t i = 0; i < old.keys.size(); ++i) {
         keys[old.keys[i].first] = old.keys[i].second;
     }
-    // The time of the param's key that each key of target sets: the key at the same time, else, if nearest is set and
-    // deleteOthers is not, the nearest key less than 1e-6 away that no other key of target sets (a new key there would
+    // The time of the param's key that each key of target sets: the key at the same time, else, without exactTimes and
+    // deleteOthers, the nearest key less than 1e-6 away that no other key of target sets (a new key there would
     // be hidden from GenericOCIO: Natron's OFX key list only reports the first of the keys less than 1e-6 apart), else
-    // its own time. If deleteOthers is set (target is the menu, whose reported keys are at least 1e-6 apart), the
+    // its own time. With deleteOthers (target is the menu, whose reported keys are at least 1e-6 apart), the
     // param's other keys are deleted, including those less than 1e-6 from a key of target that have no menu entry;
     // a key that is then reported (it was less than 1e-6 after a deleted one, hidden from GenericOCIO and from the
     // menu) is kept, unless it is less than 1e-6 from a key of target, and the menu gets it.
@@ -933,27 +956,23 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
             }
         }
     }
-    for (size_t j = 0; nearest && !deleteOthers && (j < target.keys.size()); ++j) {
-        int nearest = -1;
+    for (size_t j = 0; !has(options, StringKeys::exactTimes) && !deleteOthers && (j < target.keys.size()); ++j) {
+        int nearestIndex = -1;
         for (size_t i = 0; !matched[j] && (i < old.keys.size()); ++i) {
             const double d = std::fabs(old.keys[i].first - times[j]);
-            if (!oldUsed[i] && (d < 1e-6) && ((nearest < 0) || (d < std::fabs(old.keys[nearest].first - times[j])))) {
-                nearest = (int)i;
+            if (!oldUsed[i] && (d < kNatronKeyTimeEpsilon) && ((nearestIndex < 0) || (d < std::fabs(old.keys[nearestIndex].first - times[j])))) {
+                nearestIndex = (int)i;
             }
         }
-        if (nearest >= 0) {
-            oldUsed[nearest] = true;
-            times[j] = old.keys[nearest].first;
+        if (nearestIndex >= 0) {
+            oldUsed[nearestIndex] = true;
+            times[j] = old.keys[nearestIndex].first;
         }
     }
     if (deleteOthers) {
         for (size_t i = old.keys.size(); i > 0; --i) {
             const double t = old.keys[i - 1].first;
-            bool nearTarget = false;
-            for (size_t j = 0; j < times.size(); ++j) {
-                nearTarget = nearTarget || (std::fabs(times[j] - t) < 1e-6);
-            }
-            if (oldUsed[i - 1] || (fromMenu && !nearTarget && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
+            if (oldUsed[i - 1] || (fromMenu && !nearAny(times, t) && (colorspaceIndex(config, old.keys[i - 1].second) < 0))) {
                 continue;
             }
             str->deleteKeyAtTime(t);
@@ -962,30 +981,20 @@ applyStringKeys(const OCIO::ConstConfigRcPtr& config,
         }
         // (a key less than 1e-6 after a deleted one is then reported: keep it, unless it is less than 1e-6 from a key of
         // target, and delete it then, which may report another one)
-        for (int pass = 0; pass < 100; ++pass) {
-            const std::vector<std::pair<double, string>> now = getStringKeys(str);
-            bool deleted = false;
-            for (size_t i = now.size(); i > 0; --i) {
-                const double t = now[i - 1].first;
-                if ((keys.find(t) != keys.end()) || containsTime(times, t)) {
-                    continue;
-                }
-                bool nearTarget = false;
-                for (size_t j = 0; j < times.size(); ++j) {
-                    nearTarget = nearTarget || (std::fabs(times[j] - t) < 1e-6);
-                }
-                if (!nearTarget) {
-                    keys[t] = now[i - 1].second;
-                    continue;
-                }
-                str->deleteKeyAtTime(t);
-                firstChange = std::min(firstChange, t);
-                deleted = true;
+        deleteKeysUntilStable(str, &getStringKeys, [&](const std::pair<double, string>& key) {
+            const double t = key.first;
+            if ((keys.find(t) != keys.end()) || containsTime(times, t)) {
+                return false;
             }
-            if (!deleted) {
-                break;
+            if (!nearAny(times, t)) {
+                keys[t] = key.second;
+
+                return false;
             }
-        }
+            firstChange = std::min(firstChange, t);
+
+            return true;
+        });
     }
     std::map<double, string> before = keys;
     for (size_t j = 0; j < target.keys.size(); ++j) {
@@ -1026,27 +1035,16 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
         if (!times.empty()) {
             // (a key less than 1e-6 after a deleted one is then reported: delete it too, until the menu has no key at
             // other times)
-            std::vector<double> oldTimes;
-            for (int pass = 0; pass < 100; ++pass) {
-                oldTimes = getKeyTimes(choice);
-                bool deleted = false;
-                for (size_t i = oldTimes.size(); i > 0; --i) {
-                    if (std::find(times.begin(), times.end(), oldTimes[i - 1]) == times.end()) {
-                        choice->deleteKeyAtTime(oldTimes[i - 1]);
-                        deleted = true;
-                    }
-                }
-                if (!deleted) {
-                    break;
-                }
-            }
+            const std::vector<double> oldTimes = deleteKeysUntilStable(choice, &getKeyTimes<ChoiceParam>, [&](double t) {
+                return !containsTime(times, t);
+            });
             for (size_t i = 0; i < a.keys.size(); ++i) {
                 const double t = a.keys[i].first;
                 const int index = colorspaceIndex(config, a.keys[i].second);
                 if (index < 0) {
                     continue;
                 }
-                if (std::find(oldTimes.begin(), oldTimes.end(), t) != oldTimes.end()) {
+                if (containsTime(oldTimes, t)) {
                     int old;
                     choice->getValueAtTime(t, old);
                     if (old == index) {
@@ -1072,7 +1070,97 @@ setChoiceAnimation(const OCIO::ConstConfigRcPtr& config,
         choice->setValue(index);
     }
 }
+
+// the times of the keys of a and b, sorted, each once
+std::vector<double>
+mergedKeyTimes(const ColorspaceAnimation& a,
+               const ColorspaceAnimation& b)
+{
+    std::vector<double> times;
+    for (size_t i = 0; i < a.keys.size(); ++i) {
+        times.push_back(a.keys[i].first);
+    }
+    for (size_t i = 0; i < b.keys.size(); ++i) {
+        if (!containsTime(times, b.keys[i].first)) {
+            times.push_back(b.keys[i].first);
+        }
+    }
+    std::sort(times.begin(), times.end());
+
+    return times;
+}
+
+// the keys of the swap that moveNatronNearKeys() moves or drops
+struct NatronNearKeys {
+    std::vector<std::pair<double, double>> movedFrom; // (new time, original time) of the swap's keys that are moved
+    std::vector<double> owned[2]; // the keys of each side (input, output) that are moved or dropped
+};
+
+// For Swap Colorspaces in Natron, times are the times of the keys of both sides (input and output), sorted.
+// A key that a side has less than 1e-6 after a key of the other side would be hidden from GenericOCIO on the other
+// side (its OFX key list only reports the first of the keys less than 1e-6 apart). Natron reads string params at
+// frames (floor(time + 0.5)), so that the value of such a key is read from the next frame on (ceil(time)): it is set
+// there instead, on both sides, or nowhere if another key is at or before that frame (no frame reads it), and the
+// side's own key is deleted (Natron's undo doesn't restore it). Likewise for a key at a frame less than 1e-6 after
+// another one: the other one is only read before the first key, it is then set at its frame (floor(time)), else
+// nowhere. times gets the new times.
+NatronNearKeys
+moveNatronNearKeys(StringParam* input,
+                   StringParam* output,
+                   std::vector<double>& times)
+{
+    NatronNearKeys result;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 1; i < times.size(); ++i) {
+            if (!(times[i] - times[i - 1] < kNatronKeyTimeEpsilon)) {
+                continue;
+            }
+            size_t moved = i;
+            double newTime = std::ceil(times[i]);
+            bool drop = (i + 1 < times.size()) && (times[i + 1] <= newTime);
+            if (newTime == times[i]) {
+                // (times[i] is at a frame: times[i - 1] is only read before the first key)
+                moved = i - 1;
+                newTime = std::floor(times[i - 1]);
+                drop = (i - 1 > 0);
+            }
+            for (int side = 0; side < 2; ++side) {
+                if (containsTime(getKeyTimes(side ? output : input), times[moved])) {
+                    result.owned[side].push_back(times[moved]);
+                }
+            }
+            if (drop) {
+                times.erase(times.begin() + moved);
+            } else {
+                // (read the values at the original time, see stringAtKeyTime())
+                result.movedFrom.push_back(std::make_pair(newTime, times[moved]));
+                times[moved] = newTime;
+            }
+            changed = true;
+
+            break;
+        }
+    }
+
+    return result;
+}
 } // namespace
+
+bool
+GenericOCIO::isUserInputColorspaceEdit(const InstanceChangedArgs& args,
+                                       const string& paramName) const
+{
+    return ((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit) && !isSettingColorspaces();
+}
+
+bool
+GenericOCIO::isUserOutputColorspaceEdit(const InstanceChangedArgs& args,
+                                        const string& paramName) const
+{
+    return ((paramName == kOCIOParamOutputSpace) || (paramName == kOCIOParamOutputSpaceChoice)) && (args.reason == eChangeUserEdit) && !isSettingColorspaces();
+}
 #endif // ifdef OFX_IO_USING_OCIO
 
 #if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
@@ -1099,32 +1187,34 @@ GenericOCIO::sideOfParam(const string& paramName,
     return NULL;
 }
 
-bool
-GenericOCIO::strHasExpression(Side& side)
+// hasExpressionKeys(p), cached in cache in an instance changed action (inInstanceChanged)
+template <typename ParamT>
+static bool
+cachedExpression(bool inInstanceChanged,
+                 std::optional<bool>& cache,
+                 ParamT* p)
 {
-    if ((_instanceChangedDepth > 0) && (side.strExpression >= 0)) {
-        return side.strExpression != 0;
+    if (inInstanceChanged && cache) {
+        return *cache;
     }
-    const bool e = hasExpressionKeys(side.str);
-    if (_instanceChangedDepth > 0) {
-        side.strExpression = e;
+    const bool e = hasExpressionKeys(p);
+    if (inInstanceChanged) {
+        cache = e;
     }
 
     return e;
 }
 
 bool
+GenericOCIO::strHasExpression(Side& side)
+{
+    return cachedExpression(_instanceChangedDepth > 0, side.strExpression, side.str);
+}
+
+bool
 GenericOCIO::choiceHasExpression(Side& side)
 {
-    if ((_instanceChangedDepth > 0) && (side.choiceExpression >= 0)) {
-        return side.choiceExpression != 0;
-    }
-    const bool e = hasExpressionKeys(side.choice);
-    if (_instanceChangedDepth > 0) {
-        side.choiceExpression = e;
-    }
-
-    return e;
+    return cachedExpression(_instanceChangedDepth > 0, side.choiceExpression, side.choice);
 }
 
 // In a host that animates strings and choices (Natron), the menus have the same keys as the string params, with the
@@ -1137,7 +1227,7 @@ GenericOCIO::choiceMirrorsString(Side& side)
 {
     const ImageEffectHostDescription* host = getImageEffectHostDescription();
 
-    return _config && _choiceIsOk && host && host->supportsStringAnimation && host->supportsChoiceAnimation && !strHasExpression(side) && !choiceHasExpression(side);
+    return mainConfig() && _choiceIsOk && host && host->supportsStringAnimation && host->supportsChoiceAnimation && !strHasExpression(side) && !choiceHasExpression(side);
 }
 
 // Give the menus the keys of the string params, and set _choiceAnimSynced. Only in an instance changed action (see
@@ -1147,16 +1237,29 @@ GenericOCIO::syncChoicesFromStrings()
 {
     assert(_instanceChangedDepth > 0);
     SettingColorspaces setting(this);
-    ColorspaceAnimation a;
     for (int i = 0; i < 2; ++i) {
         Side& side = _sides[i];
         if (side.str && choiceMirrorsString(side)) {
             // (without keys, the value at any time is the param's value)
-            getStringAnimation(side.str, 0., a);
-            setChoiceAnimation(_config, side.choice, a, true);
+            setChoiceAnimation(mainConfig(), side.choice, getStringAnimation(side.str, 0.), true);
         }
     }
     _choiceAnimSynced = true;
+}
+
+// Show the menu of a colorspace and hide its string param, or (if !menu) the other way round
+static void
+showColorspaceMenu(StringParam* str,
+                   ChoiceParam* choice,
+                   bool menu)
+{
+#ifdef OFX_OCIO_NOSECRET
+    str->setEnabled(!menu);
+    choice->setEnabled(menu);
+#else
+    str->setIsSecretAndDisabled(menu);
+    choice->setIsSecretAndDisabled(!menu);
+#endif
 }
 
 // Show the menu (and hide the string param) if the string's colorspace at time is in the menu, and set the menu: in an
@@ -1171,30 +1274,22 @@ GenericOCIO::colorspaceCheck(Side& side,
 {
     StringParam* str = side.str;
     ChoiceParam* choice = side.choice;
-    if (!_config) {
+    if (!mainConfig()) {
         return;
     }
     if (!_choiceIsOk) {
         // choice menu is dirty, only use the text entry
-#ifdef OFX_OCIO_NOSECRET
-        str->setEnabled(true);
-        choice->setEnabled(false);
-#else
-        str->setIsSecretAndDisabled(false);
-        choice->setIsSecretAndDisabled(true);
-#endif
+        showColorspaceMenu(str, choice, false);
 
         return;
     }
     string name;
     str->getValueAtTime(time, name);
-    const int index = colorspaceIndex(_config, name);
+    const int index = colorspaceIndex(mainConfig(), name);
     const bool inInstanceChanged = (_instanceChangedDepth > 0);
     if (inInstanceChanged && _choiceAnimSynced && choiceMirrorsString(side)) {
         SettingColorspaces setting(this);
-        ColorspaceAnimation a;
-        getStringAnimation(str, time, a);
-        setChoiceAnimation(_config, choice, a, true);
+        setChoiceAnimation(mainConfig(), choice, getStringAnimation(str, time), true);
     } else if (index >= 0) {
         int indexOld;
         choice->getValueAtTime(time, indexOld);
@@ -1213,24 +1308,8 @@ GenericOCIO::colorspaceCheck(Side& side,
             }
         }
     }
-    if (index >= 0) {
-#ifdef OFX_OCIO_NOSECRET
-        str->setEnabled(false);
-        choice->setEnabled(true);
-#else
-        str->setIsSecretAndDisabled(true);
-        choice->setIsSecretAndDisabled(false);
-#endif
-    } else {
-        // the colorspace name is not valid
-#ifdef OFX_OCIO_NOSECRET
-        str->setEnabled(true);
-        choice->setEnabled(false);
-#else
-        str->setIsSecretAndDisabled(false);
-        choice->setIsSecretAndDisabled(true);
-#endif
-    }
+    // (the string param if the colorspace name is not valid)
+    showColorspaceMenu(str, choice, index >= 0);
 }
 #endif // defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
 
@@ -1279,7 +1358,6 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     if ((renderWindow.y2 <= renderWindow.y1) || (renderWindow.x2 <= renderWindow.x1)) {
         return;
     }
-#ifdef OFX_IO_USING_OCIO
     if (!_proc) {
         throw std::logic_error("OCIO configuration not loaded");
     }
@@ -1305,29 +1383,38 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     float* pix = (float*)(((char*)_dstPixelData) + pixelDataOffset); // (char*)dstImg->getPixelAddress(renderWindow.x1, renderWindow.y1);
     try {
         AutoSetAndRestoreThreadLocale locale;
-        if (_proc) {
-            OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels,
-                                      OCIO::BIT_DEPTH_F32, // For now, only float
-                                      sizeof(float), pixelBytes, _dstRowBytes);
-            OCIO::ConstCPUProcessorRcPtr cpuproc;
-            {
-                OCIOOptimizedProcessorLock lock;
-                cpuproc = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32, OCIO::OPTIMIZATION_DEFAULT);
-            }
-            cpuproc->apply(img);
+        OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels,
+                                  OCIO::BIT_DEPTH_F32, // For now, only float
+                                  sizeof(float), pixelBytes, _dstRowBytes);
+        OCIO::ConstCPUProcessorRcPtr cpuproc;
+        {
+            OCIOOptimizedProcessorLock lock;
+            cpuproc = _proc->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32, OCIO::OPTIMIZATION_DEFAULT);
         }
+        cpuproc->apply(img);
     } catch (OCIO::Exception& e) {
         _instance->setPersistentMessage(Message::eMessageError, "", string("OpenColorIO error: ") + e.what());
         throw std::runtime_error(string("OpenColorIO error: ") + e.what());
     }
-#endif
 }
 
 #endif // OFX_IO_USING_OCIO
 
 #ifdef OFX_IO_USING_OCIO
 OCIO::ConstProcessorRcPtr
-GenericOCIO::getOrCreateProcessor(double time)
+GenericOCIO::processorFor(const OCIO::ConstConfigRcPtr& config,
+                          double time,
+                          const string& inputSpace,
+                          const string& outputSpace) const
+{
+    const OCIO::ConstContextRcPtr context = getLocalContext(config, time);
+    const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, outputSpace };
+
+    return _procCache.get(key, [&] { return config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str()); });
+}
+
+OCIO::ConstProcessorRcPtr
+GenericOCIO::getOrCreateProcessor(double time) const
 {
     // one copy of the config for the whole call: the main thread may load another one meanwhile (#275)
     const OCIO::ConstConfigRcPtr config = getConfig();
@@ -1337,10 +1424,8 @@ GenericOCIO::getOrCreateProcessor(double time)
     string inputSpace;
     string outputSpace;
     getProcessingColorspacesAtTime(time, inputSpace, outputSpace);
-    const OCIO::ConstContextRcPtr context = getLocalContext(config, time);
-    const ProcKey key { OCIOConfigContextKey(config, context), inputSpace, outputSpace };
 
-    return _procCache.get(key, [&] { return config->getProcessor(context, inputSpace.c_str(), outputSpace.c_str()); });
+    return processorFor(config, time, inputSpace, outputSpace);
 }
 
 #endif // OFX_IO_USING_OCIO
@@ -1407,7 +1492,7 @@ setColorspaceAtTime(StringParam* str,
     if (numKeys(str) > 0) {
         ColorspaceAnimation a;
         a.keys.push_back(std::make_pair(time, colorspace));
-        applyStringKeys(OCIO::ConstConfigRcPtr(), str, a, false, false);
+        applyStringKeys(OCIO::ConstConfigRcPtr(), str, a, StringKeys::none);
     } else {
         str->setValue(colorspace);
     }
@@ -1443,7 +1528,7 @@ GenericOCIO::changedChoice(Side& side,
     ChoiceParam* choice = side.choice;
     int index;
     choice->getValueAtTime(time, index);
-    const string colorspace = colorspaceOfIndex(_config, index);
+    const string colorspace = colorspaceOfIndex(mainConfig(), index);
     if (colorspace.empty() || !_choiceIsOk) {
         return;
     }
@@ -1453,13 +1538,12 @@ GenericOCIO::changedChoice(Side& side,
         // the string param's value is that of its expression: setting it would only add keys under the expression
         // (colorspaceCheck() then gives the menu the expression's value at that time)
     } else if (mirror && !_choiceAnimSynced) {
-        ColorspaceAnimation a;
-        getChoiceAnimation(_config, choice, time, a);
+        const ColorspaceAnimation a = getChoiceAnimation(mainConfig(), choice, time);
         ColorspaceAnimation target;
         if (a.keys.empty()) {
             string old;
             str->getValueAtTime(time, old);
-            if ((index != side.initialIndex) && (colorspaceIndex(_config, old) != index)) {
+            if ((index != side.initialIndex) && (colorspaceIndex(mainConfig(), old) != index)) {
                 if (numKeys(str) > 0) {
                     target.keys.push_back(std::make_pair(time, colorspace));
                 } else {
@@ -1471,7 +1555,7 @@ GenericOCIO::changedChoice(Side& side,
         }
         for (size_t i = 0; i < a.keys.size(); ++i) {
             const double t = a.keys[i].first;
-            if (colorspaceIndex(_config, a.keys[i].second) == side.initialIndex) {
+            if (colorspaceIndex(mainConfig(), a.keys[i].second) == side.initialIndex) {
                 // the colorspace that the menu should have shown at that time
                 target.keys.push_back(std::make_pair(t, stringAtKeyTime(str, t)));
             } else {
@@ -1481,18 +1565,16 @@ GenericOCIO::changedChoice(Side& side,
         if (target.keys.empty() && (numKeys(str) > 0)) {
             // (nothing changed)
         } else {
-            applyStringKeys(_config, str, target, false, true);
+            applyStringKeys(mainConfig(), str, target, StringKeys::fromMenu);
         }
     } else if (mirror) {
-        ColorspaceAnimation a;
-        getChoiceAnimation(_config, choice, time, a);
-        applyStringKeys(_config, str, a, true, true);
+        applyStringKeys(mainConfig(), str, getChoiceAnimation(mainConfig(), choice, time), StringKeys::deleteOthers | StringKeys::fromMenu);
     } else {
         string old;
         str->getValueAtTime(time, old);
         // (the colorspaces are compared by menu entry, to avoid an infinite loop on bad hosts, for examples those
         // which don't set args.reason correctly)
-        if (colorspaceIndex(_config, old) != index) {
+        if (colorspaceIndex(mainConfig(), old) != index) {
             setColorspaceAtTime(str, time, colorspace);
         }
     }
@@ -1514,15 +1596,13 @@ canFixColorspaceAtTime(StringParam* str,
     return (numKeys(str) == 0) || (str->getKeyIndex(time, eKeySearchNear) >= 0);
 }
 
-// Fix a colorspace string param that changed at time (if canFixColorspaceAtTime()): if canonicalize is set, give it
-// the canonical name of its colorspace; if fallback is set and its colorspace is not in the config, give it the
-// default colorspace (or the first one), with a warning if warn is set.
+// Fix a colorspace string param that changed at time (if canFixColorspaceAtTime()): with canonicalize, give it the
+// canonical name of its colorspace; with fallback, if its colorspace is not in the config, give it the default
+// colorspace (or the first one), with a warning with warn.
 void
 GenericOCIO::fixColorspaceAtTime(Side& side,
                                  double time,
-                                 bool canonicalize,
-                                 bool fallback,
-                                 bool warn)
+                                 FixColorspace what)
 {
     StringParam* str = side.str;
     if (!canFixColorspaceAtTime(str, time) || strHasExpression(side)) {
@@ -1531,23 +1611,24 @@ GenericOCIO::fixColorspaceAtTime(Side& side,
     }
     string colorspace;
     str->getValueAtTime(time, colorspace);
-    if (canonicalize) {
-        const string canonical = canonicalizeColorSpace(_config, colorspace);
+    if (has(what, FixColorspace::canonicalize)) {
+        const string canonical = canonicalizeColorSpace(mainConfig(), colorspace);
         if (canonical != colorspace) {
             setColorspaceAtTime(str, time, canonical);
             colorspace = canonical;
         }
     }
-    if (!fallback || !_config || (_config->getIndexForColorSpace(colorspace.c_str()) >= 0)) {
+    const OCIO::ConstConfigRcPtr config = mainConfig();
+    if (!has(what, FixColorspace::fallback) || !config || (config->getIndexForColorSpace(colorspace.c_str()) >= 0)) {
         return;
     }
-    if (warn) {
+    if (has(what, FixColorspace::warn)) {
         _parent->sendMessage(Message::eMessageWarning, "", string("Unknown OCIO colorspace \"") + colorspace + "\"");
     }
-    OCIO::ConstColorSpaceRcPtr cs = _config->getColorSpace(OCIO::ROLE_DEFAULT);
+    OCIO::ConstColorSpaceRcPtr cs = config->getColorSpace(OCIO::ROLE_DEFAULT);
     if (!cs) {
         // no default colorspace, fallback to the first one
-        cs = _config->getColorSpace(_config->getColorSpaceNameByIndex(0));
+        cs = config->getColorSpace(config->getColorSpaceNameByIndex(0));
     }
     setColorspaceAtTime(str, time, cs ? string(cs->getName()) : string(OCIO::ROLE_DEFAULT));
 }
@@ -1583,7 +1664,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
         // if different from inputSpace and outputSpace they must be set to the canonical value after changing ocio config
         for (int i = 0; i < 2; ++i) {
             if (_sides[i].str) {
-                fixColorspaceAtTime(_sides[i], args.time, true, false, false);
+                fixColorspaceAtTime(_sides[i], args.time, FixColorspace::canonicalize);
             }
         }
 
@@ -1591,12 +1672,12 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
         // if inputspace or outputspace are not valid in the new config, reset them to "default"
         for (int i = 0; i < 2; ++i) {
             if (_sides[i].str) {
-                fixColorspaceAtTime(_sides[i], args.time, false, true, false);
+                fixColorspaceAtTime(_sides[i], args.time, FixColorspace::fallback);
             }
         }
         refreshInputAndOutputState(args.time);
 
-        if (!_config && (args.reason == eChangeUserEdit)) {
+        if (!mainConfig() && (args.reason == eChangeUserEdit)) {
             string filename;
             _ocioConfigFile->getValue(filename);
             _parent->sendMessage(Message::eMessageError, "", string("Cannot load OCIO config file \"") + filename + '"');
@@ -1607,8 +1688,8 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                      "OpenColorIO version (compiled with / running with): " OCIO_VERSION "/";
         msg += OCIO::GetVersion();
         msg += '\n';
-        if (_config) {
-            string configdesc = _config->getDescription();
+        if (const OCIO::ConstConfigRcPtr config = mainConfig()) {
+            string configdesc = config->getDescription();
             configdesc = whitespacify(trim(configdesc));
             if (configdesc.size() > 0) {
                 msg += "\nThis OCIO configuration is ";
@@ -1617,10 +1698,10 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
             }
             msg += '\n';
             if (paramName == kOCIOHelpLooksButton) {
-                msg += (_config->getNumLooks() <= 0 ? "No look available in this OCIO configuration.\n" : "Available looks in this OCIO Configuration (applied in the given colorspace):\n");
-                for (int i = 0; i < _config->getNumLooks(); ++i) {
-                    const char* lkname = _config->getLookNameByIndex(i);
-                    OCIO::ConstLookRcPtr lk = _config->getLook(lkname);
+                msg += (config->getNumLooks() <= 0 ? "No look available in this OCIO configuration.\n" : "Available looks in this OCIO Configuration (applied in the given colorspace):\n");
+                for (int i = 0; i < config->getNumLooks(); ++i) {
+                    const char* lkname = config->getLookNameByIndex(i);
+                    OCIO::ConstLookRcPtr lk = config->getLook(lkname);
                     msg += "- ";
                     msg += lkname;
                     string lkspace = lk->getProcessSpace();
@@ -1629,26 +1710,26 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                 msg += '\n';
             }
             if (paramName == kOCIOHelpDisplaysButton) {
-                if (_config->getNumDisplays() <= 0) {
+                if (config->getNumDisplays() <= 0) {
                     msg += "No display available in this OCIO configuration.\n";
                 } else {
                     msg += "Available displays and views in this OCIO Configuration:\n";
-                    string defaultdisplay = _config->getDefaultDisplay();
-                    for (int i = 0; i < _config->getNumDisplays(); ++i) {
-                        const char* display = _config->getDisplay(i);
+                    string defaultdisplay = config->getDefaultDisplay();
+                    for (int i = 0; i < config->getNumDisplays(); ++i) {
+                        const char* display = config->getDisplay(i);
                         msg += "- ";
                         msg += display;
                         if (display == defaultdisplay) {
                             msg += " (default)";
                         }
-                        int numViews = _config->getNumViews(display);
+                        int numViews = config->getNumViews(display);
                         if (numViews <= 0) {
                             msg += ", no view available.\n";
                         } else {
                             msg += ", views: ";
-                            string defaultview = _config->getDefaultView(display);
+                            string defaultview = config->getDefaultView(display);
                             for (int j = 0; j < numViews; ++j) {
-                                const char* view = _config->getView(display, j);
+                                const char* view = config->getView(display, j);
                                 msg += view;
                                 if (view == defaultview) {
                                     msg += " (default)";
@@ -1664,20 +1745,20 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
                 msg += '\n';
             }
             msg += "Available colorspaces in this OCIO Configuration:\n";
-            int defaultcs = _config->getIndexForColorSpace(OCIO::ROLE_DEFAULT);
-            int referencecs = _config->getIndexForColorSpace(OCIO::ROLE_REFERENCE);
-            int datacs = _config->getIndexForColorSpace(OCIO::ROLE_DATA);
-            int colorpickingcs = _config->getIndexForColorSpace(OCIO::ROLE_COLOR_PICKING);
-            int scenelinearcs = _config->getIndexForColorSpace(OCIO::ROLE_SCENE_LINEAR);
-            int compositinglogcs = _config->getIndexForColorSpace(OCIO::ROLE_COMPOSITING_LOG);
-            int colortimingcs = _config->getIndexForColorSpace(OCIO::ROLE_COLOR_TIMING);
-            int texturepaintcs = _config->getIndexForColorSpace(OCIO::ROLE_TEXTURE_PAINT);
-            int mattepaintcs = _config->getIndexForColorSpace(OCIO::ROLE_MATTE_PAINT);
+            int defaultcs = config->getIndexForColorSpace(OCIO::ROLE_DEFAULT);
+            int referencecs = config->getIndexForColorSpace(OCIO::ROLE_REFERENCE);
+            int datacs = config->getIndexForColorSpace(OCIO::ROLE_DATA);
+            int colorpickingcs = config->getIndexForColorSpace(OCIO::ROLE_COLOR_PICKING);
+            int scenelinearcs = config->getIndexForColorSpace(OCIO::ROLE_SCENE_LINEAR);
+            int compositinglogcs = config->getIndexForColorSpace(OCIO::ROLE_COMPOSITING_LOG);
+            int colortimingcs = config->getIndexForColorSpace(OCIO::ROLE_COLOR_TIMING);
+            int texturepaintcs = config->getIndexForColorSpace(OCIO::ROLE_TEXTURE_PAINT);
+            int mattepaintcs = config->getIndexForColorSpace(OCIO::ROLE_MATTE_PAINT);
 
-            for (int i = 0; i < _config->getNumColorSpaces(); ++i) {
-                const char* csname = _config->getColorSpaceNameByIndex(i);
+            for (int i = 0; i < config->getNumColorSpaces(); ++i) {
+                const char* csname = config->getColorSpaceNameByIndex(i);
                 ;
-                OCIO::ConstColorSpaceRcPtr cs = _config->getColorSpace(csname);
+                OCIO::ConstColorSpaceRcPtr cs = config->getColorSpace(csname);
                 msg += "- ";
                 msg += csname;
                 bool first = true;
@@ -1751,7 +1832,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
             }
         }
         _parent->sendMessage(Message::eMessageMessage, "", msg);
-    } else if (!_config) {
+    } else if (!mainConfig()) {
         // the other parameters assume there is a valid config
         return;
     }
@@ -1766,7 +1847,7 @@ GenericOCIO::changedParam(const InstanceChangedArgs& args,
             SettingColorspaces setting(this);
             if (args.reason == eChangeUserEdit) {
                 // if the colorspace is not a valid one, reset it to the default one (first, canonicalize it)
-                fixColorspaceAtTime(*side, args.time, true, true, true);
+                fixColorspaceAtTime(*side, args.time, FixColorspace::canonicalize | FixColorspace::fallback | FixColorspace::warn);
             }
             colorspaceCheck(*side, args.time);
         } else if (args.reason == eChangeUserEdit) {
@@ -1923,10 +2004,8 @@ GenericOCIO::swapColorspaces(double time)
     const ImageEffectHostDescription* host = getImageEffectHostDescription();
     const bool stringAnimates = host->supportsStringAnimation;
     // read both sides before changing any
-    ColorspaceAnimation input;
-    ColorspaceAnimation output;
-    getStringAnimation(_inputSpace, time, input);
-    getStringAnimation(_outputSpace, time, output);
+    ColorspaceAnimation input = getStringAnimation(_inputSpace, time);
+    ColorspaceAnimation output = getStringAnimation(_outputSpace, time);
 #ifdef OFX_OCIO_CHOICE
     const bool inputExpression = strHasExpression(_sides[0]);
     const bool outputExpression = strHasExpression(_sides[1]);
@@ -1935,90 +2014,38 @@ GenericOCIO::swapColorspaces(double time)
     const bool outputExpression = hasExpressionKeys(_outputSpace);
 #endif
     const bool expression = inputExpression || outputExpression;
-    std::vector<std::pair<double, double>> movedFrom; // (new time, original time) of the swap's keys that are moved
-    std::vector<double> ownedKeys[2]; // the keys of each side that are moved or dropped, see below
+    NatronNearKeys moved; // the keys that are moved or dropped, see moveNatronNearKeys()
     if (expression) {
         input.keys.clear();
         output.keys.clear();
     } else if (stringAnimates && (!input.keys.empty() || !output.keys.empty())) {
         // the colorspaces of both sides at the times of the keys of both sides
-        std::vector<double> times;
-        for (size_t i = 0; i < input.keys.size(); ++i) {
-            times.push_back(input.keys[i].first);
-        }
-        for (size_t i = 0; i < output.keys.size(); ++i) {
-            if (!containsTime(times, output.keys[i].first)) {
-                times.push_back(output.keys[i].first);
-            }
-        }
-        std::sort(times.begin(), times.end());
+        std::vector<double> times = mergedKeyTimes(input, output);
         input.keys.clear();
         output.keys.clear();
-        // In Natron, a key that a side has less than 1e-6 after a key of the other side would be hidden from GenericOCIO
-        // on the other side (its OFX key list only reports the first of the keys less than 1e-6 apart). Natron reads
-        // string params at frames (floor(time + 0.5)), so that the value of such a key is read from the next frame on
-        // (ceil(time)): it is set there instead, on both sides, or nowhere if another key is at or before that frame
-        // (no frame reads it), and the side's own key is deleted (Natron's undo doesn't restore it). Likewise for a
-        // key at a frame less than 1e-6 after another one: the other one is only read before the first key, it is then
-        // set at its frame (floor(time)), else nowhere.
-        std::vector<double> owned[2]; // (the keys of each side that are moved or dropped)
-        if (getImageEffectHostDescription()->isNatron) {
-            bool changed = true;
-            while (changed) {
-                changed = false;
-                for (size_t i = 1; i < times.size(); ++i) {
-                    if (!(times[i] - times[i - 1] < 1e-6)) {
-                        continue;
-                    }
-                    size_t moved = i;
-                    double newTime = std::ceil(times[i]);
-                    bool drop = (i + 1 < times.size()) && (times[i + 1] <= newTime);
-                    if (newTime == times[i]) {
-                        // (times[i] is at a frame: times[i - 1] is only read before the first key)
-                        moved = i - 1;
-                        newTime = std::floor(times[i - 1]);
-                        drop = (i - 1 > 0);
-                    }
-                    for (int side = 0; side < 2; ++side) {
-                        if (containsTime(getKeyTimes(side ? _outputSpace : _inputSpace), times[moved])) {
-                            owned[side].push_back(times[moved]);
-                        }
-                    }
-                    if (drop) {
-                        times.erase(times.begin() + moved);
-                    } else {
-                        // (read the values at the original time, see stringAtKeyTime())
-                        movedFrom.push_back(std::make_pair(newTime, times[moved]));
-                        times[moved] = newTime;
-                    }
-                    changed = true;
-
-                    break;
-                }
-            }
+        if (host->isNatron) {
+            moved = moveNatronNearKeys(_inputSpace, _outputSpace, times);
         }
         for (size_t i = 0; i < times.size(); ++i) {
             double readTime = times[i];
-            for (size_t m = 0; m < movedFrom.size(); ++m) {
-                if (movedFrom[m].first == times[i]) {
-                    readTime = movedFrom[m].second;
+            for (size_t m = 0; m < moved.movedFrom.size(); ++m) {
+                if (moved.movedFrom[m].first == times[i]) {
+                    readTime = moved.movedFrom[m].second;
                 }
             }
             input.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_inputSpace, readTime)));
             output.keys.push_back(std::make_pair(times[i], stringAtKeyTime(_outputSpace, readTime)));
         }
-        ownedKeys[0] = owned[0];
-        ownedKeys[1] = owned[1];
     }
 #ifdef OFX_OCIO_CHOICE
     // the choice menus are only those of the colorspaces if they were built from the current config
-    const bool hasChoice = _config && _choiceIsOk;
+    const bool hasChoice = mainConfig() && _choiceIsOk;
     const bool mirror = hasChoice && host->supportsStringAnimation && host->supportsChoiceAnimation;
     ColorspaceAnimation inputChoice;
     ColorspaceAnimation outputChoice;
     if (hasChoice && !mirror) {
-        getChoiceAnimation(_config, _sides[0].choice, time, inputChoice);
-        getChoiceAnimation(_config, _sides[1].choice, time, outputChoice);
+        inputChoice = getChoiceAnimation(mainConfig(), _sides[0].choice, time);
+        outputChoice = getChoiceAnimation(mainConfig(), _sides[1].choice, time);
         // the menus may have keys, and not the strings (which have the colorspace of the last edit of a menu): the
         // strings get the colorspace of the menu at the given time
         if (input.keys.empty() && !inputChoice.keys.empty()) {
@@ -2032,30 +2059,7 @@ GenericOCIO::swapColorspaces(double time)
     // one undoable change (hosts may also skip rendering the intermediate state, where both colorspaces are
     // equal, but OFX edit blocks are only defined for undo). The block is closed even if a setValue() throws,
     // and hosts without edit blocks get no block.
-    struct EditBlockGuard
-    {
-        ImageEffect* effect;
-        bool open;
-        EditBlockGuard(ImageEffect* e, const char* name)
-            : effect(e)
-            , open(false)
-        {
-            try {
-                effect->beginEditBlock(name);
-                open = true;
-            } catch (...) {
-            }
-        }
-        ~EditBlockGuard()
-        {
-            if (open) {
-                try {
-                    effect->endEditBlock();
-                } catch (...) {
-                }
-            }
-        }
-    } editBlock(_parent, "Swap Colorspaces");
+    ParamSet::EditBlock editBlock(*_parent, "Swap Colorspaces", ParamSet::EditBlock::eBeginNow, ParamSet::EditBlock::eHostErrorsIgnore);
     if (expression) {
         // (the value of a side with an expression is that of the expression: it is not set)
         if (!inputExpression) {
@@ -2067,36 +2071,27 @@ GenericOCIO::swapColorspaces(double time)
     } else {
         // (without string animation, the strings have no keys; the keys of both sides are at the same times, matched
         // exactly)
+        // (the swap's keys are at the same times on both sides)
+        std::vector<double> swapTimes;
+        for (size_t j = 0; j < input.keys.size(); ++j) {
+            swapTimes.push_back(input.keys[j].first);
+        }
         for (int side = 0; side < 2; ++side) {
             StringParam* str = side ? _outputSpace : _inputSpace;
-            for (size_t i = 0; i < ownedKeys[side].size(); ++i) {
-                str->deleteKeyAtTime(ownedKeys[side][i]);
+            if (moved.owned[side].empty()) {
+                continue;
+            }
+            for (size_t i = 0; i < moved.owned[side].size(); ++i) {
+                str->deleteKeyAtTime(moved.owned[side][i]);
             }
             // (a key that was hidden less than 1e-6 after a deleted one is then reported: it is deleted too if it is less
             // than 1e-6 from a key of the swap, which would hide it again)
-            for (int pass = 0; !ownedKeys[side].empty() && (pass < 100); ++pass) {
-                const std::vector<double> now = getKeyTimes(str);
-                bool deleted = false;
-                for (size_t i = 0; i < now.size(); ++i) {
-                    // (the swap's keys are at the same times on both sides; "near" is a macro of <windows.h>)
-                    bool nearKey = false;
-                    bool inSwap = false;
-                    for (size_t j = 0; j < input.keys.size(); ++j) {
-                        nearKey = nearKey || ((now[i] != input.keys[j].first) && (std::fabs(now[i] - input.keys[j].first) < 1e-6));
-                        inSwap = inSwap || (now[i] == input.keys[j].first);
-                    }
-                    if (nearKey && !inSwap) {
-                        str->deleteKeyAtTime(now[i]);
-                        deleted = true;
-                    }
-                }
-                if (!deleted) {
-                    break;
-                }
-            }
+            deleteKeysUntilStable(str, &getKeyTimes<StringParam>, [&](double t) {
+                return !containsTime(swapTimes, t) && nearAny(swapTimes, t);
+            });
         }
-        applyStringKeys(_config, _inputSpace, output, false, false, false);
-        applyStringKeys(_config, _outputSpace, input, false, false, false);
+        applyStringKeys(mainConfig(), _inputSpace, output, StringKeys::exactTimes);
+        applyStringKeys(mainConfig(), _outputSpace, input, StringKeys::exactTimes);
     }
 #ifdef OFX_OCIO_CHOICE
     if (mirror) {
@@ -2111,14 +2106,14 @@ GenericOCIO::swapColorspaces(double time)
         if (outputChoice.keys.empty()) {
             outputChoice.value = output.value;
         }
-        setChoiceAnimation(_config, _sides[0].choice, outputChoice, choiceAnimates);
-        setChoiceAnimation(_config, _sides[1].choice, inputChoice, choiceAnimates);
+        setChoiceAnimation(mainConfig(), _sides[0].choice, outputChoice, choiceAnimates);
+        setChoiceAnimation(mainConfig(), _sides[1].choice, inputChoice, choiceAnimates);
     }
 #endif
     // update the state of the choice menus at that time
     refreshInputAndOutputState(time);
 #else
-    (void)time;
+    unused(time);
 #endif
 }
 
@@ -2169,18 +2164,12 @@ GenericOCIO::purgeCaches()
     // Context::Impl::operator=), so a LUT file moved to another directory of the search path is still read from its
     // old path (unless a context variable is set: getLocalContext() then makes a new context); and the .ocio file
     // itself is not read again.
-    OCIO::ConstConfigRcPtr config = getConfig();
+    const OCIO::ConstConfigRcPtr config = getConfig();
     if (!config) {
         return;
     }
-    OCIO::ConstConfigRcPtr copy = config->createEditableCopy();
-    {
-        AutoMutex guard(_configMutex);
-        if (_config == config) { // (not if another config was loaded meanwhile)
-            _config.swap(copy);
-        }
-    }
-    copy.reset(); // (the old config, or the unused copy: released without the lock)
+    // (not if another config was loaded meanwhile)
+    _config.replaceIf(config, config->createEditableCopy());
 #endif
 }
 

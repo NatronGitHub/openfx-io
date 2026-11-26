@@ -6,6 +6,8 @@
 #include "ocio_colorspace_anim_test.cpp"
 #undef main
 
+#include <OpenImageIO/imageio.h>
+
 #include <limits>
 #include <random>
 
@@ -435,9 +437,6 @@ generate(bool noKeyAdding)
             static const int allowed[] = { oMenuDel, oStrDel, oMenuMove, oMenuDope, oRemoveAnim, oRestoreDefault, oSaveLoad,
                                            oFilename, oExprSet, oExprClear, oTime, oKey1, oModifyAtKey };
             o.type = allowed[F.R(sizeof(allowed) / sizeof(allowed[0]))];
-            if (o.type == oRestoreDefault && std::getenv("FUZZ_F_NO_RESTORE")) {
-                continue;
-            }
         }
         // weights: make swap/undo/time more frequent
         int extra = F.R(10);
@@ -706,7 +705,7 @@ checkInvariants(const Op& o,
         }
     }
     // (d) renders (ReadOIIO, reading a 0.25 image)
-    if (F.kind == "reader" && gFailWhat.empty() && std::getenv("FUZZ_EXR")) {
+    if (F.kind == "reader" && gFailWhat.empty()) {
         for (double t : { gCurrentTime, 0., 5., 10., 20. }) {
             double ts = gRoundStringTime ? std::floor(t + 0.5) : t;
             int n = scaleOf(stringAt(P(kIS), ts));
@@ -1002,9 +1001,16 @@ main(int argc,
     dir /= "ocio_anim_fuzz." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     std::filesystem::create_directory(dir, ec);
     gTmpDir = dir.generic_string();
-    if (const char* src = std::getenv("FUZZ_EXR")) {
+    // the files of the reader (a constant kInput image), whose colorspace is in their name (out_xN: xN)
+    {
+        const std::vector<float> pixels((size_t)W * H * 3, (float)kInput);
         for (const char* fn : { "out.exr", "out_x1.exr", "out_x2.exr", "out_x3.exr", "out_x4.exr" }) {
-            std::filesystem::copy_file(src, dir / fn, ec);
+            const std::string path = (dir / fn).generic_string();
+            auto out = OIIO::ImageOutput::create(path);
+            if (!out || !out->open(path, OIIO::ImageSpec(W, H, 3, OIIO::TypeDesc::FLOAT)) || !out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) || !out->close()) {
+                std::printf("FAIL: cannot write %s\n", path.c_str());
+                return 1;
+            }
         }
     }
 
@@ -1101,8 +1107,14 @@ main(int argc,
     }
     destroyInstance();
     std::filesystem::remove_all(dir, ec);
-    std::printf("%s\n", failCounts.empty() ? "FUZZ PASSED" : "FUZZ FAILED");
-    return failCounts.empty() ? 0 : 1;
+    // the render invariant of the reader must have run (e.g. the reader's files were generated)
+    const bool noRenderCheck = (F.kind == "reader") && (gRenderChecks == 0);
+    if (noRenderCheck) {
+        std::printf("FAILURE: no render check of the reader\n");
+    }
+    const bool passed = failCounts.empty() && !noRenderCheck;
+    std::printf("%s\n", passed ? "FUZZ PASSED" : "FUZZ FAILED");
+    return passed ? 0 : 1;
 }
 
 // ---- deterministic scenarios (repros), run with: ocio_anim_fuzz scenario

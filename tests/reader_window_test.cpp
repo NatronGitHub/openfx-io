@@ -91,8 +91,6 @@
 
 namespace {
 
-int gFailures = 0;
-
 // $READER_WINDOW_ONLY: run only the tests whose title contains it (e.g. "ReadPFM", "rewrite", "scale 0.5")
 bool
 selected(const std::string& title)
@@ -112,26 +110,6 @@ strprintf(const char* fmt, ...)
     va_end(a);
 
     return buf;
-}
-
-void
-check(bool cond, const char* fmt, ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-inline OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
 }
 
 // ------------------------------------------------------------------ an output image between guard pages
@@ -203,25 +181,13 @@ private:
     size_t _size = 0;
 };
 
-// The value of the pixels that the plug-in did not write, compared on its bits (never as a float)
+// The value of the pixels that the plug-in did not write (see fillUnwritten()), compared on its bits (never as a float)
 const uint32_t kUnwrittenBits = 0xc49a5a5au; // -1234.8...
-
-void
-fillUnwrittenBits(float* p,
-                  size_t n)
-{
-    for (size_t i = 0; i < n; ++i) {
-        std::memcpy(p + i, &kUnwrittenBits, sizeof(kUnwrittenBits));
-    }
-}
 
 bool
 isUnwrittenBits(const float* p)
 {
-    uint32_t bits;
-    std::memcpy(&bits, p, sizeof(bits));
-
-    return bits == kUnwrittenBits;
+    return hasBits(p, kUnwrittenBits);
 }
 
 bool
@@ -259,7 +225,7 @@ struct Reader {
         p = plugin;
         PropSet inArgs;
         pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
             std::printf("  describeInContext failed\n");
 
             return false;
@@ -273,7 +239,7 @@ struct Reader {
         }
         inst.delegate = &ctx;
         setInstanceProps(inst, 100, 100, 1, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
             std::printf("  createInstance failed\n");
 
             return false;
@@ -286,15 +252,7 @@ struct Reader {
             return false;
         }
         // the user set the filename: guessParamsFromFilename, frame range...
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        if (!ok(p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr))) {
+        if (!ok(instanceChanged(p, inst, kOfxImageEffectFileParamName))) {
             std::printf("  instanceChanged(filename) failed\n");
 
             return false;
@@ -311,7 +269,7 @@ struct Reader {
         out->connected = true;
         setupClipImage(out, 1, 1, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
         PropSet o;
-        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&o)))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&o)))) {
             std::printf("  getClipPreferences failed\n");
 
             return false;
@@ -330,7 +288,7 @@ struct Reader {
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
         if (!ok(st)) {
             return st;
         }
@@ -353,7 +311,7 @@ struct Reader {
         rowBytes = w * 4 * (int)sizeof(float);
         const size_t n = (size_t)rowBytes * h;
         data = (float*)buffer.alloc(n, atEnd);
-        fillUnwrittenBits(data, n / sizeof(float));
+        fillUnwritten(data, n / sizeof(float), kUnwrittenBits);
         OfxPropertySetHandle ip = PH(&out->image);
         pSetPointer(ip, kOfxImagePropData, 0, data);
         int b[4] = { img.x1, img.y1, img.x2, img.y2 };
@@ -377,7 +335,7 @@ struct Reader {
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&ra), kOfxImageEffectPropSequentialRenderStatus, 0, sequential ? 1 : 0);
 
-        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr);
     }
 
     const float* pixel(int x, int y) const
@@ -388,7 +346,7 @@ struct Reader {
     ~Reader()
     {
         if (created) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         }
     }
 };
@@ -1539,8 +1497,7 @@ main(int argc,
     // $READER_WINDOW_MULTIPLANE=1: a Natron-like host (dynamic choices, multiple planes), for the 2-part EXR test only
     const bool multiPlane = std::getenv("READER_WINDOW_MULTIPLANE") && !std::strcmp(std::getenv("READER_WINDOW_MULTIPLANE"), "1");
     if (multiPlane) {
-        pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
-        pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
+        setMultiPlanarHost();
     }
     std::vector<const char*> ids = { "fr.inria.openfx.ReadOIIO", "fr.inria.openfx.ReadPFM" };
 #ifdef HAVE_PNG
@@ -1555,7 +1512,7 @@ main(int argc,
             return 1;
         }
         p->setHost(&gOfxHost);
-        if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, H(descs[i]), nullptr, nullptr))) {
+        if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, EH(descs[i]), nullptr, nullptr))) {
             std::printf("FAIL: %s load/describe\n", ids[i]);
 
             return 1;

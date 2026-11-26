@@ -312,39 +312,6 @@ rawvideoFallbackMessage(const AVOutputFormat* fmt,
     return msg;
 }
 
-// The warning about a project saved with an encoder that this FFmpeg does not have, which checkCodec() replaced by
-// rawvideo (see replaceMissingCodec()), with the pixel format that rawvideo writes in the container fmt (if known).
-static string
-codecReplacedMessage(const string& oldCodec,
-                     const AVOutputFormat* fmt,
-                     AVPixelFormat target)
-{
-    const bool ayuv = (oldCodec == "ayuv");
-    const bool alpha = ayuv || (oldCodec == "v408");
-    // v308, v408 and v410: FFmpeg n8.0 libavcodec/allcodecs.c:354-359 lists them, n9.0 does not.
-    // ayuv: n8.0 libavcodec/allcodecs.c does not list it.
-    string msg = string("The ") + oldCodec + " encoder of this project is not available in this version of FFmpeg (FFmpeg "
-        + (ayuv ? "8.0 and later do not have it" : "9 removed it") + "): the codec was replaced by rawvideo, with Pref. Pixel Coding YUV444, Bit Depth "
-        + (oldCodec == "v410" ? "10" : "8") + " and Alpha " + (alpha ? "checked" : "unchecked") + ".";
-    const char* name = av_get_pix_fmt_name(target);
-    if (fmt && fmt->name && name) {
-        const char* tag = nullptr;
-        if (!strcmp(fmt->name, "mov")) {
-            tag = (target == AV_PIX_FMT_VYU444) ? "v308" : (target == AV_PIX_FMT_UYVA) ? "v408" : (target == AV_PIX_FMT_V30XLE) ? "v410" : nullptr;
-        }
-        msg += string(" In the ") + fmt->name + " container, rawvideo writes the " + name + " pixel format";
-        if (tag) {
-            msg += string(" with the ") + tag + " tag";
-            if (oldCodec == tag) {
-                msg += ", as the " + oldCodec + " encoder did";
-            }
-        }
-        msg += ".";
-    }
-
-    return msg;
-}
-
 
 #define kPluginName "WriteFFmpeg"
 #define kPluginGrouping "Image/Writers"
@@ -463,6 +430,42 @@ missingCodecReplacement(const string& codecShortName)
     }
 
     return std::nullopt;
+}
+
+// The warning about a project saved with an encoder that this FFmpeg does not have, which checkCodec() replaced by
+// rawvideo (see replaceMissingCodec()), with the pixel format that rawvideo writes in the container fmt (if known).
+static string
+codecReplacedMessage(const MissingCodecReplacement& replacement,
+                     const AVOutputFormat* fmt,
+                     AVPixelFormat target)
+{
+    const string& oldCodec = replacement.codecShortName;
+    const bool ayuv = (oldCodec == "ayuv");
+    // the Pref. params of every replacement (missingCodecReplacement())
+    assert(replacement.pixelCoding == ePrefPixelCodingYUV444);
+    assert((replacement.bitDepth == ePrefBitDepth8) || (replacement.bitDepth == ePrefBitDepth10));
+    // v308, v408 and v410: FFmpeg n8.0 libavcodec/allcodecs.c:354-359 lists them, n9.0 does not.
+    // ayuv: n8.0 libavcodec/allcodecs.c does not list it.
+    string msg = string("The ") + oldCodec + " encoder of this project is not available in this version of FFmpeg (FFmpeg "
+        + (ayuv ? "8.0 and later do not have it" : "9 removed it") + "): the codec was replaced by rawvideo, with Pref. Pixel Coding YUV444, Bit Depth "
+        + (replacement.bitDepth == ePrefBitDepth10 ? "10" : "8") + " and Alpha " + (replacement.alpha ? "checked" : "unchecked") + ".";
+    const char* name = av_get_pix_fmt_name(target);
+    if (fmt && fmt->name && name) {
+        const char* tag = nullptr;
+        if (!strcmp(fmt->name, "mov")) {
+            tag = (target == AV_PIX_FMT_VYU444) ? "v308" : (target == AV_PIX_FMT_UYVA) ? "v408" : (target == AV_PIX_FMT_V30XLE) ? "v410" : nullptr;
+        }
+        msg += string(" In the ") + fmt->name + " container, rawvideo writes the " + name + " pixel format";
+        if (tag) {
+            msg += string(" with the ") + tag + " tag";
+            if (oldCodec == tag) {
+                msg += ", as the " + oldCodec + " encoder did";
+            }
+        }
+        msg += ".";
+    }
+
+    return msg;
 }
 
 #define kParamPrefAlpha "enableAlpha" // enableAlpha rather than prefAlpha for backward compat
@@ -867,19 +870,13 @@ enum HapFormatEnum {
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-template <typename T>
-static inline void
-unused(const T&)
-{
-}
-
 // The fourccs for MJPEGA, MJPEGB, and Photo JPEG
 static const char* kJpegCodecs[] = { "jpeg", "mjpa", "mjpb" };
 static const int kNumJpegCodecs = sizeof(kJpegCodecs) / sizeof(kJpegCodecs[0]);
 
 // A bitrate in Mbit/s (a param, at least 0) in bit/s, as an int64_t (AVCodecContext::bit_rate, rc_max_rate), clamped to
 // [0, INT_MAX kbit/s] before the conversion: some encoders (e.g. libx264) take the bitrate in kbit/s as an int, and fail
-// ("Invalid argument") above. (On master, the conversion to int overflowed above 2147 Mbit/s.)
+// ("Invalid argument") above.
 static int64_t
 bitrateToInt64(double mbps)
 {
@@ -1092,6 +1089,14 @@ codecCompatible(const AVOutputFormat* ofmt,
         return false;
     }
     return (avformat_query_codec(ofmt, codec_id, FF_COMPLIANCE_NORMAL) == 1 || (fmt == "mxf" && (codec_id == AV_CODEC_ID_MPEG2VIDEO || codec_id == AV_CODEC_ID_DNXHD || codec_id == AV_CODEC_ID_DVVIDEO || codec_id == AV_CODEC_ID_H264)) || (fmt == "mpegts" && (codec_id == AV_CODEC_ID_MPEG1VIDEO || codec_id == AV_CODEC_ID_MPEG2VIDEO || codec_id == AV_CODEC_ID_MPEG4 || codec_id == AV_CODEC_ID_H264 || codec_id == AV_CODEC_ID_HEVC || codec_id == AV_CODEC_ID_CAVS || codec_id == AV_CODEC_ID_DIRAC)) || (fmt == "mpeg" && (codec_id == AV_CODEC_ID_MPEG1VIDEO || codec_id == AV_CODEC_ID_H264)));
+}
+
+// The error when the container does not support the codec (!codecCompatible(ofmt, codec->id)), uncapitalized.
+static string
+codecNotInContainerError(const AVCodec* codec,
+                         const AVOutputFormat* ofmt)
+{
+    return string("codec ") + codec->name + " is not supported in container " + ofmt->name;
 }
 
 typedef map<string, string> CodecMap;
@@ -1588,6 +1593,23 @@ optionCharPos(const string& str,
     return " at character " + std::to_string(chars);
 }
 
+// In a user option string str: the position of the last character of the escape sequence (a backslash and the next
+// character) or of the single-quoted string that starts at j, or j if neither starts there, or string::npos if the
+// single quote is unterminated (as read by av_get_token()).
+static size_t
+skipEscapeOrQuote(const string& str,
+                  size_t j)
+{
+    if (str[j] == '\\') {
+        return (j + 1 < str.size()) ? j + 1 : j;
+    }
+    if (str[j] == '\'') {
+        return str.find('\'', j + 1);
+    }
+
+    return j;
+}
+
 // Normalize a user option string (see kParamOptionsSyntaxHint) to the strict syntax of
 // av_dict_parse_string(dict, str, "=", ":", 0), whose keys and values are read by av_get_token(),
 // and check its syntax: av_dict_parse_string() gives an unexpected meaning to some strings once
@@ -1638,30 +1660,21 @@ normalizeOptionString(const string& str,
     // A double quote (outside single quotes, not escaped) is reported first: the errors that it causes later (a value
     // after a space with an '=', or a key followed by a space) would not say what is wrong (#127).
     for (size_t j = 0; j < n; ++j) {
-        if (str[j] == '\\') {
-            ++j;
-        } else if (str[j] == '\'') {
-            const size_t end = str.find('\'', j + 1);
-            if (end == string::npos) {
-                break; // reported below
-            }
-            j = end;
-        } else if (str[j] == '"') {
+        if (str[j] == '"') {
             return fail("double quote" + optionCharPos(str, j) + ": double quotes are not supported, use single quotes, e.g. x264-params='keyint=1:bframes=0'");
+        }
+        j = skipEscapeOrQuote(str, j);
+        if (j == string::npos) {
+            break; // an unterminated single quote, reported below
         }
     }
     // the token (up to the next unquoted separator) that starts at pos, for error messages
     auto tokenAt = [&](size_t pos) {
         size_t j = pos;
         while (j < n && !isOptionSeparator(str[j])) {
-            if (str[j] == '\\' && j + 1 < n) {
-                ++j;
-            } else if (str[j] == '\'') {
-                const size_t end = str.find('\'', j + 1);
-                if (end == string::npos) {
-                    return str.substr(pos);
-                }
-                j = end;
+            j = skipEscapeOrQuote(str, j);
+            if (j == string::npos) {
+                return str.substr(pos);
             }
             ++j;
         }
@@ -1670,18 +1683,13 @@ normalizeOptionString(const string& str,
     };
     // does the token that starts at pos contain an unquoted, unescaped '='?
     auto tokenHasEqual = [&](size_t pos) {
-        const string tok = tokenAt(pos);
-        for (size_t j = 0; j < tok.size(); ++j) {
-            if (tok[j] == '\\') {
-                ++j;
-            } else if (tok[j] == '\'') {
-                const size_t end = tok.find('\'', j + 1);
-                if (end == string::npos) {
-                    return false;
-                }
-                j = end;
-            } else if (tok[j] == '=') {
+        for (size_t j = pos; j < n && !isOptionSeparator(str[j]); ++j) {
+            if (str[j] == '=') {
                 return true;
+            }
+            j = skipEscapeOrQuote(str, j);
+            if (j == string::npos) {
+                return false;
             }
         }
 
@@ -1709,16 +1717,11 @@ normalizeOptionString(const string& str,
 
         return fail("missing '=' after the key \"" + key + "\"" + optionCharPos(str, keyPos) + ", found " + found + hint);
     };
-    auto missingValue = [&]() {
-        string msg = "missing value after \"" + out->substr(keyOut) + "\"" + optionCharPos(str, keyPos);
-        if (i < n && str[i] != ':') {
-            msg += ", found the pair \"" + tokenAt(i) + "\"" + optionCharPos(str, i) + " (values cannot be empty, and a value after a space cannot contain an unquoted '=')";
-        } else {
-            msg += " (values cannot be empty)";
-        }
-
-        return fail(msg);
+    // a '=' without a value, and why
+    auto missingValue = [&](const string& why) {
+        return fail("missing value after \"" + out->substr(keyOut, valueOut - keyOut) + "\"" + optionCharPos(str, keyPos) + why);
     };
+    const string kValuesCannotBeEmpty = " (values cannot be empty)";
     // copy the token character (or escape sequence, or single-quoted string) at i to *out
     auto copyTokenChar = [&]() {
         const char c = str[i];
@@ -1746,8 +1749,7 @@ normalizeOptionString(const string& str,
     };
     // an empty quoted value ("g=''"), which av_dict_parse_string() rejects with a generic message (#127)
     auto emptyValue = [&]() {
-        return fail("missing value after \"" + out->substr(keyOut, valueOut - keyOut) + "\"" + optionCharPos(str, keyPos)
-                    + " (values cannot be empty, '' is an empty value)");
+        return missingValue(" (values cannot be empty, '' is an empty value)");
     };
 
     while (i < n) {
@@ -1795,7 +1797,7 @@ normalizeOptionString(const string& str,
             break;
         case eAfterEqual:
             if (c == ':') {
-                return missingValue();
+                return missingValue(kValuesCannotBeEmpty);
             }
             if (sep) { // whitespace
                 ++i;
@@ -1803,7 +1805,8 @@ normalizeOptionString(const string& str,
                 break;
             }
             if (spaceAfterEqual && tokenHasEqual(i)) {
-                return missingValue();
+                return missingValue(", found the pair \"" + tokenAt(i) + "\"" + optionCharPos(str, i)
+                                    + " (values cannot be empty, and a value after a space cannot contain an unquoted '=')");
             }
             state = eValue;
             tokenChars = 0;
@@ -1828,13 +1831,23 @@ normalizeOptionString(const string& str,
         return missingEqual();
     }
     if (state == eAfterEqual) {
-        return missingValue();
+        return missingValue(kValuesCannotBeEmpty);
     }
     if ((state == eValue) && (tokenChars == 0)) {
         return emptyValue();
     }
 
     return true;
+}
+
+// The description of an FFmpeg error code.
+static string
+avErrorString(int errnum)
+{
+    char szError[1024] = { 0 };
+    av_strerror(errnum, szError, sizeof(szError));
+
+    return szError;
 }
 
 // Parse a user option string (see kParamOptionsSyntaxHint) into dict.
@@ -1853,9 +1866,27 @@ parseOptionString(const string& str,
     }
     int ret = av_dict_parse_string(dict, normalized.c_str(), "=", ":", 0);
     if (ret < 0) {
-        char szError[1024] = { 0 };
-        av_strerror(ret, szError, sizeof(szError));
-        *error = string("expected key=value pairs separated by colons or spaces (") + szError + ")";
+        *error = string("expected key=value pairs separated by colons or spaces (") + avErrorString(ret) + ")";
+
+        return false;
+    }
+
+    return true;
+}
+
+// Parse the user option string of param (the Codec Options or Format Options, whose label is label) into dict.
+// Returns false and sets *error to the message of a syntax error.
+static bool
+parseOptionsParam(StringParam* param,
+                  const char* label,
+                  AVDictionary** dict,
+                  string* error)
+{
+    string str;
+    param->getValue(str);
+    string syntaxError;
+    if (!parseOptionString(str, dict, &syntaxError)) {
+        *error = string("Syntax error in ") + label + " \"" + str + "\": " + syntaxError;
 
         return false;
     }
@@ -1992,6 +2023,7 @@ private:
     };
     CodecSelection selectedCodec() const;
     int selectedCodecIndex() const { return selectedCodec().index; }
+    const string& selectedCodecShortName() const;
     string unavailableCodecError() const;
     void checkCodec();
     void replaceMissingCodec(const MissingCodecReplacement& replacement, int rawvideoIndex);
@@ -1999,7 +2031,7 @@ private:
     void setCodecReplaced(const string& codecShortName);
     int freeFormat();
     void getColorInfo(AVColorPrimaries* color_primaries, AVColorTransferCharacteristic* color_trc) const;
-    const AVOutputFormat* initFormat(bool reportErrors, const string* filename = nullptr) const;
+    const AVOutputFormat* initFormat(const string* filename = nullptr) const;
     bool writesTimecodeTrack(const AVOutputFormat* fmt) const;
     bool getStartTimecode(const AVOutputFormat* fmt, string* canonical, string* error) const;
     string getSettingsErrors() const;
@@ -2012,7 +2044,7 @@ private:
                           AVPixelFormat target,
                           AVPixelFormat alphaFormat) const;
     void updatePersistentMessage();
-    bool initCodec(const AVOutputFormat* fmt, AVCodecID& outCodecId, const AVCodec*& outCodec) const;
+    const AVCodec* initCodec(const AVOutputFormat* fmt) const;
     string missingEncoderError() const;
 
     void getPixelPreferences(FFmpeg::PixelCodingEnum* pixelCoding, int* bitdepth) const;
@@ -2023,7 +2055,7 @@ private:
                          bool alpha,
                          AVPixelFormat& outRgbBufferPixelFormat,
                          AVPixelFormat& outTargetPixelFormat,
-                         bool* outAlphaDropped = nullptr) const;
+                         AVPixelFormat* outDroppedAlphaFormat = nullptr) const;
     void getPixelFormatsFromList(const AVOutputFormat* fmt,
                                  const AVCodec* videoCodec,
                                  FFmpeg::PixelCodingEnum pixelCoding,
@@ -2039,6 +2071,14 @@ private:
     static bool IsYUVFromShortName(const char* shortName, int codecProfile);
     static AVPixelFormat GetRGBPixelFormatFromBitDepth(const int bitDepth, const bool hasAlpha);
     static CodecParams GetCodecSupportedParams(const AVCodec* codec);
+    struct ActiveRateControl {
+        bool crf = false; // the CRF is set (not None)
+        CRFEnum crfValue = eCRFNone; // the CRF param, read once (when the codec has it)
+        double qscaleValue = -1.; // the Quality Scale param, read once (with qscale)
+        bool qscale = false; // without a CRF: the Quality Scale is set if it is at least 0
+        bool bitrate = false; // without a CRF or a Quality Scale: the bitrate is set
+    };
+    ActiveRateControl activeRateControl(const CodecParams& p) const;
 
     void configureAudioStream(const AVCodec* avCodec, AVStream* avStream);
     void configureVideoStream(const AVCodec* avCodec, MyAVStream* avStream);
@@ -2058,9 +2098,6 @@ private:
 
     // Returns the nmber of destination channels this will write into.
     int numberOfDestChannels() const;
-
-    bool codecIndexIsInRange(unsigned int codecIndex) const;
-    bool codecIsDisallowed(const string& codecShortName, string& reason) const;
 
     void updatePixelFormat(); // update info for output pixel format
     void availPixelFormats();
@@ -2466,7 +2503,8 @@ WriteFFmpegPlugin::isRec709Format(const int height) const
     //  * JPEG codecs always use Rec 601.
     assert(_codec);
     const int codec = selectedCodecIndex();
-    const bool isJpeg = (codec >= 0) && IsJpeg(_codec, codec);
+    assert(codec >= 0); // checked by beginEncode()
+    const bool isJpeg = IsJpeg(_codec, codec);
     if (isJpeg) {
         return false;
     }
@@ -2502,19 +2540,18 @@ WriteFFmpegPlugin::isPalFormat(const AVRational& displayRatio) const
 //   one that colourSpaceConvert() converts with: for a Y'CbCr pixel format, BT.2020 non-constant luminance with the
 //   BT.2020 primaries (except for JPEG, which is always BT.601, and DNxHD/DNxHR, which is always BT.709, see
 //   below), else BT.709 for HD and BT.601 (SMPTE 170M) for SD, and for an RGB pixel format, AVCOL_SPC_RGB
-//   (libavutil/pixfmt.h: "order of coefficients is actually GBR").
-//   Before, the matrix was only set for the codecs of IsYUVFromShortName(), so the other Y'CbCr streams (e.g.
-//   H.264) were untagged, and the RGB ones too.
+//   (libavutil/pixfmt.h: "order of coefficients is actually GBR"). It is set for every codec, not only those of
+//   IsYUVFromShortName(), so that every Y'CbCr stream (e.g. H.264) and every RGB stream is tagged.
 void
 WriteFFmpegPlugin::setColorTags(AVCodecContext* avCodecContext,
                                 AVStream* avStream,
                                 AVPixelFormat pixelFormat) const
 {
     const int codec = selectedCodecIndex();
-    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
+    assert(codec >= 0); // checked by beginEncode()
     int dnxhdCodecProfile_i = 0;
     _dnxhdCodecProfile->getValue(dnxhdCodecProfile_i);
-    const bool isYUVCodec = (codec >= 0) && (codec < (int)codecsShortNames.size()) && IsYUVFromShortName(codecsShortNames[codec].c_str(), dnxhdCodecProfile_i);
+    const bool isYUVCodec = IsYUVFromShortName(FFmpegSingleton::Instance().getCodecsShortNames()[codec].c_str(), dnxhdCodecProfile_i);
     const bool isHD = isRec709Format(avCodecContext->height); // false for JPEG
 
     if (isYUVCodec && (avCodecContext->color_trc == AVCOL_TRC_UNSPECIFIED)) {
@@ -2849,26 +2886,23 @@ WriteFFmpegPlugin::getSettingsErrors() const
     };
     // the same message as in beginEncode()
     {
-        StringParam* params[2] = { _codecOptions, _formatOptions };
-        const char* labels[2] = { kParamCodecOptionsLabel, kParamFormatOptionsLabel };
-        for (int i = 0; i < 2; ++i) {
-            string str;
-            string error;
-            AVDictionaryHolder options;
-            params[i]->getValue(str);
-            if (!parseOptionString(str, options.ptr(), &error)) {
-                addError(string("Syntax error in ") + labels[i] + " \"" + str + "\": " + error);
-            }
+        string error;
+        AVDictionaryHolder codecOptions;
+        if (!parseOptionsParam(_codecOptions, kParamCodecOptionsLabel, codecOptions.ptr(), &error)) {
+            addError(error);
+        }
+        AVDictionaryHolder formatOptions;
+        if (!parseOptionsParam(_formatOptions, kParamFormatOptionsLabel, formatOptions.ptr(), &error)) {
+            addError(error);
         }
     }
-    const AVOutputFormat* fmt = initFormat(/* reportErrors = */ false);
+    const AVOutputFormat* fmt = initFormat();
     if (fmt) {
-        AVCodecID codecId = AV_CODEC_ID_NONE;
-        const AVCodec* videoCodec = nullptr;
-        if (!initCodec(fmt, codecId, videoCodec)) {
+        const AVCodec* videoCodec = initCodec(fmt);
+        if (!videoCodec) {
             addError(missingEncoderError());
-        } else if (!codecCompatible(fmt, codecId)) {
-            addError(string("The codec ") + videoCodec->name + " is not supported in container " + fmt->name);
+        } else if (!codecCompatible(fmt, videoCodec->id)) {
+            addError("The " + codecNotInContainerError(videoCodec, fmt));
         }
     }
     string canonical, error;
@@ -2931,7 +2965,11 @@ WriteFFmpegPlugin::encodeWarnings(const AVOutputFormat* fmt,
     string warnings;
     const string replaced = codecReplaced();
     if (!replaced.empty()) {
-        warnings += codecReplacedMessage(replaced, fmt, target) + "\n";
+        const std::optional<MissingCodecReplacement> replacement = missingCodecReplacement(replaced);
+        assert(replacement); // replaceMissingCodec() only replaces these encoders
+        if (replacement) {
+            warnings += codecReplacedMessage(*replacement, fmt, target) + "\n";
+        }
     }
     warnings += rawvideoFallbackMessage(fmt, videoCodec, prefPixelCoding, prefBitDepth, prefAlpha, target);
     if (!warnings.empty() && (warnings.back() != '\n')) {
@@ -2952,10 +2990,9 @@ WriteFFmpegPlugin::encodeWarnings(const AVOutputFormat* fmt,
 string
 WriteFFmpegPlugin::getSettingsWarnings() const
 {
-    const AVOutputFormat* fmt = initFormat(/* reportErrors = */ false);
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    const AVCodec* videoCodec = nullptr;
-    if (!fmt || !initCodec(fmt, codecId, videoCodec) || !videoCodec) {
+    const AVOutputFormat* fmt = initFormat();
+    const AVCodec* videoCodec = initCodec(fmt);
+    if (!videoCodec) {
         return encodeWarnings(nullptr, nullptr, FFmpeg::ePixelCodingNone, 0, false, AV_PIX_FMT_NONE, AV_PIX_FMT_NONE);
     }
     const bool alpha = alphaEnabled();
@@ -2969,11 +3006,7 @@ WriteFFmpegPlugin::getSettingsWarnings() const
     AVPixelFormat alphaFormat = AV_PIX_FMT_NONE;
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_NONE;
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_NONE;
-    bool alphaDropped = false;
-    getPixelFormats(fmt, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
-    if (alphaDropped) {
-        getPixelFormatsFromList(fmt, videoCodec, pixelCoding, bitdepth, true, rgbBufferPixelFormat, alphaFormat);
-    }
+    getPixelFormats(fmt, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &alphaFormat);
 
     return encodeWarnings(fmt, videoCodec, pixelCoding, bitdepth, alpha, targetPixelFormat, alphaFormat);
 }
@@ -2981,8 +3014,7 @@ WriteFFmpegPlugin::getSettingsWarnings() const
 // The output format. If the Format is "Default", it is guessed from filename, which is the file being
 // rendered (beginEncode()), or by default the value of the filename param (e.g. when a param changes).
 const AVOutputFormat*
-WriteFFmpegPlugin::initFormat(bool reportErrors,
-                              const string* filename) const
+WriteFFmpegPlugin::initFormat(const string* filename) const
 {
     assert(_format);
     int format = _format->getValue();
@@ -2995,65 +3027,49 @@ WriteFFmpegPlugin::initFormat(bool reportErrors,
             filename = &fileParam;
         }
         const char* file = filename->c_str();
-        const bool fileSpecified = file && strlen(file);
+        const bool fileSpecified = strlen(file);
         // If a file name has not yet been set, assume mov format by default
         fmt = av_guess_format(fileSpecified ? nullptr : "mov", file, nullptr);
-        if (!fmt && reportErrors) {
-            return nullptr;
-        }
     } else {
         const vector<string>& formatsShortNames = FFmpegSingleton::Instance().getFormatsShortNames();
         assert(format < (int)formatsShortNames.size());
 
         fmt = av_guess_format(formatsShortNames[format].c_str(), nullptr, nullptr);
-        if (!fmt && reportErrors) {
-            return nullptr;
-        }
     }
-    // printf("avOutputFormat(%d): %s\n", format, fmt->name);
 
     return fmt;
 }
 
-bool
-WriteFFmpegPlugin::initCodec(const AVOutputFormat* fmt,
-                             AVCodecID& outCodecId,
-                             const AVCodec*& outVideoCodec) const
+// The encoder of the selected Codec menu entry, or nullptr if fmt is nullptr, or if the params select no codec of this
+// FFmpeg (unavailableCodecError()), or if the encoder is missing (missingEncoderError()).
+const AVCodec*
+WriteFFmpegPlugin::initCodec(const AVOutputFormat* fmt) const
 {
     if (!fmt) {
-        return false;
+        return nullptr;
     }
-    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-
     assert(_codec);
     const int codec = selectedCodecIndex();
-    if (codec < 0 || codec >= (int)codecsShortNames.size()) {
-        return false;
+    if (codec < 0) {
+        return nullptr;
     }
 
     // The encoder of the menu entry, and no other one: if it is missing from this FFmpeg build (e.g. the ProRes
     // entries without prores_ks), the render fails, instead of using the default encoder of the container (#388).
-    const AVCodec* userCodec = avcodec_find_encoder_by_name(getCodecFromShortName(codecsShortNames[codec]));
-    if (!userCodec) {
-        return false;
-    }
-    outCodecId = userCodec->id;
-    outVideoCodec = userCodec;
-
-    return true;
+    return avcodec_find_encoder_by_name(getCodecFromShortName(FFmpegSingleton::Instance().getCodecsShortNames()[codec]));
 }
 
 // The error when initCodec() fails on a container: the encoder of the selected Codec menu entry is missing.
 string
 WriteFFmpegPlugin::missingEncoderError() const
 {
-    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
     const int codec = selectedCodecIndex();
-    if (codec < 0 || codec >= (int)codecsShortNames.size()) {
+    if (codec < 0) {
         return "Unable to find codec";
     }
 
-    return string("Unable to find codec \"") + getCodecFromShortName(codecsShortNames[codec]) + "\": this encoder is not in the FFmpeg build";
+    return string("Unable to find codec \"") + getCodecFromShortName(FFmpegSingleton::Instance().getCodecsShortNames()[codec])
+        + "\": this encoder is not in the FFmpeg build";
 }
 
 // The Pref. Pixel Coding and Bit Depth params.
@@ -3134,7 +3150,8 @@ encoderOpensPixelFormat(const AVCodec* codec,
 
 // The pixel format to encode with, and the RGB pixel format to convert from.
 // If alpha is wanted, but the encoder can not be opened with the selected format with alpha, whereas it can
-// with the format selected without alpha, the latter is selected, and *outAlphaDropped is set.
+// with the format selected without alpha, the latter is selected, and *outDroppedAlphaFormat is set to the format with
+// alpha (else to AV_PIX_FMT_NONE).
 void
 WriteFFmpegPlugin::getPixelFormats(const AVOutputFormat* fmt,
                                    const AVCodec* videoCodec,
@@ -3143,10 +3160,10 @@ WriteFFmpegPlugin::getPixelFormats(const AVOutputFormat* fmt,
                                    bool prefAlpha,
                                    AVPixelFormat& outRgbBufferPixelFormat,
                                    AVPixelFormat& outTargetPixelFormat,
-                                   bool* outAlphaDropped) const
+                                   AVPixelFormat* outDroppedAlphaFormat) const
 {
-    if (outAlphaDropped) {
-        *outAlphaDropped = false;
+    if (outDroppedAlphaFormat) {
+        *outDroppedAlphaFormat = AV_PIX_FMT_NONE;
     }
     getPixelFormatsFromList(fmt, videoCodec, prefPixelCoding, prefBitDepth, prefAlpha, outRgbBufferPixelFormat, outTargetPixelFormat);
     if (!videoCodec || !prefAlpha || !FFmpeg::pixelFormatAlpha(outTargetPixelFormat) || (videoCodec->id == AV_CODEC_ID_PRORES)) {
@@ -3161,11 +3178,11 @@ WriteFFmpegPlugin::getPixelFormats(const AVOutputFormat* fmt,
         // error is then reported when rendering)
         return;
     }
+    if (outDroppedAlphaFormat) {
+        *outDroppedAlphaFormat = outTargetPixelFormat;
+    }
     outRgbBufferPixelFormat = rgbBufferPixelFormat;
     outTargetPixelFormat = targetPixelFormat;
-    if (outAlphaDropped) {
-        *outAlphaDropped = true;
-    }
 }
 
 // The pixel format selected from the formats that the encoder lists (or the ones it is known to use), in the container
@@ -3187,10 +3204,7 @@ WriteFFmpegPlugin::getPixelFormatsFromList(const AVOutputFormat* fmt,
         return;
     }
     if (AV_CODEC_ID_PRORES == videoCodec->id) {
-        const int index = selectedCodecIndex();
-        const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-        assert(index < (int)codecsShortNames.size());
-        int profile = getProfileFromShortName(codecsShortNames[index]);
+        const int profile = getProfileFromShortName(selectedCodecShortName());
         if (profile == kProresProfile4444 || profile == kProresProfile4444XQ) {
             // ProRes 4444 and 4444 XQ are Y'CbCr 4:4:4, with an optional alpha channel
             if (prefAlpha) {
@@ -3517,6 +3531,25 @@ WriteFFmpegPlugin::GetCodecSupportedParams(const AVCodec* codec)
     return p;
 } // WriteFFmpegPlugin::GetCodecSupportedParams
 
+// The rate control params that apply to an encoder with the params p (configureVideoStream()), which updateVisibility()
+// enables.
+WriteFFmpegPlugin::ActiveRateControl
+WriteFFmpegPlugin::activeRateControl(const CodecParams& p) const
+{
+    ActiveRateControl rc;
+    if (p.crf) {
+        rc.crfValue = (CRFEnum)_crf->getValue();
+    }
+    rc.crf = rc.crfValue != eCRFNone;
+    rc.qscale = p.qscale && !rc.crf;
+    if (rc.qscale) {
+        rc.qscaleValue = _qscale->getValue();
+    }
+    rc.bitrate = p.bitrate && !rc.crf && !(rc.qscale && (rc.qscaleValue >= 0.));
+
+    return rc;
+}
+
 #if OFX_FFMPEG_AUDIO
 ////////////////////////////////////////////////////////////////////////////////
 // configureAudioStream
@@ -3575,12 +3608,11 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
 
     // Only update the relevant context variables where the user is able to set them.
     // This deals with cases where values are left on an old value when knob disabled.
-    const CodecParams p = avCodec ? GetCodecSupportedParams(avCodec) : CodecParams();
+    const CodecParams p = GetCodecSupportedParams(avCodec);
 
     assert(_crf && _x26xSpeed && _qscale && _bitrate && _bitrateTolerance && _quality);
-    bool setqscale = p.qscale;
-    bool setbitrate = p.bitrate;
-    if (p.crf) {
+    const ActiveRateControl rc = activeRateControl(p);
+    if (rc.crf) {
         /* Mapping from easily-understandable descriptions to CRF values.
          * Assumes we output 8-bit video. Needs to be remapped if 10-bit
          * is output.
@@ -3589,11 +3621,10 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
          */
         // default is CRF=23 (see http://git.videolan.org/?p=x264.git;a=blob;f=common/common.c;h=14d4670e0e095f161e7a690b40b035eca8c01fc5;hb=HEAD#l105)
 
-        int crf = -1;
-        CRFEnum e = (CRFEnum)_crf->getValue();
-        switch (e) {
-        case eCRFNone:
-            crf = -1;
+        // (the value that activeRateControl() read: the param may change meanwhile)
+        int crf = 23; // eCRFMedium, the default of x264
+        switch (rc.crfValue) {
+        case eCRFNone: // not here (rc.crf)
             break;
 
         case eCRFLossless:
@@ -3624,74 +3655,67 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
             crf = 32;
             break;
         }
-        if (crf >= 0) {
-            setqscale = setbitrate = false;
-            const int error = av_opt_set_int(avCodecContext->priv_data, "crf", crf, 0);
-            if (error < 0) {
-                // e.g. out of the range of the option (libvpx and libaom use a 0-63 scale)
-                char szError[AV_ERROR_MAX_STRING_SIZE] = { 0 };
-                av_strerror(error, szError, sizeof(szError));
-                av_log(avCodecContext, AV_LOG_WARNING, "Output Quality: cannot set crf=%d: %s\n", crf, szError);
+        const int error = av_opt_set_int(avCodecContext->priv_data, "crf", crf, 0);
+        if (error < 0) {
+            // e.g. out of the range of the option (libvpx and libaom use a 0-63 scale)
+            av_log(avCodecContext, AV_LOG_WARNING, "Output Quality: cannot set crf=%d: %s\n", crf, avErrorString(error).c_str());
+        }
+        if ((crf == 0) && encoderOption(avCodec, "lossless")) {
+            // CRF 0 is not lossless in the encoders that have a "lossless" option, e.g. libvpx-vp9 (FFmpeg n9.1
+            // libavcodec/libvpxenc.c:2049, https://trac.ffmpeg.org/wiki/Encode/VP9)
+            av_opt_set_int(avCodecContext->priv_data, "lossless", 1, 0);
+        }
+        if (p.x26xSpeed) {
+            X26xSpeedEnum e = (X26xSpeedEnum)_x26xSpeed->getValue();
+            const char* preset = nullptr;
+            switch (e) {
+            case eX26xSpeedUltrafast:
+                preset = "ultrafast";
+                break;
+
+            case eX26xSpeedVeryfast:
+                preset = "veryfast";
+                break;
+
+            case eX26xSpeedFaster:
+                preset = "faster";
+                break;
+
+            case eX26xSpeedFast:
+                preset = "fast";
+                break;
+
+            case eX26xSpeedMedium:
+                preset = "medium";
+                break;
+
+            case eX26xSpeedSlow:
+                preset = "slow";
+                break;
+
+            case eX26xSpeedSlower:
+                preset = "slower";
+                break;
+
+            case eX26xSpeedVeryslow:
+                preset = "veryslow";
+                break;
             }
-            if ((crf == 0) && encoderOption(avCodec, "lossless")) {
-                // CRF 0 is not lossless in the encoders that have a "lossless" option, e.g. libvpx-vp9 (FFmpeg n9.1
-                // libavcodec/libvpxenc.c:2049, https://trac.ffmpeg.org/wiki/Encode/VP9)
-                av_opt_set_int(avCodecContext->priv_data, "lossless", 1, 0);
-            }
-            if (p.x26xSpeed) {
-                X26xSpeedEnum e = (X26xSpeedEnum)_x26xSpeed->getValue();
-                const char* preset = nullptr;
-                switch (e) {
-                case eX26xSpeedUltrafast:
-                    preset = "ultrafast";
-                    break;
-
-                case eX26xSpeedVeryfast:
-                    preset = "veryfast";
-                    break;
-
-                case eX26xSpeedFaster:
-                    preset = "faster";
-                    break;
-
-                case eX26xSpeedFast:
-                    preset = "fast";
-                    break;
-
-                case eX26xSpeedMedium:
-                    preset = "medium";
-                    break;
-
-                case eX26xSpeedSlow:
-                    preset = "slow";
-                    break;
-
-                case eX26xSpeedSlower:
-                    preset = "slower";
-                    break;
-
-                case eX26xSpeedVeryslow:
-                    preset = "veryslow";
-                    break;
-                }
-                if (preset != nullptr) {
-                    av_opt_set(avCodecContext->priv_data, "preset", preset, 0);
-                }
+            if (preset != nullptr) {
+                av_opt_set(avCodecContext->priv_data, "preset", preset, 0);
             }
         }
     }
-    if (setqscale) {
-        double qscale = _qscale->getValue();
+    if (rc.qscale) {
+        const double qscale = rc.qscaleValue; // (the value that activeRateControl() read)
         if (qscale >= 0.) {
-            setbitrate = false;
             avCodecContext->flags |= AV_CODEC_FLAG_QSCALE;
             avCodecContext->global_quality = qscale * FF_QP2LAMBDA;
         }
     }
-    if (setbitrate) {
+    if (rc.bitrate) {
         double bitrate = _bitrate->getValue();
-        // bit_rate and rc_max_rate are int64_t: the bitrate in bit/s was converted to int, which overflowed (undefined
-        // behaviour) above 2147 Mbit/s. It is now clamped to [0, INT_MAX kbit/s] (bitrateToInt64()).
+        // bit_rate and rc_max_rate are int64_t, and the bitrate is clamped to [0, INT_MAX kbit/s] (bitrateToInt64())
         const int64_t bitRate = bitrateToInt64(bitrate);
         if (bitrate >= 0) {
             avCodecContext->bit_rate = bitRate;
@@ -3890,8 +3914,7 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
     bool progressive = (fieldOrder == eFieldNone);
     // for the time being, we only support progressive encoding
     if (!progressive) {
-        setPersistentMessage(Message::eMessageError, "", "only progressive video is supported");
-        throwSuiteStatusException(kOfxStatFailed);
+        persistentErrorAndThrow(*this, "only progressive video is supported");
     }
     // Set this field so that an 'fiel' atom is inserted
     // into the QuickTime 'moov' atom.
@@ -3914,11 +3937,9 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
             // kDNxHRMinWidth x kDNxHRMinHeight, and only reports it through av_log(), like v210's even width (see
             // beginEncode()): the user would just see "Could not open video codec: Invalid argument" (#248).
             if ((srcWidth < kDNxHRMinWidth) || (srcHeight < kDNxHRMinHeight)) {
-                setPersistentMessage(Message::eMessageError, "",
-                                     "DNxHR needs at least " + std::to_string(kDNxHRMinWidth) + "x" + std::to_string(kDNxHRMinHeight)
-                                         + " pixels (the limit of FFmpeg's encoder), and the image is " + std::to_string(srcWidth) + "x"
-                                         + std::to_string(srcHeight) + ": pad or reformat the image, or choose another codec.");
-                throwSuiteStatusException(kOfxStatFailed);
+                persistentErrorAndThrow(*this, "DNxHR needs at least " + std::to_string(kDNxHRMinWidth) + "x" + std::to_string(kDNxHRMinHeight)
+                                        + " pixels (the limit of FFmpeg's encoder), and the image is " + std::to_string(srcWidth) + "x"
+                                        + std::to_string(srcHeight) + ": pad or reformat the image, or choose another codec.");
             }
             break;
         }
@@ -3981,10 +4002,8 @@ WriteFFmpegPlugin::configureVideoStream(const AVCodec* avCodec,
             mbs = dnxhdBitrateMbps(dnxhdCodecProfile, avCodecContext->height == 720, frameRate);
             if (mbs == 0) {
                 const bool is36 = (dnxhdCodecProfile == eDNxHDCodecProfile36);
-                setPersistentMessage(Message::eMessageError, "",
-                                     string(is36 ? AVID_DNXHD_422_36_NAME : AVID_DNXHD_422_440X_NAME) + " is only available in 1920x1080: use "
-                                         + (is36 ? AVID_DNXHD_422_145_NAME : AVID_DNXHD_422_220X_NAME) + " in 1280x720");
-                throwSuiteStatusException(kOfxStatFailed);
+                persistentErrorAndThrow(*this, string(is36 ? AVID_DNXHD_422_36_NAME : AVID_DNXHD_422_440X_NAME) + " is only available in 1920x1080: use "
+                                        + (is36 ? AVID_DNXHD_422_145_NAME : AVID_DNXHD_422_220X_NAME) + " in 1280x720");
             }
             break;
         } // switch
@@ -4166,9 +4185,7 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
         int error = avcodec_open2(avCodecContext, avCodec, nullptr);
         if (error < 0) {
             // Report the error.
-            char szError[1024] = { 0 };
-            av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Could not open audio codec: ") + szError);
+            setPersistentMessage(Message::eMessageError, "", string("Could not open audio codec: ") + avErrorString(error));
 
             return -1;
         }
@@ -4180,9 +4197,7 @@ WriteFFmpegPlugin::openCodec(AVFormatContext* avFormatContext,
         int error = avcodec_open2(avCodecContext, avCodec, options);
         if (error < 0) {
             // Report the error.
-            char szError[1024] = { 0 };
-            av_strerror(error, szError, sizeof(szError));
-            string msg = string("Could not open video codec: ") + szError;
+            string msg = string("Could not open video codec: ") + avErrorString(error);
             const CodecParams p = GetCodecSupportedParams(avCodec);
             if (p.crf && !p.crfLossless && ((CRFEnum)_crf->getValue() == eCRFLossless)) {
                 // e.g. libvpx (VP8), whose CRF 0 is out of its quantizer range (FFmpeg n9.1 libavcodec/libvpxenc.c:1145)
@@ -4310,9 +4325,7 @@ WriteFFmpegPlugin::writeAudio(AVFormatContext* avFormatContext,
 
         if (ret < 0) {
             // Report the error.
-            char szError[1024] = { 0 };
-            av_strerror(ret, szError, sizeof(szError));
-            iop->error(szError);
+            iop->error(avErrorString(ret).c_str());
         }
     } else if (audioReaderResult < 0) {
         // error in read from audio reader
@@ -4396,10 +4409,10 @@ MeasureRgb16White(AVPixelFormat srcPixelFormat,
     uint32_t luma = 0; // Y' in the middle of the image
     av_read_image_line2(&luma, const_cast<const uint8_t**>(dstData), dstLinesize, dstDesc, width / 2, height / 2, 0, 1, 0, 4);
     const int depth = dstDesc->comp[0].depth;
-    const int nominalWhite = dstRange ? ((1 << depth) - 1) : (235 << (depth - 8));
+    const int white = (int)FFmpeg::nominalWhite(depth, dstRange != 0);
     const int halfStep8 = (1 << (depth - 8)) / 2; // half an 8-bit step (0 at 8 bits: equal)
 
-    return (std::abs((int)luma - nominalWhite) <= halfStep8) ? kLegacyWhite16 : kWhite16;
+    return (std::abs((int)luma - white) <= halfStep8) ? kLegacyWhite16 : kWhite16;
 } // MeasureRgb16White
 
 // Maps 0.-1. to 0-white (see MeasureRgb16White()), rounded to the nearest and clamped to 0-65535: the values above 1
@@ -4733,8 +4746,8 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
         // canonical encode/mux loop: a single send may yield zero, one, or several
         // packets, and lookahead encoders (e.g. H.264/H.265) buffer many frames before
         // emitting output. Draining in a loop ensures frames are never dropped when the
-        // encoder buffers input (the previous one-packet-per-send code dropped a frame
-        // whenever avcodec_send_frame returned EAGAIN).
+        // encoder buffers input (reading one packet per send would drop a frame whenever
+        // avcodec_send_frame returned EAGAIN).
         // NOTE: If |flush| is true, then outputFrame_ will be NULL at this point as
         //       alloc will not have been called.
 
@@ -4743,9 +4756,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
         // AVERROR_EOF is expected when a flush (NULL) packet is re-sent after draining.
         // EAGAIN should not occur because we fully drain the encoder below after every send.
         if ((sendRet < 0) && (sendRet != AVERROR_EOF)) {
-            char szError[1024];
-            av_strerror(sendRet, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Cannot encode frame: ") + szError);
+            setPersistentMessage(Message::eMessageError, "", string("Cannot encode frame: ") + avErrorString(sendRet));
             av_log(avCodecContext, AV_LOG_ERROR, "error writing frame to file\n");
             ret = -2;
         } else {
@@ -4760,9 +4771,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 }
                 if (recvRet < 0) {
                     // Report the error.
-                    char szError[1024];
-                    av_strerror(recvRet, szError, sizeof(szError));
-                    setPersistentMessage(Message::eMessageError, "", string("Cannot encode frame: ") + szError);
+                    setPersistentMessage(Message::eMessageError, "", string("Cannot encode frame: ") + avErrorString(recvRet));
                     error = true;
                     break;
                 }
@@ -4812,9 +4821,7 @@ WriteFFmpegPlugin::writeVideo(AVFormatContext* avFormatContext,
                 const int writeResult = av_interleaved_write_frame(avFormatContext, pkt.pkt());
                 if (writeResult < 0) {
                     // Report the error.
-                    char szError[1024];
-                    av_strerror(writeResult, szError, sizeof(szError));
-                    setPersistentMessage(Message::eMessageError, "", string("Cannot write frame: ") + szError);
+                    setPersistentMessage(Message::eMessageError, "", string("Cannot write frame: ") + avErrorString(writeResult));
                     error = true;
                     break;
                 }
@@ -5020,13 +5027,8 @@ frameAtTime(double time)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// open
-// Internal function to create all the required streams for writing a QuickTime
-// movie.
-//
-// @return true if successful,
-//         false otherwise.
-//
+// Opens the output file, creates its video stream, opens the encoder and writes the file header, at
+// beginSequenceRender. On failure, the error is the persistent message, and what was allocated is freed.
 void
 WriteFFmpegPlugin::beginEncode(const string& filename,
                                const OfxRectI& rodPixel,
@@ -5037,10 +5039,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // doesn't set it, and a host may set it to 0 for a render that is sequential anyway, as WriteFFmpeg requires
     // with kOfxImageEffectInstancePropSequentialRender)
     if (_formatContext || _streamVideo.stream) {
-        setPersistentMessage(Message::eMessageError, "", "Another render is currently active");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, "Another render is currently active");
     }
 
     // the state of the previous render does not apply to this one: until beginEncode() succeeds, endEncode() has
@@ -5048,10 +5047,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     _error = IGNORE_FINISH;
 
     if (args.isInteractive) {
-        setPersistentMessage(Message::eMessageError, "", "can only write files when in non-interactive mode.");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, "can only write files when in non-interactive mode.");
     }
 
     // The frames of a movie are ints (#184): fail, rather than encode other frames than the host renders.
@@ -5073,31 +5069,21 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // on a render thread are... kOfxImageEffectActionBeginSequenceRender"), and paramSetValue "should only be called
     // from within a ::kOfxActionInstanceChanged or interact action" (ofxParam.h). selectedCodec() gives the codec to
     // encode with (#398).
-    if (selectedCodecIndex() < 0) {
-        setPersistentMessage(Message::eMessageError, "", unavailableCodecError());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+    const int codecIndex = selectedCodecIndex();
+    if (codecIndex < 0) {
+        persistentErrorAndThrow(*this, unavailableCodecError());
     }
+    const string& codecShortName = FFmpegSingleton::Instance().getCodecsShortNames()[codecIndex];
 
     // Parse the user codec and format options before allocating anything, so that a syntax error
     // is reported immediately. The holders free the dictionaries on every path.
     AVDictionaryHolder codecOptions;
     AVDictionaryHolder formatOptions;
     {
-        StringParam* params[2] = { _codecOptions, _formatOptions };
-        const char* labels[2] = { kParamCodecOptionsLabel, kParamFormatOptionsLabel };
-        AVDictionary** dicts[2] = { codecOptions.ptr(), formatOptions.ptr() };
-        for (int i = 0; i < 2; ++i) {
-            string str;
-            string error;
-            params[i]->getValue(str);
-            if (!parseOptionString(str, dicts[i], &error)) {
-                setPersistentMessage(Message::eMessageError, "", string("Syntax error in ") + labels[i] + " \"" + str + "\": " + error);
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
+        string error;
+        if (!parseOptionsParam(_codecOptions, kParamCodecOptionsLabel, codecOptions.ptr(), &error)
+            || !parseOptionsParam(_formatOptions, kParamFormatOptionsLabel, formatOptions.ptr(), &error)) {
+            persistentErrorAndThrow(*this, error);
         }
     }
 
@@ -5110,12 +5096,9 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     _rodPixel = rodPixel;
     _pixelAspectRatio = pixelAspectRatio;
 
-    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true, &filename);
+    const AVOutputFormat* avOutputFormat = initFormat(&filename);
     if (!avOutputFormat) {
-        setPersistentMessage(Message::eMessageError, "", "Invalid file extension");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, "Invalid file extension");
     }
 
     // check the start timecode before touching the output file
@@ -5123,10 +5106,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     {
         string error;
         if (!getStartTimecode(avOutputFormat, &startTimecode, &error)) {
-            setPersistentMessage(Message::eMessageError, "", error);
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, error);
         }
     }
 
@@ -5143,10 +5123,7 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     assert(!_formatContext);
     if (avformat_alloc_output_context2(&_formatContext, avOutputFormat, nullptr, filename.c_str()) < 0) {
-        setPersistentMessage(Message::eMessageError, "", "Unable to allocate the output format context");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, "Unable to allocate the output format context");
     }
 
     /////////////////////                            ////////////////////
@@ -5203,32 +5180,21 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
                 // video.
                 audioReader_->setStartPosition(-((_audioOffsetUnit == 0) ? _audioOffset : (_audioOffset / fps_)));
             } else {
-                setPersistentMessage(Message::eMessageError, "", "failed to open the audio file\nIt does not contain audio or is an invalid file");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return false;
+                persistentErrorAndThrow(*this, "failed to open the audio file\nIt does not contain audio or is an invalid file");
             }
         }
     }
 #endif // if OFX_FFMPEG_AUDIO
 
     // Create a video stream.
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    const AVCodec* videoCodec = nullptr;
-    if (!initCodec(avOutputFormat, codecId, videoCodec)) {
-        setPersistentMessage(Message::eMessageError, "", missingEncoderError());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+    const AVCodec* videoCodec = initCodec(avOutputFormat);
+    if (!videoCodec) {
+        persistentErrorAndThrow(*this, missingEncoderError());
     }
 
     // Test if the container recognises the codec type.
-    bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    if (!isCodecSupportedInContainer) {
-        setPersistentMessage(Message::eMessageError, "", string("The codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name);
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+    if (!codecCompatible(avOutputFormat, videoCodec->id)) {
+        persistentErrorAndThrow(*this, "The " + codecNotInContainerError(videoCodec, avOutputFormat));
     }
 
     const int width = rodPixel.x2 - rodPixel.x1;
@@ -5243,218 +5209,188 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
 
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_YUV422P;
     AVPixelFormat rgbBufferPixelFormat = AV_PIX_FMT_RGB24;
-    bool alphaDropped = false;
-    getPixelFormats(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &alphaDropped);
+    AVPixelFormat droppedAlphaFormat = AV_PIX_FMT_NONE;
+    getPixelFormats(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, rgbBufferPixelFormat, targetPixelFormat, &droppedAlphaFormat);
     // rawvideo RGB24 in QuickTime with an odd width: ARGB (see rawvideoPixelFormatForWidth())
     targetPixelFormat = rawvideoPixelFormatForWidth(avOutputFormat, videoCodec, targetPixelFormat, width);
     assert(!_streamVideo.stream);
+    // the encoder selected in the Codec menu, as "ffmpeg -c:v name" (FFmpeg n9.1 fftools/ffmpeg_mux_init.c:105,
+    // fftools/ffmpeg_opt.c:791), not the default encoder of its codec ID (libavcodec/allcodecs.c:993)
+    addStream(_formatContext, videoCodec, &_streamVideo);
     if (!_streamVideo.stream) {
-        // the encoder selected in the Codec menu, as "ffmpeg -c:v name" (FFmpeg n9.1 fftools/ffmpeg_mux_init.c:105,
-        // fftools/ffmpeg_opt.c:791), not the default encoder of its codec ID (libavcodec/allcodecs.c:993)
-        addStream(_formatContext, videoCodec, &_streamVideo);
-        if (!_streamVideo.stream) {
-            throwSuiteStatusException(kOfxStatFailed);
+        throwSuiteStatusException(kOfxStatFailed);
 
-            return;
-        }
+        return;
+    }
 
-        // The muxers read the "timecode" metadata when the output is initialized (avformat_init_output):
-        // mov and mp4 write a timecode (tmcd) track for each video stream that has one (or for all
-        // video streams, if it is set on the format context, as "ffmpeg -timecode" does).
-        if (!startTimecode.empty()) {
-            av_dict_set(&_formatContext->metadata, "timecode", startTimecode.c_str(), 0);
-            av_dict_set(&_streamVideo.stream->metadata, "timecode", startTimecode.c_str(), 0);
-        }
+    // The muxers read the "timecode" metadata when the output is initialized (avformat_init_output):
+    // mov and mp4 write a timecode (tmcd) track for each video stream that has one (or for all
+    // video streams, if it is set on the format context, as "ffmpeg -timecode" does).
+    if (!startTimecode.empty()) {
+        av_dict_set(&_formatContext->metadata, "timecode", startTimecode.c_str(), 0);
+        av_dict_set(&_streamVideo.stream->metadata, "timecode", startTimecode.c_str(), 0);
+    }
 
-        AVCodecContext* avCodecContext = _streamVideo.codecContext;
-        avCodecContext->pix_fmt = targetPixelFormat;
-        setColorTags(avCodecContext, _streamVideo.stream, targetPixelFormat);
+    AVCodecContext* avCodecContext = _streamVideo.codecContext;
+    avCodecContext->pix_fmt = targetPixelFormat;
+    setColorTags(avCodecContext, _streamVideo.stream, targetPixelFormat);
 
-        avCodecContext->bits_per_raw_sample = FFmpeg::pixelFormatBitDepth(targetPixelFormat);
-        avCodecContext->sample_aspect_ratio = av_d2q(pixelAspectRatio, 255);
-        // configureVideoStream() set the stream's sample aspect ratio to QuickTime's value for the usual pixel aspect
-        // ratios, or else to 1:1. avformat_write_header() fails ("Aspect ratio mismatch between muxer and encoder
-        // layer") if the stream's and the codec's differ (by more than 0.4%), e.g. for a PAR of 16/15 (PAL SD,
-        // 768/720): the stream gets the codec's, so that they always match.
-        _streamVideo.stream->sample_aspect_ratio = avCodecContext->sample_aspect_ratio;
+    avCodecContext->bits_per_raw_sample = FFmpeg::pixelFormatBitDepth(targetPixelFormat);
+    avCodecContext->sample_aspect_ratio = av_d2q(pixelAspectRatio, 255);
+    // configureVideoStream() set the stream's sample aspect ratio to QuickTime's value for the usual pixel aspect
+    // ratios, or else to 1:1. avformat_write_header() fails ("Aspect ratio mismatch between muxer and encoder
+    // layer") if the stream's and the codec's differ (by more than 0.4%), e.g. for a PAR of 16/15 (PAL SD,
+    // 768/720): the stream gets the codec's, so that they always match.
+    _streamVideo.stream->sample_aspect_ratio = avCodecContext->sample_aspect_ratio;
 
-        // Now that the stream has been created, and the pixel format
-        // is known, for DNxHD, set the YUV range.
-        if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
-            int encodeVideoRange = _encodeVideoRange->getValue();
-            // Set the metadata for the YUV range. The mov muxer writes it in the 'ACLR' atom of the
-            // video sample description: 1 for legal range, 2 for full range (libavformat/movenc.c says that they
-            // correspond to "709" and "RGB" in the official encoder), and colourSpaceConvert() converts to
-            // this range. FFmpeg's dnxhd encoder only declares the legal range (color_ranges), but it encodes
-            // the samples as they are.
-            // RGB (DNxHR 444, gbrp10) is tagged full range, since swscale writes RGB in full range (it does not
-            // scale RGB to video levels).
-            if (!FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
-                avCodecContext->color_range = AVColorRange::AVCOL_RANGE_JPEG;
-            } else {
-                avCodecContext->color_range = encodeVideoRange ? AVColorRange::AVCOL_RANGE_MPEG : AVColorRange::AVCOL_RANGE_JPEG;
-            }
+    // Now that the stream has been created, and the pixel format
+    // is known, for DNxHD, set the YUV range.
+    if (AV_CODEC_ID_DNXHD == avCodecContext->codec_id) {
+        int encodeVideoRange = _encodeVideoRange->getValue();
+        // Set the metadata for the YUV range. The mov muxer writes it in the 'ACLR' atom of the
+        // video sample description: 1 for legal range, 2 for full range (libavformat/movenc.c says that they
+        // correspond to "709" and "RGB" in the official encoder), and colourSpaceConvert() converts to
+        // this range. FFmpeg's dnxhd encoder only declares the legal range (color_ranges), but it encodes
+        // the samples as they are.
+        // RGB (DNxHR 444, gbrp10) is tagged full range, since swscale writes RGB in full range (it does not
+        // scale RGB to video levels).
+        if (!FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
+            avCodecContext->color_range = AVColorRange::AVCOL_RANGE_JPEG;
+        } else {
+            avCodecContext->color_range = encodeVideoRange ? AVColorRange::AVCOL_RANGE_MPEG : AVColorRange::AVCOL_RANGE_JPEG;
         }
-        // Uncompressed Y'CbCr (v210, and rawvideo in a Y'CbCr pixel format, e.g. v308, v408 and v410 in QuickTime):
-        // colourSpaceConvert() converts to video range (the range is not full): tag the stream with it, so that
-        // Matroska and NUT readers get it. The matrix is the one setColorTags() set above, as for every Y'CbCr
-        // stream (colourSpaceConvert() converts with it), which the mov muxer writes in the 'colr' atom (FFmpeg
-        // n9.0 libavformat/movenc.c:2648-2650).
-        if (((AV_CODEC_ID_V210 == avCodecContext->codec_id) || (AV_CODEC_ID_RAWVIDEO == avCodecContext->codec_id))
-            && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
-            avCodecContext->color_range = AVColorRange::AVCOL_RANGE_MPEG;
+    }
+    // Uncompressed Y'CbCr (v210, and rawvideo in a Y'CbCr pixel format, e.g. v308, v408 and v410 in QuickTime):
+    // colourSpaceConvert() converts to video range (the range is not full): tag the stream with it, so that
+    // Matroska and NUT readers get it. The matrix is the one setColorTags() set above, as for every Y'CbCr
+    // stream (colourSpaceConvert() converts with it), which the mov muxer writes in the 'colr' atom (FFmpeg
+    // n9.0 libavformat/movenc.c:2648-2650).
+    if (((AV_CODEC_ID_V210 == avCodecContext->codec_id) || (AV_CODEC_ID_RAWVIDEO == avCodecContext->codec_id))
+        && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
+        avCodecContext->color_range = AVColorRange::AVCOL_RANGE_MPEG;
+    }
+    // An encoder that only writes full range Y'CbCr, e.g. mjpeg at the default strictness (FFmpeg n9.1
+    // libavcodec/mjpegenc.c:666-680): colourSpaceConvert() converts to full range.
+    if ((avCodecContext->color_range == AVCOL_RANGE_UNSPECIFIED) && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
+        const void* ranges = nullptr;
+        int nRanges = 0;
+        if ((avcodec_get_supported_config(avCodecContext, nullptr, AV_CODEC_CONFIG_COLOR_RANGE, 0, &ranges, &nRanges) >= 0)
+            && (nRanges == 1) && (static_cast<const AVColorRange*>(ranges)[0] == AVCOL_RANGE_JPEG)) {
+            avCodecContext->color_range = AVCOL_RANGE_JPEG;
         }
-        // An encoder that only writes full range Y'CbCr, e.g. mjpeg at the default strictness (FFmpeg n9.1
-        // libavcodec/mjpegenc.c:666-680): colourSpaceConvert() converts to full range.
-        if ((avCodecContext->color_range == AVCOL_RANGE_UNSPECIFIED) && FFmpeg::pixelFormatIsYUV(targetPixelFormat)) {
-            const void* ranges = nullptr;
-            int nRanges = 0;
-            if ((avcodec_get_supported_config(avCodecContext, nullptr, AV_CODEC_CONFIG_COLOR_RANGE, 0, &ranges, &nRanges) >= 0)
-                && (nRanges == 1) && (static_cast<const AVColorRange*>(ranges)[0] == AVCOL_RANGE_JPEG)) {
-                avCodecContext->color_range = AVCOL_RANGE_JPEG;
-            }
-        }
+    }
 
-        // Bug 45010 The following flags must be set BEFORE calling
-        // openCodec (avcodec_open2). This will ensure that codec
-        // specific data is created and initialized. (E.g. for MPEG4
-        // the AVCodecContext::extradata will contain Elementary Stream
-        // Descriptor which is required for QuickTime to decode the
-        // stream.)
-        // Some formats want stream headers to be separate.
-        // see fftools/ffmpeg_mux_init.c:1593 (n9.1), :1521 (n8.0)
-        if (_formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
-            avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
-        if (codecId == AV_CODEC_ID_PRORES) {
-            const int index = selectedCodecIndex();
-            const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-            assert(index < (int)codecsShortNames.size());
-            // avCodecContext->profile = getProfileFromShortName(codecsShortNames[index]);
-            av_opt_set(avCodecContext->priv_data, "profile", getProfileStringFromShortName(codecsShortNames[index]), 0);
-            av_opt_set(avCodecContext->priv_data, "bits_per_mb", "8000", 0);
-            // ProRes vendor should be apl0
-            // ref: https://ffmpeg.org/ffmpeg-all.html#toc-Private-Options-for-prores_002dks
-            av_opt_set(avCodecContext->priv_data, "vendor", "apl0", 0);
-        }
-        // Activate multithreaded decoding. This must be done before opening the codec; see
-        // http://lists.gnu.org/archive/html/bino-list/2011-08/msg00019.html
-        avCodecContext->thread_count = (std::min)((int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS);
-        if (avCodecContext->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) {
-            // multiple threads are used to decode a single frame. Reduces delay
-            // also, mjpeg prefers this, see libavfocodec/frame_thread_encoder.c:ff_frame_thread_encoder_init()
-            avCodecContext->thread_type = FF_THREAD_SLICE;
-        }
+    // Bug 45010 The following flags must be set BEFORE calling
+    // openCodec (avcodec_open2). This will ensure that codec
+    // specific data is created and initialized. (E.g. for MPEG4
+    // the AVCodecContext::extradata will contain Elementary Stream
+    // Descriptor which is required for QuickTime to decode the
+    // stream.)
+    // Some formats want stream headers to be separate.
+    // see fftools/ffmpeg_mux_init.c:1593 (n9.1), :1521 (n8.0)
+    if (_formatContext->oformat->flags & AVFMT_GLOBALHEADER) {
+        avCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    if (videoCodec->id == AV_CODEC_ID_PRORES) {
+        av_opt_set(avCodecContext->priv_data, "profile", getProfileStringFromShortName(codecShortName), 0);
+        av_opt_set(avCodecContext->priv_data, "bits_per_mb", "8000", 0);
+        // ProRes vendor should be apl0
+        // ref: https://ffmpeg.org/ffmpeg-all.html#toc-Private-Options-for-prores_002dks
+        av_opt_set(avCodecContext->priv_data, "vendor", "apl0", 0);
+    }
+    // Activate multithreaded decoding. This must be done before opening the codec; see
+    // http://lists.gnu.org/archive/html/bino-list/2011-08/msg00019.html
+    avCodecContext->thread_count = (std::min)((int)MultiThread::getNumCPUs(), OFX_FFMPEG_MAX_THREADS);
+    if (avCodecContext->codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) {
+        // multiple threads are used to decode a single frame. Reduces delay
+        // also, mjpeg prefers this, see libavfocodec/frame_thread_encoder.c:ff_frame_thread_encoder_init()
+        avCodecContext->thread_type = FF_THREAD_SLICE;
+    }
 
 #if OFX_FFMPEG_PRINT_CODECS
-        std::cout << "Format: " << _formatContext->oformat->name << " Codec: " << videoCodec->name << " rgbBufferPixelFormat: " << av_get_pix_fmt_name(rgbBufferPixelFormat) << " targetPixelFormat: " << av_get_pix_fmt_name(targetPixelFormat) << " infoBitDepth: " << _infoBitDepth->getValue() << " Profile: " << _streamVideo->codec->profile << std::endl;
+    std::cout << "Format: " << _formatContext->oformat->name << " Codec: " << videoCodec->name << " rgbBufferPixelFormat: " << av_get_pix_fmt_name(rgbBufferPixelFormat) << " targetPixelFormat: " << av_get_pix_fmt_name(targetPixelFormat) << " infoBitDepth: " << _infoBitDepth->getValue() << " Profile: " << _streamVideo->codec->profile << std::endl;
 #endif //  FFMPEG_PRINT_CODECS
-        // avcodec_open2() removes the options that it recognizes from the dictionary.
-        AVDictionaryHolder codecOptionsLeft;
-        av_dict_copy(codecOptionsLeft.ptr(), codecOptions.get(), 0);
-        if (openCodec(_formatContext, videoCodec, &_streamVideo, codecOptionsLeft.ptr()) < 0) {
-            throwSuiteStatusException(kOfxStatFailed);
+    // avcodec_open2() removes the options that it recognizes from the dictionary.
+    AVDictionaryHolder codecOptionsLeft;
+    av_dict_copy(codecOptionsLeft.ptr(), codecOptions.get(), 0);
+    if (openCodec(_formatContext, videoCodec, &_streamVideo, codecOptionsLeft.ptr()) < 0) {
+        throwSuiteStatusException(kOfxStatFailed);
 
-            return;
-        }
-        if (av_dict_count(codecOptionsLeft.get()) > 0) {
-            unrecognizedOptions += string(kParamCodecOptionsLabel) + " not applied by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
-        }
-        {
-            AVPixelFormat alphaFormat = AV_PIX_FMT_NONE;
-            if (alphaDropped) {
-                AVPixelFormat rgbFormat = AV_PIX_FMT_NONE;
-                getPixelFormatsFromList(avOutputFormat, videoCodec, pixelCoding, bitdepth, true, rgbFormat, alphaFormat);
-            }
-            // shown again by endEncode(), since GenericWriterPlugin::render() clears the persistent message
-            _encodeWarnings = encodeWarnings(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, targetPixelFormat, alphaFormat);
-            if (!_encodeWarnings.empty()) {
-                setPersistentMessage(Message::eMessageWarning, "", _encodeWarnings);
-            }
-        }
+        return;
+    }
+    if (av_dict_count(codecOptionsLeft.get()) > 0) {
+        unrecognizedOptions += string(kParamCodecOptionsLabel) + " not applied by the " + videoCodec->name + " encoder: " + dictToString(codecOptionsLeft.get()) + "\n";
+    }
+    // shown again by endEncode(), since GenericWriterPlugin::render() clears the persistent message
+    _encodeWarnings = encodeWarnings(avOutputFormat, videoCodec, pixelCoding, bitdepth, alpha, targetPixelFormat, droppedAlphaFormat);
+    if (!_encodeWarnings.empty()) {
+        setPersistentMessage(Message::eMessageWarning, "", _encodeWarnings);
+    }
 
-        avcodec_parameters_from_context(_streamVideo.stream->codecpar, avCodecContext);
-
-        if (!(avOutputFormat->flags & AVFMT_NOFILE)) {
-            int error = avio_open(&_formatContext->pb, filename.c_str(), AVIO_FLAG_WRITE);
-            if (error < 0) {
-                // Report the error.
-                char szError[1024] = { 0 };
-                av_strerror(error, szError, sizeof(szError));
-                setPersistentMessage(Message::eMessageError, "", string("Unable to open file: ") + szError);
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
-            }
-        }
-
-        std::string movflags = "write_colr";
-        if (_fastStart->getValue()) {
-            movflags += "+faststart";
-        }
-
-        // Muxer options (movflags: write_colr / faststart) must be passed to the muxer
-        // initialization so they are actually applied; they are consumed during init.
-        AVDictionaryHolder header_params;
-        av_dict_set(header_params.ptr(), "movflags", movflags.c_str(), 0);
-
-        // The user format options override the plug-in options, except that a relative movflags
-        // value ("+flag" or "-flag") is appended to the plug-in movflags.
-        for (const AVDictionaryEntry* e = av_dict_iterate(formatOptions.get(), nullptr); e; e = av_dict_iterate(formatOptions.get(), e)) {
-            if (!strcmp(e->key, "movflags") && (e->value[0] == '+' || e->value[0] == '-')) {
-                av_dict_set(header_params.ptr(), e->key, (movflags + e->value).c_str(), 0);
-            } else {
-                av_dict_set(header_params.ptr(), e->key, e->value, 0);
-            }
-        }
-        const bool hasFormatOptions = av_dict_count(formatOptions.get()) > 0;
-
-        // avformat_init_output may set the "encoder" metadata (see libavformat/muc.c:init_muxer)
-        // It applies the options and removes the recognized ones from header_params
-        // (avformat_write_header does not initialize the muxer again).
-        int error = avformat_init_output(_formatContext, header_params.ptr());
+    if (!(avOutputFormat->flags & AVFMT_NOFILE)) {
+        int error = avio_open(&_formatContext->pb, filename.c_str(), AVIO_FLAG_WRITE);
         if (error < 0) {
             // Report the error.
-            char szError[1024] = { 0 };
-            av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Unable to initialize output: ") + szError + (hasFormatOptions ? string("\nCheck the values in ") + kParamFormatOptionsLabel + "." : string()));
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, string("Unable to open file: ") + avErrorString(error));
         }
-        // Only report the user options: non-QuickTime muxers ignore the plug-in movflags.
-        if (hasFormatOptions) {
-            string left = dictToString(header_params.get(), formatOptions.get());
-            if (!left.empty()) {
-                unrecognizedOptions += string(kParamFormatOptionsLabel) + " not applied by the " + _formatContext->oformat->name + " muxer: " + left + "\n";
-            }
-        }
+    }
 
-        error = avformat_write_header(_formatContext, header_params.ptr());
-        if (error < 0) {
-            // Report the error.
-            char szError[1024] = { 0 };
-            av_strerror(error, szError, sizeof(szError));
-            setPersistentMessage(Message::eMessageError, "", string("Unable to write file header: ") + szError);
-            throwSuiteStatusException(kOfxStatFailed);
+    std::string movflags = "write_colr";
+    if (_fastStart->getValue()) {
+        movflags += "+faststart";
+    }
 
-            return;
-        }
+    // Muxer options (movflags: write_colr / faststart) must be passed to the muxer
+    // initialization so they are actually applied; they are consumed during init.
+    AVDictionaryHolder header_params;
+    av_dict_set(header_params.ptr(), "movflags", movflags.c_str(), 0);
 
-        if (!unrecognizedOptions.empty()) {
-            // Not a persistent message: GenericWriterPlugin::render() clears it after each frame.
-            // This is sent during beginSequenceRender, and may pop up a dialog in interactive hosts.
-            sendMessage(Message::eMessageWarning, "", unrecognizedOptions + "These options were ignored.");
+    // The user format options override the plug-in options, except that a relative movflags
+    // value ("+flag" or "-flag") is appended to the plug-in movflags.
+    for (const AVDictionaryEntry* e = av_dict_iterate(formatOptions.get(), nullptr); e; e = av_dict_iterate(formatOptions.get(), e)) {
+        if (!strcmp(e->key, "movflags") && (e->value[0] == '+' || e->value[0] == '-')) {
+            av_dict_set(header_params.ptr(), e->key, (movflags + e->value).c_str(), 0);
+        } else {
+            av_dict_set(header_params.ptr(), e->key, e->value, 0);
         }
+    }
+    const bool hasFormatOptions = av_dict_count(formatOptions.get()) > 0;
 
-        // The mov muxer writes the 'encoder' metadata (the libavformat version) as the \251swr atom of 'udta'
-        // (mov_write_udta_tag(), n8.0 libavformat/movenc.c:4926, n9.0.2 movenc.c:5093). Replace it with the name of
-        // the video codec. (An empty value would not be written: mov_write_string_tag(), n8.0 movenc.c:4479, n9.0.2
-        // movenc.c:4606.)
-        AVDictionaryEntry* tag = av_dict_get(_formatContext->metadata, "encoder", nullptr, AV_DICT_IGNORE_SUFFIX);
-        if (tag) {
-            av_dict_set(&_formatContext->metadata, "encoder", videoCodec->name, 0);
+    // avformat_init_output may set the "encoder" metadata (see libavformat/muc.c:init_muxer)
+    // It applies the options and removes the recognized ones from header_params
+    // (avformat_write_header does not initialize the muxer again).
+    int error = avformat_init_output(_formatContext, header_params.ptr());
+    if (error < 0) {
+        // Report the error.
+        persistentErrorAndThrow(*this, string("Unable to initialize output: ") + avErrorString(error) + (hasFormatOptions ? string("\nCheck the values in ") + kParamFormatOptionsLabel + "." : string()));
+    }
+    // Only report the user options: non-QuickTime muxers ignore the plug-in movflags.
+    if (hasFormatOptions) {
+        string left = dictToString(header_params.get(), formatOptions.get());
+        if (!left.empty()) {
+            unrecognizedOptions += string(kParamFormatOptionsLabel) + " not applied by the " + _formatContext->oformat->name + " muxer: " + left + "\n";
         }
+    }
+
+    error = avformat_write_header(_formatContext, header_params.ptr());
+    if (error < 0) {
+        // Report the error.
+        persistentErrorAndThrow(*this, string("Unable to write file header: ") + avErrorString(error));
+    }
+
+    if (!unrecognizedOptions.empty()) {
+        // Not a persistent message: GenericWriterPlugin::render() clears it after each frame.
+        // This is sent during beginSequenceRender, and may pop up a dialog in interactive hosts.
+        sendMessage(Message::eMessageWarning, "", unrecognizedOptions + "These options were ignored.");
+    }
+
+    // The mov muxer writes the 'encoder' metadata (the libavformat version) as the \251swr atom of 'udta'
+    // (mov_write_udta_tag(), n8.0 libavformat/movenc.c:4926, n9.0.2 movenc.c:5093). Replace it with the name of
+    // the video codec. (An empty value would not be written: mov_write_string_tag(), n8.0 movenc.c:4479, n9.0.2
+    // movenc.c:4606.)
+    AVDictionaryEntry* tag = av_dict_get(_formatContext->metadata, "encoder", nullptr, AV_DICT_IGNORE_SUFFIX);
+    if (tag) {
+        av_dict_set(&_formatContext->metadata, "encoder", videoCodec->name, 0);
     }
 
     // Set the stream encoder to proper values for ProRes, DNxHD/DNxHR, and others (used in MOV)
@@ -5463,11 +5399,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // - https://lists.ffmpeg.org/pipermail/ffmpeg-user/2015-May/026742.html
     // - https://forum.blackmagicdesign.com/viewtopic.php?f=21&t=51457#p355458
     const char* encoder = nullptr;
-    if (codecId == AV_CODEC_ID_PRORES) {
-        const int index = selectedCodecIndex();
-        const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-        assert(index < (int)codecsShortNames.size());
-        switch (getProfileFromShortName(codecsShortNames[index])) {
+    if (videoCodec->id == AV_CODEC_ID_PRORES) {
+        switch (getProfileFromShortName(codecShortName)) {
         case kProresProfile4444XQ:
             encoder = "Apple ProRes 4444 (XQ)";
             break;
@@ -5596,15 +5529,6 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     freeFormatOnFailure.release();
 } // WriteFFmpegPlugin::beginEncode
 
-#define checkAvError()                                              \
-    if (error < 0) {                                                \
-        char errorBuf[1024];                                        \
-        av_strerror(error, errorBuf, sizeof(errorBuf));             \
-        setPersistentMessage(Message::eMessageError, "", errorBuf); \
-        throwSuiteStatusException(kOfxStatFailed);                  \
-        return;                                                     \
-    }
-
 void
 WriteFFmpegPlugin::encode(const string& filename,
                           const OfxTime time,
@@ -5650,25 +5574,16 @@ WriteFFmpegPlugin::encode(const string& filename,
             stringstream ss;
             ss << "Frame " << frame << " was rendered after frame " << (_nextFrameToEncode - _frameStep)
                << ": the frames of a movie must be rendered in increasing order";
-            setPersistentMessage(Message::eMessageError, "", ss.str());
-            throwSuiteStatusException(kOfxStatFailed);
-
-            return;
+            persistentErrorAndThrow(*this, ss.str());
         }
 
         try {
             if ((dstNComps != 4) && (dstNComps != 3)) {
-                setPersistentMessage(Message::eMessageError, "", "can only write RGBA or RGB components images");
-                throwSuiteStatusException(kOfxStatErrFormat);
-
-                return;
+                persistentErrorAndThrow(*this, "can only write RGBA or RGB components images", kOfxStatErrFormat);
             }
 
             if (!_isOpen || !_formatContext) {
-                setPersistentMessage(Message::eMessageError, "", "file is not open");
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, "file is not open");
             }
             if (!pixelData || !_streamVideo.stream) {
                 throwSuiteStatusException(kOfxStatErrBadHandle);
@@ -5682,17 +5597,11 @@ WriteFFmpegPlugin::encode(const string& filename,
             if (!isSameOutputUrl(filename, openUrl, _openPath)) {
                 stringstream ss;
                 ss << "Trying to render " << filename << " but another active render is rendering " << openUrl;
-                setPersistentMessage(Message::eMessageError, "", ss.str());
-                throwSuiteStatusException(kOfxStatFailed);
-
-                return;
+                persistentErrorAndThrow(*this, ss.str());
             }
 
             if (pixelAspectRatio != _pixelAspectRatio) {
-                setPersistentMessage(Message::eMessageError, "", "all images in the sequence do not have the same pixel aspect ratio");
-                throwSuiteStatusException(kOfxStatErrFormat);
-
-                return;
+                persistentErrorAndThrow(*this, "all images in the sequence do not have the same pixel aspect ratio", kOfxStatErrFormat);
             }
 
             // The frame this thread waits for may never come to encode(): GenericWriterPlugin::render() returns before
@@ -5831,25 +5740,18 @@ WriteFFmpegPlugin::endEncode(const EndSequenceRenderArguments& /*args*/)
         // The file is closed after the trailer is written, and the last data may only be written now
         // (e.g. on a network share). Not reported if writing a frame failed (_error is CLEANUP), which
         // was reported already.
-        char szError[1024] = { 0 };
-        av_strerror(closeError, szError, sizeof(szError));
-        setPersistentMessage(Message::eMessageError, "", string("Unable to close the file: ") + szError);
-        throwSuiteStatusException(kOfxStatFailed);
+        persistentErrorAndThrow(*this, string("Unable to close the file: ") + avErrorString(closeError));
     }
     if (error < 0) {
         // e.g. the moov atom of a mov/mp4 file could not be written: the file is unreadable
-        char szError[1024] = { 0 };
-        av_strerror(error, szError, sizeof(szError));
-        setPersistentMessage(Message::eMessageError, "", string("Unable to finalize the file: ") + szError);
-        throwSuiteStatusException(kOfxStatFailed);
+        persistentErrorAndThrow(*this, string("Unable to finalize the file: ") + avErrorString(error));
     }
     // issue #129: every frame was rendered, but nothing was written to the file; or the host rendered frames, but none
     // reached encode() (_error is still CLEANUP, as beginEncode() left it), and none failed or was aborted (e.g. the
     // host rendered only views other than the one of beginSequenceRender, see encodesSequenceViewOnly()): the file has
     // no video stream. Not if nothing was rendered (e.g. the render was cancelled before its first frame), as before.
     if (((_error == SUCCESS) && allEncoded && (_packetsWritten == 0)) || (noneEncoded && sequenceRenderRan() && !sequenceRenderFailed())) {
-        setPersistentMessage(Message::eMessageError, "", "No frame was written to the file");
-        throwSuiteStatusException(kOfxStatFailed);
+        persistentErrorAndThrow(*this, "No frame was written to the file");
     }
     if ((closeError >= 0) && (_error == SUCCESS) && allEncoded && !_encodeWarnings.empty()) {
         // the warnings of beginEncode(), which GenericWriterPlugin::render() cleared after each frame
@@ -5869,15 +5771,11 @@ WriteFFmpegPlugin::updateVisibility()
     // The advanced params are enabled/disabled based on the codec chosen and its capabilities.
     // We also investigated setting the defaults based on the codec defaults, however all current
     // codecs defaulted the same, and as a user experience it was pretty counter intuitive.
-    // Check knob exists, to deal with cases where Nuke might not have updated underlying writer (#44774)
-    //(we still want to use showPanel to update when loading from script and the like).
     int index = _codec->getValue();
-    // assert(index < _codec->getNOptions());
     const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
     string codecShortName;
 
     _codecShortName->getValue(codecShortName);
-    // assert(index < (int)codecsShortNames.size());
     //  codecShortName may be empty if this was configured in an old version
     if (!codecShortName.empty() && (((int)codecsShortNames.size() <= index) || (codecShortName != codecsShortNames[index]))) {
         _codecShortName->setIsSecret(false); // something may be wrong. Make it visible, at least
@@ -5898,22 +5796,12 @@ WriteFFmpegPlugin::updateVisibility()
     _bitrateTolerance->setIsSecretAndDisabled(!p.bitrateTol);
     _quality->setIsSecretAndDisabled(!p.qrange);
 
-    bool setqscale = p.qscale;
-    bool setbitrate = p.bitrate;
-
-    if (p.crf && (CRFEnum)_crf->getValue() != eCRFNone) {
-        setqscale = setbitrate = false;
-    }
-
-    if (setqscale && _qscale->getValue() >= 0.) {
-        setbitrate = false;
-    }
-
-    if (p.qscale && !setqscale) {
+    const ActiveRateControl rc = activeRateControl(p);
+    if (p.qscale && !rc.qscale) {
         _qscale->setEnabled(false);
     }
 
-    if (p.bitrate && !setbitrate) {
+    if (p.bitrate && !rc.bitrate) {
         _bitrate->setEnabled(false);
         if (p.bitrateTol) {
             _bitrateTolerance->setEnabled(false);
@@ -6022,6 +5910,18 @@ WriteFFmpegPlugin::selectedCodec() const
     return selection;
 }
 
+// The short name of the Codec menu entry that the params select. Precondition: they select one
+// (selectedCodecIndex() >= 0, e.g. after initCodec() succeeded).
+const string&
+WriteFFmpegPlugin::selectedCodecShortName() const
+{
+    const int codec = selectedCodecIndex();
+    const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
+    assert((codec >= 0) && (codec < (int)codecsShortNames.size()));
+
+    return codecsShortNames[codec];
+}
+
 // A project saved with the v308, v408, v410 or ayuv encoder, which this FFmpeg does not have (FFmpeg 9 removed them:
 // n8.0 libavcodec/allcodecs.c:354-359 lists v308, v408 and v410, n9.0 does not; n8.0 has no ayuv encoder
 // either): select rawvideo, with the Pref. params that give the same pixel layout
@@ -6070,10 +5970,7 @@ WriteFFmpegPlugin::checkCodec()
     const CodecSelection selection = selectedCodec();
     if (selection.index < 0) {
         _codecShortName->setIsSecret(false);
-        setPersistentMessage(Message::eMessageError, "", unavailableCodecError());
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
+        persistentErrorAndThrow(*this, unavailableCodecError());
     }
     if (selection.replacement) {
         // the codec was replaced, see _codecReplaced (also if the Codec param is already rawvideo: the codecShortName
@@ -6150,27 +6047,21 @@ WriteFFmpegPlugin::updatePixelFormat()
     // first, check that the codec setting is OK
     checkCodec();
 
-    ////////////////////                        ////////////////////
-    //////////////////// INITIALIZE FORMAT       ////////////////////
-
-    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
-    if (!avOutputFormat) {
+    const auto clearInfo = [this] {
         _infoPixelFormat->setValue("none");
         _infoBitDepth->setValue(0);
         _infoBPP->setValue(0);
-        // setPersistentMessage(Message::eMessageError, "", "Invalid file extension");
-        // throwSuiteStatusException(kOfxStatFailed);
+    };
+
+    const AVOutputFormat* avOutputFormat = initFormat();
+    if (!avOutputFormat) {
+        clearInfo();
 
         return;
     }
 
-    /////////////////////                            ////////////////////
-    ////////////////////    INITIALISE STREAM     ////////////////////
-
-    // Create a video stream.
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    const AVCodec* videoCodec = nullptr;
-    if (!initCodec(avOutputFormat, codecId, videoCodec)) {
+    const AVCodec* videoCodec = initCodec(avOutputFormat);
+    if (!videoCodec) {
         updatePersistentMessage(); // missingEncoderError(), and the other errors
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -6178,11 +6069,8 @@ WriteFFmpegPlugin::updatePixelFormat()
     }
 
     // Test if the container recognises the codec type.
-    bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    if (!isCodecSupportedInContainer) {
-        _infoPixelFormat->setValue("none");
-        _infoBitDepth->setValue(0);
-        _infoBPP->setValue(0);
+    if (!codecCompatible(avOutputFormat, videoCodec->id)) {
+        clearInfo();
         updatePersistentMessage(); // "The codec X is not supported in container Y", and the other errors
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -6214,33 +6102,23 @@ WriteFFmpegPlugin::availPixelFormats()
     // first, check that the codec setting is OK
     checkCodec();
 
-    ////////////////////                        ////////////////////
-    //////////////////// INITIALIZE FORMAT       ////////////////////
-
-    const AVOutputFormat* avOutputFormat = initFormat(/* reportErrors = */ true);
+    const AVOutputFormat* avOutputFormat = initFormat();
     if (!avOutputFormat) {
         sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (cannot initialize container/format)", false);
 
         return;
     }
 
-    /////////////////////                            ////////////////////
-    ////////////////////    INITIALISE STREAM     ////////////////////
-
-    // Create a video stream.
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    const AVCodec* videoCodec = nullptr;
-    if (!initCodec(avOutputFormat, codecId, videoCodec)) {
+    const AVCodec* videoCodec = initCodec(avOutputFormat);
+    if (!videoCodec) {
         sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (cannot initialize codec)", false);
 
         return;
     }
 
     // Test if the container recognises the codec type.
-    bool isCodecSupportedInContainer = codecCompatible(avOutputFormat, codecId);
-    if (!isCodecSupportedInContainer) {
-        string ret = string("Supported pixel codings:\nnone (codec ") + videoCodec->name + " is not supported in container " + avOutputFormat->name + ")";
-        sendMessage(Message::eMessageError, "", ret);
+    if (!codecCompatible(avOutputFormat, videoCodec->id)) {
+        sendMessage(Message::eMessageError, "", "Supported pixel codings:\nnone (" + codecNotInContainerError(videoCodec, avOutputFormat) + ")", false);
 
         return;
     }
@@ -6417,7 +6295,7 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
         // update the secret parameter
         int codec = _codec->getValue();
         const vector<string>& codecsShortNames = FFmpegSingleton::Instance().getCodecsShortNames();
-        assert(codec < (int)codecsShortNames.size());
+        assert((codec >= 0) && (codec < (int)codecsShortNames.size()));
         _codecShortName->setValue(codecsShortNames[codec]);
         if (args.reason == eChangeUserEdit) {
             // the user chose a codec: the replacement of a missing codec (checkCodec()) is no longer reported
@@ -6450,8 +6328,9 @@ WriteFFmpegPlugin::changedParam(const InstanceChangedArgs& args,
         GenericWriterPlugin::changedParam(args, paramName);
     }
 
-    if (args.reason == eChangeUserEdit && (paramName == kParamCodec || paramName == kParamCodecShortName || paramName == kParamCRF || paramName == kParamX26xSpeed || paramName == kParamQScale || paramName == kParamBitrate || paramName == kParamBitrateTolerance || paramName == kParamQuality || paramName == kParamGopSize || paramName == kParamBFrames || paramName == kParamWriteNCLC || paramName == kParamDNxHDCodecProfile || paramName == kParamHapFormat)) {
-        // for example, bitrate must be enabled when CRF goes to None or QScale goes to -1
+    if (args.reason == eChangeUserEdit && (paramName == kParamCodecShortName || paramName == kParamCRF || paramName == kParamX26xSpeed || paramName == kParamQScale || paramName == kParamBitrate || paramName == kParamBitrateTolerance || paramName == kParamQuality || paramName == kParamGopSize || paramName == kParamBFrames || paramName == kParamWriteNCLC || paramName == kParamDNxHDCodecProfile || paramName == kParamHapFormat)) {
+        // for example, bitrate must be enabled when CRF goes to None or QScale goes to -1 (the Codec branch above
+        // already called it)
         updateVisibility();
     }
     // also check that the codec setting is OK

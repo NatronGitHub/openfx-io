@@ -31,12 +31,6 @@ const char* const kPluginIdentifier = "fr.inria.openfx.OCIOFileTransform";
 const char* const kParamFile = "file";
 const char* const kParamCCCID = "cccId";
 
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 // is the param secret (kOfxParamPropSecret, set by the instance on the param of the context descriptor)?
 bool
 isSecret(Effect& ctx,
@@ -83,7 +77,7 @@ main(int, char**)
     inst.delegate = &ctx;
     setInstanceProps(inst, 8, 8, 1, kOfxImageEffectContextFilter);
     // (the constructor calls updateCCCId() with the default, empty, file name)
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         std::printf("FAIL: createInstance\n");
 
         return 1;
@@ -103,14 +97,7 @@ main(int, char**)
     };
     for (const auto& c : cases) {
         setOverrideString(&ctx, kParamFile, c.file);
-        PropSet a;
-        pSetString(PH(&a), kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(PH(&a), kOfxPropName, 0, kParamFile);
-        pSetString(PH(&a), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
-        const OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr);
+        const OfxStatus st = instanceChanged(p, inst, kParamFile);
         const bool shown = !isSecret(ctx, kParamCCCID);
         const bool pass = ok(st) && (shown == c.shown);
         std::printf("  %s: file \"%s\": %s %s (status %d)\n", pass ? "PASS" : "FAIL", c.file, kParamCCCID, shown ? "shown" : "hidden", st);
@@ -118,7 +105,7 @@ main(int, char**)
             ++failures;
         }
     }
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     std::printf("Result: failures=%d\n", failures);

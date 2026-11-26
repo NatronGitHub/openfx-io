@@ -92,10 +92,10 @@ struct LayerUnionData {
     std::vector<std::string> views;
 };
 
-// This is a vector to remain the ordering imposed by the file <layer name, layer info>
+// <layer name, layer info>, in the order of the layers in the file (a vector, not a map, keeps that order)
 typedef std::vector<std::pair<std::string, LayerChannelIndexes>> LayersMap;
 
-// For each view name, the layer availables. Note that they are ordered because the first one is the "Main" view
+// For each view name, the available layers. The views are in order: the first one is the "Main" view
 typedef std::vector<std::pair<std::string, LayersMap>> ViewsLayersMap;
 
 // <layer name, extended layer info>
@@ -198,17 +198,6 @@ public:
         return _isMultiPlanar;
     }
 
-protected:
-#ifdef OFX_EXTENSIONS_NUKE
-    /**
-     * @brief For getClipComponents() of a multi-planar reader: no pass-through clip; the color plane of the sync
-     * clip (for its connection to work), the planes of the layers (but the kReaderColorLayer one), and the color
-     * plane, with the output components.
-     **/
-    void setClipPlanes(const OFX::ClipComponentsArguments& args, OFX::ClipComponentsSetter& clipComponents, const LayersUnionVect& layers);
-#endif
-
-public:
     enum BeforeAfterEnum {
         eBeforeAfterHold,
         eBeforeAfterLoop,
@@ -228,6 +217,15 @@ public:
     };
 
 protected:
+#ifdef OFX_EXTENSIONS_NUKE
+    /**
+     * @brief For getClipComponents() of a multi-planar reader: no pass-through clip; the color plane of the sync
+     * clip (for its connection to work), the planes of the layers (but the kReaderColorLayer one), and the color
+     * plane, with the output components.
+     **/
+    void setClipPlanes(const OFX::ClipComponentsArguments& args, OFX::ClipComponentsSetter& clipComponents, const LayersUnionVect& layers);
+#endif
+
     /**
      * @brief Called from changedParam() when kParamFilename is changed for any reason other than eChangeTime.
      * Calls restoreStateFromParams() to update any non-persistent params that may depend on the filename.
@@ -272,27 +270,6 @@ protected:
         OFX::PixelComponentEnum comps;
         std::string rawComps;
     };
-
-    /**
-     * @brief The part of renderWindow that is in fileBounds (for decode() and decodePlane(), the bounds of the image
-     * in the file that they opened). Returns false if it is empty (*window is then (0,0,0,0)).
-     **/
-    static bool intersectWindow(const OfxRectI& renderWindow,
-                                const OfxRectI& fileBounds,
-                                OfxRectI* window)
-    {
-        window->x1 = (std::max)(renderWindow.x1, fileBounds.x1);
-        window->y1 = (std::max)(renderWindow.y1, fileBounds.y1);
-        window->x2 = (std::min)(renderWindow.x2, fileBounds.x2);
-        window->y2 = (std::min)(renderWindow.y2, fileBounds.y2);
-        if ((window->x1 >= window->x2) || (window->y1 >= window->y2)) {
-            window->x1 = window->y1 = window->x2 = window->y2 = 0;
-
-            return false;
-        }
-
-        return true;
-    }
 
     /**
      * @brief Clips the render window of decode() or decodePlane() to the image in the file that they actually opened,

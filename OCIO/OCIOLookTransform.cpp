@@ -487,12 +487,9 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
                                       const string& lookCombination)
 {
     AutoSetAndRestoreThreadLocale locale;
-    OCIO::ConstConfigRcPtr config = _ocio->getConfig();
+    const OCIO::ConstConfigRcPtr config = _ocio->getConfig();
     if (!config) {
-        setPersistentMessage(Message::eMessageError, "", "OCIO: no current config");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return OCIO::ConstProcessorRcPtr();
+        persistentErrorAndThrow(*this, "No OCIO config");
     }
 
     string inputSpace;
@@ -507,7 +504,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
     int directioni = _direction->getValueAtTime(time);
     string outputSpace;
     _ocio->getOutputColorspaceAtTime(time, outputSpace);
-    try {
+    return processorOrFail([&] {
         const OCIO::ConstContextRcPtr context = _ocio->getLocalContext(config, time);
         const ProcKey key { OCIOConfigContextKey(config, context), look, inputSpace, outputSpace, directioni };
 
@@ -532,12 +529,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
             }
             return config->getProcessor(context, transform, direction);
         });
-    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
-        setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-    }
-
-    return OCIO::ConstProcessorRcPtr();
+    });
 } // getProcessor
 
 void
@@ -908,7 +900,7 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs& args,
         _lookCombination->setEnabled(!singleLook);
         _lookCombination->setEvaluateOnChange(!singleLook);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+    } else if (paramEffectsOpenGLAndTileSupport(paramName)) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     } else {

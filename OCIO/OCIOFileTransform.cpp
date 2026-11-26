@@ -472,18 +472,12 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
         break;
     default:
         // Should never happen
-        setPersistentMessage(Message::eMessageError, "", "OCIO Interpolation value out of bounds");
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return OCIO::ConstProcessorRcPtr();
+        persistentErrorAndThrow(*this, "OCIO Interpolation value out of bounds");
     }
 
-    try {
+    return processorOrFail([&] {
         AutoSetAndRestoreThreadLocale locale;
-        OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
-        if (!config) {
-            throw std::runtime_error("OCIO: No current config");
-        }
+        const OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig(); // (never null)
         const ProcKey key { OCIOConfigContextKey(config), file, cccid, version, direction, interpolation };
 
         return _procCache.get(key, [&] {
@@ -503,12 +497,7 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
 
             return copy->getProcessor(transform, OCIO::TRANSFORM_DIR_FORWARD);
         });
-    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
-        setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-    }
-
-    return OCIO::ConstProcessorRcPtr();
+    });
 } // getProcessor
 
 void
@@ -854,7 +843,7 @@ OCIOFileTransformPlugin::changedParam(const InstanceChangedArgs& args,
         OCIO::ClearAllCaches();
         _version->setValue(_version->getValue() + 1); // invalidate the node cache
 #ifdef OFX_SUPPORTS_OPENGLRENDER
-    } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+    } else if (paramEffectsOpenGLAndTileSupport(paramName)) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     }

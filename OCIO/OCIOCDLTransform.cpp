@@ -254,6 +254,9 @@ private:
     // Render-safe (no paramSetValue).
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
 
+    // The processor of grade in direction directioni, from _procCache. Throws an OCIO::Exception on error.
+    OCIO::ConstProcessorRcPtr processorForGrade(const CDLGrade& grade, int directioni);
+
     // Enable the grade params, unless they are read from the file. Sets no param value.
     void refreshKnobEnabledState(bool readFromFile);
 
@@ -668,30 +671,23 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
 {
     const CDLGradeResult result = getGradeAtTime(time);
     if (!result.grade) {
-        setPersistentMessage(Message::eMessageError, "", result.error);
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return OCIO::ConstProcessorRcPtr();
+        persistentErrorAndThrow(*this, result.error);
     }
-    const CDLGrade& grade = *result.grade;
     const int directioni = _direction->getValueAtTime(time);
 
-    try {
-        AutoSetAndRestoreThreadLocale locale;
-        OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
-        if (!config) {
-            throw std::runtime_error("OCIO: no current config");
-        }
-        const ProcKey key { OCIOConfigContextKey(config), grade, directioni };
-
-        return _procCache.get(key, [&] { return config->getProcessor(createCDLTransform(grade, directioni)); });
-    } catch (const std::runtime_error& e) { // (OCIO::Exception is a std::runtime_error; not OFX::Exception::Suite)
-        setPersistentMessage(Message::eMessageError, "", e.what());
-        throwSuiteStatusException(kOfxStatFailed);
-    }
-
-    return OCIO::ConstProcessorRcPtr();
+    return processorOrFail([&] { return processorForGrade(*result.grade, directioni); });
 } // OCIOCDLTransformPlugin::getProcessor
+
+OCIO::ConstProcessorRcPtr
+OCIOCDLTransformPlugin::processorForGrade(const CDLGrade& grade,
+                                          int directioni)
+{
+    AutoSetAndRestoreThreadLocale locale;
+    const OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig(); // (never null)
+    const ProcKey key { OCIOConfigContextKey(config), grade, directioni };
+
+    return _procCache.get(key, [&] { return config->getProcessor(createCDLTransform(grade, directioni)); });
+}
 
 void
 OCIOCDLTransformPlugin::apply(double time,
@@ -976,20 +972,14 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments& args,
     if (result.grade) {
         const int directioni = _direction->getValueAtTime(time);
         try {
-            AutoSetAndRestoreThreadLocale locale;
-            OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
-            if (!config) {
-                throw std::runtime_error("OCIO: no current config");
-            }
-            OCIO::ConstProcessorRcPtr proc = config->getProcessor(createCDLTransform(*result.grade, directioni));
-            if (proc->isNoOp()) {
+            // (the processor is cached: render() then uses the same one)
+            if (processorForGrade(*result.grade, directioni)->isNoOp()) {
                 identityClip = _srcClip;
 
                 return true;
             }
         } catch (const std::exception& e) {
-            setPersistentMessage(Message::eMessageError, "", e.what());
-            throwSuiteStatusException(kOfxStatFailed);
+            persistentErrorAndThrow(*this, e.what());
         }
     }
 
@@ -1125,10 +1115,7 @@ OCIOCDLTransformPlugin::exportCDL(double time,
     string xml; // the grade, as a ColorCorrection XML file
     try {
         AutoSetAndRestoreThreadLocale locale;
-        OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
-        if (!config) {
-            throw std::runtime_error("OCIO: no current config");
-        }
+        const OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig(); // (never null)
         const OCIO::CDLTransformRcPtr cc = createCDLTransform(*result.grade, 0); // forward
         // the same ColorCorrection XML (.cc) as OCIO 1's CDLTransform::getXML()
         OCIO::GroupTransformRcPtr g = OCIO::GroupTransform::Create();
@@ -1196,7 +1183,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs& args,
         exportCDL(args.time, exportName);
         _export->setValue(string());
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
-    } else if (paramEffectsOpenGLAndTileSupport(paramName) || paramName == kParamPremult) {
+    } else if (paramEffectsOpenGLAndTileSupport(paramName)) {
         setSupportsOpenGLAndTileInfoAtTime(args.time);
 #endif
     }

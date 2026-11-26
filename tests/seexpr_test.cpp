@@ -6,9 +6,9 @@
  *    made only of frame, numbers, operators, ?: and deterministic builtin functions is evaluated (whether or not the
  *    call would be evaluated: a superset); anything else (another variable, a local variable, a pixel value, an
  *    assignment to frame, an input index that is not computable) gives the input frame range param. The frames of
- *    the evaluation of the expression with NaN for the other variables, as on master, are added (a NaN frame gives the
- *    default range, tested with OFX::IsNaN()): the frames are at least those of master (checked on the corpus of the
- *    review, seexpr_test_master.inc).
+ *    the evaluation of the expression with NaN for the other variables, as before #176, are added (a NaN frame gives the
+ *    default range, tested with OFX::IsNaN()): the frames are at least those before #176 (checked on the corpus of the
+ *    review, seexpr_test_pre176.inc).
  *  - render: the coordinates of cpixel() may be out of the range of int (or infinite): they are clamped to +-1e9
  *    before their conversion to int, which gives the edge pixel, as before; the frame is clamped to the range of int,
  *    in the render and in getFramesNeeded(), since hosts convert frames to int (#184); a NaN coordinate or frame gives
@@ -53,24 +53,6 @@ const char* const kParamTransformCenter = "transformCenter";
 const char* const kParamTransformTranslate = "transformTranslate";
 const char* const kParamTransformCenterChanged = "transformCenterChanged";
 
-int gFailures = 0;
-
-void
-check(bool cond,
-      const char* fmt,
-      ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
 // Is *p finite (not NaN or infinite)? Tested on its bits in memory, never passed as a float value (see isUnwritten()
 // in ofx_test_host.h), which works even if the compiler assumes that there are no NaNs or infinities (-ffast-math)
 bool
@@ -80,12 +62,6 @@ isFiniteBits(const float* p)
     std::memcpy(&bits, p, sizeof(bits));
 
     return (bits & 0x7f800000u) != 0x7f800000u;
-}
-
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
 }
 
 std::string
@@ -115,7 +91,7 @@ framesNeeded(OfxPlugin* p,
     pSetDouble(PH(&a), kOfxPropTime, 0, t);
     PropSet o;
     gPersistentError.clear();
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionGetFramesNeeded, H(inst), PH(&a), PH(&o));
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionGetFramesNeeded, EH(inst), PH(&a), PH(&o));
     if (!ok(st)) {
         std::printf("  getFramesNeeded(\"%s\") = %d\n", script, st);
 
@@ -161,28 +137,28 @@ covers(const std::vector<double>& r,
     return true;
 }
 
-// The frames needed on master (openfx-io bc4c45c) for the expressions where an earlier version of this change gave
-// fewer frames than master, at times 0, 10 and 3.5, with the default frame range 0,0 (frameRange 0) and -5..5
+// The frames needed before #176 (openfx-io bc4c45c) for the expressions where an earlier version of this change gave
+// fewer frames than bc4c45c, at times 0, 10 and 3.5, with the default frame range 0,0 (frameRange 0) and -5..5
 // (frameRange 1), from the corpus of the review of #176 (infinite and NaN frames left out: they are clamped, or give
 // the default range). The frames needed must contain them.
-struct MasterFrames {
+struct Pre176Frames {
     const char* script;
     int frameRange;
     double time;
     std::vector<double> ranges;
 };
-const MasterFrames kMasterFrames[] = {
-#include "seexpr_test_master.inc"
+const Pre176Frames kPre176Frames[] = {
+#include "seexpr_test_pre176.inc"
 };
 
-// The cases of kMasterFrames where master found frames only through NaN semantics (it evaluated the expression with NaN
+// The cases of kPre176Frames where bc4c45c found frames only through NaN semantics (it evaluated the expression with NaN
 // for the variables other than frame): the frame depends on another variable, and is unknown here (the default frame
-// range is used). The frames may be fewer than master's for these.
+// range is used). The frames may be fewer than bc4c45c's for these.
 const struct {
     const char* script;
     const char* reason;
 } kNaNArtifacts[] = {
-    // fmax/fmin(NaN, v) is v in C: master's frame was the frame alone; here it depends on x
+    // fmax/fmin(NaN, v) is v in C: bc4c45c's frame was the frame alone; here it depends on x
     { "cpixel(1, frame + max(x, 0), x, y)", "max(NaN, 0) is 0; it depends on x" },
     { "cpixel(1, frame + min(x, 0), x, y)", "min(NaN, 0) is 0; it depends on x" },
     { "cpixel(1, max(x, frame), x, y)", "max(NaN, frame) is frame; it depends on x" },
@@ -205,7 +181,7 @@ isNaNArtifact(const char* script)
 
 // Is the script nested deeper than the cap of the analysis (kStubMaxDepth, 256, in SeExpr.cpp)? Counted on its
 // parentheses (a lower bound of the depth of the parse tree). Its frames are not analyzed: the default range is used
-// for all the inputs, which may be fewer frames than master's (e.g. with the frame range 0,0).
+// for all the inputs, which may be fewer frames than bc4c45c's (e.g. with the frame range 0,0).
 bool
 isDeeperThanCap(const char* script)
 {
@@ -234,7 +210,7 @@ renderPixel(OfxPlugin* p,
 {
     setOverrideString(&ctx, "script", script);
     PropSet a = makeRenderInArgs(t, w, h);
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     if (!ok(st)) {
         std::printf("  render(\"%s\") = %d\n", script, st);
 
@@ -394,7 +370,7 @@ testParamsAtTime(OfxPlugin* p,
         double rs[2] = { 1., 1. };
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         PropSet o;
-        const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
         double rod[4] = { 0., 0., 0., 0. };
         for (int i = 0; i < 4; ++i) {
             pGetDouble(PH(&o), kOfxImageEffectPropRegionOfDefinition, i, &rod[i]);
@@ -420,7 +396,7 @@ renderSeNoise(OfxPlugin* p,
     Effect describeEffect, ctx;
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
         return kOfxStatFailed;
     }
     const int W = 8, H8 = 8;
@@ -442,7 +418,7 @@ renderSeNoise(OfxPlugin* p,
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H8, 100, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         return kOfxStatFailed;
     }
     PropSet a = makeRenderInArgs(1., W, H8);
@@ -450,10 +426,10 @@ renderSeNoise(OfxPlugin* p,
     pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
     pSetDoubleN(PH(&out->image), kOfxImageEffectPropRenderScale, 2, rs);
     pSetDoubleN(PH(&src->image), kOfxImageEffectPropRenderScale, 2, rs);
-    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     const float* px = reinterpret_cast<const float*>(out->buffer.data());
     pixels->assign(px, px + (size_t)W * H8 * 4);
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
 
     return st;
 }
@@ -511,16 +487,7 @@ userChangedParam(OfxPlugin* p,
                  Effect& inst,
                  const char* paramName)
 {
-    PropSet a;
-    OfxPropertySetHandle ap = PH(&a);
-    pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-    pSetString(ap, kOfxPropName, 0, paramName);
-    pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-    pSetDouble(ap, kOfxPropTime, 0, 1.);
-    double rs[2] = { 1., 1. };
-    pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-    return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+    return instanceChanged(p, inst, paramName);
 }
 
 // SeNoise's Reset Center, after the user moved the center, sets the center and the translation, and clears the
@@ -532,7 +499,7 @@ testSeNoiseResetCenter(OfxPlugin* p)
     Effect ctx;
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
         check(false, "describe in context");
 
         return;
@@ -547,7 +514,7 @@ testSeNoiseResetCenter(OfxPlugin* p)
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H8, 100, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         check(false, "create instance");
 
         return;
@@ -578,7 +545,7 @@ testSeNoiseResetCenter(OfxPlugin* p)
     check(paramInt(centerChanged, 0) == 0, "Reset Center clears %s", kParamTransformCenterChanged);
     check(has(gSetInsideEdit, kParamTransformCenterChanged) && !has(gSetOutsideEdit, kParamTransformCenterChanged),
           "%s is cleared inside the edit block, so that undo restores it (#351)", kParamTransformCenterChanged);
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
 }
 
 // SeNoise: a noise size of 0 or a render scale of 0 gives finite values; any positive size is used as is
@@ -593,7 +560,7 @@ testSeNoise()
     }
     Effect describeEffect;
     p->setHost(&gOfxHost);
-    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, H(describeEffect), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, EH(describeEffect), nullptr, nullptr))) {
         check(false, "load/describe");
 
         return;
@@ -628,7 +595,7 @@ testSeNoise()
         return;
     }
     p->setHost(&gOfxHost);
-    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, H(describeGrain), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, EH(describeGrain), nullptr, nullptr))) {
         check(false, "load/describe");
 
         return;
@@ -678,7 +645,7 @@ main(int /*argc*/,
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, W, H8, 100, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         std::printf("FAIL: CreateInstance\n");
 
         return 1;
@@ -732,7 +699,7 @@ main(int /*argc*/,
         // a call in a branch that is not taken keeps its frames (a superset)
         { "x > 1e6 ? cpixel(1, frame + 3, x, y) : cpixel(1, frame, x, y)", { 10., 10., 13., 13. } },
         { "if (x > 1e6) { c = cpixel(1, frame + 4, x, y); } else { c = cpixel(1, frame, x, y); } c", { 10., 10., 14., 14. } },
-        { "cpixel(1, sqrt(frame - 20), x, y)", { 5., 15., 10., 10. } }, // NaN: the default range, as on master
+        { "cpixel(1, sqrt(frame - 20), x, y)", { 5., 15., 10., 10. } }, // NaN: the default range, as before #176
         { "cpixel(1, frame + 2e9, x, y)", { 10., 10., 2000000010., 2000000010. } }, // an int frame is used as is
         // getVar() of a local variable (assigned before the call), and of the external frame (in the assignment of f)
         { "f = frame - 1; g = getVar(\"f\", 0) - 1; cpixel(1, g, x, y)", { 8., 8., 10., 10. } },
@@ -787,7 +754,7 @@ main(int /*argc*/,
     };
     for (const char* script : unknownScripts) {
         // the default range and the current frame (always fetched), and possibly the frames of the evaluation with NaN
-        // for the other variables (e.g. through local variables), as on master
+        // for the other variables (e.g. through local variables), as before #176
         const std::vector<double> r = framesNeeded(p, ctx, inst, script, 10.);
         check(covers(r, { 5., 15., 10., 10. }), "%s at 10: %s (expected at least [5,15] [10,10])", script, rangesString(r).c_str());
     }
@@ -932,18 +899,18 @@ main(int /*argc*/,
         check(r == std::vector<double>({ 5., 15., 10., 10., 17., 17. }), "%s at 10: %s (expected [5,15] [10,10] [17,17])", script, rangesString(r).c_str());
     }
 
-    std::printf("==== getFramesNeeded(): at least the frames of master ====\n");
+    std::printf("==== getFramesNeeded(): at least the frames before #176 ====\n");
     {
         int notCovered = 0;
         int skipped = 0;
         int artifacts = 0;
         int deep = 0;
-        for (const MasterFrames& m : kMasterFrames) {
+        for (const Pre176Frames& m : kPre176Frames) {
             ctx.params["frameRange"].ov.i = (m.frameRange == 0) ? std::vector<int>({ 0, 0 }) : std::vector<int>({ -5, 5 });
             const std::vector<double> r = framesNeeded(p, ctx, inst, m.script, m.time);
             if (r.empty() && ((gPersistentError.find("Prep errors") != std::string::npos) || (gPersistentError.find("Syntax error") != std::string::npos))) {
-                // the expression does not parse or prep with this build of SeExpr (e.g. no cbrt() in MSYS2's, as on
-                // master): only these are skipped
+                // the expression does not parse or prep with this build of SeExpr (e.g. no cbrt() in MSYS2's, as
+                // before #176): only these are skipped
                 ++skipped;
                 continue;
             }
@@ -957,13 +924,13 @@ main(int /*argc*/,
             }
             if (!covers(r, m.ranges)) {
                 ++notCovered;
-                std::printf("  %s (frame range %s) at %g: %s, master %s\n", m.script, (m.frameRange == 0) ? "0,0" : "-5,5", m.time,
+                std::printf("  %s (frame range %s) at %g: %s, before #176 %s\n", m.script, (m.frameRange == 0) ? "0,0" : "-5,5", m.time,
                             rangesString(r).c_str(), rangesString(m.ranges).c_str());
             }
         }
         ctx.params["frameRange"].ov.i = { -5, 5 };
-        const int n = (int)(sizeof(kMasterFrames) / sizeof(kMasterFrames[0]));
-        check(notCovered == 0, "%d of %d cases have at least the frames of master, %d are documented NaN artifacts, %d are deeper than the cap of the analysis (the default range) (%d skipped: not supported by this SeExpr)",
+        const int n = (int)(sizeof(kPre176Frames) / sizeof(kPre176Frames[0]));
+        check(notCovered == 0, "%d of %d cases have at least the frames before #176, %d are documented NaN artifacts, %d are deeper than the cap of the analysis (the default range) (%d skipped: not supported by this SeExpr)",
               n - skipped - notCovered - artifacts - deep, n - skipped, artifacts, deep, skipped);
     }
 
@@ -1014,7 +981,7 @@ main(int /*argc*/,
 
     testParamsAtTime(p, ctx, inst, out, W, H8);
 
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
 
     testSeNoise();

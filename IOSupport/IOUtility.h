@@ -49,6 +49,8 @@
 #include <locale>
 #include <string>
 
+#include <cfloat> // DBL_MAX
+
 #include "ofxsImageEffect.h"
 #include "ofxsMacros.h" // OFXS_LN2
 
@@ -218,6 +220,39 @@ intersect(const OfxRectI& r1,
     return true;
 }
 
+/**
+ * @brief The part of renderWindow that is in bounds. Returns false if it is empty (*window is then (0,0,0,0)).
+ * Unlike intersect() and Coords::rectIntersection(), which also return true for rectangles that only touch (with an
+ * empty intersection), the intersection is strict.
+ **/
+inline bool
+intersectWindow(const OfxRectI& renderWindow,
+                const OfxRectI& bounds,
+                OfxRectI* window)
+{
+    window->x1 = (std::max)(renderWindow.x1, bounds.x1);
+    window->y1 = (std::max)(renderWindow.y1, bounds.y1);
+    window->x2 = (std::min)(renderWindow.x2, bounds.x2);
+    window->y2 = (std::min)(renderWindow.y2, bounds.y2);
+    if ((window->x1 >= window->x2) || (window->y1 >= window->y2)) {
+        window->x1 = window->y1 = window->x2 = window->y2 = 0;
+
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief The pixel aspect ratio par if it is valid, else 1. A PAR of 0 or less (or NaN) is invalid: the host and the
+ * plug-ins divide by it.
+ **/
+inline double
+validPixelAspectRatio(double par)
+{
+    return (par > 0.) ? par : 1.;
+}
+
 inline unsigned int
 getLevelFromScale(double s)
 {
@@ -230,6 +265,37 @@ getLevelFromScale(double s)
     assert(retval >= 0);
 
     return retval;
+}
+
+/**
+ * @brief The render scale, with each component that is not in (0, DBL_MAX] (invalid: it is divided by) replaced by 1.
+ * A NaN fails both comparisons and gives 1 too, without a NaN test.
+ **/
+inline OfxPointD
+validRenderScale(const OfxPointD& rs)
+{
+    OfxPointD ret;
+    ret.x = ((rs.x > 0.) && (rs.x <= DBL_MAX)) ? rs.x : 1.;
+    ret.y = ((rs.y > 0.) && (rs.y <= DBL_MAX)) ? rs.y : 1.;
+
+    return ret;
+}
+
+/**
+ * @brief Shows message as the persistent error of the effect, and fails the action with status (a failure, not
+ * kOfxStatOK or a reply status): what the actions of the plug-ins do when they can't go on.
+ **/
+[[noreturn]] inline void
+persistentErrorAndThrow(OFX::ImageEffect& effect,
+                        const std::string& message,
+                        OfxStatus status = kOfxStatFailed)
+{
+    // (throwSuiteStatusException() doesn't throw for these)
+    assert((status != kOfxStatOK) && (status != kOfxStatReplyDefault) && (status != kOfxStatReplyYes) && (status != kOfxStatReplyNo));
+    effect.setPersistentMessage(OFX::Message::eMessageError, "", message);
+    OFX::throwSuiteStatusException(status);
+    // not reached for a failure status (throwSuiteStatusException() isn't declared [[noreturn]])
+    throw OFX::Exception::Suite(status);
 }
 
 /**

@@ -69,23 +69,6 @@ const int kThreads = 4; // (one row each: the image is kW x kThreads)
 const int kRendersPerThread = 100;
 const float kInput = 0.25f;
 
-int gFailures = 0;
-
-void
-check(bool cond, const std::string& what)
-{
-    std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 bool
 writeFile(const std::string& path,
           const std::string& contents)
@@ -225,7 +208,7 @@ struct Instance {
 
     bool create()
     {
-        created = ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr));
+        created = ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr));
 
         return created;
     }
@@ -233,7 +216,7 @@ struct Instance {
     ~Instance()
     {
         if (created) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         }
         if (p) {
             p->mainEntry(kOfxActionUnload, nullptr, nullptr, nullptr);
@@ -243,20 +226,11 @@ struct Instance {
     // the user edited the param name (kOfxActionInstanceChanged)
     OfxStatus changed(const char* name)
     {
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, name);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-        return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+        return instanceChanged(p, inst, name);
     }
 
     // the host purges its caches (kOfxActionPurgeCaches)
-    OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, H(inst), nullptr, nullptr); }
+    OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, EH(inst), nullptr, nullptr); }
 
     // render row y of the output at time t; true if it succeeded and the row is kInput * f (RGB) for one f of factors
     bool renderRowAnyOf(double t,
@@ -268,7 +242,7 @@ struct Instance {
         PropSet a = makeRenderInArgs(t, kW, kThreads);
         int win[4] = { 0, y, kW, y + 1 };
         pSetIntN(PH(&a), kOfxImageEffectPropRenderWindow, 4, win);
-        if (!ok(p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr))) {
             return false;
         }
         for (double factor : factors) {

@@ -20,9 +20,9 @@
 
 #include "ofxsMacros.h"
 #include <cstring>
-#include <iostream>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -86,32 +86,10 @@ static void
 startOIIOThreads()
 {
     // See https://github.com/lgritz/oiio/commit/7f7934fafc127a9f3bc51b6aa5e2e77b1b8a26db
-    // We want OpenEXR to use all threads, while we do not want OIIO to use all threads for its image
-    // processing functionalities w/o letting the host know about it.
-    if (!attribute("exr_threads", 0)) {
-        // This version of OIIO does not have the exr_threads attribute, fallback on the "threads" attribute...
-        if (!attribute("threads", 0)) {
-#ifdef DEBUG
-            std::cerr << "OIIO: Failed to set exr_threads and threads attribute" << std::endl;
-#endif
-        }
-#ifdef DEBUG
-        else {
-            std::cout << "Failed to set exr_threads to 0 fallback to OIIO threads=0" << std::endl;
-        }
-#endif
-    } else {
-        // This version of OIIO has the exr_threads attribute. Set the "threads" attribute to limit image processing functions
-        static const int oiio_threads = 0;
-#ifdef DEBUG
-        std::cout << "Successfully set exr_threads to 0, setting OIIO threads=" << oiio_threads << std::endl;
-#endif
-        if (!attribute("threads", oiio_threads)) {
-#ifdef DEBUG
-            std::cerr << "Failed to set the threads attribute for OIIO" << std::endl;
-#endif
-        }
-    }
+    // OpenEXR uses all threads (exr_threads 0), and so do OIIO's image processing functions (threads 0). Both
+    // attributes exist in every supported OpenImageIO (2.4 or later).
+    attribute("exr_threads", 0);
+    attribute("threads", 0);
 }
 
 // Stop OpenImageIO's thread pool, with loadedOIIOPluginsMutex() locked: when the
@@ -243,12 +221,19 @@ pinOpenMPRuntime()
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
     // MinGW's libgomp, LLVM's libomp, Intel's libiomp5 and MSVC's vcomp140: GetModuleHandleExW() only finds a module
     // that is already loaded, and pins it (it stays loaded until the process exits)
-    static const wchar_t* const names[] = { L"libgomp-1.dll", L"libomp.dll", L"libiomp5md.dll", L"vcomp140.dll" };
-    static const char* const namesA[] = { "libgomp-1.dll", "libomp.dll", "libiomp5md.dll", "vcomp140.dll" };
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    static const struct {
+        const wchar_t* name;
+        const char* nameA; // the key in pinnedRuntimes
+    } runtimes[] = {
+        { L"libgomp-1.dll", "libgomp-1.dll" },
+        { L"libomp.dll", "libomp.dll" },
+        { L"libiomp5md.dll", "libiomp5md.dll" },
+        { L"vcomp140.dll", "vcomp140.dll" },
+    };
+    for (const auto& r : runtimes) {
         HMODULE h;
-        if (!pinnedRuntimes->count(namesA[i]) && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, names[i], &h)) {
-            pinnedRuntimes->insert(namesA[i]);
+        if (!pinnedRuntimes->count(r.nameA) && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, r.name, &h)) {
+            pinnedRuntimes->insert(r.nameA);
         }
     }
 #else
@@ -271,4 +256,56 @@ pinOpenMPRuntime()
         }
     }
 #endif
+}
+
+std::string
+oiioVersionString(int ver)
+{
+    std::ostringstream oss;
+    oss << ver / 10000 << '.' << (ver % 10000) / 100 << '.' << (ver % 100);
+
+    return oss.str();
+}
+
+std::string
+oiioLibraryInfo()
+{
+    std::ostringstream oss;
+    oss << "OpenImageIO version (compiled with / running with): " << OIIO_VERSION_STRING << '/';
+    oss << oiioVersionString(openimageio_version()) << std::endl;
+    const std::string libs = OIIO::get_string_attribute("library_list");
+    if (!libs.empty()) {
+        oss << std::endl
+            << "Dependent libraries:" << std::endl;
+        std::istringstream f(libs);
+        std::string s;
+        while (std::getline(f, s, ';')) {
+            const size_t pos = s.find(':');
+            oss << s.substr(pos + 1) << std::endl;
+        }
+    }
+
+    // "format:ext1,ext2;format2:ext3" -> "format: ext1, ext2; format2: ext3; "
+    std::string extensionsList;
+    getattribute("extension_list", extensionsList);
+    oss << "\nAll supported formats and extensions: ";
+    std::istringstream formatss(extensionsList);
+    std::string format;
+    while (std::getline(formatss, format, ';')) {
+        std::istringstream extensionss(format);
+        std::string extension;
+        std::getline(extensionss, extension, ':'); // extract the format
+        oss << extension << ": ";
+        bool first = true;
+        while (std::getline(extensionss, extension, ',')) {
+            if (!first) {
+                oss << ", ";
+            }
+            first = false;
+            oss << extension;
+        }
+        oss << "; ";
+    }
+
+    return oss.str();
 }

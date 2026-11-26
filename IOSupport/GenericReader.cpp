@@ -1527,7 +1527,6 @@ GenericReaderPlugin::getRenderTime()
 // The part of the render window of the decode() or decodePlane() call being processed by this thread that comes from
 // the file (see GenericReaderPlugin::setDecodedWindow()). gDecoding is only true during that call.
 static thread_local bool gDecoding = false;
-static thread_local bool gDecodedWindowEmpty = false;
 static thread_local OfxRectI gDecodedWindow = { 0, 0, 0, 0 };
 
 namespace {
@@ -1541,38 +1540,24 @@ public:
     explicit DecodedWindowScope(const OfxRectI& renderWindow)
         : _renderWindow(renderWindow)
         , _previousDecoding(gDecoding)
-        , _previousEmpty(gDecodedWindowEmpty)
         , _previousWindow(gDecodedWindow)
     {
         gDecoding = true;
-        gDecodedWindowEmpty = false;
         gDecodedWindow = renderWindow;
     }
 
     ~DecodedWindowScope()
     {
         gDecoding = _previousDecoding;
-        gDecodedWindowEmpty = _previousEmpty;
         gDecodedWindow = _previousWindow;
     }
 
-    bool decodedWindow(OfxRectI* window) const
-    {
-        if (gDecodedWindowEmpty) {
-            return false;
-        }
-        window->x1 = (std::max)(_renderWindow.x1, gDecodedWindow.x1);
-        window->y1 = (std::max)(_renderWindow.y1, gDecodedWindow.y1);
-        window->x2 = (std::min)(_renderWindow.x2, gDecodedWindow.x2);
-        window->y2 = (std::min)(_renderWindow.y2, gDecodedWindow.y2);
-
-        return (window->x1 < window->x2) && (window->y1 < window->y2);
-    }
+    // (an empty decoded window has an empty intersection)
+    bool decodedWindow(OfxRectI* window) const { return intersectWindow(_renderWindow, gDecodedWindow, window); }
 
 private:
     const OfxRectI _renderWindow;
     const bool _previousDecoding;
-    const bool _previousEmpty;
     const OfxRectI _previousWindow;
 };
 }
@@ -1584,7 +1569,6 @@ GenericReaderPlugin::setDecodedWindow(const OfxRectI& window)
         return;
     }
     gDecodedWindow = window;
-    gDecodedWindowEmpty = (window.x1 >= window.x2) || (window.y1 >= window.y2);
 }
 
 bool
@@ -1643,8 +1627,10 @@ setOpaqueAlpha(const OfxRectI& renderWindow,
                int rowBytes)
 {
     assert(pixelComponentCount == 4);
-    const OfxRectI w = { (std::max)(renderWindow.x1, bounds.x1), (std::max)(renderWindow.y1, bounds.y1),
-                         (std::min)(renderWindow.x2, bounds.x2), (std::min)(renderWindow.y2, bounds.y2) };
+    OfxRectI w;
+    if (!intersectWindow(renderWindow, bounds, &w)) {
+        return;
+    }
     for (int y = w.y1; y < w.y2; ++y) {
         // rowBytes may be negative (OFX images may be stored bottom-up): use signed offsets
         float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * (ptrdiff_t)rowBytes) + (ptrdiff_t)(w.x1 - bounds.x1) * pixelComponentCount + 3;
@@ -1919,7 +1905,11 @@ GenericReaderPlugin::render(const RenderArguments& args)
     // the file, e.g. ReadEXR): the part of the render window out of the new frame bounds is black.
     OfxRectI renderWindow = args.renderWindow;
     {
-        OfxRectI frameWindow = resample ? scaleSmallestEnclosing(frameBounds, args.renderScale) : Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        // the frame bounds at the render scale
+        const auto scaledFrameBounds = [&]() {
+            return resample ? scaleSmallestEnclosing(frameBounds, args.renderScale) : Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+        };
+        OfxRectI frameWindow = scaledFrameBounds();
         // The part of the render window in the RoD that the host got: if it is out of the frame bounds, the reader's
         // cached frame bounds may be older than the file (e.g. the file reverted to the header that the host got the
         // RoD from), and the reader may read them again. A render window larger than an up-to-date RoD (e.g. the
@@ -1955,7 +1945,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
                 return;
             }
             clampProxyFrameBounds(downscaleLevels, &frameBounds);
-            frameWindow = resample ? scaleSmallestEnclosing(frameBounds, args.renderScale) : Coords::downscalePowerOfTwoSmallestEnclosing(frameBounds, downscaleLevels);
+            frameWindow = scaledFrameBounds();
         }
         if (readsProxy) {
             // The RoD is the full-resolution file's (getRegionOfDefinition() does not read the proxy file): a proxy
@@ -1970,7 +1960,7 @@ GenericReaderPlugin::render(const RenderArguments& args)
             for (std::list<PlaneToRender>::iterator it = planes.begin(); it != planes.end(); ++it) {
                 fillWithBlack(args.renderWindow, args.renderScale, it->pixelData, firstBounds, it->comps, it->numChans, firstDepth, it->rowBytes);
             }
-            if (!intersect(args.renderWindow, frameWindow, &renderWindow) || isRectNull(renderWindow)) {
+            if (!intersectWindow(args.renderWindow, frameWindow, &renderWindow)) {
                 return;
             }
         }
@@ -2689,7 +2679,7 @@ GenericReaderPlugin::changedParam(const InstanceChangedArgs& args,
             }
         }
 #ifdef OFX_IO_USING_OCIO
-    } else if (((paramName == kOCIOParamInputSpace) || (paramName == kOCIOParamInputSpaceChoice)) && (args.reason == eChangeUserEdit) && !_ocio->isSettingColorspaces()) {
+    } else if (_ocio->isUserInputColorspaceEdit(args, paramName)) {
         // set the inputSpaceSet param to true https://github.com/MrKepzie/Natron/issues/1492
         // (not when GenericOCIO deletes a key, which Natron reports as a user edit)
         colorspaceSetByUser = true;
@@ -2723,6 +2713,7 @@ GenericReaderPlugin::setOutputComponents(PixelComponentEnum comps)
     // the table ends with ePixelComponentNone: the entries after it are not set
     for (i = 0; i < 4 && _outputComponentsTable[i] != ePixelComponentNone && _outputComponentsTable[i] != comps; ++i) {
     }
+    // (the loop stopped at the end of the table, at its ePixelComponentNone end marker, or at comps)
     if ((i >= 4) || (_outputComponentsTable[i] == ePixelComponentNone) || (_outputComponentsTable[i] != comps)) {
         // not found, set the first supported component
         i = 0;
@@ -2811,7 +2802,7 @@ GenericReaderPlugin::getClipPreferences(ClipPreferencesSetter& clipPreferences)
             bool success = getFrameBounds(filename, sequenceTimeDomain.min, /*view=*/0, &bounds, &format, &par, &error, &tile_width, &tile_height);
             if (success) {
                 // the PAR comes from the file: a PAR of 0 or less is invalid (the host divides by it)
-                clipPreferences.setPixelAspectRatio(*_outputClip, (par > 0.) ? par : 1.);
+                clipPreferences.setPixelAspectRatio(*_outputClip, validPixelAspectRatio(par));
                 clipPreferences.setOutputFormat(format);
             }
 
@@ -2913,12 +2904,8 @@ GenericReaderPlugin::detectProxyScale(const string& originalFileName,
     success = success && getFrameBounds(proxyFileName, sequenceTime, /*view=*/0, &proxyBounds, &proxyFormat, &proxyPAR, &error, &tile_width, &tile_height);
     OfxPointD ret;
     // the PARs come from the files: a PAR of 0 or less is invalid
-    if (originalPAR <= 0.) {
-        originalPAR = 1.;
-    }
-    if (proxyPAR <= 0.) {
-        proxyPAR = 1.;
-    }
+    originalPAR = validPixelAspectRatio(originalPAR);
+    proxyPAR = validPixelAspectRatio(proxyPAR);
     if (!success || (originalBounds.x1 == originalBounds.x2) || (originalBounds.y1 == originalBounds.y2) || (proxyBounds.x1 == proxyBounds.x2) || (proxyBounds.y1 == proxyBounds.y2)) {
         ret.x = 1.;
         ret.y = 1.;

@@ -50,7 +50,6 @@ NAMESPACE_OFX_IO_ENTER
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
 
-static const int LUT3D_EDGE_SIZE = 32;
 static const char* g_fragShaderText = ""
                                       "\n"
                                       "uniform sampler2D tex1;\n"
@@ -93,12 +92,10 @@ GenericOCIO::applyGL(const Texture* srcImg,
     }
     if (!glBuilder) {
         // Extract the shader information.
-        bool gpulegacy = false;
         OCIO::ConstGPUProcessorRcPtr gpuProc;
         {
             OCIOOptimizedProcessorLock lock;
-            gpuProc = gpulegacy ? processor->getOptimizedLegacyGPUProcessor(OCIO::OPTIMIZATION_GOOD, LUT3D_EDGE_SIZE)
-                                : processor->getOptimizedGPUProcessor(OCIO::OPTIMIZATION_VERY_GOOD);
+            gpuProc = processor->getOptimizedGPUProcessor(OCIO::OPTIMIZATION_VERY_GOOD);
         }
         // See https://github.com/AcademySoftwareFoundation/OpenColorIO/blob/b2e88b195c1e1a82a51818e0a4aa2975e03b6a88/vendor/aftereffects/OpenColorIO_AE_Context.cpp#L851
         // Step 1: Create a GPU Shader Description

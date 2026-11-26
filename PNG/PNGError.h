@@ -49,13 +49,16 @@ namespace IO {
 
         PNGError() { message[0] = '\0'; }
 
+        // Store a message (truncated to the size of message)
+        void set(const char* msg) { std::snprintf(message, sizeof(message), "%s", msg ? msg : "unknown error"); }
+
         // The error function of the png_struct (png_create_read_struct/png_create_write_struct, with this PNGError as
         // the error pointer): store the message, and longjmp to png_jmpbuf(png). It never returns.
         static void errorFn(png_structp png, png_const_charp msg)
         {
             PNGError* e = static_cast<PNGError*>(png_get_error_ptr(png));
             if (e) {
-                std::snprintf(e->message, sizeof(e->message), "%s", msg ? msg : "unknown error");
+                e->set(msg);
             }
             png_longjmp(png, 1);
         }

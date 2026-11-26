@@ -57,6 +57,9 @@ env:
   # the Linux testing bundles never carry (find_and_copy_deps.py): their linuxCheckBundle.sh check counts the runner's
   # sonames that match it as system libraries (OFX_ABI_SYSTEM_LIBS), so that it fails if one is bundled.
   DESKTOP_LIBS_RE: '^lib(X[A-Za-z0-9]*|X11-xcb|xcb|xcb-.*|SM|ICE|xkbcommon|xkbcommon-x11|asound)\.so\.[0-9]+$'
+  # The hostDemo tests (io-hostdemo, tests/hostdemo/*.sh) fail, instead of skipping, if the bundle is not installed
+  # or lacks a plug-in, or if oiiotool is missing
+  IO_HOSTDEMO_STRICT: 1
 
   # SeExpr 2.11 is built (by seexpr211_build.sh) with the patches of Natron's SDKs, at this Natron commit, in this
   # order: those of the MacPorts seexpr211 port (tools/MacPorts/graphics/seexpr211/Portfile) on macOS, and the same ones
@@ -125,6 +128,15 @@ jobs:
       # of Ubuntu's FFmpeg 8.0.1 writes bgr0 instead of Bayer
       FFMPEG_READ_TEST_STRICT: 1
       FFMPEG_READ_TEST_EXPECTED_SKIPS: '^ffv1 wrote .*, not bayer_rggb16le$'
+      # linuxCheckBundle.sh's symbol version limits: this build uses Ubuntu's libraries, so none (99). A Rocky Linux 9
+      # build would use the defaults (EL9's limits).
+      OFX_ABI_GLIBC: 99
+      OFX_ABI_GLIBCXX: 99
+      OFX_ABI_CXXABI: 99
+      OFX_ABI_GCC: 99
+      OFX_ABI_GOMP: 99
+      OFX_ABI_LIBATOMIC: 99
+      OFX_ABI_ZLIB: 99
     defaults:
       run:
         shell: bash -eo pipefail {0}
@@ -190,16 +202,8 @@ jobs:
         # openfx's linuxCheckBundle.sh (OFX_LINUX_CHECK_BUNDLE): no bundled system library, no GLIBC_PRIVATE, GLIBC_ABI_*,
         # DT_RELR or unnumbered version need, only $ORIGIN rpaths (or OFX_ABI_RPATH_ALLOW's). This build uses
         # Ubuntu 26.04's libraries (glibc 2.43, GCC 15): --no-needed (they come from the system, nothing is bundled)
-        # and no symbol version limit (99). A Rocky Linux 9 build would use the defaults (EL9's limits).
+        # and no symbol version limit (the job's OFX_ABI_*).
         # Exit status 1 (problems) or 2 (usage error, missing tool) fails the job.
-        env:
-          OFX_ABI_GLIBC: 99
-          OFX_ABI_GLIBCXX: 99
-          OFX_ABI_CXXABI: 99
-          OFX_ABI_GCC: 99
-          OFX_ABI_GOMP: 99
-          OFX_ABI_LIBATOMIC: 99
-          OFX_ABI_ZLIB: 99
         run: |
           check=$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)
           test -n "$check" || { echo "OFX_LINUX_CHECK_BUNDLE is not in build/CMakeCache.txt"; exit 1; }
@@ -220,9 +224,6 @@ jobs:
       - name: Tests
         # the tests of tests/ (tests/CMakeLists.txt), io-load, io-icons, and io-hostdemo (on the installed bundle), run
         # by ctest
-        env:
-          # io-hostdemo fails if the bundle is not installed or lacks a plug-in
-          IO_HOSTDEMO_STRICT: 1
         run: ctest --test-dir build --output-on-failure
       - name: Upload the hostDemo test outputs
         if: failure()
@@ -267,33 +268,15 @@ jobs:
             "package of each library). Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
-          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest --json=bundle-deps.json \
-            ${BINARY_PATH}/IO.ofx ${BINARY_PATH} SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
-          # The licences of the bundled libraries (their packages' Debian copyright files and the common licences they
-          # refer to, and SeExprBuild's), in Contents/Resources/Licenses (see "Linux runtime requirements" in README.md)
-          bash .github/workflows/copy_bundled_licenses.sh bundle-deps.json ${BINARY_PATH} \
-            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
-          patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
-          # No system library may be bundled (same limits as the Bundle check above; --no-needed: the copied
-          # Ubuntu libraries find their dependencies in the system).
-          # The desktop libraries (X11...) must not be bundled either (DESKTOP_LIBS_RE).
-          desktop=$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -printf '%f\n' | grep -E "$DESKTOP_LIBS_RE" | sort | tr '\n' ' ')
-          [[ " $desktop " == *" libX11.so.6 "* && " $desktop " == *" libxcb.so.1 "* ]] || { echo "no X11 libraries in DESKTOP_LIBS_RE's list: $desktop"; exit 1; }
-          OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
-            OFX_ABI_ZLIB=99 OFX_ABI_SYSTEM_LIBS="$desktop" \
-            "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
-          # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
-          sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
-          g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
-          ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
-          # Every bundled library comes with its licence (#272)
-          bash .github/workflows/check_bundled_licenses.sh ${BINARY_PATH} \
-            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
+          # Its libraries (from SeExprBuild and Ubuntu) and their licences, checked (see the script)
+          bash .github/workflows/make_linux_testing_bundle.sh ${BINARY_PATH} SeExprBuild/lib /usr/lib /usr/lib/x86_64-linux-gnu
+          # Load check (io_verify_plugin_loads: RTLD_NOW, so that missing symbols make loading fail)
+          build/io_verify_plugin_loads ${BINARY_PATH}/IO.ofx
       - name: Check the testing bundle on a clean Ubuntu 26.04 (docker)
         # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
         # check that the bundle needs no undocumented system library, and load IO.ofx (RTLD_NOW) in a clean ubuntu:26.04
         # container, with only the documented runtime packages and their dependencies.
-        run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:26.04 ./verify_plugin_loads
+        run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:26.04 build/io_verify_plugin_loads
       - name: Upload testing artifacts
         if: env.UPLOAD_BUNDLES == 'true'
         uses: actions/upload-artifact@v4.3.1
@@ -382,6 +365,15 @@ jobs:
       FFMPEG_CONFIGURE: --enable-shared --disable-static --disable-programs --disable-doc --disable-autodetect --enable-gpl --enable-zlib --enable-libx264 --enable-libx265 --enable-libvpx
       # seexpr211_build.sh's extra CMake arguments (part of the SeExpr cache key): none
       SEEXPR_CMAKE_ARGS: ""
+      # linuxCheckBundle.sh's symbol version limits: this build uses Ubuntu's libraries, so none (99). A Rocky Linux 9
+      # build would use the defaults (EL9's limits).
+      OFX_ABI_GLIBC: 99
+      OFX_ABI_GLIBCXX: 99
+      OFX_ABI_CXXABI: 99
+      OFX_ABI_GCC: 99
+      OFX_ABI_GOMP: 99
+      OFX_ABI_LIBATOMIC: 99
+      OFX_ABI_ZLIB: 99
     defaults:
       run:
         shell: bash -eo pipefail {0}
@@ -477,33 +469,15 @@ jobs:
             "package of each library). Release builds target Rocky Linux 9." \
             > TestingBundle/README.txt
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
-          python3 .github/workflows/find_and_copy_deps.py --manifest=IO.manifest \
-            --json=bundle-deps.json ${BINARY_PATH}/IO.ofx ${BINARY_PATH} FFmpegBuild/lib SeExprBuild/lib /usr/lib \
+          # Its libraries (from FFmpegBuild, SeExprBuild and Ubuntu) and their licences, checked (see the script)
+          bash .github/workflows/make_linux_testing_bundle.sh ${BINARY_PATH} FFmpegBuild/lib SeExprBuild/lib /usr/lib \
             /usr/lib/x86_64-linux-gnu
           for l in avformat avcodec avutil swscale; do
             ls ${BINARY_PATH}/lib${l}.so.* > /dev/null || { echo "lib${l} is not in the bundle"; exit 1; }
           done
           ls ${BINARY_PATH}
-          # The licences of the bundled libraries (their packages' Debian copyright files and the common licences they
-          # refer to, and those of FFmpegBuild and SeExprBuild), in Contents/Resources/Licenses (see "Linux runtime
-          # requirements" in README.md)
-          bash .github/workflows/copy_bundled_licenses.sh bundle-deps.json ${BINARY_PATH} \
-            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
-          patchelf --force-rpath --set-rpath '$ORIGIN' ${BINARY_PATH}/IO.ofx
-          # No system library may be bundled (Ubuntu 24.04's libraries: no symbol version limit; --no-needed: the
-          # copied Ubuntu libraries find their dependencies in the system)
-          # The desktop libraries (X11...) must not be bundled either (DESKTOP_LIBS_RE).
-          desktop=$(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -printf '%f\n' | grep -E "$DESKTOP_LIBS_RE" | sort | tr '\n' ' ')
-          [[ " $desktop " == *" libX11.so.6 "* && " $desktop " == *" libxcb.so.1 "* ]] || { echo "no X11 libraries in DESKTOP_LIBS_RE's list: $desktop"; exit 1; }
-          OFX_ABI_GLIBC=99 OFX_ABI_GLIBCXX=99 OFX_ABI_CXXABI=99 OFX_ABI_GCC=99 OFX_ABI_GOMP=99 OFX_ABI_LIBATOMIC=99 \
-            OFX_ABI_ZLIB=99 OFX_ABI_SYSTEM_LIBS="$desktop" \
-            "$(sed -n 's/^OFX_LINUX_CHECK_BUNDLE:FILEPATH=//p' build/CMakeCache.txt)" -v --no-needed TestingBundle
-          # Every bundled library comes with its licence (#272)
-          bash .github/workflows/check_bundled_licenses.sh ${BINARY_PATH} \
-            TestingBundle/IO.ofx.bundle/Contents/Resources/Licenses
       - name: Check the testing bundle (verify_plugin_loads, hostDemo)
         env:
-          IO_HOSTDEMO_STRICT: 1
           OCIO: ${{ github.workspace }}/tests/test.ocio
         run: |
           # Without LD_LIBRARY_PATH: the bundle must find its FFmpeg by itself. ldd shows which FFmpeg each library
@@ -511,21 +485,19 @@ jobs:
           unset LD_LIBRARY_PATH
           BINARY_PATH=TestingBundle/IO.ofx.bundle/Contents/Linux-x86-64
           ldd ${BINARY_PATH}/IO.ofx | grep -E 'libav|libsw|OpenImageIO'
-          # Load check: replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
-          sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
-          g++ -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
-          ./verify_plugin_loads ${BINARY_PATH}/IO.ofx
-          # hostDemo renders every plug-in of the testing bundle (tests/hostdemo/run.sh, as io-hostdemo), including
-          # ReadOIIO (Ubuntu's FFmpeg 6.1, through OpenImageIO) and Read/WriteFFmpeg (FFmpeg 9.0.2) in one process
           hd=$(find build -type f -name hostDemo -perm -u+x | head -1)
           vp=$(find build -type f -name io_verify_plugin_loads -perm -u+x | head -1)
           test -n "$hd" && test -n "$vp"
+          # Load check (io_verify_plugin_loads: RTLD_NOW, so that missing symbols make loading fail)
+          "$vp" ${BINARY_PATH}/IO.ofx
+          # hostDemo renders every plug-in of the testing bundle (tests/hostdemo/run.sh, as io-hostdemo), including
+          # ReadOIIO (Ubuntu's FFmpeg 6.1, through OpenImageIO) and Read/WriteFFmpeg (FFmpeg 9.0.2) in one process
           bash tests/hostdemo/run.sh "$hd" TestingBundle/IO.ofx.bundle "$vp" "$PWD/hostdemo-testing"
       - name: Check the testing bundle on a clean Ubuntu 24.04 (docker)
         # The runner has more libraries than a user's system (e.g. the OpenCL ICD loader, a build dependency, #270):
         # check that the bundle needs no undocumented system library, and load IO.ofx (RTLD_NOW) in a clean ubuntu:24.04
         # container, with only the documented runtime packages and their dependencies.
-        run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:24.04 ./verify_plugin_loads
+        run: .github/workflows/check_testing_bundle.sh TestingBundle/IO.ofx.bundle ubuntu:24.04 build/io_verify_plugin_loads
       - name: Upload the hostDemo test outputs
         if: failure()
         uses: actions/upload-artifact@v4.3.1
@@ -647,7 +619,7 @@ jobs:
           export PATH="$RUNNER_TEMP/ffbin":/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
           # the tests of tests/ (tests/CMakeLists.txt), io-load, io-icons, io-load-installed and io-hostdemo (on the
           # installed, deployed bundle), run by ctest
-          IO_HOSTDEMO_STRICT=1 ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure
       - name: Upload the hostDemo test outputs
         if: failure()
         uses: actions/upload-artifact@v4.3.1
@@ -673,10 +645,8 @@ jobs:
           # The release bundle is self-contained (osxDeploy.sh copies its libraries into Contents/Libraries):
           # load it without any DYLD_* path, so that a library missing from the bundle makes the check fail.
           unset DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
-          # Replace RTLD_LAZY with RTLD_NOW so that missing symbols make loading fail.
-          sed -e 's/RTLD_LAZY/RTLD_NOW/g' openfx/HostSupport/src/ofxhBinary.cpp > ofxhBinaryStrict.cpp
-          clang++ -std=c++17 -o verify_plugin_loads tests/verify_plugin_loads.cpp ofxhBinaryStrict.cpp -I openfx/HostSupport/include/ -I openfx/include/
-          ./verify_plugin_loads Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx
+          # io_verify_plugin_loads: RTLD_NOW, so that missing symbols make loading fail
+          build/io_verify_plugin_loads Bundle/IO.ofx.bundle/Contents/MacOS/IO.ofx
           # Loading alone doesn't prove self-containment (the /opt/local paths exist on this runner): the plug-in
           # and its bundled libraries must only reference @rpath/@loader_path libraries and system libraries.
           shopt -s nullglob
@@ -733,7 +703,6 @@ jobs:
             gdb:p
       - name: Build (release, C++17, CMake)
         run: |
-          set -eo pipefail
           # cmake.exe is a native program: pass Windows paths
           ffpc=; [ -z "$FFMPEG_PKG_CONFIG_PATH" ] || ffpc="$(cygpath -m "$FFMPEG_PKG_CONFIG_PATH")"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOFX_CXX_STANDARD=17 -DOFX_IO_REQUIRE_ALL=ON \
@@ -746,7 +715,6 @@ jobs:
       - name: Build (debug, C++20, CMake)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
-          set -eo pipefail
           ffpc=; [ -z "$FFMPEG_PKG_CONFIG_PATH" ] || ffpc="$(cygpath -m "$FFMPEG_PKG_CONFIG_PATH")"
           cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOFX_CXX_STANDARD=20 -DOFX_IO_REQUIRE_ALL=ON \
             -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")" -DFFMPEG_PKG_CONFIG_PATH="$ffpc"
@@ -754,11 +722,9 @@ jobs:
       - name: Tests
         # the tests of tests/ (tests/CMakeLists.txt; test-ffmpeg and test-oiio are bash scripts, which call MSYS2's
         # ffmpeg and oiiotool), io-load, io-icons, and io-hostdemo (on the installed bundle; a bash script), run by
-        # ctest. The DLLs are found in $MINGW_PREFIX/bin, on PATH. IO_HOSTDEMO_STRICT: io-hostdemo fails if the
-        # bundle is not installed or lacks a plug-in.
+        # ctest. The DLLs are found in $MINGW_PREFIX/bin, on PATH.
         run: |
-          set -eo pipefail
-          IO_HOSTDEMO_STRICT=1 ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure
       - name: Upload the hostDemo test outputs
         if: failure()
         uses: actions/upload-artifact@v4.3.1
@@ -772,7 +738,6 @@ jobs:
         # the same, built with C++20 (the bundle of the Debug build: io-load, io-icons; no io-hostdemo)
         if: env.EXTRA_VARIANTS == 'true'
         run: |
-          set -eo pipefail
           ctest --test-dir build-debug --output-on-failure
       - name: Skips inside the tests
         # ctest --output-on-failure hides the output of the passing tests: list what they skipped (#309)
@@ -780,7 +745,6 @@ jobs:
         run: bash tests/ctest_skips.sh build build-debug
       - name: Generate testing bundle
         run: |
-          set -eo pipefail
           # Self-contained bundle used for Natron's automated testing (the natron_testing asset
           # openfx-io-build-windows_ucrt64-testing.zip, see "Natron's testing bundles" in README.md).
           cp -r Bundle TestingBundle

@@ -5,9 +5,8 @@
 # licence file (PACKAGE-INFO.txt, pacman's package information, doesn't count). The only exceptions are the MSYS2
 # packages of NO_LICENCE_FILE_PACKAGES, which install no licence file: they have only their licence names
 # (PACKAGE-INFO.txt) and, except for "custom" licences, the generic SPDX texts of these licences (the spdx/ files that
-# the "Licence texts (SPDX):" line of PACKAGE-INFO.txt lists, which must exist). dpkg: each
-# /usr/share/common-licenses/<name> (or {<name>,<name>...}) that a Debian copyright file refers to must be in
-# <licence directory>/common-licenses.
+# the "Licence texts (SPDX):" line of PACKAGE-INFO.txt lists, which must exist). (copy_bundled_licenses.sh copies the
+# common licences that the Debian copyright files refer to, or fails.)
 #
 #   check_bundled_licenses.sh <binary directory of the bundle> <licence directory>
 
@@ -69,19 +68,6 @@ for f in "$bindir"/*; do
   fi
 done
 test "$n" -gt 0 || { echo "error: no library in $bindir: nothing was checked" >&2; exit 1; }
-
-# dpkg: the common licences that the Debian copyright files refer to
-if command -v dpkg > /dev/null; then
-  names=$(find "$licdir" -name copyright -type f -exec grep -ohE \
-    '/usr/share/common-licenses/(\{[A-Za-z0-9._,-]+\}|[A-Za-z0-9._-]*[A-Za-z0-9])' {} + |
-    sed 's|.*/||; s/[{}]//g' | tr ',' '\n' | sort -u || true)
-  for name in $names; do
-    if [ ! -f "$licdir/common-licenses/$name" ]; then
-      echo "error: a copyright file refers to /usr/share/common-licenses/$name, which is not in $licdir/common-licenses"
-      fail=1
-    fi
-  done
-fi
 
 if [ "$fail" != 0 ]; then
   echo "error: some of the $n bundled libraries have no licence (see copy_bundled_licenses.sh)"

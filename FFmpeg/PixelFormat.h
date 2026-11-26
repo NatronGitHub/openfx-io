@@ -59,7 +59,10 @@ namespace FFmpeg {
     };
 
     bool pixelFormatIsYUV(AVPixelFormat pixelFormat);
+    // The bit depth of a pixel format: the smallest depth of its components for WriteFFmpeg (the precision of the
+    // encoded samples), the largest for ReadFFmpeg (the decode buffer must keep every component). See PixelFormat.cpp.
     int pixelFormatBitDepth(AVPixelFormat pixelFormat);
+    int pixelFormatMaxComponentDepth(AVPixelFormat pixelFormat);
     int pixelFormatBPP(AVPixelFormat pixelFormat);
     PixelCodingEnum pixelFormatCoding(AVPixelFormat pixelFormat);
     bool pixelFormatAlpha(AVPixelFormat pixelFormat);
@@ -92,6 +95,31 @@ namespace FFmpeg {
             return SWS_CS_BT2020;
         default:
             return -1;
+        }
+    }
+
+    // The Y' code of nominal white (E'Y = 1) at a bit depth (8 to 16): 219·2^(depth-8) + 16·2^(depth-8) in video
+    // range, 2^depth - 1 in full range (ITU-T H.273 §8.3)
+    constexpr unsigned nominalWhite(int depth, bool fullRange)
+    {
+        return fullRange ? ((1u << depth) - 1) : (235u << (depth - 8));
+    }
+
+    // The pixel format of a deprecated, full-range YUVJ pixel format without the J (libavutil/pixfmt.h), or the pixel
+    // format itself if it is not a YUVJ one
+    inline AVPixelFormat nonJpegPixelFormat(AVPixelFormat pixelFormat)
+    {
+        switch (pixelFormat) {
+        case AV_PIX_FMT_YUVJ420P:
+            return AV_PIX_FMT_YUV420P;
+        case AV_PIX_FMT_YUVJ422P:
+            return AV_PIX_FMT_YUV422P;
+        case AV_PIX_FMT_YUVJ444P:
+            return AV_PIX_FMT_YUV444P;
+        case AV_PIX_FMT_YUVJ440P:
+            return AV_PIX_FMT_YUV440P;
+        default:
+            return pixelFormat;
         }
     }
 

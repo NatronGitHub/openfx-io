@@ -2,11 +2,12 @@
  * runscript_render_test — RunScript's render on POSIX (issue #287): a script that runs while the host aborts the
  * render must be killed, and the render must return (kOfxStatFailed) soon after the abort, instead of waiting for the
  * script to exit. Also: a script that floods its standard error, and one that ends normally, still render; a render
- * at a render scale other than 1 fails with an error message (issue #438).
+ * at a render scale other than 1 fails with an error message (issue #438), and so does a render whose script file can
+ * only be written in part (a short write, provoked with RLIMIT_FSIZE: the truncated script was run).
  * ofxImageEffect.h, abort(): "This function indicates whether a plugin should stop whatever processing it is doing."
  *
  * Each render runs on a thread, with a time limit: a render that does not return in time is a failure, and the
- * program exits at once (on master, the aborted render waited for "sleep 60").
+ * program exits at once (before #287, the aborted render waited for "sleep 60").
  * The plug-in is linked directly and driven through the OFX actions by the in-process host of ofx_test_host.h.
  * POSIX only (not built on MS Windows, which has its own abort test in runscript_win32_test).
  *
@@ -24,6 +25,7 @@
 #include <thread>
 
 #include <cerrno>
+#include <sys/resource.h> // setrlimit
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -32,7 +34,6 @@ namespace {
 const char* const kPluginIdentifier = "fr.inria.openfx.RunScript";
 const int kW = 4;
 const int kH = 2;
-int gFailures = 0;
 // the scripts that are aborted write their PID there ("$$"): the abort waits for it, and a hung script is killed
 std::string gPidFile;
 
@@ -51,22 +52,6 @@ readPid()
     return pid;
 }
 
-OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
-void
-check(bool cond,
-      const std::string& what)
-{
-    std::printf("  %s: %s\n", cond ? "ok" : "FAIL", what.c_str());
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
 // Render script at time 1, setting the host's abort flag after abortAfterMs ms (if >= 0) once the script wrote its
 // PID to gPidFile, and return the status of the render. If it does not return within limitMs ms, the program exits at
 // once (the render thread still uses the effect).
@@ -80,7 +65,7 @@ renderScript(OfxPlugin* p,
     Effect ctx, inst;
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
         check(false, "describeInContext");
 
         return kOfxStatFailed;
@@ -96,7 +81,7 @@ renderScript(OfxPlugin* p,
     setupClipImage(dst, kW, kH, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
     inst.delegate = &ctx;
     setInstanceProps(inst, kW, kH, 1, kOfxImageEffectContextFilter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         check(false, "createInstance");
 
         return kOfxStatFailed;
@@ -104,7 +89,7 @@ renderScript(OfxPlugin* p,
     gAbort = 0;
     PropSet a = makeRenderInArgs(1., kW, kH);
     const auto start = std::chrono::steady_clock::now();
-    std::packaged_task<OfxStatus()> task([&]() { return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr); });
+    std::packaged_task<OfxStatus()> task([&]() { return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr); });
     std::future<OfxStatus> done = task.get_future();
     std::thread renderThread(std::move(task));
     if (abortAfterMs >= 0 && done.wait_for(std::chrono::milliseconds(abortAfterMs)) == std::future_status::timeout) {
@@ -131,7 +116,7 @@ renderScript(OfxPlugin* p,
     const OfxStatus st = done.get();
     std::printf("  (%s: render returned %d after %lld ms)\n", what, st, ms);
     gAbort = 0;
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
 
     return st;
 }
@@ -168,6 +153,31 @@ main()
     gRS = 1.;
     check(st == kOfxStatFailed && gPersistentError.find("render scale") != std::string::npos,
           "fails, with an error message: \"" + gPersistentError + "\"");
+
+    // A short write of the script file (here, beyond RLIMIT_FSIZE: write() writes up to the limit; SIGXFSZ is
+    // ignored, in case another write is made) fails the render: it used to run the first 64 bytes of the script,
+    // which exit 0.
+    // (While the limit is set, the output of this program to a file larger than 64 bytes is lost.)
+    std::printf("a script that can only be written in part (RLIMIT_FSIZE 64 bytes):\n");
+    std::fflush(stdout);
+    {
+        struct rlimit oldLimit;
+        const bool limited = ::getrlimit(RLIMIT_FSIZE, &oldLimit) == 0;
+        struct rlimit limit = oldLimit;
+        limit.rlim_cur = 64;
+        void (*const oldHandler)(int) = std::signal(SIGXFSZ, SIG_IGN);
+        const bool set = limited && ::setrlimit(RLIMIT_FSIZE, &limit) == 0;
+        gPersistentError.clear();
+        const std::string script = std::string("#!/bin/sh\nexit 0\n") + std::string(64, '#') + "\nexit 7\n";
+        st = renderScript(p, "short write", script, -1, 30000);
+        if (set) {
+            (void)::setrlimit(RLIMIT_FSIZE, &oldLimit);
+        }
+        std::signal(SIGXFSZ, oldHandler);
+        check(set, "RLIMIT_FSIZE set to 64 bytes");
+        check(st == kOfxStatFailed && gPersistentError.find("cannot write the script") != std::string::npos,
+              "fails, with an error message: \"" + gPersistentError + "\"");
+    }
 
     std::printf("a script that floods its standard error (20 MB) and fails:\n");
     gPersistentWarning.clear();

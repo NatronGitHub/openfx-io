@@ -60,28 +60,6 @@ sliceBase(const void* buffer,
     return reinterpret_cast<char*>(reinterpret_cast<uintptr_t>(buffer) - (uintptr_t)offset);
 }
 
-int gFailures = 0;
-
-void
-check(bool cond, const char* fmt, ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-inline OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 // ------------------------------------------------------------------ EXR files
 
 // The value of EXR pixel (x, y) (OpenEXR coordinates, y down), channel c, in the test files: exact in half
@@ -123,6 +101,7 @@ uintValue(int x, int y)
     return (uint32_t)(x * 100000 + y * 1000000) + 123u;
 }
 
+// Writes the EXR file s to path: false (a failed check) if it can't
 bool
 writeExr(const std::string& path, const ExrSpec& s)
 {
@@ -181,7 +160,7 @@ writeExr(const std::string& path, const ExrSpec& s)
         out.setFrameBuffer(fb);
         out.writePixels(h);
     } catch (const std::exception& e) {
-        std::printf("  cannot write %s: %s\n", path.c_str(), e.what());
+        check(false, "cannot write %s: %s", path.c_str(), e.what());
 
         return false;
     }
@@ -213,7 +192,7 @@ struct Reader {
         p = plugin;
         PropSet inArgs;
         pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
             std::printf("  describeInContext failed\n");
 
             return false;
@@ -221,7 +200,7 @@ struct Reader {
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
         inst.delegate = &ctx;
         setInstanceProps(inst, 100, 100, 1, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
             std::printf("  createInstance failed\n");
 
             return false;
@@ -234,15 +213,7 @@ struct Reader {
             return false;
         }
         // the user set the filename: guessParamsFromFilename, frame range...
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-        if (!ok(p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr))) {
+        if (!ok(instanceChanged(p, inst, kOfxImageEffectFileParamName))) {
             std::printf("  instanceChanged(filename) failed\n");
 
             return false;
@@ -250,7 +221,7 @@ struct Reader {
         out->connected = true;
         setupClipImage(out, 1, 1, kOfxImageComponentRGBA, kOfxBitDepthFloat, false);
         PropSet o;
-        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&o)))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&o)))) {
             std::printf("  getClipPreferences failed\n");
 
             return false;
@@ -270,7 +241,7 @@ struct Reader {
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
         if (!ok(st)) {
             return st;
         }
@@ -316,11 +287,11 @@ struct Reader {
         double rs[2] = { scale, scale };
         pSetDoubleN(PH(&ra), kOfxImageEffectPropRenderScale, 2, rs);
 
-        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr);
     }
 
     // the purge caches action
-    OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, H(inst), nullptr, nullptr); }
+    OfxStatus purgeCaches() { return p->mainEntry(kOfxActionPurgeCaches, EH(inst), nullptr, nullptr); }
 
     // the planes of the output clip (the getClipComponents action of a multi-planar host), none if it fails
     std::vector<std::string> planes(int view = 0)
@@ -330,7 +301,7 @@ struct Reader {
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, view);
         PropSet o;
         std::vector<std::string> r;
-        if (p->mainEntry(kFnOfxImageEffectActionGetClipComponents, H(inst), PH(&a), PH(&o)) != kOfxStatOK) {
+        if (p->mainEntry(kFnOfxImageEffectActionGetClipComponents, EH(inst), PH(&a), PH(&o)) != kOfxStatOK) {
             return r;
         }
         const std::string name = std::string(kFnOfxImageEffectActionGetClipComponentsPropString) + kOfxImageEffectOutputClipName;
@@ -352,16 +323,7 @@ struct Reader {
             HostWrite lock;
             ctx.params.at(kOfxImageEffectFileParamName).ov.s = { filename };
         }
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-        return p->mainEntry(kOfxActionInstanceChanged, H(inst), ap, nullptr);
+        return instanceChanged(p, inst, kOfxImageEffectFileParamName);
     }
 
     // render a plane (kFnOfxImagePlaneColour, or the string of a plane) of a view into an image of nComps
@@ -382,7 +344,7 @@ struct Reader {
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
         pSetString(PH(&ra), kOfxImageEffectPropRenderPlanes, 0, plane.c_str());
         pSetInt(PH(&ra), kFnOfxImageEffectPropView, 0, view);
-        const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr);
         pSetString(ip, kOfxImageEffectPropComponents, 0, kOfxImageComponentRGBA);
 
         return st;
@@ -410,7 +372,7 @@ struct Reader {
     ~Reader()
     {
         if (created) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         }
     }
 };
@@ -486,8 +448,6 @@ testPixels(OfxPlugin* p, const std::string& dir, const char* name, const ExrSpec
     std::printf("==== %s ====\n", name);
     const std::string path = dir + "/" + name + ".exr";
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     Reader r;
@@ -518,8 +478,6 @@ testWindow(OfxPlugin* p, const std::string& dir)
     s.display = box(5, 7, 104, 66);
     s.data = box(0, 3, 109, 69);
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     Reader r;
@@ -548,8 +506,6 @@ testScale(OfxPlugin* p, const std::string& dir)
     s.display = box(0, 0, 99, 59);
     s.data = box(10, 20, 69, 49);
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     Reader r;
@@ -593,8 +549,6 @@ testRewrite(OfxPlugin* p, const std::string& dir)
         const OfxRectI expected = k ? OfxRectI { 0, 0, 64, 32 } : OfxRectI { -11, -11, 139, 75 };
         std::printf("  rewritten: RoD %d,%d,%d,%d\n", expected.x1, expected.y1, expected.x2, expected.y2);
         if (!writeExr(path, s)) {
-            ++gFailures;
-
             return;
         }
         // the cached RoD is the old one: the image is the new one, within the old RoD
@@ -610,8 +564,6 @@ testRewrite(OfxPlugin* p, const std::string& dir)
     // the purge caches action: the next RoD is the new one
     std::printf("  rewritten, then purge caches\n");
     if (!writeExr(path, a)) {
-        ++gFailures;
-
         return;
     }
     check(ok(r.purgeCaches()), "purge caches");
@@ -657,8 +609,6 @@ testRewriteCachedRoD(OfxPlugin* p, const std::string& dir, bool unpremult)
     }
     checkRoD(r, { 0, 0, 64, 48 });
     if (!writeExr(path, b)) {
-        ++gFailures;
-
         return;
     }
     // render at scale 1, the old RoD: this render reads the new header, and updates the cache
@@ -739,8 +689,6 @@ testRevert(OfxPlugin* p, const std::string& dir)
     const OfxRectI rod = r.img;
     // the file changes: this render reads the new header, and updates the cache
     if (!writeExr(path, b)) {
-        ++gFailures;
-
         return;
     }
     r.setImage(rod, 1.);
@@ -750,8 +698,6 @@ testRevert(OfxPlugin* p, const std::string& dir)
     check(wrongPixels(r, b, rod) == 0, "the second file's pixels");
     // the file reverts to the first header (the host keeps the first RoD): the first image, not cropped
     if (!writeExr(path, a)) {
-        ++gFailures;
-
         return;
     }
     for (int k = 0; k < 2; ++k) {
@@ -776,8 +722,6 @@ testWindowBlocks(OfxPlugin* p, const std::string& dir)
     s.data = box(0, 3, 39, 590);
     s.compression = Imf::PIZ_COMPRESSION;
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     Reader r;
@@ -1163,7 +1107,7 @@ testPlanesWhileFileChanges(OfxPlugin* p, const std::string& dir)
                     int win[4] = { r.img.x1, r.img.y1, r.img.x2, r.img.y2 };
                     pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, win);
                     // (may fail: the file changed)
-                    if (ok(p->mainEntry(kOfxImageEffectActionRender, H(r.inst), PH(&ra), nullptr))) {
+                    if (ok(p->mainEntry(kOfxImageEffectActionRender, EH(r.inst), PH(&ra), nullptr))) {
                         ++okRenders;
                         if (wrongPlaneValues(r, { "R", "G", "B", "A" }, { "R", "G", "B", "A" }) != 0) {
                             ++wrongRenders;
@@ -1228,8 +1172,6 @@ testTruncated(OfxPlugin* p, const std::string& dir)
     s.compression = Imf::ZIP_COMPRESSION;
     s.bench = true; // (noise: the file is not tiny)
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     std::FILE* f = std::fopen(path.c_str(), "rb");
@@ -1287,8 +1229,6 @@ testThreads(OfxPlugin* p, const std::string& dir)
         s.bench = true;
         paths.push_back(dir + "/threads" + std::to_string(k) + ".exr");
         if (!writeExr(paths.back(), s)) {
-            ++gFailures;
-
             return;
         }
         Reader r;
@@ -1356,8 +1296,6 @@ testPoolRefcount(OfxPlugin* p, const std::string& dir)
     ExrSpec s;
     s.display = s.data = box(0, 0, 63, 31);
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     check(liveExrThreadsUsers() == 0, "no OpenEXR pool user alive (%d)", liveExrThreadsUsers());
@@ -1406,8 +1344,6 @@ testPoolChurn(OfxPlugin* p, const std::string& dir)
     s.type = Imf::HALF;
     s.bench = true;
     if (!writeExr(path, s)) {
-        ++gFailures;
-
         return;
     }
     const int kReaders = 4, kRenders = 20, kChurn = 400;
@@ -1521,8 +1457,7 @@ main(int argc, char** argv)
     initHost();
     if (multiPlanar) {
         // a Natron-like host: multiple planes (and dynamic choices, for ReadOIIO's output-layer menu)
-        pSetInt(PH(&gHostProps), kFnOfxImageEffectPropMultiPlanar, 0, 1);
-        pSetInt(PH(&gHostProps), kNatronOfxParamHostPropSupportsDynamicChoices, 0, 1);
+        setMultiPlanarHost();
     }
     OfxPlugin* p = findPlugin("fr.inria.openfx.ReadEXR");
     if (!p) {
@@ -1532,7 +1467,7 @@ main(int argc, char** argv)
     }
     Effect desc;
     p->setHost(&gOfxHost);
-    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, H(desc), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(p->mainEntry(kOfxActionDescribe, EH(desc), nullptr, nullptr))) {
         std::printf("FAIL: ReadEXR load/describe\n");
 
         return 1;
@@ -1557,7 +1492,7 @@ main(int argc, char** argv)
         Effect oiioDesc;
         if (oiio) {
             oiio->setHost(&gOfxHost);
-            if (!ok(oiio->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(oiio->mainEntry(kOfxActionDescribe, H(oiioDesc), nullptr, nullptr))) {
+            if (!ok(oiio->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(oiio->mainEntry(kOfxActionDescribe, EH(oiioDesc), nullptr, nullptr))) {
                 oiio = nullptr;
             }
         }

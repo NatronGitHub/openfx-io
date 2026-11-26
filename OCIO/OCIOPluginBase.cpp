@@ -61,9 +61,8 @@ OCIOPluginBase::defineEnableGPUParam(ImageEffectDescriptor& desc, PageParamDescr
     const ImageEffectHostDescription& gHostDescription = *getImageEffectHostDescription();
     // Resolve advertises OpenGL support in its host description, but never calls render with OpenGL enabled
     if (gHostDescription.supportsOpenGLRender && (gHostDescription.hostName.compare(0, 14, "DaVinciResolve") != 0)) {
-        // OCIO's GPU render is not accurate enough.
-        // see https://github.com/imageworks/OpenColorIO/issues/394
-        param->setDefault(/*true*/ false);
+        // off by default: the CPU render is the reference, and the GPU render is opt-in
+        param->setDefault(false);
         if (gHostDescription.APIVersionMajor * 100 + gHostDescription.APIVersionMinor < 104) {
             // Switching OpenGL render from the plugin was introduced in OFX 1.4
             param->setEnabled(false);

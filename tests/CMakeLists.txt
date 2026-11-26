@@ -12,11 +12,13 @@
 #                         has it (as tests/Makefile's WITH_LIBRAW=1); default ON
 #   IO_TESTS_TIMEOUT      time limit of each test, in seconds (test-ffmpeg: twice as much); default 1800
 #   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
-#   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run:
-#                         test-ofx14-scan-asan, test-exr-tsan, test-exr-ubsan, test-exr-tsan-debug,
-#                         test-ocio-processor-cache-tsan (and -renders-tsan), test-oiio-layer-menu-tsan,
-#                         test-readffmpeg-views-concurrent-tsan, test-writeffmpeg-codec-edit-during-begin-tsan
-#                         (needs a compiler with -fsanitize=thread,undefined; not with MinGW); default OFF
+#   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run (the
+#                         tests registered under if(IO_TESTS_SANITIZERS ...) below): test-readffmpeg-views-concurrent-tsan,
+#                         test-writeffmpeg-codec-edit-during-begin-tsan, test-ocio-processor-cache[-renders]-tsan,
+#                         test-oiio-threads-tsan, test-oiio-layer-menu-tsan, test-ofx14-scan-asan[-full],
+#                         test-exr[-multiplanar]-tsan, test-exr[-multiplanar]-ubsan, test-exr-tsan-debug,
+#                         test-reader-hooks-tsan-debug (needs a compiler with -fsanitize=thread,undefined; not on MS
+#                         Windows: MinGW has neither); default OFF
 # (tests/Makefile's bench-exr is not a test: run it with make.)
 
 option(IO_TESTS_WITH_LIBRAW "Build ReadOIIO's RAW support in the tests that link it, when the bundle has it" ON)
@@ -44,6 +46,11 @@ _io_has(RunScript _io_t_runscript)
 set(_io_t_libraw OFF)
 if(IO_TESTS_WITH_LIBRAW AND _io_t_oiio AND OFX_IO_WITH_LIBRAW AND TARGET PkgConfig::LIBRAW)
   set(_io_t_libraw ON)
+endif()
+# LibRaw built with OpenMP: its headers include <omp.h> (as for the IO target)
+set(_io_libraw_openmp OFF)
+if(_io_t_libraw AND "${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIBRARIES}" MATCHES "openmp|(^|;)-?l?gomp(;|$)|(^|;)-?l?omp(;|$)")
+  set(_io_libraw_openmp ON)
 endif()
 
 # The build type's flags (e.g. Release's -O3 -DNDEBUG) don't apply in this directory: each program gets those of
@@ -124,8 +131,7 @@ function(io_test_program name)
     add_executable(${name} ${P_SOURCES} ${_io_ofx_support})
     target_compile_options(${name} PRIVATE -O0 -g)
     target_link_libraries(${name} PRIVATE io_tests_ofx)
-    if(_io_t_libraw AND "${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIBRARIES}" MATCHES "openmp|(^|;)-?l?gomp(;|$)|(^|;)-?l?omp(;|$)")
-      # LibRaw's headers include <omp.h> when compiled with OpenMP (as for the IO target)
+    if(_io_libraw_openmp)
       ofx_target_openmp(${name})
     endif()
   else()
@@ -173,7 +179,7 @@ set(_io_asan_env "ASAN_OPTIONS=detect_leaks=0 $ENV{ASAN_OPTIONS}")
 # the options of the ThreadSanitizer runs: stop at the first report, and the suppressions of tsan.supp (the races that
 # uninstrumented libraries order themselves)
 set(_io_tsan_options "halt_on_error=1 suppressions='${T}/tsan.supp'")
-set(_io_tsan_opt_env "TSAN_OPTIONS=${_io_tsan_options} $ENV{TSAN_OPTIONS}")
+set(_io_tsan_env "TSAN_OPTIONS=${_io_tsan_options} $ENV{TSAN_OPTIONS}")
 find_program(IO_BASH NAMES bash)
 
 # ---- test-ffmpeg: the FFmpeg reader-core harness (FFmpegFile.cpp), on clips that the ffmpeg CLI generates
@@ -274,10 +280,10 @@ if(TARGET io_tests_ofx)
   # test-readffmpeg-views-concurrent (#291): concurrent renders of the views of a movie with one video stream per view
   # (written by the ffmpeg CLI): each render gets its own view
   io_test(test-readffmpeg-views-concurrent ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov.i291.mov" --views-concurrent)
-  if(IO_TESTS_SANITIZERS)
+  if(IO_TESTS_SANITIZERS AND NOT WIN32)
     # test-readffmpeg-views-concurrent-tsan: the same with ThreadSanitizer
     io_test_program(ofx_render_test_tsan OFX THREADS SOURCES ${T}/ofx_render_test.cpp ${_io_plugin_srcs} SANITIZE -fsanitize=thread)
-    io_test(test-readffmpeg-views-concurrent-tsan ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
+    io_test(test-readffmpeg-views-concurrent-tsan ENV "${_io_ocio_env}" "${_io_tsan_env}"
             COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i291.tsan.mov" --views-concurrent)
   endif()
   # test-writeffmpeg-dnxhd-profiles (#305): each DNxHD/DNxHR Codec Profile in 1080p and 720p at 23.976 to 60 fps: the
@@ -316,7 +322,7 @@ if(TARGET io_tests_ofx)
   if(IO_TESTS_SANITIZERS AND NOT WIN32)
     # test-writeffmpeg-codec-edit-during-begin-tsan: the same with ThreadSanitizer (ofx_render_test_tsan, above), no
     # data race in WriteFFmpeg
-    io_test(test-writeffmpeg-codec-edit-during-begin-tsan ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
+    io_test(test-writeffmpeg-codec-edit-during-begin-tsan ENV "${_io_ocio_env}" "${_io_tsan_env}"
             COMMAND ofx_render_test_tsan "${B}/.render_out.mov.i319tsan.mov" --codec-edit-during-begin)
   endif()
   # test-writeffmpeg-pixfmt-choice (#218): the pixel format that WriteFFmpeg selects fits the Pref. Pixel Coding
@@ -390,16 +396,16 @@ if(TARGET io_tests_ofx)
   # (with DIR, run_test.cmake runs the program: give its path, not the target name)
   io_test(test-ocio-processor-cache DIR "${B}/.ocio_processor_cache"
           COMMAND $<TARGET_FILE:ocio_processor_cache_test> "${B}/.ocio_processor_cache")
-  if(IO_TESTS_SANITIZERS)
+  if(IO_TESTS_SANITIZERS AND NOT WIN32)
     io_test_program(ocio_processor_cache_test_tsan OFX THREADS SOURCES ${T}/ocio_processor_cache_test.cpp ${_io_ocio_pc_srcs}
                     DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_gl_incs} SANITIZE -fsanitize=thread LIBS ${_io_gl_libs})
     io_test(test-ocio-processor-cache-tsan DIR "${B}/.ocio_processor_cache_tsan"
-            ENV "${_io_tsan_opt_env}"
+            ENV "${_io_tsan_env}"
             COMMAND $<TARGET_FILE:ocio_processor_cache_test_tsan> "${B}/.ocio_processor_cache_tsan")
     # test-ocio-processor-cache-renders-tsan: the same without the purges during renders, whose only reports with
     # uninstrumented OpenColorIO libraries are false positives (CI runs this one, not the one above: #471)
     io_test(test-ocio-processor-cache-renders-tsan DIR "${B}/.ocio_processor_cache_renders_tsan"
-            ENV "${_io_tsan_opt_env}"
+            ENV "${_io_tsan_env}"
             COMMAND $<TARGET_FILE:ocio_processor_cache_test_tsan> --no-purge-during-renders
                     "${B}/.ocio_processor_cache_renders_tsan")
   endif()
@@ -429,11 +435,11 @@ if(TARGET io_tests_ofx)
   io_test_program(oiio_threadpool_test OFX SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs} ${S}/OIIO/OIIOResize.cpp
                   INCLUDES ${S}/openfx/Support/Plugins/include)
   io_test(test-oiio-threads ENV "${_io_ocio_env}" COMMAND oiio_threadpool_test)
-  if(IO_TESTS_SANITIZERS)
+  if(IO_TESTS_SANITIZERS AND NOT WIN32)
     # test-oiio-threads-tsan: the same with ThreadSanitizer (the instances are counted from several threads, #250)
     io_test_program(oiio_threadpool_test_tsan OFX THREADS SOURCES ${T}/oiio_threadpool_test.cpp ${_io_plugin_srcs}
                     ${S}/OIIO/OIIOResize.cpp INCLUDES ${S}/openfx/Support/Plugins/include SANITIZE -fsanitize=thread)
-    io_test(test-oiio-threads-tsan ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
+    io_test(test-oiio-threads-tsan ENV "${_io_ocio_env}" "${_io_tsan_env}"
             COMMAND oiio_threadpool_test_tsan)
   endif()
 
@@ -445,13 +451,13 @@ if(TARGET io_tests_ofx)
 
   # test-reader-window: ReadOIIO, ReadPFM and ReadPNG (with libpng): render windows narrower than the image, render
   # scale 1/2, files rewritten while rendering, with AddressSanitizer
-  set(_io_srcs ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp ${S}/PFM/ReadPFM.cpp)
-  set(_io_defs "")
-  set(_io_libs "")
+  set(_io_rw_srcs ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp ${S}/PFM/ReadPFM.cpp)
+  set(_io_rw_defs "")
+  set(_io_rw_libs "")
   if(_io_t_png)
-    list(APPEND _io_srcs ${S}/PNG/ReadPNG.cpp)
-    set(_io_defs HAVE_PNG)
-    set(_io_libs io_png)
+    list(APPEND _io_rw_srcs ${S}/PNG/ReadPNG.cpp)
+    set(_io_rw_defs HAVE_PNG)
+    set(_io_rw_libs io_png)
   endif()
   # also UBSan's signed-integer-overflow check, stopping at the first error (PNG offsets near the limits of an int at
   # scales 1/2 and 1/4, #371), except with MinGW, as AddressSanitizer
@@ -459,8 +465,8 @@ if(TARGET io_tests_ofx)
   if(NOT WIN32)
     list(APPEND _io_rw_sanitize -fsanitize=signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow)
   endif()
-  io_test_program(reader_window_test OFX THREADS SOURCES ${T}/reader_window_test.cpp ${_io_srcs} ${_io_reader_srcs}
-                  DEFINITIONS ${_io_defs} INCLUDES ${S}/PFM ${S}/PNG SANITIZE ${_io_rw_sanitize} LIBS ${_io_libs})
+  io_test_program(reader_window_test OFX THREADS SOURCES ${T}/reader_window_test.cpp ${_io_rw_srcs} ${_io_reader_srcs}
+                  DEFINITIONS ${_io_rw_defs} INCLUDES ${S}/PFM ${S}/PNG SANITIZE ${_io_rw_sanitize} LIBS ${_io_rw_libs})
   io_test(test-reader-window DIR "${B}/.reader_window" ENV "${_io_ocio_env}" "${_io_asan_env}"
           COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window")
   # the 2-part EXR test, in a Natron-like host (tests/Makefile's second run of reader_window_test)
@@ -478,7 +484,7 @@ if(TARGET io_tests_ofx)
     io_test_program(oiio_layer_menu_test_tsan OFX THREADS SOURCES ${_io_layer_menu_srcs} DEFINITIONS NDEBUG
                     SANITIZE -fsanitize=thread)
     io_test(test-oiio-layer-menu-tsan DIR "${B}/.oiio_layer_menu_tsan" ENV "${_io_ocio_env}"
-            "${_io_tsan_opt_env}" COMMAND $<TARGET_FILE:oiio_layer_menu_test_tsan> "${B}/.oiio_layer_menu_tsan")
+            "${_io_tsan_env}" COMMAND $<TARGET_FILE:oiio_layer_menu_test_tsan> "${B}/.oiio_layer_menu_tsan")
   endif()
 
   # test-png-corrupt: ReadPNG and WritePNG on libpng errors (#235): corrupt PNG files fail cleanly (no crash, no
@@ -502,23 +508,27 @@ if(TARGET io_tests_ofx)
   # ffmpeg (skipped without oiiotool)
   if(TARGET OfxHost AND IO_BASH)
     set(_io_hd "${S}/openfx/HostSupport/examples")
-    add_executable(reader_window_host ${T}/hostdemo/reader_window.cpp "${_io_hd}/hostDemoClipInstance.cpp"
-                   "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
-                   "${_io_hd}/hostDemoParamInstance.cpp")
-    target_compile_options(reader_window_host PRIVATE -O0 -g)
-    target_include_directories(reader_window_host PRIVATE "${_io_hd}")
-    target_link_libraries(reader_window_host PRIVATE OfxHost)
-    set_target_properties(reader_window_host PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
-                          CXX_EXTENSIONS OFF)
+    # io_hostdemo_program(<name> <source> [LIBS <lib>...]): a host built on HostSupport (OfxHost) and hostDemo's host
+    # classes
+    function(io_hostdemo_program name src)
+      cmake_parse_arguments(PARSE_ARGV 2 P "" "" "LIBS")
+      add_executable(${name} ${src} "${_io_hd}/hostDemoClipInstance.cpp" "${_io_hd}/hostDemoEffectInstance.cpp"
+                     "${_io_hd}/hostDemoHostDescriptor.cpp" "${_io_hd}/hostDemoParamInstance.cpp")
+      target_compile_options(${name} PRIVATE -O0 -g)
+      target_include_directories(${name} PRIVATE "${_io_hd}")
+      target_link_libraries(${name} PRIVATE OfxHost ${P_LIBS})
+      set_target_properties(${name} PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    endfunction()
+    io_hostdemo_program(reader_window_host ${T}/hostdemo/reader_window.cpp)
     # the bundle (tests/Makefile's RW_BUNDLE_BINARY), with the flags of the tests that link the plug-ins
     set(_io_rw_bundle "${B}/.reader_window_host/plugins/ReaderWindow.ofx.bundle/Contents/${ARCHDIR}")
-    add_library(io_reader_window_plugins MODULE ${_io_srcs} ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp
+    add_library(io_reader_window_plugins MODULE ${_io_rw_srcs} ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp
                 ${S}/FFmpeg/PixelFormat.cpp ${_io_reader_srcs} ${_io_ofx_support})
     target_compile_options(io_reader_window_plugins PRIVATE -O0 -g)
-    target_compile_definitions(io_reader_window_plugins PRIVATE ${_io_defs})
+    target_compile_definitions(io_reader_window_plugins PRIVATE ${_io_rw_defs})
     target_include_directories(io_reader_window_plugins PRIVATE ${S}/PFM ${S}/PNG)
-    target_link_libraries(io_reader_window_plugins PRIVATE io_tests_ofx ${_io_libs})
-    if(_io_t_libraw AND "${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIBRARIES}" MATCHES "openmp|(^|;)-?l?gomp(;|$)|(^|;)-?l?omp(;|$)")
+    target_link_libraries(io_reader_window_plugins PRIVATE io_tests_ofx ${_io_rw_libs})
+    if(_io_libraw_openmp)
       ofx_target_openmp(io_reader_window_plugins)
     endif()
     set_target_properties(io_reader_window_plugins PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
@@ -535,18 +545,12 @@ if(TARGET io_tests_ofx)
     set_tests_properties(test-reader-window-host PROPERTIES SKIP_RETURN_CODE 77)
     # test-exit-without-unload: a host that renders ReadOIIO, destroys its instance and exits without
     # kOfxActionUnload, 10 times, must exit (#250); linked with OpenImageIO, whose pool it also checks
-    add_executable(exit_without_unload ${T}/hostdemo/exit_without_unload.cpp "${_io_hd}/hostDemoClipInstance.cpp"
-                   "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
-                   "${_io_hd}/hostDemoParamInstance.cpp")
-    target_compile_options(exit_without_unload PRIVATE -O0 -g)
-    target_include_directories(exit_without_unload PRIVATE "${_io_hd}")
-    target_link_libraries(exit_without_unload PRIVATE OfxHost OpenImageIO::OpenImageIO)
+    set(_io_ewu_libs OpenImageIO::OpenImageIO)
     if(IO_TESTS_TBBMALLOC_LIBRARY)
       # (the oneTBB exit crash of programs that link OpenImageIO, see io_tests_ofx)
-      target_link_libraries(exit_without_unload PRIVATE "${IO_TESTS_TBBMALLOC_LIBRARY}")
+      list(APPEND _io_ewu_libs "${IO_TESTS_TBBMALLOC_LIBRARY}")
     endif()
-    set_target_properties(exit_without_unload PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
-                          CXX_EXTENSIONS OFF)
+    io_hostdemo_program(exit_without_unload ${T}/hostdemo/exit_without_unload.cpp LIBS ${_io_ewu_libs})
     add_dependencies(exit_without_unload io_reader_window_plugins)
     io_test(test-exit-without-unload ENV "${_io_ocio_env}"
             COMMAND "${IO_BASH}" "${T}/hostdemo/exit_without_unload.sh" $<TARGET_FILE:exit_without_unload>
@@ -556,14 +560,7 @@ if(TARGET io_tests_ofx)
     # the plug-ins, keeps running, then exits, 5 times: the OpenMP runtime loaded after the render must still be loaded
     # after the unload, and no run may crash (#239); not linked with OpenImageIO, LibRaw or OpenMP, so that nothing
     # else keeps them loaded
-    add_executable(raw_unload ${T}/hostdemo/raw_unload.cpp "${_io_hd}/hostDemoClipInstance.cpp"
-                   "${_io_hd}/hostDemoEffectInstance.cpp" "${_io_hd}/hostDemoHostDescriptor.cpp"
-                   "${_io_hd}/hostDemoParamInstance.cpp")
-    target_compile_options(raw_unload PRIVATE -O0 -g)
-    target_include_directories(raw_unload PRIVATE "${_io_hd}")
-    target_link_libraries(raw_unload PRIVATE OfxHost)
-    set_target_properties(raw_unload PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
-                          CXX_EXTENSIONS OFF)
+    io_hostdemo_program(raw_unload ${T}/hostdemo/raw_unload.cpp)
     add_dependencies(raw_unload io_reader_window_plugins)
     io_test(test-raw-unload ENV "${_io_ocio_env}"
             COMMAND "${IO_BASH}" "${T}/hostdemo/raw_unload.sh" $<TARGET_FILE:raw_unload>
@@ -601,18 +598,18 @@ if(TARGET io_tests_ofx)
       ${S}/SupportExt/ofxsOGLFontData.cpp ${S}/SupportExt/ofxsRamp.cpp ${S}/SupportExt/ofxsGenerator.cpp
       ${S}/SupportExt/ofxsTransformInteract.cpp ${S}/SupportExt/ofxsRectangleInteract.cpp ${S}/SupportExt/ofxsOGLUtilities.cpp
       ${S}/SupportExt/glad/glad.cpp ${S}/SupportExt/glad/gladegl.cpp)
-    set(_io_libs ${_io_gl_libs})
+    set(_io_ofx14_libs ${_io_gl_libs})
     if(_io_t_seexpr)
       list(APPEND _io_ofx14_srcs ${S}/SeExpr/SeExpr.cpp ${S}/SeExpr/SeGrain.cpp ${S}/SeExpr/SeNoise.cpp)
-      list(APPEND _io_libs SeExpr::SeExpr)
+      list(APPEND _io_ofx14_libs SeExpr::SeExpr)
     endif()
     if(_io_t_png)
       list(APPEND _io_ofx14_srcs ${S}/PNG/ReadPNG.cpp ${S}/PNG/WritePNG.cpp)
-      list(APPEND _io_libs io_png)
+      list(APPEND _io_ofx14_libs io_png)
     endif()
     set(_io_ofx14_incs ${S}/EXR ${S}/OCIO ${S}/PFM ${S}/PNG ${S}/SeExpr ${S}/SupportExt/glad ${S}/openfx/Support/Plugins/include)
     io_test_program(ofx14_host_test OFX THREADS SOURCES ${_io_ofx14_srcs}
-                    DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_ofx14_incs} LIBS ${_io_libs})
+                    DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_ofx14_incs} LIBS ${_io_ofx14_libs})
     set(_p $<TARGET_FILE:ofx14_host_test>)
     # the OFX 1.4-only host; an OFX 1.1 host; OFX 1.4 with the optional OpenGL render suite and a sequential render
     # status of 0; the full host
@@ -633,7 +630,7 @@ if(TARGET io_tests_ofx)
       # OfxPlugin structs of the Support library's generatePlugInfo() are only deleted when a plug-in is unloaded,
       # never at exit)
       io_test_program(ofx14_host_test_asan OFX THREADS SOURCES ${_io_ofx14_srcs}
-                      DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_ofx14_incs} SANITIZE ${_io_asan} LIBS ${_io_libs})
+                      DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_ofx14_incs} SANITIZE ${_io_asan} LIBS ${_io_ofx14_libs})
       set(_p $<TARGET_FILE:ofx14_host_test_asan>)
       io_test(test-ofx14-scan-asan DIR "${B}/.ofx14scanasan" ENV "${_io_ocio_env}" "${_io_asan_env}"
               COMMAND ${_p} --scan "${B}/.ofx14scanasan")
@@ -642,10 +639,10 @@ if(TARGET io_tests_ofx)
       # test-exr-tsan: test-exr with ThreadSanitizer
       io_test_program(exr_read_test_tsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       SANITIZE -fsanitize=thread)
-      io_test(test-exr-tsan DIR "${B}/.exr_read_tsan" ENV "${_io_ocio_env}" "${_io_tsan_opt_env}"
+      io_test(test-exr-tsan DIR "${B}/.exr_read_tsan" ENV "${_io_ocio_env}" "${_io_tsan_env}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> "${B}/.exr_read_tsan")
       io_test(test-exr-multiplanar-tsan DIR "${B}/.exr_read_multiplanar_tsan" ENV "${_io_ocio_env}"
-              "${_io_tsan_opt_env}"
+              "${_io_tsan_env}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> --multiplanar "${B}/.exr_read_multiplanar_tsan")
       # test-exr-ubsan: with UndefinedBehaviorSanitizer, stopping at the first error, with an allocator that fills new
       # memory with a pattern (tests/Makefile's test-exr-ubsan)
@@ -658,15 +655,15 @@ if(TARGET io_tests_ofx)
               COMMAND $<TARGET_FILE:exr_read_test_ubsan> --multiplanar "${B}/.exr_read_multiplanar_ubsan")
       # test-exr-tsan-debug: test-exr and test-reader-hooks, DEBUG builds (the Support library's property validation
       # and logging) with ThreadSanitizer
-      set(_io_tsan_env "${_io_ocio_env}" "TSAN_OPTIONS=${_io_tsan_options} abort_on_error=0 $ENV{TSAN_OPTIONS}")
+      set(_io_tsan_debug_env "${_io_ocio_env}" "TSAN_OPTIONS=${_io_tsan_options} abort_on_error=0 $ENV{TSAN_OPTIONS}")
       io_test_program(exr_read_test_tsan_debug OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       DEFINITIONS DEBUG
                       SANITIZE -fsanitize=thread)
-      io_test(test-exr-tsan-debug DIR "${B}/.exr_read_tsan_debug" ENV ${_io_tsan_env}
+      io_test(test-exr-tsan-debug DIR "${B}/.exr_read_tsan_debug" ENV ${_io_tsan_debug_env}
               COMMAND $<TARGET_FILE:exr_read_test_tsan_debug> "${B}/.exr_read_tsan_debug")
       io_test_program(reader_hooks_test_tsan_debug OFX THREADS SOURCES ${T}/reader_hooks_test.cpp ${_io_reader_srcs}
                       DEFINITIONS DEBUG SANITIZE -fsanitize=thread)
-      io_test(test-reader-hooks-tsan-debug ENV ${_io_tsan_env}
+      io_test(test-reader-hooks-tsan-debug ENV ${_io_tsan_debug_env}
               COMMAND reader_hooks_test_tsan_debug "${B}/.reader_hooks_tsan_debug")
     endif()
   endif()
@@ -703,7 +700,7 @@ if(_io_t_runscript)
                     SOURCES ${T}/runscript_render_test.cpp ${S}/RunScript/RunScript.cpp ${S}/RunScript/RunScriptWin32.cpp
                             ${S}/SupportExt/ofxsThreadSuite.cpp ${_io_ofx_support}
                     DEFINITIONS OFX_EXTENSIONS_VEGAS OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_TUTTLE OFX_EXTENSIONS_NATRON
-                    INCLUDES ${S}/RunScript ${S}/SupportExt ${S}/openfx/include ${S}/openfx/Support/include)
+                    INCLUDES ${S}/RunScript ${S}/IOSupport ${S}/SupportExt ${S}/openfx/include ${S}/openfx/Support/include)
     io_test(test-runscript-render TIMEOUT 300 COMMAND runscript_render_test)
   endif()
 endif()

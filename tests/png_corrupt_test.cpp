@@ -96,30 +96,6 @@ __asan_default_options()
 
 namespace {
 
-int gFailures = 0;
-
-void
-check(bool cond,
-      const char* fmt,
-      ...)
-{
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
-inline OfxImageEffectHandle
-H(Effect& e)
-{
-    return reinterpret_cast<OfxImageEffectHandle>(&e);
-}
-
 // ------------------------------------------------------------------ files
 
 typedef std::vector<unsigned char> Bytes;
@@ -435,7 +411,7 @@ struct Reader {
         p = plugin;
         PropSet inArgs;
         pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
             std::printf("  describeInContext failed\n");
 
             return false;
@@ -443,7 +419,7 @@ struct Reader {
         setOverrideString(&ctx, kOfxImageEffectFileParamName, filename);
         inst.delegate = &ctx;
         setInstanceProps(inst, 100, 100, 1, kOfxImageEffectContextReader);
-        if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+        if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
             std::printf("  createInstance failed\n");
 
             return false;
@@ -468,7 +444,7 @@ struct Reader {
         setOverrideInt(&ctx, "outputPremult", 1);
         setOverrideInt(&ctx, "outputComponents", 0); // RGBA
         PropSet o;
-        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&o)))) {
+        if (!ok(p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&o)))) {
             std::printf("  getClipPreferences failed\n");
 
             return false;
@@ -479,16 +455,7 @@ struct Reader {
 
     OfxStatus changed(const char* param)
     {
-        PropSet a;
-        OfxPropertySetHandle ap = PH(&a);
-        pSetString(ap, kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(ap, kOfxPropName, 0, param);
-        pSetString(ap, kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        pSetDouble(ap, kOfxPropTime, 0, 1.);
-        double rs[2] = { 1., 1. };
-        pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-
-        return p->mainEntry(kOfxActionInstanceChanged, H(inst), PH(&a), nullptr);
+        return instanceChanged(p, inst, param);
     }
 
     OfxStatus getRoD()
@@ -499,7 +466,7 @@ struct Reader {
         pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
         PropSet o;
-        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, H(inst), PH(&a), PH(&o));
+        OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, EH(inst), PH(&a), PH(&o));
         if (!ok(st)) {
             return st;
         }
@@ -528,24 +495,16 @@ struct Reader {
         PropSet ra = makeRenderInArgs(1., 0, 0);
         pSetIntN(PH(&ra), kOfxImageEffectPropRenderWindow, 4, b);
 
-        return p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&ra), nullptr);
+        return p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&ra), nullptr);
     }
 
     ~Reader()
     {
         if (created) {
-            p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+            p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
         }
     }
 };
-
-std::string
-persistentError()
-{
-    std::lock_guard<std::mutex> lock(gMessagesMutex);
-
-    return gPersistentError;
-}
 
 void
 clearMessages()
@@ -669,8 +628,8 @@ testWrite(OfxPlugin* p,
     Effect ctx; // the descriptor (Describe and DescribeInContext, as loadAndDescribe in ofx_render_test)
     PropSet inArgs;
     pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionDescribe, H(ctx), nullptr, nullptr))
-        || !ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, H(ctx), PH(&inArgs), nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionDescribe, EH(ctx), nullptr, nullptr))
+        || !ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
         check(false, "WritePNG describeInContext");
 
         return;
@@ -680,7 +639,7 @@ testWrite(OfxPlugin* p,
     Effect inst;
     inst.delegate = &ctx;
     setInstanceProps(inst, w, h, 1, kOfxImageEffectContextWriter);
-    if (!ok(p->mainEntry(kOfxActionCreateInstance, H(inst), nullptr, nullptr))) {
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
         check(false, "WritePNG createInstance");
 
         return;
@@ -696,7 +655,7 @@ testWrite(OfxPlugin* p,
     Clip* o = ctx.clips.count(kOfxImageEffectOutputClipName) ? ctx.clips[kOfxImageEffectOutputClipName] : nullptr;
     if (!src || !o) {
         check(false, "WritePNG: Source and Output clips");
-        p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+        p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
 
         return;
     }
@@ -710,12 +669,12 @@ testWrite(OfxPlugin* p,
     setupClipImage(o, w, h, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
     {
         PropSet outArgs;
-        p->mainEntry(kOfxImageEffectActionGetClipPreferences, H(inst), nullptr, PH(&outArgs));
+        p->mainEntry(kOfxImageEffectActionGetClipPreferences, EH(inst), nullptr, PH(&outArgs));
     }
     PropSet a = makeRenderInArgs(1., w, h);
-    const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, H(inst), PH(&a), nullptr);
+    const OfxStatus st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
     const std::string err = persistentError();
-    p->mainEntry(kOfxActionDestroyInstance, H(inst), nullptr, nullptr);
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
     if (!verbose) {
         return;
     }
@@ -911,8 +870,8 @@ main(int argc,
     Effect readDesc, writeDesc;
     read->setHost(&gOfxHost);
     write->setHost(&gOfxHost);
-    if (!ok(read->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(read->mainEntry(kOfxActionDescribe, H(readDesc), nullptr, nullptr))
-        || !ok(write->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(write->mainEntry(kOfxActionDescribe, H(writeDesc), nullptr, nullptr))) {
+    if (!ok(read->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(read->mainEntry(kOfxActionDescribe, EH(readDesc), nullptr, nullptr))
+        || !ok(write->mainEntry(kOfxActionLoad, nullptr, nullptr, nullptr)) || !ok(write->mainEntry(kOfxActionDescribe, EH(writeDesc), nullptr, nullptr))) {
         std::printf("FAIL: load/describe\n");
 
         return 1;

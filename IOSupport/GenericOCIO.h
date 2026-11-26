@@ -34,8 +34,10 @@
 #endif
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include "ofxsImageEffect.h"
@@ -66,6 +68,32 @@ typedef OCIO_SHARED_PTR<OpenGLBuilder> OpenGLBuilderRcPtr;
 
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
+
+// The scoped enums used as bitmasks (GenericOCIO's FixColorspace and StringKeys) opt in to operator| and has() with
+// template <> struct IsFlagEnum<E> : std::true_type {};
+template <class E>
+struct IsFlagEnum : std::false_type {};
+
+template <class E, class = std::enable_if_t<IsFlagEnum<E>::value>>
+constexpr E
+operator|(E a,
+          E b)
+{
+    using U = std::underlying_type_t<E>;
+
+    return E(U(a) | U(b));
+}
+
+// true if set contains the flag f
+template <class E, class = std::enable_if_t<IsFlagEnum<E>::value>>
+constexpr bool
+has(E set,
+    E f)
+{
+    using U = std::underlying_type_t<E>;
+
+    return (U(set) & U(f)) != 0;
+}
 
 #ifdef OFX_IO_USING_OCIO
 #define kOCIOParamConfigFile "ocioConfigFile"
@@ -161,14 +189,12 @@ public:
 #ifdef OFX_IO_USING_OCIO
     // the context of config (the one returned by getConfig()) with the OCIO Context params at time
     OCIO_NAMESPACE::ConstContextRcPtr getLocalContext(const OCIO_NAMESPACE::ConstConfigRcPtr& config, double time) const;
-    // a copy of _config, taken under _configMutex: a render uses its copy, which the main thread can't replace (#275)
+    // a copy of the config, taken under its lock: a render uses its copy, which the main thread can't replace (#275)
     OCIO_NAMESPACE::ConstConfigRcPtr getConfig() const
     {
-        AutoMutex guard(_configMutex);
-
-        return _config;
+        return _config.get();
     }
-    OCIO_NAMESPACE::ConstProcessorRcPtr getOrCreateProcessor(double time);
+    OCIO_NAMESPACE::ConstProcessorRcPtr getOrCreateProcessor(double time) const;
 
 #endif
     bool configIsDefault() const;
@@ -197,10 +223,10 @@ public:
             }
         }
         ~InstanceChanged() { --_ocio->_instanceChangedDepth; }
+        InstanceChanged(const InstanceChanged&) = delete;
+        InstanceChanged& operator=(const InstanceChanged&) = delete;
 
     private:
-        InstanceChanged(const InstanceChanged&);
-        InstanceChanged& operator=(const InstanceChanged&);
         GenericOCIO* _ocio;
     };
 
@@ -216,6 +242,13 @@ public:
 #endif
     }
 
+#ifdef OFX_IO_USING_OCIO
+    // true if args is a user edit of the input (or output) colorspace param or of its menu, not a change that
+    // GenericOCIO makes (see isSettingColorspaces(): e.g. Natron reports a key that GenericOCIO deletes as a user edit)
+    bool isUserInputColorspaceEdit(const OFX::InstanceChangedArgs& args, const std::string& paramName) const;
+    bool isUserOutputColorspaceEdit(const OFX::InstanceChangedArgs& args, const std::string& paramName) const;
+#endif
+
 public:
     typedef IOMutex Mutex;
     typedef IOAutoMutex AutoMutex;
@@ -225,8 +258,14 @@ private:
     void resetExpressionCache();
 #if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
     struct Side;
+    // what fixColorspaceAtTime() does (a bitmask)
+    enum class FixColorspace : unsigned {
+        canonicalize = 1, //< give the string param the canonical name of its colorspace
+        fallback = 2, //< give it a valid colorspace if its colorspace is not in the config
+        warn = 4, //< with fallback: warn about the unknown colorspace
+    };
     // canonicalize the colorspace string param of a side that changed at time, or reset it to a valid colorspace
-    void fixColorspaceAtTime(Side& side, double time, bool canonicalize, bool fallback, bool warn);
+    void fixColorspaceAtTime(Side& side, double time, FixColorspace what);
     // the side of a colorspace param (its string param or its menu), or NULL
     Side* sideOfParam(const std::string& paramName, bool* isChoice);
     // update the state and value (or keys) of the menu of a side from its string param
@@ -255,10 +294,10 @@ private:
             _ocio->_settingColorspaces = true;
         }
         ~SettingColorspaces() { _ocio->_settingColorspaces = _wasSetting; }
+        SettingColorspaces(const SettingColorspaces&) = delete;
+        SettingColorspaces& operator=(const SettingColorspaces&) = delete;
 
     private:
-        SettingColorspaces(const SettingColorspaces&);
-        SettingColorspaces& operator=(const SettingColorspaces&);
         GenericOCIO* _ocio;
         bool _wasSetting;
     };
@@ -288,31 +327,30 @@ private:
         OFX::StringParam* str; //< NULL if the effect doesn't have this side
         OFX::ChoiceParam* choice; //< its menu
         int initialIndex;
-        int strExpression; //< hasExpressionKeys(str), if known in this instance changed action (else -1)
-        int choiceExpression; //< hasExpressionKeys(choice), likewise
+        std::optional<bool> strExpression; //< hasExpressionKeys(str), if known in this instance changed action
+        std::optional<bool> choiceExpression; //< hasExpressionKeys(choice), likewise
     };
     Side _sides[2]; //< input, output
     bool _choiceAnimSynced;
 #endif
-    OFX::StringParam* _contextKey1;
-    OFX::StringParam* _contextValue1;
-    OFX::StringParam* _contextKey2;
-    OFX::StringParam* _contextValue2;
-    OFX::StringParam* _contextKey3;
-    OFX::StringParam* _contextValue3;
-    OFX::StringParam* _contextKey4;
-    OFX::StringParam* _contextValue4;
+    // the OCIO Context params (kOCIOParamContextKey1... and kOCIOParamContextValue1...), NULL if the effect doesn't
+    // have them
+    static constexpr int kContextVariables = 4;
+    OFX::StringParam* _contextKeys[kContextVariables];
+    OFX::StringParam* _contextValues[kContextVariables];
 
     // Thread safety: the render actions (and isIdentity) run on render threads, concurrently with each other and with
     // the main thread (OFX ofxThreadSafety.rst: "An instance must be able to handle simultaneous actions called on the
     // main and render threads"), whose instance changed action loads a new config (loadConfig()).
-    // - _configMutex guards _config. Only loadConfig() and purgeCaches(), on the main thread, assign it, under the lock;
-    //   the main thread may thus read it without the lock. Other threads take a copy with getConfig(), and use only
-    //   that copy in an action: the config it points to is const and stays alive while they hold it.
+    // - _config has its own mutex (see OCIOSharedConfig). Only loadConfig() and purgeCaches(), on the main thread,
+    //   replace it; the main thread may thus read it without the lock (mainConfig()). Other threads take a copy with
+    //   getConfig(), and use only that copy in an action: the config it points to is const and stays alive while they
+    //   hold it.
     // - _procCache has its own mutex (see OCIOProcessorCache).
     // - Neither lock is held while taking the other one, or while calling out (lock order: none).
-    mutable Mutex _configMutex;
-    OCIO_NAMESPACE::ConstConfigRcPtr _config; // guarded by _configMutex
+    OCIOSharedConfig _config;
+    // the config, on the main thread (see above)
+    const OCIO_NAMESPACE::ConstConfigRcPtr& mainConfig() const { return _config.getOnMainThread(); }
 
     // everything that the processor of getOrCreateProcessor() depends on
     struct ProcKey {
@@ -325,7 +363,12 @@ private:
             return std::tie(a.configContext, a.inputSpace, a.outputSpace) == std::tie(b.configContext, b.inputSpace, b.outputSpace);
         }
     };
-    OCIOProcessorCache<ProcKey> _procCache;
+    mutable OCIOProcessorCache<ProcKey> _procCache; // (isIdentity() and getOrCreateProcessor() are const)
+    // the processor from inputSpace to outputSpace, with the context of config at time (from _procCache)
+    OCIO_NAMESPACE::ConstProcessorRcPtr processorFor(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                                                     double time,
+                                                     const std::string& inputSpace,
+                                                     const std::string& outputSpace) const;
 #endif
 };
 
@@ -392,6 +435,11 @@ private:
     locale_t currentLocale;
 #endif
 };
+
+#if defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
+template <>
+struct IsFlagEnum<GenericOCIO::FixColorspace> : std::true_type {};
+#endif
 
 NAMESPACE_OFX_IO_EXIT
 NAMESPACE_OFX_EXIT

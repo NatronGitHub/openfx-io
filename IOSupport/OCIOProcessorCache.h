@@ -19,6 +19,7 @@
 
 /*
  * OCIOProcessorCache: the last OpenColorIO processor of a plug-in instance, shared by its render threads.
+ * OCIOSharedConfig: the OpenColorIO config of a plug-in instance, shared by its main and render threads.
  */
 
 #ifndef IO_OCIOProcessorCache_h
@@ -112,6 +113,49 @@ private:
     IOMutex _mutex; // guards _proc and _key; never held while calling out (no lock order)
     OCIO_NAMESPACE::ConstProcessorRcPtr _proc; // the processor for _key (null: none yet)
     Key _key;
+};
+
+// The OCIO config of a plug-in instance: the main thread replaces it (loading another config file), and the render
+// threads use it concurrently. get() returns a copy taken under the lock: a render uses only its copy, which another
+// thread can't replace meanwhile, and the config it points to is const and stays alive while it is held (#275). The
+// replaced config is released without the lock (by the caller of exchange(), or by the last render that holds it).
+class OCIOSharedConfig {
+public:
+    OCIO_NAMESPACE::ConstConfigRcPtr get() const
+    {
+        IOAutoMutex guard(_mutex);
+
+        return _config;
+    }
+
+    // the config, without the lock: only on the main thread, the only one that replaces it
+    const OCIO_NAMESPACE::ConstConfigRcPtr& getOnMainThread() const { return _config; }
+
+    // replace the config by cfg; returns the old one
+    OCIO_NAMESPACE::ConstConfigRcPtr exchange(OCIO_NAMESPACE::ConstConfigRcPtr cfg)
+    {
+        IOAutoMutex guard(_mutex);
+        _config.swap(cfg);
+
+        return cfg;
+    }
+
+    // replace the config by cfg if it is still expected (not if another one was set meanwhile)
+    void replaceIf(const OCIO_NAMESPACE::ConstConfigRcPtr& expected,
+                   OCIO_NAMESPACE::ConstConfigRcPtr cfg)
+    {
+        {
+            IOAutoMutex guard(_mutex);
+            if (_config == expected) {
+                _config.swap(cfg);
+            }
+        }
+        cfg.reset(); // (the old config, or the unused one: released without the lock)
+    }
+
+private:
+    mutable IOMutex _mutex; // guards _config; never held while calling out (no lock order)
+    OCIO_NAMESPACE::ConstConfigRcPtr _config;
 };
 
 NAMESPACE_OFX_IO_EXIT

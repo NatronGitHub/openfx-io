@@ -115,25 +115,10 @@ requireSupportedFFmpegRuntime(const char* pluginName)
     }
 }
 
-#define CHECKMSG(x, msg)         \
-    {                            \
-        int error = (x);         \
-        if (error < 0) {         \
-            setError((msg), ""); \
-            close();             \
-            return;              \
-        }                        \
-    }
-
 // Used in ffmpeg metadata dicts to stash values written to and from nclc atom.
 #define kNCLCPrimariesKey "fn_primaries"
 #define kNCLCTransferKey "fn_transfer_function"
 #define kNCLCMatrixKey "fn_matrix"
-#define kNCLCUnknownLabel "Unknown"
-#define kNCLCReservedLabel "Reserved"
-
-// Avid DNxHD specific. Label for switching between video legal and full range.
-#define kACLRYuvRange "fn_aclr_yuv_range"
 
 // metadata keys used by Nuke
 #define kMetaKeyApplication "uk.co.thefoundry.Application"
@@ -145,12 +130,6 @@ requireSupportedFFmpegRuntime(const char* pluginName)
 #define kMetaValueWriter64 "mov64"
 
 #define OFX_FFMPEG_MAX_THREADS 16 // MAX_AUTO_THREADS in libavcodec/pthread_internal.h. 32 in libavcodec/mpegvideo.h, 16 in libavcodec/hevcdec.h, 8 in libavcodec/vp8.h
-
-////////////////////////////////////////////////////////////////////////////////
-// Chunksize static names.
-////////////////////////////////////////////////////////////////////////////////
-
-#define kChunkSizeKey "fn_log2chunksize"
 
 namespace OFX {
 class ImageEffect;
@@ -183,6 +162,20 @@ private:
 
 class FFmpegFile {
 public:
+    // The Y'CbCr matrix and range of the conversion to RGB (the ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params).
+    // Auto takes them from the tags of the stream (see Stream::getConvertCtx()).
+    enum ColorMatrixEnum {
+        eColorMatrixAuto = 0,
+        eColorMatrixRec601,
+        eColorMatrixRec709,
+        eColorMatrixRec2020,
+    };
+    enum ColorRangeEnum {
+        eColorRangeAuto = 0,
+        eColorRangeVideo,
+        eColorRangeFull,
+    };
+
     // Thrown by decode() when the frame is outside of the stream and !loadNearest
     class MissingFrameException
         : public std::runtime_error
@@ -342,7 +335,6 @@ private:
         bool _intervalDiscontinuous; // a timestamp discontinuity was found since the last keyframe packet
         int _maxKeyframeInterval; // the largest number of packets from a keyframe packet to the next one (0 if none)
         SwsContext* _convertCtx;
-        bool _resetConvertCtx;
         // Source/destination parameters the cached _convertCtx was created for,
         // used to detect when it must be rebuilt (e.g. if the frame dimensions,
         // pixel format or color range change mid-stream).
@@ -368,10 +360,6 @@ private:
         bool _ptsOnFirstPacketOnly; // the first packet has a PTS, and the next ones none, even after a seek (see probeStreamStart())
         int64_t _frames; // video duration in frames
 
-        bool _ptsSeen; // True if a read AVPacket has ever contained a valid PTS during this stream's decode,
-        // indicating that this stream does contain PTSs.
-        int64_t AVPacket::*_timestampField; // Pointer to member of AVPacket from which timestamps are to be retrieved. Enables
-        // fallback to using DTSs for a stream if PTSs turn out not to be available.
         int _width;
         int _height;
         double _aspect;
@@ -379,19 +367,8 @@ private:
         int _numberOfComponents;
         enum AVPixelFormat _outputPixelFormat;
         uint8_t _componentPosition[4];
-        int _colorMatrixOverride; // the Y'CbCr matrix (eColorMatrixAuto: from the tags of the stream)
-        int _colorRangeOverride; // the Y'CbCr range (eColorRangeAuto: from the tags of the stream)
-        bool _doNotAttachPrefix;
-        bool _matchMetaFormat;
-        int _decodeNextFrameIn; // The 0-based index of the next frame to be fed into decode. Negative before any
-        // frames have been decoded or when we've just seeked but not yet found a relevant frame. Equal to
-        // frames_ when all available frames have been fed into decode.
-        int _decodeNextFrameOut; // The 0-based index of the next frame expected out of decode. Negative before
-        // any frames have been decoded or when we've just seeked but not yet found a relevant frame. Equal to
-        // frames_ when all available frames have been output from decode.
-        int _accumDecodeLatency; // The number of frames that have been input without any frame being output so far in this stream
-        // since the last seek. This is part of a guard mechanism to detect when decode appears to have
-        // stalled and ensure that FFmpegFile::decode() does not loop indefinitely.
+        ColorMatrixEnum _colorMatrixOverride; // the Y'CbCr matrix (eColorMatrixAuto: from the tags of the stream)
+        ColorRangeEnum _colorRangeOverride; // the Y'CbCr range (eColorRangeAuto: from the tags of the stream)
 
         Stream()
             : _idx(0)
@@ -452,7 +429,6 @@ private:
             , _intervalDiscontinuous(false)
             , _maxKeyframeInterval(0)
             , _convertCtx(nullptr)
-            , _resetConvertCtx(true)
             , _convertCtxSrcPixelFormat(AV_PIX_FMT_NONE)
             , _convertCtxSrcWidth(0)
             , _convertCtxSrcHeight(0)
@@ -470,21 +446,14 @@ private:
             , _startFromDecodedFrame(false)
             , _ptsOnFirstPacketOnly(false)
             , _frames(0)
-            , _ptsSeen(false)
-            , _timestampField(&AVPacket::pts)
             , _width(0)
             , _height(0)
             , _aspect(1.0)
             , _bitDepth(8)
             , _numberOfComponents(3)
             , _outputPixelFormat(AV_PIX_FMT_RGB24)
-            , _colorMatrixOverride(0)
-            , _colorRangeOverride(0)
-            , _doNotAttachPrefix(true)
-            , _matchMetaFormat(true)
-            , _decodeNextFrameIn(-1)
-            , _decodeNextFrameOut(-1)
-            , _accumDecodeLatency(0)
+            , _colorMatrixOverride(eColorMatrixAuto)
+            , _colorRangeOverride(eColorRangeAuto)
         {
             // The purpose of this is to avoid an RGB->RGB conversion.
             // This saves memory and improves performance. For example
@@ -529,11 +498,6 @@ private:
             if (_convertCtx) {
                 sws_freeContext(_convertCtx);
             }
-        }
-
-        static void destroy(Stream* s)
-        {
-            delete (s);
         }
 
         bool inDamagedRange(int frame) const
@@ -928,6 +892,12 @@ private:
             return av_rescale(AV_TIME_BASE, _fpsDen, _fpsNum);
         }
 
+        // The duration of a frame, in the time base of the stream (that of frame 0, as frameToPts() rounds it)
+        int64_t frameTicks() const
+        {
+            return frameToPts(1) - frameToPts(0);
+        }
+
         int ptsToFrame(int64_t pts) const
         {
             int64_t numerator = int64_t(_avstream->time_base.num) * _fpsNum;
@@ -954,12 +924,16 @@ private:
             return (_height >= 720);
         }
 
-        bool isYUV() const
-        {
-            // from swscale_internal.h
-            const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(_codecContext->pix_fmt);
+        // the codec context's pixel format is Y'CbCr (FFmpeg::pixelFormatIsYUV())
+        bool isYUV() const;
 
-            return !(desc->flags & AV_PIX_FMT_FLAG_RGB) && desc->nb_components >= 2;
+        // The decoder runs frame threads, or threads of its own (e.g. libdav1d): the error of a packet is returned
+        // later, with another packet
+        bool frameThreadsActive() const
+        {
+            const bool otherThreads = _videoCodec && (_videoCodec->capabilities & AV_CODEC_CAP_OTHER_THREADS) && (_codecContext->thread_count != 1);
+
+            return ((_codecContext->active_thread_type & FF_THREAD_FRAME) != 0) || otherThreads;
         }
 
         static double GetStreamAspectRatio(Stream* stream);
@@ -995,7 +969,7 @@ private:
     // store all video streams available in the file (the views: they match the first one, see
     // CheckStreamPropertiesMatch()). Set by the constructor only, so it may be read without a lock; the Streams
     // themselves are decoded under _lock.
-    std::vector<Stream*> _streams;
+    std::vector<std::unique_ptr<Stream>> _streams;
 
     // The stream that the last decode() demuxed (nullptr before the first one), guarded by _lock
     Stream* _demuxedStream;
@@ -1070,8 +1044,6 @@ private:
     int64_t getStreamFrames(Stream& stream);
 
 public:
-    // FFmpegFile();
-
     // constructor
     FFmpegFile(const std::string& filename);
 
@@ -1112,20 +1084,6 @@ public:
         return _streams.size();
     }
 
-    // The Y'CbCr matrix and range of the conversion to RGB (the ReadFFmpeg "YCbCr Matrix" and "YCbCr Range" params).
-    // Auto takes them from the tags of the stream (see Stream::getConvertCtx()).
-    enum ColorMatrixEnum {
-        eColorMatrixAuto = 0,
-        eColorMatrixRec601,
-        eColorMatrixRec709,
-        eColorMatrixRec2020,
-    };
-    enum ColorRangeEnum {
-        eColorRangeAuto = 0,
-        eColorRangeVideo,
-        eColorRangeFull,
-    };
-
     // Set the Y'CbCr matrix and range of all the streams. The conversion context is rebuilt by the next decode() if
     // they changed. Thread safe.
     void setColorOverrides(ColorMatrixEnum matrix, ColorRangeEnum range) const
@@ -1133,9 +1091,9 @@ public:
 #ifdef OFX_IO_MT_FFMPEG
         AutoMutex guard(_lock); // decode() reads them
 #endif
-        for (Stream* stream : _streams) {
-            stream->_colorMatrixOverride = (int)matrix;
-            stream->_colorRangeOverride = (int)range;
+        for (const std::unique_ptr<Stream>& stream : _streams) {
+            stream->_colorMatrixOverride = matrix;
+            stream->_colorRangeOverride = range;
         }
     }
 
@@ -1143,65 +1101,13 @@ public:
     // an empty string. Thread safe (takes _lock: decode() may update the metadata).
     std::string getColorspaceMetadata() const;
 
-    void setDoNotAttachPrefix(bool doNotAttachPrefix) const
-    {
-        if (_streams.empty()) {
-            return;
-        }
-
-        // mov64Reader::decode always uses stream 0
-        Stream* stream = _streams[0];
-        stream->_doNotAttachPrefix = doNotAttachPrefix;
-    }
-
-    void setMatchMetaFormat(bool matchMetaFormat) const
-    {
-        if (_streams.empty()) {
-            return;
-        }
-
-        // mov64Reader::decode always uses stream 0
-        Stream* stream = _streams[0];
-        stream->_matchMetaFormat = matchMetaFormat;
-    }
-
-    bool isRec709Format() const
-    {
-#ifdef OFX_IO_MT_FFMPEG
-        AutoMutex guard(_lock); // decode() may replace the codec context (flushDecoder())
-#endif
-        if (_streams.empty()) {
-            return false;
-        }
-
-        // mov64Reader::decode always uses stream 0
-        Stream* stream = _streams[0];
-
-        return stream->isRec709Format();
-    }
-
-    bool isYUV() const
-    {
-#ifdef OFX_IO_MT_FFMPEG
-        AutoMutex guard(_lock); // decode() may replace the codec context (flushDecoder())
-#endif
-        if (_streams.empty()) {
-            return false;
-        }
-
-        // mov64Reader::decode always uses stream 0
-        Stream* stream = _streams[0];
-
-        return stream->isYUV();
-    }
-
+    // The properties of the first stream, which the other ones (the views) match (see CheckStreamPropertiesMatch())
     int getBitDepth() const
     {
         if (_streams.empty()) {
             return 0;
         }
 
-        // mov64Reader::decode always uses stream 0
         // Pixel formats with less than 8 bits per component (e.g. monow: 1, bgr8: 3) are decoded to 8 bits.
         return (std::max)(8, _streams[0]->_bitDepth);
     }
@@ -1212,7 +1118,6 @@ public:
             return 0;
         }
 
-        // mov64Reader::decode always uses stream 0
         return _streams[0]->_numberOfComponents;
     }
 
@@ -1222,7 +1127,6 @@ public:
             return 0;
         }
 
-        // mov64Reader::decode always uses stream 0
         return _streams[0]->_componentPosition[componentIndex];
     }
 
@@ -1232,7 +1136,6 @@ public:
             return 0;
         }
 
-        // mov64Reader::decode always uses stream 0
         return _streams[0]->_width;
     }
 
@@ -1242,7 +1145,6 @@ public:
             return 0;
         }
 
-        // mov64Reader::decode always uses stream 0
         return _streams[0]->_height;
     }
 
@@ -1272,8 +1174,6 @@ public:
                  int& frames) const;
 
     const char* getColorspace() const;
-
-    std::size_t getBufferBytesCount() const;
 
     // Number of seeks done by decode() so far (a debugging and test counter: seeking is costly).
     unsigned long getSeekCount() const
@@ -1331,7 +1231,11 @@ class FFmpegFileManager {
     /// removes it from the map on another thread. This prevents use-after-free during decode.
     typedef std::map<void const*, std::list<std::shared_ptr<FFmpegFile>>> FilesMap;
     mutable FilesMap _files;
-    mutable FFmpegFile::Mutex* _lock; // guards _files
+    std::unique_ptr<FFmpegFile::Mutex> _lock; // guards _files (created by init())
+
+    // The valid file of the plug-in instance with that name, or nullptr. An invalid one is removed from _files and
+    // moved to evicted, for the caller to destroy after it releases _lock, which it holds.
+    std::shared_ptr<FFmpegFile> find(void const* plugin, const std::string& filename, std::shared_ptr<FFmpegFile>& evicted) const;
 
 public:
     FFmpegFileManager();

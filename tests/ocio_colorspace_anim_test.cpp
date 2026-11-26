@@ -75,39 +75,6 @@ const int W = 4;
 const int H = 2;
 const double kInput = 0.25;
 
-int gFailures = 0;
-bool gQuiet = false; // (fuzzer) don't print the checks that pass
-std::function<void(const char*)> gOnFail; // (fuzzer) called with the message of a failed check
-
-void
-check(bool cond,
-      const char* fmt,
-      ...)
-{
-    if (cond && gQuiet) {
-        return;
-    }
-    if (!cond && gOnFail) {
-        char buf[1024];
-        va_list b;
-        va_start(b, fmt);
-        std::vsnprintf(buf, sizeof(buf), fmt, b);
-        va_end(b);
-        ++gFailures;
-        gOnFail(buf);
-        return;
-    }
-    va_list a;
-    va_start(a, fmt);
-    std::printf("  %s: ", cond ? "PASS" : "FAIL");
-    std::vprintf(fmt, a);
-    std::printf("\n");
-    va_end(a);
-    if (!cond) {
-        ++gFailures;
-    }
-}
-
 // ------------------------------------------------------------------ the Natron-like animated parameter suite
 bool gStringAnimation = true; // kOfxParamHostPropSupportsStringAnimation
 bool gChoiceAnimation = true; // kOfxParamHostPropSupportsChoiceAnimation
