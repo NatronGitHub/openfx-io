@@ -74,16 +74,18 @@ NAMESPACE_OFX_IO_ENTER
 // in the Writer context, the script name must be kOfxImageEffectFileParamName, @see kOfxImageEffectContextWriter
 #define kParamFilename kOfxImageEffectFileParamName
 #define kParamFilenameLabel "File"
-#define kParamFilenameHint                                                                                                                                          \
-    "The output image sequence/video stream file(s). "                                                                                                              \
-    "The string must match the following format: "                                                                                                                  \
-    "path/sequenceName###.ext where the number of "                                                                                                                 \
-    "# (hashes) will define the number of digits to append to each "                                                                                                \
-    "file. For example path/mySequence###.jpg will be translated to "                                                                                               \
-    "path/mySequence000.jpg, path/mySequence001.jpg, etc. "                                                                                                         \
-    "%d printf-like notation can also be used instead of the hashes, for example path/sequenceName%03d.ext will achieve the same than the example aforementioned. " \
-    "there will be at least 2 digits). The file name may not contain any # (hash) in which case it  will be overridden everytimes. "                                \
-    "Views can be specified using the \"long\" view notation %V or the \"short\" notation using %v."
+#define kParamFilenameHint                                                                                          \
+    "The output image sequence/video stream file(s). "                                                              \
+    "For an image sequence, the file name has the form path/sequenceName###.ext, where the number of "              \
+    "# (hashes) gives the minimum number of digits of the frame number, padded with zeros. "                        \
+    "For example path/mySequence###.jpg gives the files "                                                           \
+    "path/mySequence000.jpg, path/mySequence001.jpg, etc. "                                                         \
+    "The printf-style notation %0Nd (e.g. %03d) can also be used instead of the hashes, "                           \
+    "for example path/mySequence%03d.jpg gives the same file names as the example above (%d gives no padding). "    \
+    "With Overwrite checked, if the file name contains neither # nor %d, every frame is written to the same file: " \
+    "an image file is rewritten at each frame, a video file gets all the frames. "                                  \
+    "With Overwrite unchecked, an existing image file is kept. "                                                    \
+    "In the file name, %V is replaced by the view name and %v by its first letter (e.g. L or R)."
 
 #define kParamOverwrite "overwrite"
 #define kParamOverwriteLabelAndHint "Overwrite", "Overwrite existing files when rendering."
