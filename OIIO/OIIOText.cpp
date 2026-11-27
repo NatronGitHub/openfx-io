@@ -347,7 +347,10 @@ OIIOTextPlugin::render(const RenderArguments& args)
         pixelComponentCount = srcImg->getPixelComponentCount();
         bitDepth = srcImg->getPixelDepth();
         srcSpec = imageSpecFromOFXImage(srcRod, srcBounds, pixelComponents, bitDepth);
-        srcBuf.reset(new OIIO::ImageBuf("src", srcSpec, const_cast<void*>(srcImg->getPixelData())));
+        // the host's row bytes, which may be padded or negative (top-down rows, #456). (OpenImageIO < 3.1 computes a
+        // negative stride's offset as a size_t (ImageBufImpl::pixeladdr): it wraps around, UB in OpenImageIO but the
+        // right address on flat targets)
+        srcBuf.reset(new OIIO::ImageBuf(srcSpec, const_cast<void*>(srcImg->getPixelData()), OIIO::AutoStride, srcImg->getRowBytes()));
 
         if (!kSupportsTiles) {
             // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
@@ -440,7 +443,8 @@ OIIOTextPlugin::render(const RenderArguments& args)
         }
     }
     OIIO::ImageSpec dstSpec = imageSpecFromOFXImage(dstRod, dstBounds, pixelComponents, bitDepth);
-    OIIO::ImageBuf dstBuf("dst", dstSpec, dstImg->getPixelData());
+    // (row bytes: see srcBuf)
+    OIIO::ImageBuf dstBuf(dstSpec, dstImg->getPixelData(), OIIO::AutoStride, dstImg->getRowBytes());
 
     OIIO::ROI tmpRoi(tmpSpec.x, tmpSpec.x + tmpSpec.width, tmpSpec.y, tmpSpec.y + tmpSpec.height);
     // do we have to flip the image?

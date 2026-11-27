@@ -361,6 +361,23 @@ test-ofx14-scan-asan: ofx14_host_test_asan
 clean-ofx14-scan:
 	rm -rf ofx14_host_test_asan ofx14_host_test_asan.dSYM .ofx14scan .ofx14scanfull .ofx14scanasan .ofx14scanasanfull
 
+# test-ofx14-rowbytes: every plug-in renders with its images in packed, padded and top-down rows (a negative
+# kOfxImagePropRowBytes; OFX14_ROWBYTES), and must give the same output in each layout (#456), in the OFX 1.4-only and
+# full hosts. With AddressSanitizer and UBSan's pointer-overflow check (the unsigned row offsets that wrap around for a
+# negative kOfxImagePropRowBytes), stopping at the first error (none with MinGW, which has neither).
+OFX14_ROWBYTES_SAN := $(if $(filter Windows_NT,$(OS)),,-fsanitize=address,pointer-overflow -fno-sanitize-recover=pointer-overflow -fno-omit-frame-pointer)
+ofx14_host_test_rowbytes: ofx14_host_test.cpp ofx_test_host.h ofx14_names.h $(OFX14_SRCS) $(OFX_SUPPORT)
+	$(CXX) $(OFX_CXXFLAGS) $(OFX14_CXXFLAGS) $(OFX14_ROWBYTES_SAN) -pthread $(filter-out %.h,$^) $(OFX_LIBS) $(OFX14_LIBS) $(OCIO_CDL_LIBS) -o $@
+.PHONY: test-ofx14-rowbytes clean-ofx14-rowbytes
+test: test-ofx14-rowbytes
+clean: clean-ofx14-rowbytes
+test-ofx14-rowbytes: ofx14_host_test_rowbytes
+	rm -rf .ofx14rowbytes .ofx14rowbytesfull
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" UBSAN_OPTIONS="print_stacktrace=1 $(UBSAN_OPTIONS)" OFX14_ROWBYTES=1 ./ofx14_host_test_rowbytes $(CURDIR)/.ofx14rowbytes
+	OCIO=$(CURDIR)/test.ocio ASAN_OPTIONS="detect_leaks=0 $(ASAN_OPTIONS)" UBSAN_OPTIONS="print_stacktrace=1 $(UBSAN_OPTIONS)" OFX14_ROWBYTES=1 ./ofx14_host_test_rowbytes --full $(CURDIR)/.ofx14rowbytesfull
+clean-ofx14-rowbytes:
+	rm -rf ofx14_host_test_rowbytes ofx14_host_test_rowbytes.dSYM .ofx14rowbytes .ofx14rowbytesfull
+
 # ReadEXR and GenericReader with their in-repo dependencies, and OpenEXR (in OFX_PKGS, if pkg-config finds it).
 # With ReadOIIO: ReadEXR must present the same planes (#386). -pthread: the test uses std::thread
 EXR_READ_SRCS := ../EXR/ReadEXR.cpp ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp $(READER_HOOKS_SRCS)

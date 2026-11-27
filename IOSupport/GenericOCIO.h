@@ -168,7 +168,6 @@ public:
                         OCIOOpenGLContextData* contextData);
 #endif
 
-    void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, OFX::Image* dstImg);
     void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, float* pixelData, const OfxRectI& bounds, OFX::PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
     void changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName);
     void purgeCaches();

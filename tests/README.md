@@ -20,7 +20,8 @@ the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `m
 `test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
 `test-ofx14-11`, `test-ofx14-gl`, `test-ofx14-resolve`, `test-ofx14-full`, `test-ofx14-scale075` and
 `test-ofx14-scale05` are `make test-ofx14`; `test-ofx14-scan` and
-`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32` (MS Windows only), `test-runscript-output`
+`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-ofx14-rowbytes` and `test-ofx14-rowbytes-full` are `make
+test-ofx14-rowbytes`; `test-runscript-win32` (MS Windows only), `test-runscript-output`
 and `test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
 it links (e.g. `test-seexpr`, with the SeExpr of the build). The programs run in `build/tests`, where they write their
 files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
@@ -128,6 +129,7 @@ make test-reader-window-host # the same readers and ReadFFmpeg in a host built o
 make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
 make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
 make test-ofx14-scan-asan # the same, built with AddressSanitizer
+make test-ofx14-rowbytes # every plug-in with images in padded and top-down rows (negative kOfxImagePropRowBytes), with ASan and UBSan's pointer-overflow check (#456)
 make test-seexpr   # SeExpr's frames needed, cpixel() domain and param variables at the render time, SeNoise/SeGrain degenerate params (SEEXPR_HOME=..., SEEXPR_LIBDIR=...)
 make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
@@ -983,6 +985,24 @@ global thread pool, which they did not start. `make test-ofx14-scan-asan` runs t
 [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html). The real unload of the binary (`dlclose`) is
 tested by `io-hostdemo` (CMake, `IO_HOSTDEMO_TESTS`), whose hostDemo unloads it after its scan.
 
+`make test-ofx14-rowbytes` ([#456](https://github.com/NatronGitHub/openfx-io/issues/456)) runs the OFX 1.4-only and the
+full hosts with `OFX14_ROWBYTES=1`, built with [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) and
+[UBSan](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)'s `pointer-overflow` check (stopping at the first
+error; neither with MinGW). "Row bytes can be negative, which allows hosts with a native top down row order
+to pass image into OFX without having to repack pixels" (`ofxImageEffect.h`, `kOfxImagePropRowBytes`), and they need
+not be packed. The source is then a pattern that differs in every row and column, alpha included (in (0, 1]), and each plug-in renders four
+times, with the images (source and output) in each row layout of `ofx_test_host.h` (`gRowLayout`): packed bottom-up
+rows, rows padded with 3 components of `0xa5` bytes, top-down rows (a negative `kOfxImagePropRowBytes`,
+`kOfxImagePropData` at the last row of the buffer) and padded top-down rows. Each render must give the same output
+image as the packed one, byte for byte (a writer: the same file, except for the date and time of a TIFF `DateTime`
+tag), and leave the padding untouched. The writers also render with the same input and output colour spaces and an
+unpremultiplied input, so that GenericWriter may give the input image itself to the writer's `encode()`, which needs
+packed bottom-up rows, and with an opaque input, whose alpha GenericWriter sets to 1 whatever the rows; the readers
+render with the same file and output colour spaces and an unpremultiplied output, so that
+GenericReader decodes straight into the output image. The colour checks of the other runs are skipped (the source is not a constant colour). The plug-ins
+that link OpenImageIO (OIIOResize, OIIOText) are checked by their output: ASan does not see the accesses of OpenImageIO
+itself.
+
 ### 1g. `test-exr` — ReadEXR (#123)
 
 `exr_read_test.cpp` writes EXR files with OpenEXR in a scratch directory (`.exr_read`),
@@ -1718,7 +1738,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `oiio_edge_test.cpp`        | OIIOResize and OIIOText with degenerate inputs (`test-oiio-edge`). |
 | `ocio_colorspace_anim_test.cpp` | GenericOCIO's animated colorspaces (OCIOColorSpace, WriteOIIO, ReadOIIO) and Swap Colorspaces, with a Natron-like animated param suite. |
 | `ocio_anim_fuzz.cpp`        | Random user actions on the same host, checking invariants (`test-ocio-anim`). |
-| `ofx14_host_test.cpp`       | Every plug-in in an OFX 1.4-only host, and in the full host (`test-ofx14`). |
+| `ofx14_host_test.cpp`       | Every plug-in in an OFX 1.4-only host, and in the full host (`test-ofx14`, `test-ofx14-rowbytes`). |
 | `runscript_output_test.cpp` | RunScript's stderr line splitting (`test-runscript`, all systems). |
 | `runscript_render_test.cpp` | RunScript's render: an aborted render kills the script and its process group (#287), a render at scale 0.5 fails with an error message (#438), a short write of the script file (RLIMIT_FSIZE of 64 bytes) fails the render with "cannot write the script" instead of running the truncated script (`test-runscript`, POSIX only). |
 | `runscript_win32_test.cpp`  | RunScript on MS Windows: quoting, program/batch/shebang launch, abort (`test-runscript`, MS Windows only). |

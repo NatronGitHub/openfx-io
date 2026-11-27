@@ -23,6 +23,7 @@
  */
 
 #include <algorithm>
+#include <cstddef> // std::ptrdiff_t
 #include <cstdio> // fopen, fwrite...
 #include <vector>
 
@@ -573,9 +574,10 @@ WritePNGPlugin::add_dither_for_components(OfxTime time,
 
     int width = bounds.x2 - bounds.x1;
 
-    for (int y = bounds.y1; y < bounds.y2; ++y,
-             src_pixels += srcRowElements,
-             dst_pixels += dstRowElements) {
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        // (signed: srcRowElements may be negative)
+        const float* src_row = src_pixels + (std::ptrdiff_t)(y - bounds.y1) * srcRowElements;
+        unsigned char* dst_row = dst_pixels + (std::ptrdiff_t)(y - bounds.y1) * dstRowElements;
         randHash = generatePseudoRandomHash(randHash);
         int start = convertPseudoRandomHashToRange(randHash, 0, (bounds.x2 - bounds.x1));
 
@@ -589,17 +591,17 @@ WritePNGPlugin::add_dither_for_components(OfxTime time,
             while (index < width && index >= 0) {
                 int src_col = index * srcNComps + dstNCompsStartIndex;
                 int dst_col = index * dstNComps;
-                error_r = (error_r & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_pixels[src_col]);
-                error_g = (error_g & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_pixels[src_col + 1]);
-                error_b = (error_b & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_pixels[src_col + 2]);
+                error_r = (error_r & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_row[src_col]);
+                error_g = (error_g & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_row[src_col + 1]);
+                error_b = (error_b & 0xff) + _ditherLut->toColorSpaceUint8xxFromLinearFloatFast(src_row[src_col + 2]);
                 assert(error_r < 0x10000 && error_g < 0x10000 && error_b < 0x10000);
 
-                dst_pixels[dst_col] = (unsigned char)(error_r >> 8);
-                dst_pixels[dst_col + 1] = (unsigned char)(error_g >> 8);
-                dst_pixels[dst_col + 2] = (unsigned char)(error_b >> 8);
+                dst_row[dst_col] = (unsigned char)(error_r >> 8);
+                dst_row[dst_col + 1] = (unsigned char)(error_g >> 8);
+                dst_row[dst_col + 2] = (unsigned char)(error_b >> 8);
 
                 if (dstNComps == 4) {
-                    dst_pixels[dst_col + 3] = (srcNComps == 4) ? Color::floatToInt<256>(src_pixels[src_col + 3]) : 255;
+                    dst_row[dst_col + 3] = (srcNComps == 4) ? Color::floatToInt<256>(src_row[src_col + 3]) : 255;
                 }
 
                 if (backward) {
@@ -730,49 +732,49 @@ WritePNGPlugin::encode(const string& filename,
         return;
     }
     int nComps = (std::min)(dstNComps, pixelDataNComps);
-    const int srcRowElements = rowBytes / sizeof(float);
-    const size_t numPixels = (size_t)(bounds.x2 - bounds.x1) * (size_t)(bounds.y2 - bounds.y1);
+    // the rows of pixelData are packed and bottom-up (GenericWriter.h, asserted below): walking them with the signed
+    // rowBytes is only defensive (a host's rowBytes may be negative or padded, #456)
+    const int srcRowElements = rowBytes / (int)sizeof(float);
+    const int width = bounds.x2 - bounds.x1;
+    const int height = bounds.y2 - bounds.y1;
+    const size_t numPixels = (size_t)width * (size_t)height;
 
-    assert(srcRowElements == (bounds.x2 - bounds.x1) * pixelDataNComps);
+    assert(srcRowElements == width * pixelDataNComps);
     assert(scratchBufBytes == numPixels * dstNComps * bitDepthSize);
-
-    const float* src_pixels = pixelData;
 
     if (pngDepth == ePNGBitDepthUByte) {
         bool ditherEnabled = _ditherEnabled->getValue();
 
         unsigned char* dstPixelData = scratchBuffer.getData();
-        unsigned char* dst_pixels = dstPixelData;
 
         // no dither
         if (!ditherEnabled || (nComps < 3)) {
-            for (size_t i = 0; i < numPixels; ++i,
-                        dst_pixels += dstNComps,
-                        src_pixels += pixelDataNComps) {
-                assert(src_pixels == pixelData + i * pixelDataNComps);
-                assert(dst_pixels == dstPixelData + i * dstNComps);
-                for (int c = 0; c < nComps; ++c) {
-                    dst_pixels[c] = floatToInt<256>(src_pixels[dstNCompsStartIndex + c]);
+            for (int y = 0; y < height; ++y) {
+                const float* src_pixels = pixelData + (std::ptrdiff_t)y * srcRowElements;
+                unsigned char* dst_pixels = dstPixelData + (size_t)y * dstRowElements;
+                for (int x = 0; x < width; ++x, dst_pixels += dstNComps, src_pixels += pixelDataNComps) {
+                    for (int c = 0; c < nComps; ++c) {
+                        dst_pixels[c] = floatToInt<256>(src_pixels[dstNCompsStartIndex + c]);
+                    }
                 }
             }
         } else {
             assert(nComps >= 3);
             const unsigned int ditherSeed = 2000;
-            add_dither(time, ditherSeed, src_pixels, bounds, dst_pixels, srcRowElements, dstRowElements, dstNCompsStartIndex, pixelDataNComps, dstNComps);
+            add_dither(time, ditherSeed, pixelData, bounds, dstPixelData, srcRowElements, dstRowElements, dstNCompsStartIndex, pixelDataNComps, dstNComps);
         }
     } else {
         assert(pngDepth == ePNGBitDepthUShort);
 
         unsigned short* dstPixelData = reinterpret_cast<unsigned short*>(scratchBuffer.getData());
-        unsigned short* dst_pixels = dstPixelData;
 
-        for (size_t i = 0; i < numPixels; ++i,
-                    dst_pixels += dstNComps,
-                    src_pixels += pixelDataNComps) {
-            assert(src_pixels == pixelData + i * pixelDataNComps);
-            assert(dst_pixels == dstPixelData + i * dstNComps);
-            for (int c = 0; c < nComps; ++c) {
-                dst_pixels[c] = floatToInt<65536>(src_pixels[dstNCompsStartIndex + c]);
+        for (int y = 0; y < height; ++y) {
+            const float* src_pixels = pixelData + (std::ptrdiff_t)y * srcRowElements;
+            unsigned short* dst_pixels = dstPixelData + (size_t)y * dstRowElements;
+            for (int x = 0; x < width; ++x, dst_pixels += dstNComps, src_pixels += pixelDataNComps) {
+                for (int c = 0; c < nComps; ++c) {
+                    dst_pixels[c] = floatToInt<65536>(src_pixels[dstNCompsStartIndex + c]);
+                }
             }
         }
         // PNG is always big endian

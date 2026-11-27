@@ -101,6 +101,11 @@ struct Clip {
     PropSet props{PropSet::eClip};   // clip props (components, depth, connected, ...)
     PropSet image{PropSet::eImage};  // image props returned by clipGetImage
     std::vector<uint8_t> buffer; // pixel buffer backing the image
+    // the layout of the image in buffer (setupClipImage(), see gRowLayout): the signed kOfxImagePropRowBytes, the
+    // bytes of the pixels of a row, and the number of rows
+    int rowBytes = 0;
+    size_t pixelRowBytes = 0;
+    int rows = 0;
     bool connected = false;
     bool noImage = false;     // clipGetImage fails with kOfxStatFailed ("assume black and transparent")
 };
@@ -134,6 +139,24 @@ double gProjectSize[2] = { 0., 0. };   // of the last setInstanceProps()
 double gProjectOffset[2] = { 0., 0. };
 double gRS = 1.;                     // OFX14_SCALE
 bool gOpenGLRender = false;          // OFX14_GL: the host has the OpenGL render suite (optional in OFX 1.4)
+// The row layout of the images of setupClipImage(): packed bottom-up rows (the default, which the other tests read
+// in Clip::buffer), or rows padded with kRowPadByte at their end, and top-down rows (a negative
+// kOfxImagePropRowBytes, kOfxImagePropData pointing at the last row of the buffer). ofxImageEffect.h,
+// kOfxImagePropRowBytes: "Note that row bytes can be negative, which allows hosts with a native top down row order
+// to pass image into OFX without having to repack pixels." (#456)
+enum class RowLayout { ePacked, ePadded, eTopDown, eTopDownPadded };
+RowLayout gRowLayout = RowLayout::ePacked;
+const uint8_t kRowPadByte = 0xa5;
+inline const char* rowLayoutName(RowLayout l)
+{
+    switch (l) {
+    case RowLayout::ePacked: return "packed";
+    case RowLayout::ePadded: return "padded";
+    case RowLayout::eTopDown: return "top-down";
+    case RowLayout::eTopDownPadded: return "top-down padded";
+    }
+    return "?";
+}
 // Is the property name defined by OFX 1.4 (or by the older version of OFX14_LEVEL)?
 bool isOfx14Name(const char* n)
 {
@@ -696,14 +719,25 @@ inline int componentCount(const char* comps) { return !std::strcmp(comps, kOfxIm
 inline int bytesPerComponent(const char* depth) { return !std::strcmp(depth, kOfxBitDepthFloat) ? 4 : (!std::strcmp(depth, kOfxBitDepthShort) ? 2 : 1); }
 
 // The image of clip c (what clipGetImage returns): w x h pixels from (0, 0), with components comps and depth depth,
-// in a buffer of zeros; the clip's props are set to the same format, its RoD to the image and its frame range to
-// 1..1000. premultOpaque: Opaque, else PreMultiplied.
+// in a buffer of zeros, with the rows of gRowLayout (a padded row ends with 3 components of kRowPadByte); the clip's
+// props are set to the same format, its RoD to the image and its frame range to 1..1000. premultOpaque: Opaque, else
+// PreMultiplied.
 void setupClipImage(Clip* c, int w, int h, const char* comps, const char* depth, bool premultOpaque)
 {
-    int rowBytes = w * componentCount(comps) * bytesPerComponent(depth);
-    c->buffer.assign((size_t)rowBytes * h, 0);
+    const bool padded = (gRowLayout == RowLayout::ePadded) || (gRowLayout == RowLayout::eTopDownPadded);
+    const bool topDown = (gRowLayout == RowLayout::eTopDown) || (gRowLayout == RowLayout::eTopDownPadded);
+    const size_t pixelRowBytes = (size_t)w * componentCount(comps) * bytesPerComponent(depth);
+    const size_t stride = pixelRowBytes + (padded ? 3 * bytesPerComponent(depth) : 0);
+    c->buffer.assign(stride * h, 0);
+    for (int y = 0; y < h; ++y) {
+        std::memset(c->buffer.data() + y * stride + pixelRowBytes, kRowPadByte, stride - pixelRowBytes);
+    }
+    c->rowBytes = topDown ? -(int)stride : (int)stride;
+    c->pixelRowBytes = pixelRowBytes;
+    c->rows = h;
+    const int rowBytes = c->rowBytes;
     OfxPropertySetHandle ip = PH(&c->image);
-    pSetPointer(ip, kOfxImagePropData, 0, c->buffer.data());
+    pSetPointer(ip, kOfxImagePropData, 0, c->buffer.data() + ((topDown && h > 0) ? (h - 1) * stride : 0));
     int bounds[4] = { 0, 0, w, h };
     pSetIntN(ip, kOfxImagePropBounds, 4, bounds);
     pSetIntN(ip, kOfxImagePropRegionOfDefinition, 4, bounds);
@@ -726,6 +760,48 @@ void setupClipImage(Clip* c, int w, int h, const char* comps, const char* depth,
     double fr[2] = { 1., 1000. }; pSetDoubleN(cp, kOfxImageEffectPropFrameRange, 2, fr);
     pSetString(cp, kOfxImageClipPropFieldOrder, 0, kOfxImageFieldNone);
     pSetInt(cp, kOfxImageClipPropContinuousSamples, 0, 0);
+}
+
+// The bytes of row y (0: the bottom row) of the image of setupClipImage()
+inline uint8_t* clipRow(Clip* c, int y)
+{
+    void* data = nullptr;
+    pGetPointer(PH(&c->image), kOfxImagePropData, 0, &data);
+    return static_cast<uint8_t*>(data) + (std::ptrdiff_t)y * c->rowBytes;
+}
+
+// The pixels of the image of setupClipImage(), as packed bottom-up rows (whatever gRowLayout)
+inline std::vector<uint8_t> packedPixels(Clip* c)
+{
+    std::vector<uint8_t> v(c->pixelRowBytes * c->rows);
+    for (int y = 0; y < c->rows; ++y) {
+        std::memcpy(v.data() + y * c->pixelRowBytes, clipRow(c, y), c->pixelRowBytes);
+    }
+    return v;
+}
+
+// Sets the pixels of the image of setupClipImage() from packed bottom-up rows
+inline void setPackedPixels(Clip* c, const std::vector<uint8_t>& v)
+{
+    assert(v.size() == c->pixelRowBytes * c->rows);
+    for (int y = 0; y < c->rows; ++y) {
+        std::memcpy(clipRow(c, y), v.data() + y * c->pixelRowBytes, c->pixelRowBytes);
+    }
+}
+
+// Are the padding bytes at the end of the rows of the image of setupClipImage() still kRowPadByte?
+inline bool rowPaddingIntact(Clip* c)
+{
+    const size_t stride = (size_t)std::abs(c->rowBytes);
+    for (int y = 0; y < c->rows; ++y) {
+        const uint8_t* row = clipRow(c, y);
+        for (size_t i = c->pixelRowBytes; i < stride; ++i) {
+            if (row[i] != kRowPadByte) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 void setInstanceProps(Effect& inst, int w, int h, int nFrames, const char* context)
