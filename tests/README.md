@@ -1333,6 +1333,19 @@ An MPEG-TS whose PES packets each hold one frame, with one PES header without a 
 the frames of the clean file in every order, with at most 2 seeks per request, as the clean file: one such packet
 does not make the reader treat the stream's timestamps as shifting; B-frames with a negative first DTS (MPEG-4 in an elementary stream and Matroska,
 MPEG-2 in MXF) must decode their first frames;
+H.264 (with and without B-frames) and HEVC elementary streams, whose packets libavformat gives no timestamps at all,
+and PNG image pipes, in which libavformat cannot seek, were counted as 1 frame
+([#336](https://github.com/NatronGitHub/openfx-io/issues/336), [#162](https://github.com/NatronGitHub/openfx-io/issues/162),
+[#450](https://github.com/NatronGitHub/openfx-io/issues/450)): every frame must be counted and right, sequentially and
+after seeks, and in 240-frame clips (H.264 with a GOP of 24, HEVC with open GOPs, PNG with small frames and with 30 KB
+frames, which have byte positions but still decode from the start for each seek,
+[#491](https://github.com/NatronGitHub/openfx-io/issues/491)) every frame must be the one that the ffmpeg CLI decodes in order, in every order,
+with 1 and 8 decoder threads, with at most 2 seeks per request for H.264 and HEVC (a request just before a keyframe
+seeks twice, [#490](https://github.com/NatronGitHub/openfx-io/issues/490)) and 1 for PNG; an H.264
+stream cut at its 6th packet must count and give the 216 frames from its first keyframe, as the ffmpeg CLI; opening a
+15 MB 1920x1080 H.264 elementary stream must read it once, plus what `avformat_find_stream_info()` reads (at most 7/4
+of its size; the file was read twice). Field-coded H.264 (two packets per frame, and unpaired fields) is not tested:
+no encoder of the ffmpeg CLI writes it;
 MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
 display the first 2 (negative timestamps), must not count these frames; in the one that does not display the first 3,
 and in a MOV stream-copied from 0.6 s (`ramp_ss_copy.mov`), the frames of the first GOP, decoded after far frames

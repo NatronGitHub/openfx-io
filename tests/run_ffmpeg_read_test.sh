@@ -38,7 +38,10 @@
 #     NUT files larger than the 4 MB that the end probe reads (FFV1), with and without an index, also with a
 #     non-zero start time and with a longer audio track, and a single GOP larger than that (H.264).
 #   * An MPEG-TS whose end probe fails (its last 4 MB are audio).
-#   * An MPEG-2 elementary stream with B-frames, which has no timestamps.
+#   * An MPEG-2 elementary stream with B-frames, which has no timestamps. H.264 (with and without B-frames) and HEVC
+#     elementary streams, whose packets get no timestamps at all, and PNG image pipes, in which libavformat cannot
+#     seek (#336, #162, #450): every frame, also in 240-frame clips in every order (also PNG frames of 30 KB, with
+#     byte positions, and an H.264 stream cut in its first GOP), and the bytes read at open of a 15 MB H.264 stream.
 #   * MPEG-1 video (B-frames) in MPEG-TS, MPEG-PS and an elementary stream: its r_frame_rate is
 #     twice the frame rate (#353); a larger MPEG-1 elementary stream (frame count and rate only). MPEG-PS and VOB whose
 #     packets hold several pictures and lack a PTS (#436, #336, #189): every frame, sequentially and after seeks, also in
@@ -1459,26 +1462,36 @@ RAMP_SIZE=128x96 check ramp_mpeg2_96.vob "VOB (MPEG-2 video, 128x96, no B-frames
 # from the start of the file, and land more than the 1 s window after the first packet read before the requested frame
 # (see Stream::armResync()): every frame must be that of the reference in every order (with 1 and 8 decoder threads,
 # which MPEG-1/2 decoders only use as slice threads), and each request of an order with backward jumps, the first one
-# in a newly opened file, and one in the first second of the file, must seek at most once.
+# in a newly opened file, and one in the first second of the file, must seek at most once (SEEK_REFERENCE_MAX_SEEKS
+# times, if set). SEEK_REFERENCE_FILTER: filters appended to the source (starting with a comma). SEEK_REFERENCE_CUT=N:
+# the file starts at its (N+1)th video packet (cut with ffprobe's positions, as a capture that starts in a GOP), and the
+# reader must count the SEEK_REFERENCE_FRAMES frames (default 240) that the ffmpeg CLI decodes from it.
 check_seek_reference() {
-    local name="$1" desc="$2" encoder="$3" threads all
+    local name="$1" desc="$2" encoder="$3" threads all frames="${SEEK_REFERENCE_FRAMES:-240}" cut="${SEEK_REFERENCE_CUT:-0}" cutpos=""
     shift 3
     echo "== $desc =="
     if ! have_encoder "$encoder" || ! have_encoder ffv1; then
         skip "no $encoder or ffv1 encoder in the ffmpeg CLI"
         return
     fi
-    if ! ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=128x96:r=24,format=gray,geq=lum='16+mod(N*3\,200)':cb=128:cr=128,format=yuv420p" \
+    if [ "$cut" -gt 0 ] && ! command -v ffprobe >/dev/null 2>&1; then
+        skip "no ffprobe CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=128x96:r=24,format=gray,geq=lum='16+mod(N*3\,200)':cb=128:cr=128,format=yuv420p${SEEK_REFERENCE_FILTER:-}" \
         -frames:v 240 "$@" "$tmp/$name" ||
+        { [ "$cut" -gt 0 ] && { ! mv "$tmp/$name" "$tmp/whole_$name" ||
+            ! cutpos=$(ffprobe -v error -select_streams v:0 -show_entries packet=pos -of csv=p=0 "$tmp/whole_$name" | sed -n "$((cut + 1))p") ||
+            [ -z "$cutpos" ] || ! tail -c +$((cutpos + 1)) "$tmp/whole_$name" > "$tmp/$name"; }; } ||
         ! ffmpeg -y -loglevel error -i "$tmp/$name" -vf setpts=N/FRAME_RATE/TB -c:v ffv1 -f matroska "$tmp/ref_$name.mkv"; then
         echo "FAIL: could not generate $name"
         rc=1
         return
     fi
-    all="$(seq -s, 1 240)"
+    all="$(seq -s, 1 "$frames")"
     for threads in 1 8; do
         # shellcheck disable=SC2086
-        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames 240 --reference "$tmp/ref_$name.mkv" --reference-frames "$all" \
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames "$frames" --reference "$tmp/ref_$name.mkv" --reference-frames "$all" \
             ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
             grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
             echo "(with $threads decoder threads)"
@@ -1486,7 +1499,7 @@ check_seek_reference() {
         fi
     done
     # shellcheck disable=SC2086
-    "$bin" "$tmp/$name" --frames 240 --order 200,120,60,180,90,10 --order-max-seeks 1 ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    "$bin" "$tmp/$name" --frames "$frames" --order 200,120,60,180,90,10 --order-max-seeks "${SEEK_REFERENCE_MAX_SEEKS:-1}" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
 }
 # (No B-frames and 128x96 for the VOBs: see ramp_mpeg2_96.vob above. Not here: MPEG-1 PS and low-delay MPEG-2 PS without
 # B-frames, whose runs of timestamps one frame too high are still wrong, issue #481.)
@@ -1528,6 +1541,48 @@ check_count testsrc_mpeg1.m1v "MPEG-1 elementary stream (1920x1080): frame count
 check ramp_bframes_mpeg4.m4v "MPEG-4 elementary stream (B-frames)" mpeg4 24 -c:v mpeg4 -bf 2 -f m4v
 check ramp_mpeg4_bf.mkv "Matroska (MPEG-4, B-frames)" mpeg4 24 -c:v mpeg4 -bf 2
 check ramp_mpeg2_bf.mxf "MXF (MPEG-2, B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2
+# Elementary streams and image pipes without timestamps (#336, #162, #450): raw H.264 and HEVC, whose packets
+# libavformat gives no timestamps at all, and PNG image pipes, in which libavformat cannot seek: small frames (several
+# per 4096-byte read) have no byte position, and larger frames get the position of a read before them, but the seek fails
+# all the same (also with ffmpeg -ss). Each was counted as 1 frame. Every frame must be counted and decoded, in every order, also in 240-frame clips, compared with
+# the frames that the ffmpeg CLI decodes in order. The packets of raw H.264 and HEVC are numbered in decoding order, and
+# the frames are placed as in AVI (DTS without PTS): with B-frames, a request for one of the frames just before a
+# keyframe seeks twice (issue #490). A PNG pipe decodes from the start of the file for each request that seeks
+# (issue #491). (Field-coded H.264, whose two fields are two packets of one frame, is not tested: no encoder of
+# the ffmpeg CLI writes it.)
+check ramp_bframes.h264 "H.264 elementary stream (B-frames)" libx264 24 $X264 -f h264
+check ramp_nob.h264 "H.264 elementary stream (no B-frames)" libx264 24 -c:v libx264 -g 8 -bf 0 -pix_fmt yuv420p -f h264
+check ramp_bframes.hevc "HEVC elementary stream (B-frames, open GOPs)" libx265 24 \
+    -c:v libx265 -x265-params log-level=error:keyint=8 -pix_fmt yuv420p -f hevc
+check ramp_png.pipe "PNG image pipe" png 24 -c:v png -f image2pipe
+SEEK_REFERENCE_MAX_SEEKS=2 check_seek_reference seek_h264.h264 "H.264 elementary stream (B-frames, 240 frames): every frame after seeks" \
+    libx264 -c:v libx264 -g 24 -bf 2 -pix_fmt yuv420p -f h264
+SEEK_REFERENCE_MAX_SEEKS=2 check_seek_reference seek_hevc.hevc "HEVC elementary stream (open GOPs, 240 frames): every frame after seeks" \
+    libx265 -c:v libx265 -x265-params log-level=error:keyint=24 -pix_fmt yuv420p -f hevc
+check_seek_reference seek_png.pipe "PNG image pipe (240 frames): every frame after seeks" png -c:v png -f image2pipe
+SEEK_REFERENCE_FILTER=",noise=alls=30:allf=t" check_seek_reference seek_png_large.pipe \
+    "PNG image pipe (240 frames of about 30 KB, with byte positions): every frame after seeks" png -c:v png -f image2pipe
+# A raw H.264 stream cut at its 6th packet (a capture that starts in a GOP; the keyframes repeat the parameter sets): the
+# packets before its first keyframe cannot be decoded, and are not counted (216 frames, as ffprobe -count_frames).
+SEEK_REFERENCE_CUT=5 SEEK_REFERENCE_FRAMES=216 SEEK_REFERENCE_MAX_SEEKS=2 check_seek_reference cut.h264 \
+    "H.264 elementary stream cut in its first GOP (240 frames, 216 from the first keyframe): every frame after seeks" \
+    libx264 -c:v libx264 -g 24 -bf 2 -x264-params repeat-headers=1 -pix_fmt yuv420p -f h264
+# The cost of the open: the packets of a raw H.264 stream are read once (the file was read twice), plus what
+# avformat_find_stream_info() reads first (6.6 MB here).
+if have_encoder libx264; then
+    if ffmpeg -y -loglevel error -f lavfi -i testsrc2=size=1920x1080:rate=24 -frames:v 120 -c:v libx264 -preset veryfast -b:v 60M \
+        -g 24 -bf 2 -pix_fmt yuv420p -f h264 "$tmp/big.h264"; then
+        check_open big.h264 "H.264 elementary stream (1920x1080, 120 frames, 15 MB): frame count, and the file read once at open" \
+            120 $(($(wc -c <"$tmp/big.h264") * 7 / 4)) --fps 24
+        rm -f "$tmp/big.h264"
+    else
+        echo "FAIL: could not generate big.h264"
+        rc=1
+    fi
+else
+    echo "== H.264 elementary stream (1920x1080, 120 frames, 15 MB): frame count, and the file read once at open =="
+    skip "no libx264 encoder in the ffmpeg CLI"
+fi
 # An edit list that starts after the first frames (negative timestamps): they are not displayed.
 check_frames ramp_preroll1.mp4 "MP4 (H.264, edit list, first frame not displayed: negative timestamp)" libx264 24 39 1 \
     $X264 -output_ts_offset -0.041666666666666667
