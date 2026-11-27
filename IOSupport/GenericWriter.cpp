@@ -88,7 +88,7 @@ NAMESPACE_OFX_IO_ENTER
     "In the file name, %V is replaced by the view name and %v by its first letter (e.g. L or R)."
 
 #define kParamOverwrite "overwrite"
-#define kParamOverwriteLabelAndHint "Overwrite", "Overwrite existing files when rendering."
+#define kParamOverwriteLabelAndHint "Overwrite", "Overwrite existing files when rendering. When unchecked, the frames whose image file exists are not rendered, and if the movie file exists, the render fails, and the movie is not changed."
 
 #define kParamOutputFormat kNatronParamFormatChoice
 #define kParamOutputFormatLabel "Format"
@@ -158,6 +158,8 @@ enum FormatTypeEnum {
 
 #define kParamGuessedParams "ParamExistingInstance" // was guessParamsFromFilename already successfully called once on this instance
 
+#define kParamInputPremultSet "inputPremultSet" // was the Input Premult set by the user? (then the input does not change it, #457)
+
 #ifdef OFX_IO_USING_OCIO
 #define kParamOutputSpaceSet "ocioOutputSpaceSet" // was the output colorspace set by user?
 #endif
@@ -197,6 +199,7 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
     , _processChannels()
     , _outputComponents(NULL)
     , _guessedParams(NULL)
+    , _inputPremultSet(NULL)
 #ifdef OFX_IO_USING_OCIO
     , _outputSpaceSet(NULL)
     , _ocio(new GenericOCIO(this))
@@ -242,6 +245,7 @@ GenericWriterPlugin::GenericWriterPlugin(OfxImageEffectHandle handle,
     assert(_processChannels[0] && _processChannels[1] && _processChannels[2] && _processChannels[3] && _outputComponents);
 
     _guessedParams = fetchBooleanParam(kParamGuessedParams);
+    _inputPremultSet = fetchBooleanParam(kParamInputPremultSet);
 
 #ifdef OFX_IO_USING_OCIO
     _outputSpaceSet = fetchBooleanParam(kParamOutputSpaceSet);
@@ -923,20 +927,15 @@ GenericWriterPlugin::renderFile(const RenderArguments& args,
     }
 
     // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
-    if (!_overwrite->getValueAtTime(time)) {
-        // check if output file exists
-        // exists_utf8(), not fopen(): a file that can not be read exists too, and the writers remove an existing file
-        if ( OFX::exists_utf8( filename.c_str() ) ) {
-            // file exists
-            if (_outputClip && _outputClip->isConnected()) {
-                std::unique_ptr<Image> dstImg(_outputClip->fetchImage(time));
-                // fill output with black
-                fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
-            }
-            // nothing else to do!
-
-            return;
+    if (keepsExistingFile(time, filename)) {
+        if (_outputClip && _outputClip->isConnected()) {
+            std::unique_ptr<Image> dstImg(_outputClip->fetchImage(time));
+            // fill output with black
+            fillBlack(*this, args.renderWindow, args.renderScale, dstImg.get());
         }
+        // nothing else to do!
+
+        return;
     }
 
     double pixelAspectRatio;
@@ -1448,6 +1447,19 @@ GenericWriterPlugin::renderFile(const RenderArguments& args,
     clearPersistentMessage();
 } // GenericWriterPlugin::renderFile
 
+bool
+GenericWriterPlugin::keepsExistingFile(double time,
+                                       const string& filename) const
+{
+    if (!isImageFile(extension(filename))) {
+        // a movie: beginSequenceRender fails if it exists and "Overwrite" is unchecked, and otherwise beginEncode()
+        // created the file, which this render writes (#470)
+        return false;
+    }
+    // exists_utf8(), not fopen(): a file that can not be read exists too, and the writers remove an existing file
+    return !_overwrite->getValueAtTime(time) && OFX::exists_utf8(filename.c_str());
+}
+
 class PackPixelsProcessorBase
     : public PixelProcessorFilterBase {
 protected:
@@ -1783,6 +1795,35 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& arg
         }
     }
 
+    // A movie holds all the frames of one sequence render: one at a time on an instance, and an overlapping one must
+    // fail before it changes the state of the active one (_sequenceView...). Released by any
+    // endSequenceRender, or below if this beginSequenceRender fails. Not for image files: a host calls
+    // beginSequenceRender(t, t) and endSequenceRender around each frame of a writer that is not sequential, and may
+    // render frames concurrently (Natron does), so these sequence renders overlap.
+    const bool movie = !isImageFile(extension(filename));
+    if (movie && _sequenceRenderActive.exchange(true)) {
+        persistentErrorAndThrow(*this, "Another render is currently active");
+    }
+    struct ReleaseOnFailure {
+        std::atomic<bool>& active;
+        const bool claimed;
+        bool started = false;
+        ~ReleaseOnFailure()
+        {
+            if (claimed && !started) {
+                active = false;
+            }
+        }
+    } release { _sequenceRenderActive, movie };
+
+    // #470: with "Overwrite" unchecked, a sequence render of an existing movie fails, before beginEncode(), which
+    // removes or truncates the file it opens (e.g. WriteFFmpeg's): the file is not changed. Unlike an image sequence, a
+    // movie can't be completed frame by frame, so the render fails rather than doing nothing.
+    // (getValue(), as for the file name: the param does not animate, and the frame range may be anything, e.g. NaN)
+    if (movie && !_overwrite->getValue() && OFX::exists_utf8(filename.c_str())) {
+        persistentErrorAndThrow(*this, string("The movie file \"") + filename + "\" exists and \"Overwrite\" is unchecked: nothing was rendered, and the file was not changed. Check \"Overwrite\" to replace it.");
+    }
+
     OfxRectD rod;
     double par;
     getOutputRoD(args.frameRange.min, args.view, &rod, &par);
@@ -1793,6 +1834,7 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& arg
     Coords::toPixelEnclosing(rod, args.renderScale, par, &rodPixel);
 
     beginEncode(filename, rodPixel, par, args);
+    release.started = true;
     // only once a sequence render has started: a beginSequenceRender that beginEncode() rejects (e.g. an
     // interactive one, or one while another render is active) must not change the view of the active render
     _sequenceView = args.view;
@@ -1803,6 +1845,15 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& arg
 void
 GenericWriterPlugin::endSequenceRender(const EndSequenceRenderArguments& args)
 {
+    // The next sequence render of a movie may begin when this one has ended, whatever happens here. Released
+    // unconditionally, not from the file name: the file may have changed since beginSequenceRender (e.g. from a movie
+    // to an image file, which would leave the flag set). That is safe, because only a movie sets the flag, and the
+    // writer of a movie (WriteFFmpeg) is sequential: no image-file sequence render runs alongside its movie render.
+    struct Release {
+        std::atomic<bool>& active;
+        ~Release() { active = false; }
+    } release { _sequenceRenderActive };
+
     if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
         throwSuiteStatusException(kOfxStatFailed);
 
@@ -2043,22 +2094,15 @@ GenericWriterPlugin::getRegionsOfInterest(const OFX::RegionsOfInterestArguments&
     // RoD of its inputs. We just ask for the renderwindow.
 
     // If "Overwrite" is not checked, and the file already exists, render does nothing (and outputs a black image)
-    if (_overwrite->getValueAtTime(time)) {
+    string filename;
+    _fileParam->getValueAtTime(time, filename);
+    if (!keepsExistingFile(time, filename)) { // as in renderFile()
         // set the RoI, since the default is the full input RoD
         rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
     } else {
-        // check if output file exists
-        string filename;
-        _fileParam->getValueAtTime(time, filename);
-        // filename = filenameFromPattern(filename, time);
-        if ( !OFX::exists_utf8( filename.c_str() ) ) { // as in render()
-            // set the RoI, since the default is the full input RoD
-            rois.setRegionOfInterest(*_inputClip, args.regionOfInterest);
-        } else {
-            // file exists, do not ask for anything on input
-            const OfxRectD emptyRoI = { 0., 0., 0., 0. };
-            rois.setRegionOfInterest(*_inputClip, emptyRoI);
-        }
+        // file exists, do not ask for anything on input
+        const OfxRectD emptyRoI = { 0., 0., 0., 0. };
+        rois.setRegionOfInterest(*_inputClip, emptyRoI);
     }
 }
 
@@ -2384,6 +2428,12 @@ GenericWriterPlugin::changedParam(const InstanceChangedArgs& args,
         }
     } else if (paramName == kParamFilename) {
         outputFileChanged(args.reason, _guessedParams->getValue(), true);
+    } else if ((paramName == kParamInputPremult) && (args.reason == eChangeUserEdit)) {
+        // not when changedClip() sets it from the input (a plug-in edit) (#457). kOfxChangeUserEdited "includes
+        // undo/redos, resets and loading values from files or presets" (ofxCore.h): an undo or a reset sets the flag
+        // too, and in a host that reports each loaded param so, every loaded project keeps its Input Premult (as
+        // ocioOutputSpaceSet keeps the output colorspace).
+        _inputPremultSet->setValue(true);
     } else if (paramName == kParamFormatType) {
         FormatTypeEnum type = (FormatTypeEnum)_outputFormatType->getValue();
         if (_clipToRoD) {
@@ -2475,7 +2525,11 @@ GenericWriterPlugin::changedClip(const InstanceChangedArgs& args,
             }
         }
 #endif
-        _premult->setValue(premult);
+        // #457: some hosts connect the input of a loaded project with a user edit (not a plug-in edit, as
+        // kOfxActionCreateInstance in ofxCore.h asks): a value that the user set is kept
+        if (!_inputPremultSet->getValue()) {
+            _premult->setValue(premult);
+        }
 
         double fps = _inputClip->getFrameRate();
         setOutputFrameRate(fps);
@@ -2961,6 +3015,16 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
         param->appendOption(premultString(eImageUnPreMultiplied), kParamInputPremultOptionUnPreMultipliedHint);
         param->setDefault(eImagePreMultiplied); // images should be premultiplied in a compositing context
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
+        if (page) {
+            page->addChild(*param);
+        }
+    }
+    {
+        BooleanParamDescriptor* param = desc.defineBooleanParam(kParamInputPremultSet);
+        param->setEvaluateOnChange(false);
+        param->setAnimates(false);
+        param->setIsSecretAndDisabled(true);
+        param->setDefault(false);
         if (page) {
             page->addChild(*param);
         }

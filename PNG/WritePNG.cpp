@@ -55,7 +55,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
 #define kPluginDescription "Write PNG files."
 #define kPluginIdentifier "fr.inria.openfx.WritePNG"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 0 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 92 // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated. Better than WriteOIIO
 
 #define kSupportsRGBA true

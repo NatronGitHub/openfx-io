@@ -35,6 +35,10 @@ public:
     // Defines enableGPU param in |desc| and adds it as a child of |page|.
     static void defineEnableGPUParam(ImageEffectDescriptor& desc, PageParamDescriptor* page);
 
+    // Defines the secret premultSet param (was the premult checkbox set by the user?, see changedSrcClip()) in |desc|
+    // and adds it as a child of |page|.
+    static void definePremultSetParam(ImageEffectDescriptor& desc, PageParamDescriptor* page);
+
 protected:
     OCIOPluginBase(OfxImageEffectHandle handle);
     virtual ~OCIOPluginBase() override;
@@ -51,7 +55,11 @@ protected:
     void setSupportsOpenGLAndTileInfo();
     void setSupportsOpenGLAndTileInfoAtTime(double time);
 
+    // Sets the premult checkbox from the premultiplication of the input, unless the user set it (#457).
     void changedSrcClip(Clip* srcClip);
+
+    // To call from changedParam(): records that the user set the premult checkbox.
+    void changedPremultParam(const InstanceChangedArgs& args, const std::string& paramName);
 
     // The processor that makeProcessor() returns, or, if it throws a std::runtime_error (an OCIO::Exception is one;
     // not OFX::Exception::Suite), persistentErrorAndThrow() with its message.
@@ -69,6 +77,7 @@ private:
     void setSupportsOpenGLAndTileInfo_internal(bool premult, bool enableGPU);
 
     BooleanParam* _premult;
+    BooleanParam* _premultSet;
     ChoiceParam* _premultChannel;
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)

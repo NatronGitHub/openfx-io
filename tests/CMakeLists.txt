@@ -300,8 +300,9 @@ if(TARGET io_tests_ofx)
     # disk): the render fails, and the process survives (not on MS Windows)
     io_test(test-writeoiio-disk-full ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i292" --writeoiio-disk-full)
   endif()
-  # test-writeoiio-files (#362, #171): WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which
-  # OpenImageIO writes by name, are written and read back; a zstd EXR must warn if the file is not zstd
+  # test-writeoiio-files (#362, #171, #476): WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which
+  # OpenImageIO writes by name, are written and read back; a zstd EXR must warn if the file is not zstd; a PFM file of
+  # more than 64 MiB has its rows in order
   io_test(test-writeoiio-files ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i362" --writeoiio-files)
   # test-writer-remove-partial-file (#251): a failed or aborted render of an image file leaves no partial file (a test
   # writer; WritePNG and RLIMIT_FSIZE, except on MS Windows and without libpng), and a render that fails before the
@@ -338,6 +339,21 @@ if(TARGET io_tests_ofx)
   # test-writer-render-scale (#438): a writer (WritePFM) at a render scale other than 1: beginSequenceRender and render
   # fail with an error message, getRegionOfDefinition fails without one
   io_test(test-writer-render-scale ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writer-render-scale)
+  # test-writer-no-overwrite (#470): WriteFFmpeg with "Overwrite" unchecked writes a new movie; for an existing one,
+  # beginSequenceRender fails with an error, and the movie is kept
+  io_test(test-writer-no-overwrite ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writer-no-overwrite)
+  # test-writer-image-overlapping-begins (#470): two overlapping one-frame sequence renders on one WritePFM instance
+  # (as Natron renders image files) both succeed and write their files
+  io_test(test-writer-image-overlapping-begins ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out" --writer-image-overlapping-begins)
+  # test-writer-file-change-during-render (#470): WriteFFmpeg, the file changes from a movie to an image during a
+  # render: the next sequence render of the movie begins
+  io_test(test-writer-file-change-during-render ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out" --writer-file-change-during-render)
+  # test-writeffmpeg-interactive (#460): WriteFFmpeg writes a movie of several frames when the host sets
+  # kOfxPropIsInteractive, and refuses a single-frame interactive render
+  io_test(test-writeffmpeg-interactive ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writeffmpeg-interactive)
+  # test-writer-input-connect (#457): connecting the input sets a writer's Input Premult, unless the user set it (also
+  # in a loaded project)
+  io_test(test-writer-input-connect ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writer-input-connect)
   # test-writer-int-ranges (#184): GenericWriter's Project format and WriteFFmpeg's frame range, step, frames and fps,
   # with host values out of the range of int (or NaN): built with UBSan's float-cast-overflow and signed-integer-overflow
   # checks, stopping at the first error (ofx_render_test_ubsan); on MS Windows (MinGW has no UBSan runtime),

@@ -26,6 +26,10 @@
 NAMESPACE_OFX_ENTER
 NAMESPACE_OFX_IO_ENTER
 
+// was the premult checkbox set by the user? (then the input does not change it: some hosts connect the input of a loaded
+// project with a user edit, not a plug-in edit as kOfxActionCreateInstance in ofxCore.h asks, #457)
+#define kParamPremultSet "premultSet"
+
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
 #define kParamEnableGPU "enableGPU"
 #define kParamEnableGPULabel "Enable GPU Render"
@@ -38,12 +42,13 @@ NAMESPACE_OFX_IO_ENTER
 OCIOPluginBase::OCIOPluginBase(OfxImageEffectHandle handle)
     : ImageEffect(handle)
     , _premult(fetchBooleanParam(kParamPremult))
+    , _premultSet(fetchBooleanParam(kParamPremultSet))
     , _premultChannel(fetchChoiceParam(kParamPremultChannel))
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     , _enableGPU(fetchBooleanParam(kParamEnableGPU))
 #endif
 {
-    assert(_premult && _premultChannel);
+    assert(_premult && _premultSet && _premultChannel);
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
     assert(_enableGPU);
 #endif
@@ -72,6 +77,20 @@ OCIOPluginBase::defineEnableGPUParam(ImageEffectDescriptor& desc, PageParamDescr
         param->setEnabled(false);
     }
 
+    if (page) {
+        page->addChild(*param);
+    }
+}
+
+// static
+void
+OCIOPluginBase::definePremultSetParam(ImageEffectDescriptor& desc, PageParamDescriptor* page)
+{
+    BooleanParamDescriptor* param = desc.defineBooleanParam(kParamPremultSet);
+    param->setEvaluateOnChange(false);
+    param->setAnimates(false);
+    param->setIsSecretAndDisabled(true);
+    param->setDefault(false);
     if (page) {
         page->addChild(*param);
     }
@@ -114,6 +133,9 @@ OCIOPluginBase::setSupportsOpenGLAndTileInfo_internal(bool premult, bool enableG
 void
 OCIOPluginBase::changedSrcClip(Clip* srcClip)
 {
+    if (_premultSet->getValue()) {
+        return;
+    }
     if (srcClip->getPixelComponents() != ePixelComponentRGBA) {
         _premult->setValue(false);
     } else {
@@ -128,6 +150,17 @@ OCIOPluginBase::changedSrcClip(Clip* srcClip)
             _premult->setValue(false);
             break;
         }
+    }
+}
+
+void
+OCIOPluginBase::changedPremultParam(const InstanceChangedArgs& args, const std::string& paramName)
+{
+    // not when changedSrcClip() sets it (a plug-in edit). kOfxChangeUserEdited "includes undo/redos, resets and loading
+    // values from files or presets" (ofxCore.h): an undo or a reset sets the flag too, and in a host that reports each
+    // loaded param so, every loaded project keeps its premult checkbox.
+    if ((paramName == kParamPremult) && (args.reason == eChangeUserEdit)) {
+        _premultSet->setValue(true);
     }
 }
 

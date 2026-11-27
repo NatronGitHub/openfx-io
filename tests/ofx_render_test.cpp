@@ -2925,6 +2925,12 @@ public:
     // the field order of the source clip, e.g. kOfxImageFieldLower for an interlaced input
     void setSourceFieldOrder(const char* fieldOrder) { pSetString(PH(&_src->props), kOfxImageClipPropFieldOrder, 0, fieldOrder); }
 
+    // the source clip, e.g. to change its premultiplication or frame rate before instanceChanged(kOfxTypeClip, ...)
+    Clip& source() { return *_src; }
+
+    // kOfxPropIsInteractive in the next begin() and end() (default 0)
+    void setInteractive(bool interactive) { _interactive = interactive; }
+
     OfxStatus begin(int nFrames, double renderScale = 1.) { return sequenceAction(kOfxImageEffectActionBeginSequenceRender, 1., nFrames, 1., renderScale); }
     OfxStatus end(int nFrames) { return sequenceAction(kOfxImageEffectActionEndSequenceRender, 1., nFrames, 1.); }
     // the same with the host's frame range and frame step
@@ -2994,7 +3000,7 @@ private:
         double fr[2] = { first, last };
         pSetDoubleN(ap, kOfxImageEffectPropFrameRange, 2, fr);
         pSetDouble(ap, kOfxImageEffectPropFrameStep, 0, step);
-        pSetInt(ap, kOfxPropIsInteractive, 0, 0);
+        pSetInt(ap, kOfxPropIsInteractive, 0, _interactive ? 1 : 0);
         double rs[2] = { renderScale, renderScale };
         pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
         pSetInt(ap, kOfxImageEffectPropSequentialRenderStatus, 0, 1);
@@ -3010,6 +3016,7 @@ private:
     int _W = 0;
     int _H = 0;
     bool _created = false;
+    bool _interactive = false;
 };
 
 // #289: render a movie, then on the same instance a beginSequenceRender that fails in the settings of the video
@@ -3688,6 +3695,66 @@ int testWriteOIIOEXRZstd(const std::string& outFile)
 }
 
 // ---- #294, #296: the PFM plug-ins fail on write errors and on invalid headers (options --pfm-write-errors, --pfm-read-errors) ----
+
+// #476: WriteOIIO, a PFM file of more than 64 MiB (4096x1500 RGB float, 73.7 MB). Before OpenImageIO 3.2.1,
+// ImageOutput::write_image() wrote it in chunks of about 64 MiB, and the PFM writer stored each chunk bottom row first on
+// its own: the rows of the file were rotated. Each row of the source holds its row number (R) and column numbers (G),
+// and PFM is stored bottom row first, which is row 0 of an OFX image: row k of the file must hold k.
+int testWriteOIIOPFMRows(const std::string& outFile)
+{
+    const int W = 4096, H = 1500;
+    const std::string file = outFile + ".i476.pfm";
+    std::printf("==== WriteOIIO PFM, 4096x1500 RGB float (more than 64 MiB): the rows are in order (issue #476) ====\n");
+    std::remove(file.c_str());
+    // the file (73.7 MB) is removed on every return
+    struct RemoveFile {
+        const std::string& file;
+        ~RemoveFile() { std::remove(file.c_str()); }
+    } removeFile { file };
+    WriterSession s;
+    if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WriteOIIO") || !s.setChoice("outputComponents", "RGB")) return 1;
+    s.setInt(kNatronOfxParamProcessA, 0); // RGB (the checkboxes of a Natron-like host)
+    // an RGB source, as the host gives it for Output Components RGB (getClipPreferences)
+    setupClipImage(&s.source(), W, H, kOfxImageComponentRGB, kOfxBitDepthFloat, true);
+    float* src = reinterpret_cast<float*>(s.source().buffer.data());
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            float* px = src + ((size_t)y * W + x) * 3;
+            px[0] = (float)y;
+            px[1] = (float)x;
+            px[2] = 0.5f;
+        }
+    }
+    if (s.renderAll(1)) return 1;
+    const std::string data = fileContents(file);
+    // the header: "PF", the width, the height and the scale (negative: little-endian), each followed by one whitespace
+    size_t pos = 0;
+    std::string fields[4];
+    for (std::string& f : fields) {
+        while ((pos < data.size()) && std::isspace((unsigned char)data[pos])) ++pos;
+        while ((pos < data.size()) && !std::isspace((unsigned char)data[pos])) f += data[pos++];
+    }
+    ++pos; // the whitespace after the scale
+    const size_t rowSize = (size_t)W * 3 * sizeof(float);
+    if ((fields[0] != "PF") || (fields[1] != std::to_string(W)) || (fields[2] != std::to_string(H)) || (fields[3].empty() || fields[3][0] != '-')
+        || (data.size() != pos + rowSize * H)) {
+        std::printf("  FAIL: not a %dx%d little-endian RGB PFM file of %zu bytes: \"%s %s %s %s\", %zu bytes\n", W, H, pos + rowSize * H,
+                    fields[0].c_str(), fields[1].c_str(), fields[2].c_str(), fields[3].c_str(), data.size());
+        return 1;
+    }
+    int badRows = 0;
+    for (int k = 0; k < H; ++k) {
+        float px[3], last[3];
+        std::memcpy(px, data.data() + pos + rowSize * k, sizeof(px)); // (a little-endian host)
+        std::memcpy(last, data.data() + pos + rowSize * k + rowSize - sizeof(last), sizeof(last));
+        if ((px[0] != (float)k) || (px[1] != 0.f) || (last[0] != (float)k) || (last[1] != (float)(W - 1))) {
+            if (badRows++ < 3) std::printf("  FAIL: row %d of the file holds row %g (columns %g to %g)\n", k, px[0], px[1], last[1]);
+        }
+    }
+    if (badRows) { std::printf("  FAIL: %d of %d rows are out of order\n", badRows, H); return 1; }
+    std::printf("  PASS\n");
+    return 0;
+}
 
 // #294, POSIX only: WritePFM, the file can not grow beyond 16 KB (RLIMIT_FSIZE, as on a full disk), so that fwrite()
 // or fclose() fails: the render must fail with an error that names the file. The same instance then writes the whole
@@ -5993,6 +6060,253 @@ int testReadFFmpegViewsPixelFormat(const std::string& outFile)
     return failures;
 }
 
+// #470: WriteFFmpeg with "Overwrite" unchecked. A new movie must be written: beginEncode() created the file, which
+// renderFile() took for an existing one, so every frame was skipped and the render failed ("No frame was written").
+// Rendering again (another image) to the same movie must fail in beginSequenceRender, with an error that says that the
+// movie exists and "Overwrite" is unchecked, and leave the movie as it is; with "Overwrite" checked, the movie is
+// written again.
+int testWriterNoOverwrite(const std::string& outFile)
+{
+    const int W = 64, H = 48, N = 3;
+    const std::string file = outFile + ".i470.mov";
+    std::printf("==== WriteFFmpeg, Overwrite unchecked: a new movie is written, an existing one fails the render and is kept (issue #470) ====\n");
+    std::remove(file.c_str());
+    int failures = 0;
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    // the first component (Y') of pixel (8, 8) of the first frame of the movie, or -1
+    auto firstY = [&file]() {
+        int w = 0, h = 0, depth = 0;
+        std::vector<std::vector<int>> values;
+        return (!probePixels(file, { { 8, 8 } }, &w, &h, &depth, &values) && !values.empty() && !values[0].empty()) ? values[0][0] : -1;
+    };
+    WriterParams wp;
+    wp.ints = { { "overwrite", 0 } };
+    std::string first;
+    {
+        WriterSession s;
+        if (s.create(file, W, H, N, wp)) return 1;
+        msgClear(nullptr);
+        // a sequence render that begins while one is active fails, and the active one writes all its frames
+        OfxStatus st = s.begin(N);
+        const OfxStatus overlapping = s.begin(N);
+        const std::string error = persistentError();
+        expect(!ok(overlapping) && (error.find("Another render") != std::string::npos),
+               "a sequence render that begins while one is active fails (" + std::to_string(overlapping) + ", \"" + error + "\")");
+        msgClear(nullptr);
+        int failed = ok(st) ? 0 : 1;
+        for (int t = 1; t <= N; ++t) failed += ok(s.render(t)) ? 0 : 1;
+        failed += ok(s.end(N)) ? 0 : 1;
+        int nFrames = 0, nIFrames = 0;
+        expect(!failed && !probeVideoFrames(file, &nFrames, &nIFrames) && (nFrames == N),
+               "a new movie is written: " + std::to_string(nFrames) + " frames (error: \"" + persistentError() + "\")");
+        first = fileContents(file);
+    }
+    const int y0 = firstY();
+    if (first.empty()) { std::printf("  FAIL: no movie\n"); return failures + 1; }
+    {
+        WriterSession s;
+        if (s.create(file, W, H, N, wp)) return failures + 1;
+        // another image: opaque dark grey (the first one is the mid-grey of WriterSession, whose alpha is 0.5: WriteFFmpeg
+        // unpremultiplies it to white, whatever the grey)
+        float* pix = s.sourcePixels();
+        for (size_t i = 0; i < (size_t)W * H; ++i) {
+            pix[4 * i] = pix[4 * i + 1] = pix[4 * i + 2] = 0.25f;
+            pix[4 * i + 3] = 1.f;
+        }
+        msgClear(nullptr);
+        const OfxStatus st = s.begin(N);
+        const std::string error = persistentError();
+        s.end(N); // as a host does after a failed beginSequenceRender
+        expect(!ok(st), "beginSequenceRender of the existing movie fails (" + std::to_string(st) + ")");
+        expect(fileContents(file) == first, "the existing movie is unchanged");
+        expect((error.find("exists") != std::string::npos) && (error.find("Overwrite") != std::string::npos),
+               "the error says that the movie exists and Overwrite is unchecked: \"" + error + "\"");
+        s.setInt("overwrite", 1);
+        msgClear(nullptr);
+        const int failedAgain = s.renderAll(N);
+        const int y1 = firstY();
+        expect(!failedAgain && (y1 >= 0) && (y1 != y0),
+               "with Overwrite checked, the movie is written again, with the other image: Y' " + std::to_string(y1) + ", was " + std::to_string(y0)
+                   + " (error: \"" + persistentError() + "\")");
+    }
+    std::remove(file.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #470: the one-sequence-render-at-a-time guard of GenericWriter is for movies only. A host renders the frames of a writer
+// that is not sequential (the image writers) as sequence renders of one frame each, beginSequenceRender(t, t) and
+// endSequenceRender around each render, and may render them concurrently, with no lock for a fully-safe plug-in (Natron:
+// Engine/EffectInstanceRenderRoI.cpp). Two overlapping ones on one WritePFM instance must both succeed and write both files.
+int testWriterImageOverlappingBegins(const std::string& outFile)
+{
+    const int W = 8, H = 4;
+    std::printf("==== WritePFM, two overlapping one-frame sequence renders on one instance: both write their file (issue #470) ====\n");
+    auto frameFile = [&outFile](double t) { return outFile + ".i470." + std::to_string((int)t) + ".pfm"; };
+    std::remove(frameFile(1.).c_str());
+    std::remove(frameFile(2.).c_str());
+    int failures = 0;
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    {
+        WriterSession s;
+        if (s.create(outFile + ".i470.#.pfm", W, H, 2, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
+        // the file of each frame, as the host gives it (getValueAtTime)
+        s.context().params[kOfxImageEffectFileParamName].stringAtTime = frameFile;
+        msgClear(nullptr);
+        const OfxStatus b1 = s.begin(1., 1., 1.);
+        const OfxStatus b2 = s.begin(2., 2., 1.);
+        const std::string beginError = persistentError();
+        const OfxStatus r1 = s.render(1.);
+        const OfxStatus r2 = s.render(2.);
+        const OfxStatus e1 = s.end(1., 1., 1.);
+        const OfxStatus e2 = s.end(2., 2., 1.);
+        expect(ok(b1) && ok(b2), "both begins succeed (" + std::to_string(b1) + ", " + std::to_string(b2) + ", \"" + beginError + "\")");
+        expect(ok(r1) && ok(r2) && ok(e1) && ok(e2), "both renders and ends succeed (" + std::to_string(r1) + ", " + std::to_string(r2) + ", " +
+                                                         std::to_string(e1) + ", " + std::to_string(e2) + ", \"" + persistentError() + "\")");
+        expect((fileSize(frameFile(1.)) > 0) && (fileSize(frameFile(2.)) > 0), "both files are written");
+    }
+    std::remove(frameFile(1.).c_str());
+    std::remove(frameFile(2.).c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #470: the guard against overlapping sequence renders of a movie is released by endSequenceRender, whatever the file
+// is then. The file param may change during a render: from out.mov to out.png (an image file for WriteFFmpeg), the end
+// used to keep the guard, and every later sequence render of a movie on that instance failed with "Another render is
+// currently active".
+int testWriterFileChangeDuringRender(const std::string& outFile)
+{
+    const int W = 64, H = 48, N = 2;
+    const std::string movie = outFile + ".i470fc.mov", image = outFile + ".i470fc.png";
+    std::printf("==== WriteFFmpeg, the file changes from a movie to an image during a render: the next movie render begins (issue #470) ====\n");
+    std::remove(movie.c_str());
+    int failures = 0;
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    {
+        WriterSession s;
+        if (s.create(movie, W, H, N, WriterParams())) return 1;
+        msgClear(nullptr);
+        OfxStatus st = s.begin(N);
+        expect(ok(st), "begin on " + movie + " (" + std::to_string(st) + ")");
+        s.setFilename(image);
+        s.end(N);
+        s.setFilename(movie);
+        msgClear(nullptr);
+        st = s.begin(N);
+        const std::string error = persistentError();
+        expect(ok(st), "after an end with the file changed to " + image + ", the next begin on the movie succeeds (" + std::to_string(st) + ", \"" + error + "\")");
+        int failed = ok(st) ? 0 : 1;
+        for (int t = 1; t <= N; ++t) failed += ok(s.render(t)) ? 0 : 1;
+        failed += ok(s.end(N)) ? 0 : 1;
+        int nFrames = 0, nIFrames = 0;
+        expect(!failed && !probeVideoFrames(movie, &nFrames, &nIFrames) && (nFrames == N),
+               "that render writes the movie: " + std::to_string(nFrames) + " frames (error: \"" + persistentError() + "\")");
+    }
+    std::remove(movie.c_str());
+    std::remove(image.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #460: WriteFFmpeg refused every sequence render with kOfxPropIsInteractive set ("a single frame render due to user
+// interaction in a GUI", ofxImageEffect.h), which some hosts (Resolve, Fusion, Flame) also set for final renders. A
+// render of several frames must write the movie; a single-frame interactive render (a viewer) is still refused.
+int testWriteFFmpegInteractive(const std::string& outFile)
+{
+    const int W = 64, H = 48, N = 3;
+    const std::string file = outFile + ".i460.mov";
+    std::printf("==== WriteFFmpeg, kOfxPropIsInteractive set: a render of several frames writes the movie (issue #460) ====\n");
+    std::remove(file.c_str());
+    int failures = 0;
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    {
+        WriterSession s;
+        if (s.create(file, W, H, N, WriterParams())) return 1;
+        s.setInteractive(true);
+        msgClear(nullptr);
+        const int failed = s.renderAll(N);
+        int nFrames = 0, nIFrames = 0;
+        expect(!failed && !probeVideoFrames(file, &nFrames, &nIFrames) && (nFrames == N),
+               "interactive, frames 1 to " + std::to_string(N) + ": the movie has " + std::to_string(nFrames) + " frames (error: \"" + persistentError() + "\")");
+    }
+    std::remove(file.c_str());
+    {
+        WriterSession s;
+        if (s.create(file, W, H, 1, WriterParams())) return failures + 1;
+        s.setInteractive(true);
+        msgClear(nullptr);
+        const OfxStatus st = s.begin(1., 1., 1.);
+        const std::string error = persistentError();
+        s.end(1., 1., 1.);
+        expect(!ok(st) && (error.find("non-interactive") != std::string::npos) && (fileSize(file) < 0),
+               "interactive, a single frame: refused, no file (" + std::to_string(st) + ", \"" + error + "\")");
+    }
+    std::remove(file.c_str());
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #457: GenericWriter's Input Premult (WritePFM) follows the premultiplication of the input when it is connected (a user
+// edit of the Source clip), unless the user set it: some hosts connect the input of a loaded project with a user edit,
+// which overwrote the saved value. The saved inputPremultSet param tells that the user set it.
+int testWriterInputConnect(const std::string& outFile)
+{
+    const int W = 16, H = 8;
+    const std::string file = outFile + ".i457.pfm";
+    std::printf("==== WritePFM: connecting the input sets Input Premult, unless the user set it (issue #457) ====\n");
+    int failures = 0;
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    // the user connects the Source clip, with premultiplication premult (Input Premult: 0 Opaque, 1 PreMultiplied,
+    // 2 UnPreMultiplied)
+    auto connect = [](WriterSession& s, const char* premult) {
+        pSetString(PH(&s.source().props), kOfxImageEffectPropPreMultiplication, 0, premult);
+        pSetDouble(PH(&s.source().props), kOfxImageEffectPropFrameRate, 0, 25.); // (read by changedClip())
+        const OfxStatus st = s.instanceChanged(kOfxTypeClip, kOfxImageEffectSimpleSourceClipName);
+        if (!ok(st)) std::printf("  instanceChanged(Source clip) = %d\n", st);
+        return st;
+    };
+    auto premult = [](WriterSession& s) { return paramInt(&s.context().params["inputPremult"], 0); };
+    {
+        WriterSession s;
+        if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
+        expect(ok(connect(s, kOfxImageOpaque)) && (premult(s) == 0), "a new instance: the input sets it (" + std::to_string(premult(s)) + ")");
+        expect(ok(connect(s, kOfxImagePreMultiplied)) && (premult(s) == 1), "another input: it follows (" + std::to_string(premult(s)) + ")");
+        // the user sets it, then connects another input
+        s.setInt("inputPremult", 2);
+        s.instanceChanged(kOfxTypeParameter, "inputPremult");
+        expect(ok(connect(s, kOfxImageOpaque)) && (premult(s) == 2), "set by the user, then an input is connected: kept (" + std::to_string(premult(s)) + ")");
+    }
+    {
+        // a loaded project whose Input Premult the user set (saved inputPremultSet)
+        WriterParams wp;
+        wp.ints = { { "inputPremult", 2 }, { "inputPremultSet", 1 } };
+        WriterSession s;
+        if (s.create(file, W, H, 1, wp, "fr.inria.openfx.WritePFM")) {
+            ++failures;
+        } else {
+            expect(ok(connect(s, kOfxImageOpaque)) && (premult(s) == 2), "a loaded project, set by the user: kept (" + std::to_string(premult(s)) + ")");
+        }
+    }
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
 } // namespace
 
 int
@@ -6021,7 +6335,7 @@ main(int argc, char** argv)
         } else if (mode == "--writeoiio-disk-full") {
             failures = testWriteOIIODiskFull(outFile);
         } else if (mode == "--writeoiio-files") {
-            failures = testWriteOIIOFiles(outFile) + testWriteOIIOEXRZstd(outFile);
+            failures = testWriteOIIOFiles(outFile) + testWriteOIIOEXRZstd(outFile) + testWriteOIIOPFMRows(outFile);
         } else if (mode == "--writer-remove-partial-file") {
             failures = testWriterRemovePartialFile(outFile);
         } else if (mode == "--swscale-exact") {
@@ -6050,6 +6364,16 @@ main(int argc, char** argv)
             failures = testWriterIntRanges(outFile);
         } else if (mode == "--pfm-read-errors") {
             failures = testReadPFMHeaderSize(outFile);
+        } else if (mode == "--writer-no-overwrite") {
+            failures = testWriterNoOverwrite(outFile);
+        } else if (mode == "--writer-image-overlapping-begins") {
+            failures = testWriterImageOverlappingBegins(outFile);
+        } else if (mode == "--writer-file-change-during-render") {
+            failures = testWriterFileChangeDuringRender(outFile);
+        } else if (mode == "--writeffmpeg-interactive") {
+            failures = testWriteFFmpegInteractive(outFile);
+        } else if (mode == "--writer-input-connect") {
+            failures = testWriterInputConnect(outFile);
         } else if (mode == "--views-concurrent") {
             failures = testReadFFmpegViewsConcurrent(outFile) + testReadFFmpegViewsPixelFormat(outFile + ".pixfmt.mkv");
         } else {

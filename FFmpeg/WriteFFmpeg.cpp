@@ -347,7 +347,7 @@ rawvideoFallbackMessage(const AVOutputFormat* fmt,
 
 #define kPluginIdentifier "fr.inria.openfx.WriteFFmpeg"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 3 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 0 // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated
 
 #define kSupportsRGBA true
@@ -5038,6 +5038,8 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // (not args.sequentialRenderStatus: kOfxImageEffectPropSequentialRenderStatus is OFX 1.2, a 1.0 or 1.1 host
     // doesn't set it, and a host may set it to 0 for a render that is sequential anyway, as WriteFFmpeg requires
     // with kOfxImageEffectInstancePropSequentialRender)
+    // (GenericWriterPlugin::beginSequenceRender() already refuses an overlapping sequence render of a movie; this also
+    // covers an image file that FFmpeg writes, isImageFile(), for which GenericWriter claims nothing)
     if (_formatContext || _streamVideo.stream) {
         persistentErrorAndThrow(*this, "Another render is currently active");
     }
@@ -5046,7 +5048,10 @@ WriteFFmpegPlugin::beginEncode(const string& filename,
     // nothing to finish (#289)
     _error = IGNORE_FINISH;
 
-    if (args.isInteractive) {
+    // kOfxPropIsInteractive: "is this a single frame render due to user interaction in a GUI, or a proper full
+    // sequence render" (ofxImageEffect.h, kOfxImageEffectActionBeginSequenceRender). Some hosts (Resolve, Fusion,
+    // Flame) also set it for final renders: only a single-frame interactive render is refused (#460).
+    if (args.isInteractive && (args.frameRange.min == args.frameRange.max)) {
         persistentErrorAndThrow(*this, "can only write files when in non-interactive mode.");
     }
 

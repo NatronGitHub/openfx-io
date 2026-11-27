@@ -68,7 +68,7 @@ using std::string;
 
 #define kPluginIdentifier "fr.inria.openfx.OCIOLookTransform"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 
 #define kSupportsTiles 1
 #define kSupportsMultiResolution 1
@@ -876,6 +876,7 @@ OCIOLookTransformPlugin::changedParam(const InstanceChangedArgs& args,
 {
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
+    changedPremultParam(args, paramName); // (#457)
     if (paramName == kParamLookAppend) {
         AutoSetAndRestoreThreadLocale locale;
         OCIO::ConstConfigRcPtr config = _ocio->getConfig();
@@ -1075,6 +1076,7 @@ OCIOLookTransformPluginFactory::describeInContext(ImageEffectDescriptor& desc,
 #endif
 
     ofxsPremultDescribeParams(desc, page);
+    OCIOPluginBase::definePremultSetParam(desc, page);
     ofxsMaskMixDescribeParams(desc, page);
 } // OCIOLookTransformPluginFactory::describeInContext
 

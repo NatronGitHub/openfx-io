@@ -291,6 +291,7 @@ namespace IO {
         OFX::BooleanParam* _processChannels[4];
         OFX::ChoiceParam* _outputComponents;
         OFX::BooleanParam* _guessedParams; //!< was guessParamsFromFilename already successfully called once on this instance
+        OFX::BooleanParam* _inputPremultSet; //!< was _premult set by the user? (then changedClip() keeps it, #457)
 
 #ifdef OFX_IO_USING_OCIO
         OFX::BooleanParam* _outputSpaceSet;
@@ -313,6 +314,13 @@ namespace IO {
         // see sequenceRenderRan() and sequenceRenderFailed(); atomic, for the same reason
         std::atomic<bool> _sequenceRenderRan { false };
         std::atomic<bool> _sequenceRenderFailed { false };
+        // whether a sequence render of a movie is active (between beginSequenceRender and endSequenceRender): an
+        // overlapping one fails (#470)
+        std::atomic<bool> _sequenceRenderActive { false };
+
+        // Whether the render at time leaves filename as it is: an image file that exists, with "Overwrite" unchecked (a
+        // movie never: beginSequenceRender fails instead, #470)
+        bool keepsExistingFile(double time, const std::string& filename) const;
 
         class InputImagesHolder {
             std::list<const OFX::Image*> _imgs;
