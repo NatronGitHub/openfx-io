@@ -891,37 +891,6 @@ testFile(OfxPlugin* p,
     }
 }
 
-// The mean of value(i, j), for the pixels (i, j) at scale 1 in bounds that pixel (x, y) at the render scale covers
-// ([x / scale.x, (x + 1) / scale.x) x [y / scale.y, (y + 1) / scale.y), "Mapping Between The Spatial Coordinate
-// Systems", ofxCoordSystem.rst), weighted by the covered area; 0 if it covers none of bounds.
-template <typename Value>
-double
-areaMean(const OfxRectI& bounds,
-         const OfxPointD& scale,
-         int x,
-         int y,
-         Value value)
-{
-    const double x1 = (std::max)(x / scale.x, (double)bounds.x1);
-    const double x2 = (std::min)((x + 1.) / scale.x, (double)bounds.x2);
-    const double y1 = (std::max)(y / scale.y, (double)bounds.y1);
-    const double y2 = (std::min)((y + 1.) / scale.y, (double)bounds.y2);
-    double sum = 0.;
-    double weight = 0.;
-    for (long long j = (long long)std::floor(y1); j < y2; ++j) {
-        const double wy = (std::min)(j + 1., y2) - (std::max)((double)j, y1);
-        for (long long i = (long long)std::floor(x1); i < x2; ++i) {
-            const double w = wy * ((std::min)(i + 1., x2) - (std::max)((double)i, x1));
-            if (w > 0.) {
-                sum += w * value((int)i, (int)j);
-                weight += w;
-            }
-        }
-    }
-
-    return (weight > 0.) ? sum / weight : 0.;
-}
-
 // Render scales that are not a power of two, or not the same in x and y, or above 1 (#194). kOfxImageEffectPropRenderScale
 // is "The proxy render scale currently being applied" (ofxImageEffect.h), and nothing in OFX restricts it to powers of
 // two. GenericReader decoded the image at the nearest power of two and wrote it as is: at 0.75 or 2, a crop of the

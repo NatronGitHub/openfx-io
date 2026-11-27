@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -853,6 +854,38 @@ IO_TEST_PRINTF_FORMAT(2, 3) inline void check(bool cond, const char* fmt, ...)
     std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", buf.data());
 }
 inline void check(bool cond, const std::string& what) { check(cond, "%s", what.c_str()); }
+
+// The mean of value(i, j), for the pixels (i, j) at scale 1 in bounds that pixel (x, y) at the render scale covers
+// ([x / scale.x, (x + 1) / scale.x) x [y / scale.y, (y + 1) / scale.y), "Mapping Between The Spatial Coordinate
+// Systems", ofxCoordSystem.rst), weighted by the covered area; 0 if it covers none of bounds. The reference of the
+// tests of render scales that are not a power of two (#194: reader_window_test, exr_read_test).
+template <typename Value>
+double
+areaMean(const OfxRectI& bounds,
+         const OfxPointD& scale,
+         int x,
+         int y,
+         Value value)
+{
+    const double x1 = (std::max)(x / scale.x, (double)bounds.x1);
+    const double x2 = (std::min)((x + 1.) / scale.x, (double)bounds.x2);
+    const double y1 = (std::max)(y / scale.y, (double)bounds.y1);
+    const double y2 = (std::min)((y + 1.) / scale.y, (double)bounds.y2);
+    double sum = 0.;
+    double weight = 0.;
+    for (long long j = (long long)std::floor(y1); j < y2; ++j) {
+        const double wy = (std::min)(j + 1., y2) - (std::max)((double)j, y1);
+        for (long long i = (long long)std::floor(x1); i < x2; ++i) {
+            const double w = wy * ((std::min)(i + 1., x2) - (std::max)((double)i, x1));
+            if (w > 0.) {
+                sum += w * value((int)i, (int)j);
+                weight += w;
+            }
+        }
+    }
+
+    return (weight > 0.) ? sum / weight : 0.;
+}
 
 } // namespace
 

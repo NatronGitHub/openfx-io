@@ -3,7 +3,9 @@
  * render must be killed, and the render must return (kOfxStatFailed) soon after the abort, instead of waiting for the
  * script to exit. Also: a script that floods its standard error, and one that ends normally, still render; a render
  * at a render scale other than 1 fails with an error message (issue #438), and so does a render whose script file can
- * only be written in part (a short write, provoked with RLIMIT_FSIZE: the truncated script was run).
+ * only be written in part (a short write, provoked with RLIMIT_FSIZE: the truncated script was run). InstanceChanged
+ * and getRegionsOfInterest at render scales 0.75 and 0.5 succeed, and update the params (they used to fail with no
+ * message, issue #194).
  * ofxImageEffect.h, abort(): "This function indicates whether a plugin should stop whatever processing it is doing."
  *
  * Each render runs on a thread, with a time limit: a render that does not return in time is a failure, and the
@@ -121,6 +123,91 @@ renderScript(OfxPlugin* p,
     return st;
 }
 
+// kOfxActionInstanceChanged and kOfxImageEffectActionGetRegionsOfInterest at render scale scale (#194).
+// InstanceChanged's kOfxImageEffectPropRenderScale is "the render scale currently being applied to any image fetched
+// from a clip" (ofxCore.h): RunScript fetches no image there, and must update its params at any scale. The RoIs are
+// the source clips' RoDs, in canonical coordinates, at any scale. Both used to fail with no message at a scale other
+// than 1 (the params were left as they were); only render refuses that scale, and says why (#438).
+// - the user sets "Number of Parameters" from 0 to 2: the first two parameters are shown, the third stays hidden;
+// - the user checks "Validate": "Number of Parameters" and the script are disabled.
+void
+testInstanceChangedAtScale(OfxPlugin* p,
+                           double scale)
+{
+    std::printf("InstanceChanged and getRegionsOfInterest at render scale %g:\n", scale);
+    Effect ctx, inst;
+    PropSet inArgs;
+    pSetString(PH(&inArgs), kOfxImageEffectPropContext, 0, kOfxImageEffectContextFilter);
+    if (!ok(p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ctx), PH(&inArgs), nullptr))) {
+        check(false, "describeInContext");
+
+        return;
+    }
+    setOverrideInt(&ctx, "paramCount", 0);
+    setOverrideInt(&ctx, "validate", 0);
+    Clip* src = ctx.clips[kOfxImageEffectSimpleSourceClipName];
+    Clip* dst = ctx.clips[kOfxImageEffectOutputClipName];
+    src->connected = true;
+    dst->connected = true;
+    setupClipImage(src, kW, kH, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+    setupClipImage(dst, kW, kH, kOfxImageComponentRGBA, kOfxBitDepthFloat, true);
+    inst.delegate = &ctx;
+    setInstanceProps(inst, kW, kH, 1, kOfxImageEffectContextFilter);
+    if (!ok(p->mainEntry(kOfxActionCreateInstance, EH(inst), nullptr, nullptr))) {
+        check(false, "createInstance");
+
+        return;
+    }
+    const auto paramInt = [&ctx](const char* name, const char* prop) {
+        int v = -1;
+        pGetInt(PH(ctx.params.at(name).props), prop, 0, &v);
+
+        return v;
+    };
+    const auto secret = [&paramInt](const char* name) { return paramInt(name, kOfxParamPropSecret); };
+    const auto enabled = [&paramInt](const char* name) { return paramInt(name, kOfxParamPropEnabled); };
+    const double rs[2] = { scale, scale };
+    const auto changed = [&](const char* name) {
+        PropSet a;
+        pSetString(PH(&a), kOfxPropType, 0, kOfxTypeParameter);
+        pSetString(PH(&a), kOfxPropName, 0, name);
+        pSetString(PH(&a), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        gPersistentError.clear();
+        const OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, EH(inst), PH(&a), nullptr);
+        check(ok(st) && gPersistentError.empty(), "InstanceChanged(%s) = %d, error \"%s\"", name, st, gPersistentError.c_str());
+    };
+    check(secret("type1") == 1, "with 0 parameters, type1 is hidden");
+    setOverrideInt(&ctx, "paramCount", 2);
+    changed("paramCount");
+    check(secret("type1") == 0 && secret("type2") == 0 && secret("type3") == 1,
+          "with 2 parameters, type1 and type2 are shown, type3 is hidden (secret %d %d %d)", secret("type1"), secret("type2"), secret("type3"));
+    check(enabled("paramCount") != 0 && enabled("script") != 0, "not validated: paramCount and script are enabled (%d %d)", enabled("paramCount"),
+          enabled("script"));
+    setOverrideInt(&ctx, "validate", 1);
+    changed("validate");
+    check(enabled("paramCount") == 0 && enabled("script") == 0, "validated: paramCount and script are disabled (enabled %d %d)", enabled("paramCount"),
+          enabled("script"));
+    {
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        const double roi[4] = { 0., 0., (double)kW, (double)kH };
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRegionOfInterest, 4, roi);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        gPersistentError.clear();
+        const OfxStatus st = p->mainEntry(kOfxImageEffectActionGetRegionsOfInterest, EH(inst), PH(&a), PH(&o));
+        double srcRoI[4] = { -1., -1., -1., -1. };
+        pGetDoubleN(PH(&o), "OfxImageClipPropRoI_" kOfxImageEffectSimpleSourceClipName, 4, srcRoI);
+        check(ok(st) && gPersistentError.empty() && srcRoI[0] == 0. && srcRoI[1] == 0. && srcRoI[2] == kW && srcRoI[3] == kH,
+              "getRegionsOfInterest = %d, error \"%s\", Source RoI %g %g %g %g (the Source RoD, 0 0 %d %d)", st, gPersistentError.c_str(),
+              srcRoI[0], srcRoI[1], srcRoI[2], srcRoI[3], kW, kH);
+    }
+    p->mainEntry(kOfxActionDestroyInstance, EH(inst), nullptr, nullptr);
+}
+
 } // namespace
 
 int
@@ -153,6 +240,10 @@ main()
     gRS = 1.;
     check(st == kOfxStatFailed && gPersistentError.find("render scale") != std::string::npos,
           "fails, with an error message: \"" + gPersistentError + "\"");
+
+    for (double scale : { 0.75, 0.5 }) {
+        testInstanceChangedAtScale(p, scale);
+    }
 
     // A short write of the script file (here, beyond RLIMIT_FSIZE: write() writes up to the limit; SIGXFSZ is
     // ignored, in case another write is made) fails the render: it used to run the first 64 bytes of the script,

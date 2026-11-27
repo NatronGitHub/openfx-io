@@ -6,6 +6,7 @@
  *    around the data window (when the windows differ) is black, and the channels that are not in the file are 0
  *  - UINT channels are normalized by 2^32-1, as in ReadOIIO
  *  - luminance/chroma files (Y, RY, BY): read as before #123 (not converted)
+ *  - render scales 0.75 and 1/2: the image, scaled (the area-weighted mean of the pixels at scale 1, #194)
  *  - a render window narrower than the data window (in blocks of lines), render scale 1/2, and a file rewritten
  *    with other windows (the header cache is updated by the next render, or emptied by the purge caches action),
  *    including renders with the RoD the host got before the rewrite (GenericReader then fills with black the part
@@ -522,6 +523,57 @@ testScale(OfxPlugin* p, const std::string& dir)
         nan += isUnwritten(&v) ? 1 : 0;
     }
     check(nan == 0, "image %d,%d,%d,%d: no unwritten pixel (%d NaN)", r.img.x1, r.img.y1, r.img.x2, r.img.y2, nan);
+}
+
+// Render scales 0.75 (not a power of two) and 1/2 (#194): each pixel at render scale s covers [x / s, (x + 1) / s) x
+// [y / s, (y + 1) / s) at scale 1 (ofxCoordSystem.rst, "Mapping Between The Spatial Coordinate Systems"), and must be
+// the mean of the pixels of the render at scale 1 that it covers, weighted by the covered area (areaMean()). An RGB
+// file (Opaque, so that the mean is not premultiplied afterwards) whose data window is its display window: the frame
+// bounds are the RoD. GenericReader used to read the nearest power-of-two level (#428): at 0.75, a crop of the image. The tolerance,
+// 1e-6 relative, is a few float ulps (the reader sums in double and stores floats; the values are below 7).
+void
+testScales(OfxPlugin* p, const std::string& dir)
+{
+    const std::string path = dir + "/scales.exr";
+    ExrSpec s;
+    s.display = s.data = box(0, 0, 99, 59);
+    s.channels = "RGB";
+    Reader r1;
+    if (!writeExr(path, s) || !r1.create(p, path) || !ok(r1.prepareAndRender())) {
+        check(false, "render at scale 1");
+
+        return;
+    }
+    for (double scale : { 0.75, 0.5 }) {
+        std::printf("==== render scale %g: the image, scaled ====\n", scale);
+        Reader r;
+        if (!r.create(p, path) || !ok(r.prepare(scale))) {
+            check(false, "getRegionOfDefinition");
+
+            continue;
+        }
+        gPersistentError.clear();
+        const OfxStatus st = r.render(r.img, scale);
+        check(ok(st) && gPersistentError.empty(), "render = %d%s%s", st, gPersistentError.empty() ? "" : ", error: ", gPersistentError.c_str());
+        int bad = 0;
+        const OfxPointD renderScale = { scale, scale };
+        for (int y = r.img.y1; y < r.img.y2; ++y) {
+            for (int x = r.img.x1; x < r.img.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const double expected = areaMean(r1.img, renderScale, x, y, [&](int i, int j) { return (double)r1.pixel(i, j)[c]; });
+                    const float got = r.pixel(x, y)[c];
+                    if (!(std::fabs(got - expected) <= 1e-6 * (1. + std::fabs(expected)))) { // (NaN: unwritten)
+                        if (bad < 5) {
+                            std::printf("  pixel (%d,%d) channel %d: %.9g, expected %.9g\n", x, y, c, got, expected);
+                        }
+                        ++bad;
+                    }
+                }
+            }
+        }
+        check(bad == 0, "image %d,%d,%d,%d: every pixel is the area-weighted mean of the pixels at scale 1 (%d wrong)", r.img.x1, r.img.y1, r.img.x2,
+              r.img.y2, bad);
+    }
 }
 
 // The file is rewritten with other windows while an instance reads it: no render may fail (or assert), and the RoD
@@ -1585,6 +1637,7 @@ main(int argc, char** argv)
     testLumaChroma(p, dir, "diffuse."); // (#358)
     testWindow(p, dir);
     testScale(p, dir);
+    testScales(p, dir);
     testRewrite(p, dir);
     testRewriteCachedRoD(p, dir, false);
     testRewriteCachedRoD(p, dir, true);

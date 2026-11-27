@@ -611,11 +611,7 @@ RunScriptPlugin::changedParam(const InstanceChangedArgs& args,
     // must clear persistent message, or render() is not called by Nuke after an error
     clearPersistentMessage();
 
-    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
+    // (any render scale: this action only updates the params, and fetches no image, #194)
 
     int param_count;
     _param_count->getValue(param_count);
@@ -753,12 +749,8 @@ void
 RunScriptPlugin::getRegionsOfInterest(const RegionsOfInterestArguments& args,
                                       RegionOfInterestSetter& rois)
 {
-    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
-        throwSuiteStatusException(kOfxStatFailed);
-
-        return;
-    }
-
+    // (any render scale: the RoIs are the source clips' RoDs, in canonical coordinates, and render says why it refuses
+    // a render scale other than 1, #194)
     if (!kSupportsTiles) {
         // The effect requires full images to render any region
         for (int i = 0; i < kRunScriptPluginSourceClipCount; ++i) {
