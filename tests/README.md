@@ -1040,7 +1040,7 @@ those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed b
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
-### 1h. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #194, #232, #234, #242)
+### 1h. `test-reader-window` — render windows and scales of ReadOIIO, ReadPFM and ReadPNG (#160, #163, #194, #232, #234, #242, #466)
 
 `reader_window_test.cpp` writes files in a scratch directory (`.reader_window`): float TIFF (grey, RGB, RGBA), scanline
 and tiled EXR with a data window smaller than the display window, and an EXR whose data window has a negative origin
@@ -1067,6 +1067,15 @@ buffer, which it then premultiplies (UnPreMultiplied files):
 * **PNG offsets near the limits of an int** (oFFs: x1 = -2^31 + 4 and y1 = 2^24, and x2, y2 just below `INT_MAX`), at
   scales 1/2 and 1/4: the RoD and the pixels are those of the same file without an offset, translated. GenericReader
   computed the windows at the render scale and the pixel offsets in `int`, which overflowed (#371).
+* **tiled data windows that end near `INT_MAX`** (37x9 RGB at x = y = `INT_MAX - 128`, rendered Opaque at scale 1,
+  the narrow windows and the RoD), in a synthetic tiled format that the test registers with
+  `OIIO::declare_imageio_format()` (`*.rw466tile`: the origin and the tile size), as no real format carries such an
+  origin on every OpenImageIO (OpenEXR rejects data windows beyond `INT_MAX / 2`, the TIFF reader drops origins of
+  2^30 or more from 3.1.18). With tiles of 128 (the last tile ends at `INT_MAX`), the pixels are those of the same
+  image at x = y = 128; with tiles of 129, the last tile ends past `INT_MAX`, and every render fails with an error
+  message and writes nothing. ReadOIIO rounded the window to the tiles in `int`, which overflowed (#466), and
+  OpenImageIO's `read_tiles()` steps from tile to tile in `int` too before 3.1.19 and 3.2.2
+  ([OpenImageIO#5494](https://github.com/AcademySoftwareFoundation/OpenImageIO/pull/5494)).
 * **render scales that are not a power of two** (0.75, 1/3), **not the same in x and y** (0.5 x 0.75, 1 x 0.5), **or
   above 1** (2), for an RGB TIFF, an RGBA EXR with a data window, an RGB tiled EXR, an RGB PFM and an RGBA PNG: each
   pixel of the render of the whole RoD is the mean of the file's pixels that it covers, weighted by the covered area
