@@ -979,10 +979,11 @@ OIIOResizePluginFactory<majorVersion>::describeInContext(ImageEffectDescriptor& 
         param->setLabel(kParamSizeLabel);
         param->setHint(kParamSizeHint);
         param->setDefault(200, 200);
-        param->setDisplayRange(0, 0, 10000, 10000);
         param->setAnimates(false);
         // param->setIsSecretAndDisabled(true); // done in the plugin constructor
+        // the range first: setting it resets the display range (OFX 1.5.1 ofxParam.h, kOfxParamPropMin)
         param->setRange(1, 1, std::numeric_limits<int>::max(), std::numeric_limits<int>::max());
+        param->setDisplayRange(0, 0, 10000, 10000);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
         if (page) {
             page->addChild(*param);

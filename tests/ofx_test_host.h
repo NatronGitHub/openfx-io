@@ -135,6 +135,10 @@ std::set<std::string> gExtraUnknown; // names added after gOfxLevel
 // default in canonical coordinates (project size * default, plus the project offset for an absolute position), as
 // in Natron and Nuke. Off by default: the other tests read the defaults as described.
 bool gHonourNormalisedDefaults = false;
+// OFX 1.5.1 ofxParam.h, kOfxParamPropMin: "Setting this will also reset ::kOfxParamPropDisplayMin" (and Max:
+// DisplayMax): setting the range of a param sets its display range to the new range, index by index, as in HostSupport
+// (openfx#384). Off by default: OFX 1.4 has no such rule.
+bool gResetDisplayRangeOnSetRange = false;
 double gProjectSize[2] = { 0., 0. };   // of the last setInstanceProps()
 double gProjectOffset[2] = { 0., 0. };
 double gRS = 1.;                     // OFX14_SCALE
@@ -289,10 +293,22 @@ OfxStatus pSetPointer(OfxPropertySetHandle h, const char* n, int idx, void* v)
 { HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.p.size() <= idx) a.p.resize(idx + 1); a.p[idx] = v; return kOfxStatOK; }
 OfxStatus pSetString(OfxPropertySetHandle h, const char* n, int idx, const char* v)
 { HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.s.size() <= idx) a.s.resize(idx + 1); a.s[idx] = v ? v : ""; return kOfxStatOK; }
+// gResetDisplayRangeOnSetRange: the display property that setting the range property n of ps resets, or nullptr
+inline const char* resetDisplayRange(const PropSet* ps, const char* n)
+{
+    if (!gResetDisplayRangeOnSetRange || (ps->kind != PropSet::eParam)) return nullptr;
+    if (!std::strcmp(n, kOfxParamPropMin)) return kOfxParamPropDisplayMin;
+    if (!std::strcmp(n, kOfxParamPropMax)) return kOfxParamPropDisplayMax;
+    return nullptr;
+}
 OfxStatus pSetDouble(OfxPropertySetHandle h, const char* n, int idx, double v)
-{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v; return kOfxStatOK; }
+{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.d.size() <= idx) a.d.resize(idx + 1); a.d[idx] = v;
+  if (const char* display = resetDisplayRange(PS(h), n)) { auto& b = PS(h)->props[display]; if ((int)b.d.size() <= idx) b.d.resize(idx + 1); b.d[idx] = v; }
+  return kOfxStatOK; }
 OfxStatus pSetInt(OfxPropertySetHandle h, const char* n, int idx, int v)
-{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v; return kOfxStatOK; }
+{ HostWrite lock; CHECK_PROP_KNOWN(n); auto& a = PS(h)->props[n]; if ((int)a.i.size() <= idx) a.i.resize(idx + 1); a.i[idx] = v;
+  if (const char* display = resetDisplayRange(PS(h), n)) { auto& b = PS(h)->props[display]; if ((int)b.i.size() <= idx) b.i.resize(idx + 1); b.i[idx] = v; }
+  return kOfxStatOK; }
 // (setting N values sets the dimension of the property to N, e.g. 0 to empty a choice param's options)
 OfxStatus pSetPointerN(OfxPropertySetHandle h, const char* n, int c, void* const* v) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props[n].p.resize(c); for (int k = 0; k < c; ++k) pSetPointer(h, n, k, v[k]); return kOfxStatOK; }
 OfxStatus pSetStringN(OfxPropertySetHandle h, const char* n, int c, const char* const* v) { HostWrite lock; CHECK_PROP_KNOWN(n); PS(h)->props[n].s.resize(c); for (int k = 0; k < c; ++k) pSetString(h, n, k, v[k]); return kOfxStatOK; }

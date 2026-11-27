@@ -30,6 +30,9 @@
  *     enableGPU param is disabled. The host honours normalised defaults (gHonourNormalisedDefaults), except at
  *     OFX 1.1 and in the Resolve host, which reject kOfxParamPropDefaultCoordinateSystem: there, the default transform
  *     center must still be the project centre, and not count as a user edit.
+ *   - in every context, each param keeps its display range in a host that resets it when the range is set (OFX 1.5.1
+ *     ofxParam.h, kOfxParamPropMin: "Setting this will also reset ::kOfxParamPropDisplayMin"): the plug-in must set
+ *     the range first.
  * Each writer also gets an InstanceChanged on its filename, its time domain must be its input's frame range (1..3:
  * the default frame range is the time line's, and the host never has the optional TimeLine suite), and its RoD the
  * input's, also with the input format (formatType 0, without Natron's kOfxImageClipPropFormat).
@@ -68,6 +71,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <regex>
@@ -432,6 +436,46 @@ checkHostQuirkParams(const std::string& c,
     }
 }
 
+// A host that follows OFX 1.5.1 resets the display range on setRange (gResetDisplayRangeOnSetRange): the plug-in must
+// set the range first, so that each display range it sets in the context descriptor (ctx) is kept in the one
+// described there (ctx151). A display range that the plug-in doesn't set is Support's default (the spec's default,
+// the whole int or double range), which the 1.5.1 host may replace by the range: as the spec asks.
+void
+checkDisplayRangeKept(const std::string& c,
+                      const Effect& ctx,
+                      const Effect& ctx151)
+{
+    static const struct { const char* name; int i; double d; } kDisplay[] = {
+        { kOfxParamPropDisplayMin, INT_MIN, std::numeric_limits<double>::lowest() },
+        { kOfxParamPropDisplayMax, INT_MAX, std::numeric_limits<double>::max() },
+    };
+    for (const auto& kv : ctx.params) {
+        auto it151 = ctx151.params.find(kv.first);
+        if (it151 == ctx151.params.end()) {
+            fail("[%s] the param %s is not described in the OFX 1.5.1 host", c.c_str(), kv.first.c_str());
+            continue;
+        }
+        for (const auto& r : kDisplay) {
+            auto a = kv.second.props->props.find(r.name);
+            if (a == kv.second.props->props.end()) continue;
+            auto b = it151->second.props->props.find(r.name);
+            const Value none;
+            const Value& v151 = (b != it151->second.props->props.end()) ? b->second : none;
+            bool lost = false;
+            for (size_t k = 0; k < a->second.i.size(); ++k) {
+                lost |= (a->second.i[k] != r.i) && ((k >= v151.i.size()) || (v151.i[k] != a->second.i[k]));
+            }
+            for (size_t k = 0; k < a->second.d.size(); ++k) {
+                lost |= (a->second.d[k] != r.d) && ((k >= v151.d.size()) || (v151.d[k] != a->second.d[k]));
+            }
+            if (lost) {
+                fail("[%s] the param %s loses its %s in an OFX 1.5.1 host: the plug-in sets it before the range",
+                     c.c_str(), kv.first.c_str(), r.name);
+            }
+        }
+    }
+}
+
 // Every context: describe, instantiate, InstanceChanged on every param, clip preferences, destroy.
 void
 exerciseContext(OfxPlugin* p, const std::string& c, const std::string& file)
@@ -565,6 +609,14 @@ testPlugin(OfxPlugin* p,
         st = p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ce), PH(&inArgs), nullptr);
         if (!ok(st)) fail("DescribeInContext(%s) = %d", c.c_str(), st);
         checkHostQuirkParams(c, ce);
+        {
+            Effect ce151;
+            gResetDisplayRangeOnSetRange = true;
+            st = p->mainEntry(kOfxImageEffectActionDescribeInContext, EH(ce151), PH(&inArgs), nullptr);
+            gResetDisplayRangeOnSetRange = false;
+            if (!ok(st)) fail("DescribeInContext(%s), OFX 1.5.1 display range = %d", c.c_str(), st);
+            checkDisplayRangeKept(c, ce, ce151);
+        }
         if (c == wanted) context = c;
         if (!gVariant.noContexts) exerciseContext(p, c, file.empty() ? std::string() : (s.kind == eWriter ? file + ".ctx." + c + file.substr(file.rfind('.')) : file));
     }

@@ -948,7 +948,10 @@ sets `kOfxImageEffectInstancePropSequentialRender` also sets it on its instance 
 descriptor). The host honours normalised defaults (a never-set param with a normalised default is its default times
 the project size, plus the project offset for a position), except where it rejects
 `kOfxParamPropDefaultCoordinateSystem` (OFX 1.1, Resolve); in every host, the default transform center of SeNoise must
-be the project centre, without setting its "center changed" flag.
+be the project centre, without setting its "center changed" flag. Each context is also described a second time in a
+host that resets the display range when the range is set, as OFX 1.5.1 asks (`ofxParam.h`, `kOfxParamPropMin`:
+"Setting this will also reset ::kOfxParamPropDisplayMin"; `gResetDisplayRangeOnSetRange` in `ofx_test_host.h`): every
+param must keep its display range there, i.e. the plug-in sets the range before the display range.
 
 `make test-ofx14` runs it in five hosts, then twice more in the OFX 1.4-only host:
 
