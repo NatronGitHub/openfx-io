@@ -32,8 +32,13 @@
 #include <cstring> // memset
 #include <iterator> // std::advance
 #include <memory>
+#include <new> // std::bad_alloc
 #include <sstream>
+#include <system_error>
 #include <vector>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 #if defined(DEBUG) && defined(DEBUG_READER)
 #include <cstdio>
 #define DBG(x) x
@@ -1504,78 +1509,158 @@ public:
     }
 };
 
-// The time of the render action being processed by this thread, see GenericReaderPlugin::getRenderTime()
-static thread_local double gRenderTime = 0.;
-
 namespace {
-// Sets gRenderTime for the duration of a render action (restores the previous value on exit, including on exceptions)
+// The innermost Scope (RenderTimeSetter or DecodedWindowScope, below) of the calling thread, or nullptr. Not a
+// thread_local on macOS and Linux: macOS's dyld never unloads an image that has thread-local variables, so the
+// plug-in binary stayed loaded after the host unloaded it (#264). (MS Windows unloads a DLL that has them.)
+template <class Scope>
+class InnermostScope
+{
+public:
+    static Scope* get()
+    {
+#ifdef _WIN32
+        return slot();
+#else
+        return static_cast<Scope*>(pthread_getspecific(key().key));
+#endif
+    }
+
+    // Makes scope the innermost one, and returns the previous one, for pop(). Throws std::bad_alloc if the thread's
+    // storage could not be allocated (only possible the first time a thread sets it), before any change.
+    static Scope* push(Scope* scope)
+    {
+        Scope* previous = get();
+#ifdef _WIN32
+        slot() = scope;
+#else
+        if (pthread_setspecific(key().key, scope) != 0) {
+            throw std::bad_alloc();
+        }
+#endif
+
+        return previous;
+    }
+
+    // Restores the scope that push() returned (the thread's storage exists: this cannot fail)
+    static void pop(Scope* previous) noexcept
+    {
+#ifdef _WIN32
+        slot() = previous;
+#else
+        pthread_setspecific(key().key, previous);
+#endif
+    }
+
+private:
+#ifdef _WIN32
+    static Scope*& slot()
+    {
+        static thread_local Scope* scope = nullptr;
+
+        return scope;
+    }
+#else
+    // a pthread key, deleted when the binary is unloaded (each scope resets its thread's value on exit: there is no
+    // value left to destroy, so the key has no destructor function)
+    struct Key {
+        Key()
+        {
+            const int err = pthread_key_create(&key, nullptr);
+            if (err != 0) {
+                throw std::system_error(err, std::generic_category(), "pthread_key_create");
+            }
+        }
+        // (at exit without kOfxActionUnload, #250, this may run while a host thread is in a decode: its
+        // pthread_getspecific() then returns nullptr, so getRenderTime() is 0, and its pop() fails, harmlessly)
+        ~Key() { pthread_key_delete(key); }
+        Key(const Key&) = delete;
+        Key& operator=(const Key&) = delete;
+
+        pthread_key_t key;
+    };
+
+    // (created at the first use: an exception there propagates to the action, and the next use tries again)
+    static const Key& key()
+    {
+        static const Key k;
+
+        return k;
+    }
+#endif
+};
+
+// The time of the render action being processed by this thread, for its duration (see
+// GenericReaderPlugin::getRenderTime()); the enclosing one is restored on exit, including on exceptions.
 class RenderTimeSetter
 {
 public:
     explicit RenderTimeSetter(double t)
-        : _previous(gRenderTime)
+        : _time(t)
+        , _previous(InnermostScope<RenderTimeSetter>::push(this))
     {
-        gRenderTime = t;
     }
 
-    ~RenderTimeSetter() { gRenderTime = _previous; }
+    ~RenderTimeSetter() { InnermostScope<RenderTimeSetter>::pop(_previous); }
+
+    RenderTimeSetter(const RenderTimeSetter&) = delete;
+    RenderTimeSetter& operator=(const RenderTimeSetter&) = delete;
+
+    double time() const { return _time; }
 
 private:
-    double _previous;
+    const double _time;
+    RenderTimeSetter* const _previous;
 };
 }
 
 double
 GenericReaderPlugin::getRenderTime()
 {
-    return gRenderTime;
+    const RenderTimeSetter* scope = InnermostScope<RenderTimeSetter>::get();
+
+    return scope ? scope->time() : 0.;
 }
 
-// The part of the render window of the decode() or decodePlane() call being processed by this thread that comes from
-// the file (see GenericReaderPlugin::setDecodedWindow()). gDecoding is only true during that call.
-static thread_local bool gDecoding = false;
-static thread_local OfxRectI gDecodedWindow = { 0, 0, 0, 0 };
-
 namespace {
-// Around a call to decode() or decodePlane() with the given render window: the decoded window is the whole render
-// window, unless decode() reports a smaller one. decodedWindow() is the part of renderWindow that comes from the file
-// (returns false if it is empty). The previous state is restored on exit (including on exceptions), as in
-// RenderTimeSetter, for a render nested in a decode() on the same thread.
+// Around a call to decode() or decodePlane() with the given render window, on this thread: the decoded window is the
+// whole render window, unless decode() reports a smaller one (GenericReaderPlugin::setDecodedWindow(), outside such
+// a call, does nothing). decodedWindow() is the part of renderWindow that comes from the file (returns false if it is
+// empty). The enclosing scope is restored on exit (including on exceptions), as in RenderTimeSetter, for a render
+// nested in a decode() on the same thread.
 class DecodedWindowScope
 {
 public:
     explicit DecodedWindowScope(const OfxRectI& renderWindow)
         : _renderWindow(renderWindow)
-        , _previousDecoding(gDecoding)
-        , _previousWindow(gDecodedWindow)
+        , _decodedWindow(renderWindow)
+        , _previous(InnermostScope<DecodedWindowScope>::push(this))
     {
-        gDecoding = true;
-        gDecodedWindow = renderWindow;
     }
 
-    ~DecodedWindowScope()
-    {
-        gDecoding = _previousDecoding;
-        gDecodedWindow = _previousWindow;
-    }
+    ~DecodedWindowScope() { InnermostScope<DecodedWindowScope>::pop(_previous); }
+
+    DecodedWindowScope(const DecodedWindowScope&) = delete;
+    DecodedWindowScope& operator=(const DecodedWindowScope&) = delete;
+
+    void setDecodedWindow(const OfxRectI& window) { _decodedWindow = window; }
 
     // (an empty decoded window has an empty intersection)
-    bool decodedWindow(OfxRectI* window) const { return intersectWindow(_renderWindow, gDecodedWindow, window); }
+    bool decodedWindow(OfxRectI* window) const { return intersectWindow(_renderWindow, _decodedWindow, window); }
 
 private:
     const OfxRectI _renderWindow;
-    const bool _previousDecoding;
-    const OfxRectI _previousWindow;
+    OfxRectI _decodedWindow;
+    DecodedWindowScope* const _previous;
 };
 }
 
 void
 GenericReaderPlugin::setDecodedWindow(const OfxRectI& window)
 {
-    if (!gDecoding) {
-        return;
+    if (DecodedWindowScope* scope = InnermostScope<DecodedWindowScope>::get()) {
+        scope->setDecodedWindow(window);
     }
-    gDecodedWindow = window;
 }
 
 bool

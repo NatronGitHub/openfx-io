@@ -2,8 +2,10 @@
 # Run raw_unload (raw_unload.cpp) several times: a host that renders a DNG file with ReadOIIO (LibRaw, which uses
 # OpenMP on Linux and MS Windows), unloads the plug-ins, keeps running, then exits (#239). Each run must not crash,
 # the render must be demosaiced, and an OpenMP runtime loaded after the render must still be loaded after the unload
-# (ReadOIIO pins it). With IO_HOSTDEMO_STRICT=1 on Linux and MS Windows, a run where no OpenMP runtime was loaded fails:
-# the test would then exercise nothing (e.g. if LibRaw were built without OpenMP).
+# (ReadOIIO pins it). The plug-in binary must be unmapped after the unload (#264), except on macOS while it has
+# thread-local variables, which dyld never unloads (then a "SKIPPED: " line). With IO_HOSTDEMO_STRICT=1 on Linux and MS
+# Windows, a run where no OpenMP runtime was loaded fails: the test would then exercise nothing (e.g. if LibRaw were
+# built without OpenMP).
 #
 # Usage: tests/hostdemo/raw_unload.sh <raw_unload> <dir with the bundle> [work dir]
 # Environment:
@@ -59,6 +61,7 @@ if ! "$PROG" --write-dng "$(native "$WORK/bayer.dng")" 640 480 > "$WORK/write-dn
 fi
 
 failed=0
+skipped=""
 for i in $(seq 1 "$RUNS"); do
     log="$WORK/run$i.log"
     rm -f "$WORK/run$i.stacks"
@@ -96,11 +99,13 @@ for i in $(seq 1 "$RUNS"); do
     else
         echo "ok   run $i: $(grep '^ok   demosaiced' "$log" | sed 's/^ok   //'); $(grep '^threads:' "$log"); $(grep '^plug-in binary' "$log")"
         grep -q "^note:" "$log" && echo "     $(grep '^note:' "$log")"
+        grep -q "^SKIPPED:" "$log" && skipped=$(grep -m 1 "^SKIPPED:" "$log")
         continue
     fi
     failed=$((failed + 1))
     sed 's/^/     | /' "$log"
     [ -s "$WORK/run$i.stacks" ] && sed 's/^/     | /' "$WORK/run$i.stacks" | head -200
 done
+[ -n "$skipped" ] && echo "$skipped"
 echo "$((RUNS - failed)) of $RUNS runs rendered the DNG file, unloaded IO.ofx and exited (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
 [ $failed -eq 0 ]

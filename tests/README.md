@@ -865,13 +865,19 @@ outlive the render: ReadOIIO keeps the OpenMP runtime loaded (`pinOpenMPRuntime(
   and MS Windows, where LibRaw uses OpenMP (so that the test can't silently stop exercising anything);
 * the render was demosaiced by LibRaw: RGB or RGBA output, with R, G and B not all equal (a TIFF reader reads the CFA
   as one channel, which ReadOIIO outputs as Alpha);
-* no crash, within the 3 s after the unload or at exit.
+* no crash, within the 3 s after the unload or at exit;
+* the plug-in binary is unmapped after the unload
+  ([#264](https://github.com/NatronGitHub/openfx-io/issues/264)): otherwise a reload gets the same image, with its
+  static state, and the runtime stays loaded whatever the pin does. The bundle exports only the OFX entry points, with
+  the export list of the real ones: on Linux, GCC's GNU unique symbols (the static variables of inline functions and
+  templates) in the dynamic symbol table make `dlclose()` a no-op. On macOS, dyld never unloads an image that has
+  thread-local variables (the `MH_HAS_TLV_DESCRIPTORS` header flag): while the binary has some (openfx's Support
+  library), the check prints a `SKIPPED: ` line instead of failing. The PR that bumps the submodules past them deletes
+  that branch.
 
-It also prints the thread counts (Linux, MS Windows) and whether the plug-in binary is still mapped after the unload: if
-it is (e.g. its GNU unique symbols make `dlclose()` a no-op on Linux), the runtime stays loaded whatever the pin does.
-macOS does not exercise the fix: MacPorts' LibRaw has no OpenMP; with `WITH_LIBRAW=1` the test bundle links libomp
-itself (`tests/Makefile`), so the pin runs, but libomp then stays loaded with or without it; and the plug-in binary stays
-mapped after `dlclose()` there, as on Linux ([#264](https://github.com/NatronGitHub/openfx-io/issues/264)).
+It also prints the thread counts (Linux, MS Windows). macOS does not exercise the pin: MacPorts' LibRaw has no OpenMP;
+with `WITH_LIBRAW=1` the test bundle links libomp itself (`tests/Makefile`), so the pin runs, but libomp then stays
+loaded with or without it.
 The DNG file is written by `raw_unload --write-dng`: an uncompressed 16-bit RGGB CFA DNG with the minimal DNG tags,
 which LibRaw reads (OpenImageIO's `raw` reader), since no RAW file can be committed, and a download would make the
 test depend on the network.
@@ -1692,7 +1698,7 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `runscript_render_test.cpp` | RunScript's render: an aborted render kills the script and its process group (#287), a render at scale 0.5 fails with an error message (#438), a short write of the script file (RLIMIT_FSIZE of 64 bytes) fails the render with "cannot write the script" instead of running the truncated script (`test-runscript`, POSIX only). |
 | `runscript_win32_test.cpp`  | RunScript on MS Windows: quoting, program/batch/shebang launch, abort (`test-runscript`, MS Windows only). |
 | `hostdemo/exit_without_unload.cpp`, `hostdemo/exit_without_unload.sh` | A host that renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (`test-exit-without-unload`, #250). |
-| `hostdemo/raw_unload.cpp`, `hostdemo/raw_unload.sh` | A host that renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads the plug-ins and keeps running (`test-raw-unload`, #239). |
+| `hostdemo/raw_unload.cpp`, `hostdemo/raw_unload.sh` | A host that renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads the plug-ins and keeps running; the binary must be unmapped (`test-raw-unload`, #239, #264). |
 | `ofx14_names.h`             | The names defined by the OFX 1.4 headers, for the OFX 1.4-only mode of `ofx_test_host.h`. |
 | `oiio_layers_test.cpp`      | ReadOIIO's EXR channel name -> view/layer mapping (OpenEXR and Nuke multi-view layouts), on in-memory `ImageSpec`s. |
 | `test.ocio`                 | Minimal OpenColorIO config for the render test (GenericOCIO needs `$OCIO`). |

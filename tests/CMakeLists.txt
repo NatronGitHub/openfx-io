@@ -547,6 +547,20 @@ if(TARGET io_tests_ofx)
     if(_io_libraw_openmp)
       ofx_target_openmp(io_reader_window_plugins)
     endif()
+    # only the OFX entry points are exported, with the export list of the real bundles (add_ofx_plugin, which also
+    # compiles with hidden visibility; the export list alone is enough here): with GCC, the GNU unique symbols (the
+    # static variables of inline functions and templates) in the dynamic symbol table make dlclose() a no-op on Linux,
+    # so the binary stayed loaded after the unload (#264)
+    if(APPLE)
+      set(_io_rw_exports "${S}/openfx/Support/include/osxSymbols")
+      target_link_options(io_reader_window_plugins PRIVATE "LINKER:-exported_symbols_list,${_io_rw_exports}")
+    elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD")
+      set(_io_rw_exports "${S}/openfx/Support/include/linuxSymbols")
+      target_link_options(io_reader_window_plugins PRIVATE "LINKER:--version-script=${_io_rw_exports}")
+    endif()
+    if(_io_rw_exports)
+      set_property(TARGET io_reader_window_plugins APPEND PROPERTY LINK_DEPENDS "${_io_rw_exports}")
+    endif()
     set_target_properties(io_reader_window_plugins PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
                           CXX_EXTENSIONS OFF PREFIX "" SUFFIX ".ofx" OUTPUT_NAME ReaderWindow
                           LIBRARY_OUTPUT_DIRECTORY "${_io_rw_bundle}" RUNTIME_OUTPUT_DIRECTORY "${_io_rw_bundle}")
