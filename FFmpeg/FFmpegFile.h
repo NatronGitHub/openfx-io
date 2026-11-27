@@ -40,6 +40,7 @@
 #include <locale>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -301,6 +302,15 @@ private:
         bool _tooManyDroppedPackets; // decoding stopped after too many consecutive damaged packets in the current decode()
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
+        bool _timestampsMayShift; // set at open, see FFmpegFile::timestampsMayShift() and placeShiftedFrame()
+        int64_t _seekTargetTs; // the timestamp of the last seek (see armResync())
+        int64_t _seekFirstTs; // the timestamp (PTS, else DTS, else _seekTargetTs) of the first packet read since the last
+        // seek, if it may be the end of a frame cut by the seek (AV_NOPTS_VALUE otherwise), until a frame is used after
+        // the window (see placeShiftedFrame())
+        int64_t _lastGapPts; // the timestamp of the last frame used after a frame time without a frame, since the last
+        // seek or its window (AV_NOPTS_VALUE if none), see placeShiftedFrame()
+        int64_t _rewriteStartPts; // the timestamp given to the first frame of the current run of frames whose timestamp
+        // placeShiftedFrame() changed (AV_NOPTS_VALUE if none)
         // For decodeForwardIsCheaper():
         bool _indexReliable; // the format has no timestamp discontinuities (not AVFMT_TS_DISCONT), set at open, no
         // seek landed on a predicted frame (see checkSeekFrame()), and the index keyframes around a request are not one
@@ -417,6 +427,11 @@ private:
             , _stoppedOnDamagedPacket(false)
             , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
+            , _timestampsMayShift(false)
+            , _seekTargetTs(AV_NOPTS_VALUE)
+            , _seekFirstTs(AV_NOPTS_VALUE)
+            , _lastGapPts(AV_NOPTS_VALUE)
+            , _rewriteStartPts(AV_NOPTS_VALUE)
             , _indexReliable(false)
             , _seekFrameCheck(SeekFrameCheck::eNone)
             , _seekFramePts(AV_NOPTS_VALUE)
@@ -698,6 +713,7 @@ private:
                 // (not a packet whose frame libavcodec drops: AV_PKT_FLAG_DISCARD, see checkSeekFrame())
                 _seekFramePts = pts;
                 _seekFrameKey = key;
+                armResync((pts != int64_t(AV_NOPTS_VALUE)) ? pts : pkt.dts);
                 const bool discard = (pkt.flags & AV_PKT_FLAG_DISCARD) != 0;
                 _seekFrameCheck = ((pts == int64_t(AV_NOPTS_VALUE)) || discard) ? SeekFrameCheck::eNone : SeekFrameCheck::eAwaitFrame;
             }
@@ -761,6 +777,101 @@ private:
             _seekFrameCheck = SeekFrameCheck::eAwaitPacket;
             _seekFramePts = AV_NOPTS_VALUE;
             _seekFrameKey = false;
+            _seekFirstTs = AV_NOPTS_VALUE;
+            _lastGapPts = AV_NOPTS_VALUE;
+            _rewriteStartPts = AV_NOPTS_VALUE;
+        }
+
+        // In a stream whose timestamps may shift (_timestampsMayShift, see FFmpegFile::timestampsMayShift()), after a
+        // seek: the first packet read is often the end of a frame that started before the seek point. libavformat gives
+        // it the timestamps of the demuxer packet in which it ends, which are those of the next frame, and the frames
+        // after it get timestamps counted from them (compute_pkt_fields(), libavformat/demux.c:1101-1145 in FFmpeg
+        // 9.0.2, 1085-1129 in 8.0.1), one frame (or a part of a frame) off, up to the next demuxer packet with a PTS
+        // (e.g. a seek in an MPEG-PS gave the next or the previous frame, issue #436; the ffmpeg CLI with -ss lands on
+        // the same wrong frames). The frames within kResyncSeconds of that first packet are not used: that is more than
+        // the 0.7 s between two PTS of MPEG systems streams (H.222.0 section 2.7.4), plus the reordering delay of the
+        // decoder, so that their timestamps come from a PTS read after the seek. decode() seeks kSeekBackSeconds before
+        // the requested frame (seekTs()), which leaves a margin for a binary search on the timestamps that lands a
+        // little after its target (ff_seek_frame_binary(), libavformat/seek.c:290-358 in 9.0.2 and 8.0.1); if the requested
+        // frame is still in the window, it retries from earlier (earlierRestartTs()) or from the start.
+        // Not armed after a seek to the start of the file (decodingFromStart), nor when the first packet read is the
+        // first packet of the stream (at or before its start time): no frame is cut there.
+        static constexpr int kResyncSeconds = 1;
+        static constexpr int kSeekBackSeconds = 2;
+        int64_t secondsToTicks(int seconds) const
+        {
+            return av_rescale_q(int64_t(seconds) * AV_TIME_BASE, AV_TIME_BASE_Q, _avstream->time_base);
+        }
+        void armResync(int64_t firstTs)
+        {
+            _seekFirstTs = AV_NOPTS_VALUE;
+            if (!_timestampsMayShift || _decodingFromStart) {
+                return;
+            }
+            if (firstTs == int64_t(AV_NOPTS_VALUE)) {
+                firstTs = _seekTargetTs;
+            }
+            if ((firstTs != int64_t(AV_NOPTS_VALUE)) && (firstTs > _startPTS)) {
+                _seekFirstTs = firstTs;
+            }
+        }
+        // The timestamp of the seek for the 0-based frame (see armResync())
+        int64_t seekTs(int frame) const
+        {
+            const int64_t ts = frameToPts(frame);
+            return _timestampsMayShift ? av_sat_sub64(ts, secondsToTicks(kSeekBackSeconds)) : ts;
+        }
+
+        // A decoded frame of a stream whose timestamps may shift, with its timestamp pts: returns its timestamp, or nothing
+        // if it is not used (in the window after a seek, see armResync()).
+        // In presentation order, a frame whose end the parser found in the next demuxer packet gets the PTS of the first
+        // frame that starts in that packet (ff_fetch_timestamp(), libavcodec/parser.c:89-118 in FFmpeg 9.0.2, 84-113 in
+        // 8.0.1; H.222.0 section 2.4.3.7), and the frames after it get timestamps counted from it, up to the next PTS:
+        // - If that frame is displayed before it (a B-frame, e.g. in a VOB with B-frames), the timestamps are too low:
+        //   a frame whose timestamp is before the frame after the previous one (_nextDecodedPts) is that frame, as a
+        //   frame without a timestamp is (and as the ffmpeg CLI fills in a missing timestamp, fftools/ffmpeg_dec.c:
+        //   405-408 in FFmpeg 9.0.2, 410-413 in 8.0.1).
+        // - If it is displayed after it (e.g. an MPEG-1 PS without B-frames), the timestamps are too high: the first
+        //   one skips a frame time, and the next PTS gives a timestamp before _nextDecodedPts. Those frames were already
+        //   output: within kResyncSeconds after a skipped frame time (_lastGapPts), a timestamp before _nextDecodedPts is
+        //   kept, so that the frames after it are not all shifted by one frame.
+        // A run of rewritten frames is bounded by kResyncSeconds too (_rewriteStartPts), since a PTS comes every 0.7 s at
+        // most (H.222.0 section 2.7.4): e.g. a variable frame rate, whose frames come closer than the frame rate, is
+        // shifted for at most that long.
+        // The first frame used after the window keeps its timestamp: the timestamps are counted from a PTS read after
+        // the seek by then.
+        std::optional<int64_t> placeShiftedFrame(int64_t pts)
+        {
+            if (_seekFirstTs != int64_t(AV_NOPTS_VALUE)) {
+                if (pts < av_sat_add64(_seekFirstTs, secondsToTicks(kResyncSeconds))) {
+                    _nextDecodedPts = frameToPts(ptsToFrame(pts) + 1);
+                    return std::nullopt;
+                }
+                _seekFirstTs = AV_NOPTS_VALUE;
+                _lastGapPts = AV_NOPTS_VALUE;
+                _rewriteStartPts = AV_NOPTS_VALUE;
+                return pts;
+            }
+            if (_nextDecodedPts == int64_t(AV_NOPTS_VALUE)) {
+                return pts; // the first frame since the seek
+            }
+            const int f = ptsToFrame(pts);
+            const int next = ptsToFrame(_nextDecodedPts);
+            if (f < next) {
+                const int64_t window = secondsToTicks(kResyncSeconds);
+                const bool afterGap = (_lastGapPts != int64_t(AV_NOPTS_VALUE)) && (_nextDecodedPts - _lastGapPts < window);
+                const bool longRun = (_rewriteStartPts != int64_t(AV_NOPTS_VALUE)) && (_nextDecodedPts - _rewriteStartPts >= window);
+                if (!afterGap && !longRun) {
+                    if (_rewriteStartPts == int64_t(AV_NOPTS_VALUE)) {
+                        _rewriteStartPts = _nextDecodedPts;
+                    }
+                    return _nextDecodedPts;
+                }
+            } else if (f > next) {
+                _lastGapPts = pts;
+            }
+            _rewriteStartPts = AV_NOPTS_VALUE;
+            return pts;
         }
 
         // The position of the demuxer, and the keyframe interval, for decodeForwardIsCheaper(). The interval is counted
@@ -1033,6 +1144,8 @@ private:
     };
     StreamStartProbe probeStreamStart(Stream& stream);
     bool nextPacketsLackPts(const Stream& stream, int maxPackets);
+    bool timestampsMayShift(Stream& stream);
+    int seekToStreamStart(const Stream& stream);
 
     // The number of frames of the stream that are not displayed
     int64_t getDiscardedFrames(Stream& stream);

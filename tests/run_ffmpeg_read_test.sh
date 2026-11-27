@@ -39,8 +39,11 @@
 #     non-zero start time and with a longer audio track, and a single GOP larger than that (H.264).
 #   * An MPEG-TS whose end probe fails (its last 4 MB are audio).
 #   * An MPEG-2 elementary stream with B-frames, which has no timestamps.
-#   * MPEG-1 video (B-frames) in MPEG-TS, MPEG-PS (frame count and rate only) and an elementary stream: its r_frame_rate is
-#     twice the frame rate (#353); a larger MPEG-1 elementary stream (frame count and rate only). MPEG-4 with B-frames, whose
+#   * MPEG-1 video (B-frames) in MPEG-TS, MPEG-PS and an elementary stream: its r_frame_rate is
+#     twice the frame rate (#353); a larger MPEG-1 elementary stream (frame count and rate only). MPEG-PS and VOB whose
+#     packets hold several pictures and lack a PTS (#436, #336, #189): every frame, sequentially and after seeks, also in
+#     240-frame clips (MPEG-1 PS, MPEG-2 and MPEG-4 Part 2 VOB) compared with the frames that the ffmpeg CLI decodes in
+#     order, with at most one seek per request; an MPEG-TS with one PES header without a PTS. MPEG-4 with B-frames, whose
 #     first DTS is negative, in an elementary stream and Matroska, and MPEG-2 with B-frames in MXF.
 #   * MP4 with an edit list that does not display the first 1 or 3 frames, and MOV with one that does
 #     not display the first 2 (negative timestamps): they are counted in the stream's number of frames,
@@ -197,7 +200,8 @@ ramp() {
     # the ffmpeg CLI converts the full-range gray to yuv420p and back, and that round trip through the video range
     # loses a luma level on every FFmpeg version (32 becomes 31, hidden by the --ramp tolerance of 0.4 * 4 = 1.6),
     # to which FFmpeg n8.0 adds a chroma bias (issue #345).
-    echo "color=c=gray:s=128x128:r=$1,format=gray,geq=lum='16+4*N':cb=128:cr=128,format=${RAMP_PIX_FMT:-yuv420p}"
+    # RAMP_SIZE: the size (default 128x128).
+    echo "color=c=gray:s=${RAMP_SIZE:-128x128}:r=$1,format=gray,geq=lum='16+4*N':cb=128:cr=128,format=${RAMP_PIX_FMT:-yuv420p}"
 }
 have_encoder() {
     # Not `ffmpeg ... | grep -q`: grep -q exits at the first match, ffmpeg then gets SIGPIPE if it still
@@ -1439,9 +1443,82 @@ check ramp_bframes.m2v "MPEG-2 elementary stream (B-frames)" mpeg2video 24 -c:v 
 # elementary stream has no timestamps either, and the duration estimated from its bit rate (the VBR value) is 1 ms.
 check ramp_mpeg1.ts "MPEG-TS (MPEG-1 video, B-frames)" mpeg1video 24 -c:v mpeg1video -bf 2 -g 8 -q:v 2
 check ramp_mpeg1.m1v "MPEG-1 elementary stream (B-frames)" mpeg1video 24 -c:v mpeg1video -bf 2 -g 8 -q:v 2 -f mpeg1video
-# MPEG-PS: only the frame count. After a seek, some frames are read one frame late, also by ffmpeg -ss (#353).
-check_count ramp_mpeg1.mpg "MPEG-PS (MPEG-1 video, B-frames): frame count" mpeg1video "$(ramp 24)" \
+# MPEG-PS and VOB whose packets of the demuxer hold several pictures, and lack a PTS (a PTS is only needed every 0.7 s):
+# after a seek, the first packet read is the end of a picture, and some frames were read one frame late or early, also
+# by ffmpeg -ss (#436, #353); in the VOB with B-frames, sequential frames 13, 28 and 29 showed the next frame (#336), whose
+# PTS the parser gave a frame that ends in the next packet of the demuxer (#189). Every frame must be right, in every order.
+check ramp_mpeg1.mpg "MPEG-PS (MPEG-1 video, B-frames)" mpeg1video 24 -c:v mpeg1video -bf 2 -g 8 -q:v 2 -f mpeg
+check ramp_mpeg2.mpg "MPEG-PS (MPEG-2 video, B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2 -f mpeg
+check ramp_mpeg2.vob "VOB (MPEG-2 video, B-frames)" mpeg2video 24 -c:v mpeg2video -bf 2 -g 8 -q:v 2 -f vob
+# (128x96, not 128x128: at 128x128 this VOB counts 41 frames, and a 240-frame VOB with B-frames counts 238, because
+# the end of the file is read from its last packets, whose timestamps are shifted too: still open, see #336.)
+RAMP_SIZE=128x96 check ramp_mpeg2_96.vob "VOB (MPEG-2 video, 128x96, no B-frames)" mpeg2video 24 -c:v mpeg2video -f vob
+# check_seek_reference NAME DESCRIPTION ENCODER FFMPEG_OUTPUT_ARGS...
+# 240 frames (10 s at 24 fps) of a slowly changing gray, a few hundred bytes per picture, and the reference: the frames
+# that the ffmpeg CLI decodes in order, renumbered (setpts), in lossless FFV1. Long enough for seeks that do not decode
+# from the start of the file, and land more than the 1 s window after the first packet read before the requested frame
+# (see Stream::armResync()): every frame must be that of the reference in every order (with 1 and 8 decoder threads,
+# which MPEG-1/2 decoders only use as slice threads), and each request of an order with backward jumps, the first one
+# in a newly opened file, and one in the first second of the file, must seek at most once.
+check_seek_reference() {
+    local name="$1" desc="$2" encoder="$3" threads all
+    shift 3
+    echo "== $desc =="
+    if ! have_encoder "$encoder" || ! have_encoder ffv1; then
+        skip "no $encoder or ffv1 encoder in the ffmpeg CLI"
+        return
+    fi
+    if ! ffmpeg -y -loglevel error -f lavfi -i "color=c=gray:s=128x96:r=24,format=gray,geq=lum='16+mod(N*3\,200)':cb=128:cr=128,format=yuv420p" \
+        -frames:v 240 "$@" "$tmp/$name" ||
+        ! ffmpeg -y -loglevel error -i "$tmp/$name" -vf setpts=N/FRAME_RATE/TB -c:v ffv1 -f matroska "$tmp/ref_$name.mkv"; then
+        echo "FAIL: could not generate $name"
+        rc=1
+        return
+    fi
+    all="$(seq -s, 1 240)"
+    for threads in 1 8; do
+        # shellcheck disable=SC2086
+        if ! FFMPEG_READ_TEST_THREADS=$threads "$bin" "$tmp/$name" --frames 240 --reference "$tmp/ref_$name.mkv" --reference-frames "$all" \
+            ${FFMPEG_READ_TEST_ARGS:-} 2>"$tmp/$name.err"; then
+            grep '^FAIL' "$tmp/$name.err" || echo "FAIL"
+            echo "(with $threads decoder threads)"
+            rc=1
+        fi
+    done
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/$name" --frames 240 --order 200,120,60,180,90,10 --order-max-seeks 1 ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+}
+# (No B-frames and 128x96 for the VOBs: see ramp_mpeg2_96.vob above. Not here: MPEG-1 PS and low-delay MPEG-2 PS without
+# B-frames, whose runs of timestamps one frame too high are still wrong, issue #481.)
+check_seek_reference seek_mpeg1.mpg "MPEG-PS (MPEG-1 video, B-frames, 240 frames): every frame after seeks" mpeg1video \
     -c:v mpeg1video -bf 2 -g 8 -q:v 2 -f mpeg
+check_seek_reference seek_mpeg2.vob "VOB (MPEG-2 video, no B-frames, 240 frames): every frame after seeks" mpeg2video \
+    -c:v mpeg2video -q:v 2 -f vob
+# MPEG-4 Part 2 without B-frames: libavformat interpolates the PTS of every packet (no reordering delay), and the
+# timestamps after a seek were counted from the end of a cut picture all the same.
+check_seek_reference seek_mpeg4.vob "VOB (MPEG-4 Part 2, no B-frames, 240 frames): every frame after seeks" mpeg4 \
+    -c:v mpeg4 -bf 0 -q:v 2 -f vob
+# An MPEG-TS whose PES packets each hold one frame, but whose 100th video PES header has no PTS (its PTS_DTS_flags
+# cleared, as after damage): every frame must be that of the clean file, in every order, with at most 2 seeks per
+# request, as in the clean file (the timestamps of the stream are not taken as shifting, see timestampsMayShift()).
+echo "== MPEG-TS (H.264 with B-frames, one PES header without a PTS) =="
+if ! have_encoder libx264; then
+    skip "no libx264 encoder in the ffmpeg CLI"
+elif ! command -v perl >/dev/null 2>&1; then
+    skip "no perl"
+elif ! ffmpeg -y -loglevel error -f lavfi -i testsrc2=s=320x240:r=24 -frames:v 240 -c:v libx264 -g 24 -bf 2 -pix_fmt yuv420p "$tmp/clean_one_nopts.ts" ||
+    ! perl -e 'local $/; open(my $in, "<:raw", $ARGV[0]) or die; my $d = <$in>; my ($n, $p) = (0, 0);
+        while (($p = index($d, "\x00\x00\x01\xe0", $p)) >= 0) { if (++$n == 100) { substr($d, $p + 7, 1) = "\x00"; last } $p += 4 }
+        die "too few PES packets\n" if $n < 100; open(my $out, ">:raw", $ARGV[1]) or die; print $out $d' \
+        "$tmp/clean_one_nopts.ts" "$tmp/one_nopts.ts"; then
+    echo "FAIL: could not generate one_nopts.ts"
+    rc=1
+else
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/one_nopts.ts" --frames 240 --reference "$tmp/clean_one_nopts.ts" --reference-frames "$(seq -s, 1 240)" ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+    # shellcheck disable=SC2086
+    "$bin" "$tmp/one_nopts.ts" --frames 240 --order 200,120,60,180,90,10 --order-max-seeks 2 ${FFMPEG_READ_TEST_ARGS:-} || rc=1
+fi
 # A larger MPEG-1 elementary stream, whose duration estimated from the bit rate is a few frames (not 40): the
 # stream duration has the same estimate.
 check_count testsrc_mpeg1.m1v "MPEG-1 elementary stream (1920x1080): frame count" mpeg1video testsrc2=size=1920x1080:rate=24 \

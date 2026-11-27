@@ -671,6 +671,9 @@ FFmpegFile::Stream::GetStreamAspectRatio(Stream* stream)
     return stream->_aspect;
 }
 
+// The most packets that a scan of the file at open reads (e.g. for a stream that has few packets)
+static constexpr int kMaxOpenScanPackets = 1024;
+
 // Whether the demuxer may give timestamp discontinuities (MPEG-TS and MPEG-PS). Their demuxers resync after a byte
 // seek, and libavformat counts a duration estimated from their timestamps from the start time.
 static bool
@@ -739,8 +742,7 @@ FFmpegFile::readFirstPalettes()
     }
     _readAtOpen = true;
     MyAVPacket avPacket;
-    const int kMaxPackets = 1024; // bounded, for a palette stream without packets
-    for (int packets = 0; (pendingStreams > 0) && (packets < kMaxPackets) && (av_read_frame(_context, avPacket.pkt()) >= 0); ++packets) {
+    for (int packets = 0; (pendingStreams > 0) && (packets < kMaxOpenScanPackets) && (av_read_frame(_context, avPacket.pkt()) >= 0); ++packets) {
         const int idx = avPacket->stream_index;
         // the streams found while reading (AVFMTCTX_NOHEADER, e.g. MPEG-TS) are not in palettes and pending
         if ((idx >= 0) && (size_t(idx) < pending.size()) && pending[idx]) {
@@ -907,6 +909,70 @@ FFmpegFile::nextPacketsLackPts(const Stream& stream, int maxPackets)
     return false;
 }
 
+// Whether the timestamps of the frames of the stream may be those of other frames (Stream::_timestampsMayShift, see
+// Stream::armResync() and Stream::placeShiftedFrame()): in a format whose demuxer resumes reading anywhere after a seek
+// (AVFMT_TS_DISCONT, e.g. MPEG-PS, MPEG-TS), if a demuxer packet holds several frames. The parser then splits it into
+// frames, and only the frame in which it finds the start of the demuxer packet gets the timestamps of that packet
+// (ff_fetch_timestamp(), libavcodec/parser.c:89-118 in FFmpeg 9.0.2, 84-113 in 8.0.1), which H.222.0 gives to the first
+// frame that starts in it (section 2.4.3.7; a PTS is only needed every 0.7 s, section 2.7.4). Decided at open, from
+// the first kShiftScanPackets packets of the stream, read with AVFMT_FLAG_NOFILLIN, so that libavformat leaves out the
+// timestamps that it would compute for the other frames (compute_pkt_fields(), libavformat/demux.c:997-998 in 9.0.2,
+// 981-982 in 8.0.1; those of frames that are not reordered are interpolated, e.g. MPEG-4 Part 2 without B-frames): a
+// frame without one is such a frame. A damaged packet later in the file, e.g. a PES header without a PTS in an MPEG-TS
+// whose PES packets each hold one frame, does not make the stream shift.
+// Only the first kShiftScanPackets packets of the stream decide (and at most kMaxOpenScanPackets packets of the file are
+// read, e.g. for a still picture next to a long audio track): a file whose first pictures each fill a demuxer packet,
+// but whose later pictures share them, is not taken as shifting (issue #481).
+static constexpr int kShiftScanPackets = 8;
+bool
+FFmpegFile::timestampsMayShift(Stream& stream)
+{
+    if (!HasTsDiscontinuities(_context)) {
+        return false;
+    }
+    // A seek drops the packets that avformat_find_stream_info() kept, whose timestamps were filled in.
+    _readAtOpen = true;
+    if (seekToStreamStart(stream) < 0) {
+        return false;
+    }
+    // (_context->flags restored on every path)
+    struct FlagsRestore {
+        AVFormatContext* context;
+        int flags;
+        ~FlagsRestore() { context->flags = flags; }
+    } restore { _context, _context->flags };
+    _context->flags |= AVFMT_FLAG_NOFILLIN;
+    MyAVPacket avPacket;
+    int packetsLeft = kShiftScanPackets;
+    for (int packets = 0; (packetsLeft > 0) && (packets < kMaxOpenScanPackets) && (av_read_frame(_context, avPacket.pkt()) >= 0); ++packets) {
+        const bool inStream = (avPacket->stream_index == stream._idx);
+        const bool noTimestamp = (avPacket->pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts == int64_t(AV_NOPTS_VALUE));
+        av_packet_unref(avPacket.pkt());
+        if (inStream) {
+            if (noTimestamp) {
+                return true;
+            }
+            --packetsLeft;
+        }
+    }
+
+    return false;
+}
+
+// Seeks to read the first packets of the stream again (see probeStreamStart() and timestampsMayShift()), never with
+// AVSEEK_FLAG_FRAME, which makes some demuxers (FLV) read the file from its start. In a format whose demuxer resumes
+// reading anywhere (AVFMT_TS_DISCONT, e.g. MPEG-TS, MPEG-PS) and that allows byte seeks (not AVFMT_NO_BYTE_SEEK), to byte
+// 0, which needs no binary search on the timestamps (ff_seek_frame_binary(), libavformat/seek.c:290-358 in FFmpeg 9.0.2
+// and 8.0.1); otherwise to the start time, or to byte 0 if it is unknown (e.g. in elementary streams). Returns
+// av_seek_frame()'s result.
+int
+FFmpegFile::seekToStreamStart(const Stream& stream)
+{
+    const bool byBytes = (stream._avstream->start_time == int64_t(AV_NOPTS_VALUE)) ||
+                         (HasTsDiscontinuities(_context) && !(_context->iformat->flags & AVFMT_NO_BYTE_SEEK));
+    return byBytes ? av_seek_frame(_context, -1, 0, AVSEEK_FLAG_BYTE) : av_seek_frame(_context, stream._idx, stream._avstream->start_time, AVSEEK_FLAG_BACKWARD);
+}
+
 // Read the first packets of the stream (from the start time, seeking if anything was read since
 // avformat_find_stream_info()), for a stream whose decoder delays frames (has_b_frames > 0):
 // - firstDTS: the DTS of the first packet;
@@ -927,14 +993,9 @@ FFmpegFile::probeStreamStart(Stream& stream)
 
     stream.flushCodec();
     // If nothing was read or sought since avformat_find_stream_info(), the first packets are those it kept,
-    // from the start of the file: no seek is needed. Otherwise, seek to the start time (by bytes if it is
-    // unknown, e.g. in elementary streams), never with AVSEEK_FLAG_FRAME, which makes some demuxers (FLV)
-    // read the file from its start.
-    if (_readAtOpen) {
-        const int res = (stream._avstream->start_time != int64_t(AV_NOPTS_VALUE)) ? av_seek_frame(_context, stream._idx, stream._avstream->start_time, AVSEEK_FLAG_BACKWARD) : av_seek_frame(_context, -1, 0, AVSEEK_FLAG_BYTE);
-        if (res < 0) {
-            return probe;
-        }
+    // from the start of the file: no seek is needed. Otherwise, seek to the start (seekToStreamStart()).
+    if (_readAtOpen && (seekToStreamStart(stream) < 0)) {
+        return probe;
     }
     _readAtOpen = true;
     MyAVPacket avPacket;
@@ -1933,6 +1994,7 @@ FFmpegFile::FFmpegFile(const string& filename)
             continue;
         }
         stream->_frames = getStreamFrames(*stream);
+        stream->_timestampsMayShift = timestampsMayShift(*stream);
 
         // save the stream
         _streams.push_back(std::move(stream));
@@ -2424,7 +2486,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     // The demuxer is shared by the streams (the views), and drops the packets of the other streams: after a decode of
     // another stream, this one must seek (#291).
     if (!stream->isSequential(frame) || stream->_restartSingleThread || (stream != _demuxedStream)) {
-        seekToTimestamp(stream, stream->frameToPts(frame));
+        seekToTimestamp(stream, stream->seekTs(frame));
     }
     _demuxedStream = stream;
 
@@ -2471,7 +2533,7 @@ FFmpegFile::decode(const ImageEffect* /*plugin*/,
     auto seekForAttempt = [&]() -> bool {
         switch (attempt) {
         case Attempt::eAtFrame:
-            return seekToTimestamp(stream, stream->frameToPts(frame));
+            return seekToTimestamp(stream, stream->seekTs(frame));
         case Attempt::eEarlier:
             return seekToTimestamp(stream, retryTs);
         case Attempt::eFromStart:
@@ -2918,6 +2980,7 @@ bool
 FFmpegFile::seek(Stream* stream, int64_t ts, int seekFlags)
 {
     stream->resetSeekState(); // also resets _decodingFromStart
+    stream->_seekTargetTs = ts; // (seekToStart() then sets _decodingFromStart: see Stream::armResync())
     flushDecoder(stream);
     stream->clearTaint();
     ++_seekCount;
@@ -3034,7 +3097,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
         assert(heldFrameIdx <= frame);
         if (heldFrameIdx > frame) {
             // Should not happen, but the held frames would give a wrong frame: seek, which resets them.
-            seekToTimestamp(stream, stream->frameToPts((int)frame));
+            seekToTimestamp(stream, stream->seekTs((int)frame));
         } else if (heldFrameIdx == frame) {
             return imageConvert(stream, held, avFrameOut);
         } else if (Stream::hasFrame(next) || stream->_heldFrameIsLast) {
@@ -3236,6 +3299,15 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
                 return true; // stop without a picture
             }
             return false;
+        }
+
+        // A stream whose timestamps may shift, e.g. an MPEG-PS from FFmpeg's vob muxer (see FFmpegFile::timestampsMayShift())
+        if (stream->_timestampsMayShift) {
+            const std::optional<int64_t> placed = stream->placeShiftedFrame(decodedFrame->pts);
+            if (!placed) {
+                return false;
+            }
+            decodedFrame->pts = *placed;
         }
 
         if (damaged) {
