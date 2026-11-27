@@ -22,7 +22,6 @@
  * Write text on images using OIIO.
  */
 
-#include <cfloat> // DBL_MAX
 #include <climits> // INT_MAX
 #include <memory>
 
@@ -608,8 +607,6 @@ OIIOTextPluginFactory::describeInContext(ImageEffectDescriptor& desc,
             gHostSupportsDefaultCoordinateSystem = false; // no multithread here, see kParamDefaultsNormalised
         }
         param->setDefault(0.5, 0.5);
-        param->setRange(-DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX);
-        param->setDisplayRange(-DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX);
         param->setAnimates(true);
         hostHasNativeOverlayForPosition = param->getHostHasNativeOverlayHandle();
         if (hostHasNativeOverlayForPosition) {

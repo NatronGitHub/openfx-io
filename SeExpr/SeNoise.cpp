@@ -700,11 +700,7 @@ public:
         // edit: keep the "center changed" flag as it was. This only covers a host that sends instanceChanged
         // synchronously from setValue; a host that queues the notice until after the instance is created still sets
         // the flag.
-        const bool centerChanged = _centerChanged->getValue();
-        ofxsTransformDenormaliseDefaults(*this);
-        if (_centerChanged->getValue() != centerChanged) {
-            _centerChanged->setValue(centerChanged);
-        }
+        ofxsTransformDenormaliseDefaults(*this, /*oldParams=*/false, _centerChanged);
     }
 
 private:
@@ -1414,8 +1410,7 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setHint(kParamNoiseSizeHint);
         param->setRange(0., 0., DBL_MAX, DBL_MAX);
         param->setDisplayRange(1., 1., 1000., 1000.);
-        param->setDoubleType(eDoubleTypeXY);
-        param->setDefaultCoordinateSystem(eCoordinatesCanonical); // Nuke defaults to Normalized for XY and XYAbsolute!
+        param->setDoubleType(eDoubleTypeXY); // also declares the default canonical (Support): Nuke defaults XY params to normalised
         param->setDefault(kParamNoiseSizeDefault);
         if (page) {
             page->addChild(*param);
@@ -1425,7 +1420,6 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor& desc,
         DoubleParamDescriptor* param = desc.defineDoubleParam(kParamNoiseZ);
         param->setLabel(kParamNoiseZLabel);
         param->setHint(kParamNoiseZHint);
-        param->setRange(-DBL_MAX, DBL_MAX);
         param->setDisplayRange(0., 5.);
         param->setDefault(kParamNoiseZDefault);
         if (page) {
@@ -1436,7 +1430,6 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor& desc,
         DoubleParamDescriptor* param = desc.defineDoubleParam(kParamNoiseZSlope);
         param->setLabel(kParamNoiseZSlopeLabel);
         param->setHint(kParamNoiseZSlopeHint);
-        param->setRange(-DBL_MAX, DBL_MAX);
         param->setDisplayRange(0., 1.);
         param->setDefault(kParamNoiseZSlopeDefault);
         param->setAnimates(false);
@@ -1583,7 +1576,6 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor& desc,
             DoubleParamDescriptor* param = desc.defineDoubleParam(kParamXRotate);
             param->setLabel(kParamXRotateLabel);
             param->setHint(kParamXRotateHint);
-            param->setRange(-DBL_MAX, DBL_MAX);
             param->setDisplayRange(0., 90.);
             param->setDoubleType(eDoubleTypeAngle);
             param->setDefault(kParamXRotateDefault);
@@ -1598,7 +1590,6 @@ SeNoisePluginFactory::describeInContext(ImageEffectDescriptor& desc,
             DoubleParamDescriptor* param = desc.defineDoubleParam(kParamYRotate);
             param->setLabel(kParamYRotateLabel);
             param->setHint(kParamYRotateHint);
-            param->setRange(-DBL_MAX, DBL_MAX);
             param->setDisplayRange(0., 90.);
             param->setDoubleType(eDoubleTypeAngle);
             param->setDefault(kParamYRotateDefault);

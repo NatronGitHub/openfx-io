@@ -41,7 +41,6 @@
 #endif
 
 #include <algorithm>
-#include <climits> // INT_MIN, INT_MAX
 #include <cmath>
 #include <memory>
 #include <sstream>
@@ -1021,7 +1020,6 @@ ReadFFmpegPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     {
         // deprecated parameter, for backward compatibility only
         IntParamDescriptor* param = desc.defineIntParam(kParamMaxRetries);
-        param->setRange(INT_MIN, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
         param->setDisplayRange(0, 10);
         param->setIsSecretAndDisabled(true);
         if (page) {

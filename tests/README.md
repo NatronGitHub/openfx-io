@@ -924,8 +924,9 @@ plug-ins that are an identity with `test.ocio` must output their input. A plug-i
 It also checks some host quirks of
 [openfx-misc's README-hosts.txt](https://github.com/NatronGitHub/openfx-misc/blob/master/README-hosts.txt), for every
 plug-in and context: every XY or XYAbsolute param with a non-zero default sets `kOfxParamPropDefaultCoordinateSystem`
-(Nuke defaults it to normalised), every int param sets a range and a display range (Resolve clamps it to 0..0
-otherwise), and a plug-in whose descriptor
+(Nuke defaults it to normalised), every int or double param (1D, 2D or 3D) has a range and a display range (Resolve
+clamps it to 0..0 or -1..1 otherwise), the GenericReader and GenericWriter frame params range over INT_MIN..INT_MAX,
+and a plug-in whose descriptor
 sets `kOfxImageEffectInstancePropSequentialRender` also sets it on its instance (Resolve and Nuke ignore it on the
 descriptor). The host honours normalised defaults (a never-set param with a normalised default is its default times
 the project size, plus the project offset for a position), except where it rejects

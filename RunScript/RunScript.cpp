@@ -26,8 +26,6 @@
 #include "IOUtility.h" // persistentErrorAndThrow()
 #include "ofxsMacros.h"
 
-#include <cfloat> // DBL_MAX
-#include <climits> // INT_MIN, INT_MAX
 #undef DEBUG
 #ifdef DEBUG
 #include <iostream>
@@ -942,7 +940,6 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                 param->setHint(kParamTypeDoubleHint);
                 param->setAnimates(true);
                 // param->setIsSecretAndDisabled(true); // done in the plugin constructor
-                param->setRange(-DBL_MAX, DBL_MAX);
                 param->setDisplayRange(-1000., 1000.);
                 if (group) {
                     param->setParent(*group);
@@ -956,7 +953,6 @@ RunScriptPluginFactory::describeInContext(ImageEffectDescriptor& desc,
                 IntParamDescriptor* param = desc.defineIntParam(kParamTypeIntName + istr);
                 param->setLabel(kParamTypeIntLabel + istr);
                 param->setHint(kParamTypeIntHint);
-                param->setRange(INT_MIN, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
                 param->setDisplayRange(-1000, 1000);
                 param->setAnimates(true);
                 // param->setIsSecretAndDisabled(true); // done in the plugin constructor

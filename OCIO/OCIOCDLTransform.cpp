@@ -26,7 +26,6 @@
 
 #include <array>
 #include <cerrno>
-#include <climits> // INT_MIN, INT_MAX
 #include <cstdio> // fopen...
 #ifdef _WIN32
 #include <fcntl.h> // _O_*
@@ -1347,7 +1346,6 @@ OCIOCDLTransformPluginFactory::describeInContext(ImageEffectDescriptor& desc,
     }
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamVersion);
-        param->setRange(INT_MIN, INT_MAX); // Resolve requires range and display range or values are clamped to (0,0)
         param->setDisplayRange(1, 100);
         param->setIsSecretAndDisabled(true); // always secret
         param->setDefault(1);
