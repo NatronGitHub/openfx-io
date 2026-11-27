@@ -20,9 +20,9 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 # the sections of run_ffmpeg_read_test.sh today (the VideoToolbox one only runs on macOS); raise it with new sections
-MIN_SKIPS=198
+MIN_SKIPS=205
 if [ "$(uname -s)" = Darwin ]; then
-    MIN_SKIPS=199
+    MIN_SKIPS=206
 fi
 
 mkdir "$work/bin"

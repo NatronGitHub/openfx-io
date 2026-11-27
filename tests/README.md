@@ -1242,9 +1242,28 @@ a longer audio track:
 An MPEG-TS with 1 s of video and 8 s of SMPTE 302M audio, whose end probe fails, must count 192
 frames. An MPEG-2 elementary stream with B-frames has no timestamps, and its last frame has no PTS;
 MPEG-1 video at 24 fps (r_frame_rate 48 fps) with B-frames must count 40 frames in MPEG-TS, MPEG-PS
-and an elementary stream ([#353](https://github.com/NatronGitHub/openfx-io/issues/353); only the
-count and rate in MPEG-PS), and so must a 1920x1080 MPEG-1 elementary stream, whose duration estimated from the
-bit rate is wrong; B-frames with a negative first DTS (MPEG-4 in an elementary stream and Matroska,
+and an elementary stream ([#353](https://github.com/NatronGitHub/openfx-io/issues/353)), and so must a 1920x1080
+MPEG-1 elementary stream (only the count and rate), whose duration estimated from the bit rate is wrong;
+in MPEG-PS and VOB clips whose demuxer packets hold several small pictures and lack a PTS (MPEG-1 and
+MPEG-2 with B-frames in `-f mpeg`, MPEG-2 with B-frames and 128x96 MPEG-2 without B-frames in `-f vob`),
+every frame must be right sequentially and after seeks: the parser gave a picture that ends in the next
+demuxer packet the PTS of that packet, and after a seek the first packet read is the end of a picture,
+so that the frames after it were one frame late or early, also with `ffmpeg -ss`
+([#436](https://github.com/NatronGitHub/openfx-io/issues/436),
+[#336](https://github.com/NatronGitHub/openfx-io/issues/336),
+[#189](https://github.com/NatronGitHub/openfx-io/issues/189)); 240-frame clips (an MPEG-1 PS with B-frames,
+and MPEG-2 and MPEG-4 Part 2 VOBs without B-frames, whose PTS libavformat interpolates for MPEG-4), long enough for
+seeks that do not decode from the start of the file, must give the frames that the ffmpeg CLI decodes in order, in
+every order, with 1 and 8 decoder threads, and seek at most once per request, also for the first request in a newly
+opened file and for one in the first second. The VOBs are 128x96 without B-frames because the frame count of a
+128x128 VOB without B-frames (41 for 40) and of a 240-frame VOB with B-frames (238) is still wrong: its end is read
+from the last packets, whose timestamps are shifted too ([#336](https://github.com/NatronGitHub/openfx-io/issues/336)).
+Not tested yet: MPEG-1 PS and low-delay MPEG-2 PS without B-frames, where the parser gives a picture the PTS of the
+next one, so that runs of frames are one frame late, also in order
+([#481](https://github.com/NatronGitHub/openfx-io/issues/481)).
+An MPEG-TS whose PES packets each hold one frame, with one PES header without a PTS (as after damage), must give
+the frames of the clean file in every order, with at most 2 seeks per request, as the clean file: one such packet
+does not make the reader treat the stream's timestamps as shifting; B-frames with a negative first DTS (MPEG-4 in an elementary stream and Matroska,
 MPEG-2 in MXF) must decode their first frames;
 MP4 edit lists that do not display the first 1 or 3 frames, and a MOV edit list that does not
 display the first 2 (negative timestamps), must not count these frames; in the one that does not display the first 3,
