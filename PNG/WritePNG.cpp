@@ -654,10 +654,7 @@ WritePNGPlugin::encode(const string& filename,
                        const int rowBytes)
 {
     if ((dstNComps != 4) && (dstNComps != 3) && (dstNComps != 2) && (dstNComps != 1)) {
-        setPersistentMessage(Message::eMessageError, "", "WritePNG: can only write RGBA, RGB, IA or Alpha components images");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+        persistentErrorAndThrow(*this, "WritePNG: can only write RGBA, RGB, IA or Alpha components images");
     }
 
     // If the file exists (which means "overwrite" was checked), remove it first.

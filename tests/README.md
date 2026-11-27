@@ -100,6 +100,7 @@ make test-writer-image-overlapping-begins # two overlapping one-frame sequence r
 make test-writer-file-change-during-render # WriteFFmpeg: a file change from .mov to .png during a render doesn't block the next one (#470)
 make test-writeffmpeg-interactive # WriteFFmpeg writes a movie when the host sets kOfxPropIsInteractive for several frames (#460)
 make test-writer-input-connect # connecting the input keeps the Input Premult that the user set (#457)
+make test-spec-statuses # the writers fail with kOfxStatFailed and a message; the test host brackets instanceChanged (#473, #474)
 make test-writer-int-ranges # GenericWriter and WriteFFmpeg with host values out of the range of int, with UBSan (#184)
 make test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
 make test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
@@ -580,6 +581,15 @@ WritePFM (GenericWriter) is connected with a user edit (`kOfxActionInstanceChang
 hosts do when they load a project. On a new instance, its premultiplication sets Input Premult, also for another
 input; once the user set Input Premult (a user edit of the param), connecting an input keeps it. An instance created
 with the saved values of a project in which the user set it (`inputPremultSet`) keeps it when the input is connected.
+
+`test-spec-statuses` (issues #473 and #474) runs `ofx_render_test OUT --spec-statuses`. A failed `render` or
+`beginSequenceRender` of a writer must return `kOfxStatFailed` with a persistent error message, the failure that the
+OFX spec lists for these actions ("kOfxStatFailed, something wrong, but no error code appropriate, plugin to post
+message", `ofxImageEffect.h`): WritePFM with an unsupported file extension (`beginSequenceRender`, `render`, and
+`kOfxActionInstanceChanged` on the file), and WriteFFmpeg given a frame at another pixel aspect ratio. They returned
+`kOfxStatErrImageFormat` and `kOfxStatErrFormat`. The test host's `instanceChanged()` must send
+`kOfxActionBeginInstanceChanged`, `kOfxActionInstanceChanged` and `kOfxActionEndInstanceChanged`, with the same
+change reason, as the spec asks (`ofxCore.h`): a recording plug-in checks it.
 
 `test-writer-int-ranges` (issue #184) runs `ofx_render_test_ubsan OUT --int-ranges`: `ofx_render_test` built with
 UBSan's `float-cast-overflow` and `signed-integer-overflow` checks, stopping at the first error (on MS Windows, where

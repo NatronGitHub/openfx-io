@@ -153,10 +153,7 @@ WritePFMPlugin::encode(const string& filename,
                        const int rowBytes)
 {
     if ((dstNComps != 4) && (dstNComps != 3) && (dstNComps != 1)) {
-        setPersistentMessage(Message::eMessageError, "", "PFM: can only write RGBA, RGB or Alpha components images");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+        persistentErrorAndThrow(*this, "PFM: can only write RGBA, RGB or Alpha components images");
     }
 
     // If the file exists (which means "overwrite" was checked), remove it first.

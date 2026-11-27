@@ -866,10 +866,15 @@ int loadAndDescribe(OfxPlugin* p, Effect& describeEffect, Effect& ctxEffect, con
 }
 
 // kOfxActionInstanceChanged on the param (or, with type kOfxTypeClip, the clip) name, as the host calls it on its
-// main thread: by default a user edit at time 1, at render scale 1
+// main thread: by default a user edit at time 1, at render scale 1. It is bracketed by kOfxActionBeginInstanceChanged
+// and kOfxActionEndInstanceChanged, as the spec asks ("are bracketed by a pair of kOfxActionBeginInstanceChanged and
+// kOfxActionEndInstanceChanged actions", ofxCore.h). The status of kOfxActionInstanceChanged, or else the first failure
+// of the other two.
 inline OfxStatus instanceChanged(OfxPlugin* p, Effect& inst, const char* name, const char* reason = kOfxChangeUserEdited,
                                  const char* type = kOfxTypeParameter, double t = 1.)
 {
+    PropSet b;
+    pSetString(PH(&b), kOfxPropChangeReason, 0, reason);
     PropSet a;
     OfxPropertySetHandle ap = PH(&a);
     pSetString(ap, kOfxPropType, 0, type);
@@ -878,7 +883,10 @@ inline OfxStatus instanceChanged(OfxPlugin* p, Effect& inst, const char* name, c
     pSetDouble(ap, kOfxPropTime, 0, t);
     double rs[2] = { 1., 1. };
     pSetDoubleN(ap, kOfxImageEffectPropRenderScale, 2, rs);
-    return p->mainEntry(kOfxActionInstanceChanged, EH(inst), ap, nullptr);
+    const OfxStatus begin = p->mainEntry(kOfxActionBeginInstanceChanged, EH(inst), PH(&b), nullptr);
+    const OfxStatus st = p->mainEntry(kOfxActionInstanceChanged, EH(inst), ap, nullptr);
+    const OfxStatus end = p->mainEntry(kOfxActionEndInstanceChanged, EH(inst), PH(&b), nullptr);
+    return !ok(st) ? st : !ok(begin) ? begin : !ok(end) ? end : st;
 }
 
 // A Natron-like host: dynamic choices (e.g. the output-layer menu of ReadOIIO, the Parts and Views params of

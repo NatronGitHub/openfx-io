@@ -35,7 +35,6 @@
 #endif
 #include <cerrno>
 #include <cstdlib> // mkostemp (glibc)
-#include <cstring> // strerror
 #include <memory>
 #include <sstream>
 #include <stdio.h> // for snprintf & _snprintf
@@ -424,7 +423,7 @@ RunScriptPlugin::render(const RenderArguments& args)
     const int writeError = errno;
     fd.reset(); // closed before it is executed (else ETXTBSY on Linux)
     if (s != (ssize_t)script.size()) {
-        OFX::IO::persistentErrorAndThrow(*this, string("RunScript: cannot write the script to ") + scriptname + ": " + ((s < 0) ? std::strerror(writeError) : "short write (disk full, or a file size limit)"));
+        OFX::IO::persistentErrorAndThrow(*this, string("RunScript: cannot write the script to ") + scriptname + ": " + ((s < 0) ? RunScriptPosix::errorString(writeError) : string("short write (disk full, or a file size limit)")));
     }
 
     // make the script executable
@@ -533,7 +532,7 @@ RunScriptPlugin::render(const RenderArguments& args)
         // posix_spawn() failed (it returns the error of exec()): e.g. the interpreter on the shebang line does not
         // exist (ENOENT), or /tmp is mounted noexec (EACCES)
         const int err = process.error();
-        string msg = string("RunScript: cannot execute ") + scriptname + ": " + (err ? std::strerror(err) : "unknown error");
+        string msg = string("RunScript: cannot execute ") + scriptname + ": " + (err ? RunScriptPosix::errorString(err) : string("unknown error"));
         if (err == ENOENT) {
             msg += " (check the interpreter on the first line of the script)";
         }

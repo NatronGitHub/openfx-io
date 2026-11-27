@@ -259,7 +259,7 @@ ReadPFMPlugin::decode(const string& filename,
     assert(renderScale.x == 1. && renderScale.y == 1.);
     unused(renderScale);
     if ((pixelComponents != ePixelComponentRGBA) && (pixelComponents != ePixelComponentRGB) && (pixelComponents != ePixelComponentAlpha)) {
-        persistentErrorAndThrow(*this, "PFM: can only read RGBA, RGB or Alpha components images", kOfxStatErrFormat);
+        persistentErrorAndThrow(*this, "PFM: can only read RGBA, RGB or Alpha components images");
     }
 
     // read PFM header

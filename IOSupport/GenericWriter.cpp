@@ -470,9 +470,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     getImageData(srcImg, &srcPixelData, bounds, &pixelComponents, &bitDepth, &srcRowBytes);
 
     if (bitDepth != eBitDepthFloat) {
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+        persistentErrorAndThrow(*this, "The input image is not 32-bit float");
     }
 
     // premultiplication/unpremultiplication is only useful for RGBA data
@@ -933,7 +931,7 @@ GenericWriterPlugin::renderFile(const RenderArguments& args,
     {
         string ext = extension(filename);
         if (!checkExtension(ext)) {
-            persistentErrorAndThrow(*this, string("Unsupported file extension: ") + ext, kOfxStatErrImageFormat);
+            persistentErrorAndThrow(*this, string("Unsupported file extension: ") + ext);
         }
     }
 
@@ -1802,7 +1800,7 @@ GenericWriterPlugin::beginSequenceRender(const BeginSequenceRenderArguments& arg
     {
         string ext = extension(filename);
         if (!checkExtension(ext)) {
-            persistentErrorAndThrow(*this, string("Unsupported file extension: ") + ext, kOfxStatErrImageFormat);
+            persistentErrorAndThrow(*this, string("Unsupported file extension: ") + ext);
         }
     }
 
@@ -1900,12 +1898,8 @@ setupAndProcess(PixelProcessorFilterBase& processor,
 {
     assert(srcPixelData && dstPixelData);
 
-    // make sure bit depths are sane
-    if ((srcPixelDepth != dstPixelDepth) || (srcPixelComponents != dstPixelComponents)) {
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
-    }
+    // unPremultPixelData() and premultPixelData() checked that the bit depths and components are the same
+    assert((srcPixelDepth == dstPixelDepth) && (srcPixelComponents == dstPixelComponents));
 
     // set the images
     processor.setDstImg(dstPixelData, dstBounds, dstPixelComponents, dstPixelComponentCount, dstPixelDepth, dstRowBytes);
@@ -1918,6 +1912,19 @@ setupAndProcess(PixelProcessorFilterBase& processor,
 
     // Call the base class process member, this will call the derived templated process code
     processor.process();
+}
+
+// unPremultPixelData() and premultPixelData() take float RGBA, RGB or Alpha, with the same components and bit depth for
+// the source and the destination
+static bool
+isPremultSupported(PixelComponentEnum srcPixelComponents,
+                   BitDepthEnum srcPixelDepth,
+                   PixelComponentEnum dstPixelComponents,
+                   BitDepthEnum dstBitDepth)
+{
+    return (dstBitDepth == eBitDepthFloat)
+        && ((dstPixelComponents == ePixelComponentRGBA) || (dstPixelComponents == ePixelComponentRGB) || (dstPixelComponents == ePixelComponentAlpha))
+        && (srcPixelDepth == dstBitDepth) && (srcPixelComponents == dstPixelComponents);
 }
 
 void
@@ -1939,10 +1946,8 @@ GenericWriterPlugin::unPremultPixelData(const OfxRectI& renderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+    if (!isPremultSupported(srcPixelComponents, srcPixelDepth, dstPixelComponents, dstBitDepth)) {
+        persistentErrorAndThrow(*this, "Unpremultiply: unsupported pixel format");
     }
     if (dstPixelComponents == ePixelComponentRGBA) {
         PixelCopierUnPremult<float, 4, 1, float, 4, 1> fred(*this);
@@ -1972,10 +1977,8 @@ GenericWriterPlugin::premultPixelData(const OfxRectI& renderWindow,
     assert(srcPixelData && dstPixelData);
 
     // do the rendering
-    if ((dstBitDepth != eBitDepthFloat) || ((dstPixelComponents != ePixelComponentRGBA) && (dstPixelComponents != ePixelComponentRGB) && (dstPixelComponents != ePixelComponentAlpha))) {
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+    if (!isPremultSupported(srcPixelComponents, srcPixelDepth, dstPixelComponents, dstBitDepth)) {
+        persistentErrorAndThrow(*this, "Premultiply: unsupported pixel format");
     }
 
     if (dstPixelComponents == ePixelComponentRGBA) {
@@ -2334,7 +2337,7 @@ GenericWriterPlugin::outputFileChanged(InstanceChangeReason reason,
                 } else {
                     setPersistentMessage(Message::eMessageError, "", string("Unsupported file extension: ") + ext);
                 }
-                throwSuiteStatusException(kOfxStatErrImageFormat);
+                throwSuiteStatusException(kOfxStatFailed);
             } else {
                 return;
             }

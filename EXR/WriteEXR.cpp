@@ -198,10 +198,7 @@ WriteEXRPlugin::encode(const string& filename,
     /// FIXME: WriteEXR should not disregard dstNComps
 
     if ((pixelDataNComps != 4) && (pixelDataNComps != 3) && (pixelDataNComps != 1)) {
-        setPersistentMessage(Message::eMessageError, "", "EXR: can only write RGBA, RGB, or Alpha components images");
-        throwSuiteStatusException(kOfxStatErrFormat);
-
-        return;
+        persistentErrorAndThrow(*this, "EXR: can only write RGBA, RGB, or Alpha components images");
     }
 
     assert(pixelDataNComps);
