@@ -1177,11 +1177,23 @@ with the SeExpr of the CMake build), in the Filter context:
   generated with bc4c45c) must have at least the frames of bc4c45c, or be a documented NaN artifact (`kNaNArtifacts`:
   bc4c45c evaluated the expression with NaN for the other variables, e.g. `frame + max(x, 0)` gave the frame); the
   cases that this build of SeExpr can not parse or prep are skipped (with MacPorts' SeExpr 2.11, 533 are checked, 1
-  is a NaN artifact and 30 are skipped).
+  is a NaN artifact and 30 are skipped). No NaN or infinite value is computed by the analysis
+  ([#286](https://github.com/NatronGitHub/openfx-io/issues/286)): the arguments of each operator and function are
+  checked against its domain first, and a value out of it (`sqrt(frame - 20)`, `log(frame - 10)`, `exp(frame * 100)`,
+  a division by 0, `hash(-frame)`), or above 1e100 (`1e400`), is unknown; the frames are exact again in the domain
+  (`frame + sqrt(frame - 1)` gives 13), a `?:` evaluates only the branch it selects (`frame > 20 ? sqrt(frame - 20) :
+  ...`), and no floating-point exception (invalid, overflow, division by zero) is raised. `pick()` of a vector
+  (`pick(frame, [0, 0, 0], [3, 3e6, 3])[0]`) checks the range of each component (its alloca overflowed the stack).
+  `curve()`/`ccurve()` with constant control points at distinct integer positions keep their exact frames (a retime
+  `curve(frame, 1, 1, 4, 100, 50, 4)` at 100 gives 50); coincident or non-integer positions, a control point that
+  reads a variable, `angle()`, `up()`, `hsi()`, `midhsi()` and `ortho()` of large operands give the default range.
+  The FE-flag checks are evidence at -O2 only (no FENV_ACCESS); at -Ofast, the evidence is the exact frames.
+  The work of the whole evaluations is capped (5e6 nodes): `floor(sin(sin(...(a + b))))` with two locals of 32
+  values is exact with 90 nested functions, and gives the default range with 100 (in well under 2 s).
 * **render**: `cpixel()` with coordinates of 1e9, 1e12 or -1e300 gives the edge pixel, as before (they are clamped to
   +-1e9 before their conversion to int); the frame is clamped to the range of int (1e12 and infinite frames; and in
-  the frames needed, `frame + 1e12`, `frame + 1e400` and `frame - 1e12` give `INT_MAX` or `INT_MIN`, since hosts
-  convert frames to int, #184; `frame + 2e9` is an int frame, used as is); a NaN
+  the frames needed, `frame + 1e12` and `frame - 1e12` give `INT_MAX` or `INT_MIN`, since hosts convert frames to
+  int, #184; `frame + 2e9` is an int frame, used as is); a NaN
   coordinate or frame (`sqrt(x - 100)`) gives black. The parameter variables (`x1`, `pos1`, `color1`) and `mix`,
   animated by a param suite whose `paramGetValueAtTime(t)` gives their value at `t` and `paramGetValue()` their
   value at another time (70), have their value at the render time (10, then 20), even when the variable is only
