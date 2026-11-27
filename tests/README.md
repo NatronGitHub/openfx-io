@@ -78,7 +78,7 @@ make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 
 make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
 make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
 make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
-make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171); PFM row order (#476)
+make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171); PFM row order (#476); JPEG XL quality (Natron#980)
 make test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
 make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
 make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
@@ -411,10 +411,15 @@ It then writes an EXR file with the zstd compression (issue #171). OpenImageIO <
 < 3.5, writes zip instead without an error: if the file read back is not zstd, the render must end with a persistent
 warning that names zstd, and otherwise with no warning. The next render of the same instance, with the zip
 compression, must end with no warning.
-Last, it writes a 4096x1500 RGB float PFM file (73.7 MB, issue #476) whose rows hold their row and column numbers,
+Then it writes a 4096x1500 RGB float PFM file (73.7 MB, issue #476) whose rows hold their row and column numbers,
 and reads it back as bytes: row k of the file (PFM is stored bottom row first) must hold row k of the image. With
 OpenImageIO < 3.2.1, `write_image()` wrote the file in chunks of about 64 MiB, each stored bottom row first on its
 own, and the rows of the file were rotated: WriteOIIO now writes scanline files with one `write_scanlines()` call.
+Last, it writes JPEG XL files ([Natron#980](https://github.com/NatronGitHub/Natron/issues/980)), if OpenImageIO
+has a jpegxl plug-in (else a `SKIPPED:` line): the Quality param must be visible for a .jxl file; the default
+quality, 100, must be lossless (the same pixels as a 16-bit TIFF file of the same image); quality 50 must be lossy,
+and smaller with OpenImageIO 3.0.12, 3.1.7 or later, which map the quality to a JPEG XL distance as libjxl does
+(OpenImageIO [#4933](https://github.com/AcademySoftwareFoundation/OpenImageIO/pull/4933)).
 
 `test-writer-remove-partial-file` (issue #251) runs `ofx_render_test OUT --writer-remove-partial-file`. With
 "Overwrite" unchecked, a render takes an existing file for a written frame and skips it, so a failed or aborted render

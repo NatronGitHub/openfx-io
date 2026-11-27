@@ -85,7 +85,7 @@ createFormatOutput(const string& filename)
 #define kPluginDescription "Write images using OpenImageIO."
 #define kPluginIdentifier "fr.inria.openfx.WriteOIIO"
 #define kPluginVersionMajor 1 // Incrementing this number means that you have broken backwards compatibility of the plug-in.
-#define kPluginVersionMinor 1 // Increment this when you have fixed a bug or made it faster.
+#define kPluginVersionMinor 2 // Increment this when you have fixed a bug or made it faster.
 #define kPluginEvaluation 91 // plugin quality from 0 (bad) to 100 (perfect) or -1 if not evaluated
 
 #define kSupportsRGBA true
@@ -133,7 +133,7 @@ enum ETuttlePluginComponents {
 #define kParamOutputQuality "quality"
 #define kParamOutputQualityLabel "Quality"
 #define kParamOutputQualityHint \
-    "Indicates the quality of compression to use (0-100), for those plugins and compression methods that allow a variable amount of compression, with higher numbers indicating higher image fidelity. [JPEG, TIFF w/ JPEG comp., WEBP]"
+    "Indicates the quality of compression to use (0-100), for those plugins and compression methods that allow a variable amount of compression, with higher numbers indicating higher image fidelity. [JPEG, JPEG XL (100 is lossless), TIFF w/ JPEG comp., WEBP]"
 #define kParamOutputQualityDefault 100
 
 #define kParamOutputDWACompressionLevel "dwaCompressionLevel"
@@ -878,7 +878,9 @@ WriteOIIOPlugin::refreshParamsVisibility(const string& filename)
         // hasQuality: search for uses of decode_compression_metadata() in OIIO source code.
         // output->supports("quality") still returns false for all formats, but may
         // be implemented someday, see https://github.com/OpenImageIO/oiio/issues/3859
+        // (jpegxl: jxloutput.cpp, OpenImageIO 2.6.2 and later; quality 100 is lossless)
         bool hasQuality = (strcmp(output->format_name(), "jpeg") == 0 ||
+                           strcmp(output->format_name(), "jpegxl") == 0 ||
                            strcmp(output->format_name(), "webp") == 0 ||
                            strcmp(output->format_name(), "heic") == 0 ||
                            strcmp(output->format_name(), "avif") == 0 ||
@@ -1191,7 +1193,8 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
     switch ((EParamCompression)compression_i) {
     case eParamCompressionAuto: {
         // Set compression string for formats that only have a single compression type.
-        static const char* formats[] = {"jpeg", "webp", "heic", "avif", nullptr};
+        // (the formats with a quality, see hasQuality in refreshParamsVisibility(): OIIO has no generic query)
+        static const char* formats[] = {"jpeg", "jpegxl", "webp", "heic", "avif", nullptr};
         for (int i = 0; formats[i] != nullptr; ++i) {
             if (strcmp(data->output->format_name(), formats[i]) == 0) {
                 compression = formats[i];

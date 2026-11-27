@@ -302,7 +302,7 @@ if(TARGET io_tests_ofx)
   endif()
   # test-writeoiio-files (#362, #171, #476): WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which
   # OpenImageIO writes by name, are written and read back; a zstd EXR must warn if the file is not zstd; a PFM file of
-  # more than 64 MiB has its rows in order
+  # more than 64 MiB has its rows in order; JPEG XL (Natron#980) has a Quality, and 100 is lossless
   io_test(test-writeoiio-files ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.i362" --writeoiio-files)
   # test-writer-remove-partial-file (#251): a failed or aborted render of an image file leaves no partial file (a test
   # writer; WritePNG and RLIMIT_FSIZE, except on MS Windows and without libpng), and a render that fails before the
