@@ -781,8 +781,6 @@ SeGrainPluginFactory::describeInContext(ImageEffectDescriptor& desc,
         param->setLabel(kParamSeedLabel);
         param->setHint(kParamSeedHint);
         param->setDefault(kParamSeedDefault);
-        param->setRange(-DBL_MAX, DBL_MAX);
-        param->setDisplayRange(-DBL_MAX, DBL_MAX);
         param->setLayoutHint(eLayoutHintNoNewLine, 1);
         if (page) {
             page->addChild(*param);

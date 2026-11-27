@@ -22,8 +22,9 @@
  *   - the filters that are an identity with their default parameters (OCIOColorSpace, OCIOCDLTransform,
  *     OCIOFileTransform with an identity LUT, with the identity colour spaces of test.ocio) must output their input;
  *   - host quirks (openfx-misc's README-hosts.txt), in every context: every XY or XYAbsolute param with a non-zero
- *     default sets kOfxParamPropDefaultCoordinateSystem (Nuke defaults it to normalised), every int param sets its
- *     range and display range (Resolve clamps it to 0..0 otherwise), a plug-in whose descriptor sets
+ *     default sets kOfxParamPropDefaultCoordinateSystem (Nuke defaults it to normalised), every int or double param
+ *     (1D, 2D or 3D) has a range and display range (Resolve clamps it to 0..0 or -1..1 otherwise), the
+ *     GenericReader and GenericWriter frame params range over INT_MIN..INT_MAX, a plug-in whose descriptor sets
  *     kOfxImageEffectInstancePropSequentialRender sets it on its instance too (Resolve and Nuke ignore it on the
  *     descriptor), and in a host named DaVinciResolve* with the OpenGL render suite (which Resolve never uses), the
  *     enableGPU param is disabled. The host honours normalised defaults (gHonourNormalisedDefaults), except at
@@ -362,10 +363,42 @@ checkHostQuirkParams(const std::string& c,
                 && !pr.count(kOfxParamPropDefaultCoordinateSystem)) {
                 fail("[%s] the XY param %s has no kOfxParamPropDefaultCoordinateSystem", c.c_str(), name);
             }
-        } else if (kv.second.type == kOfxParamTypeInteger) {
-            if (!pr.count(kOfxParamPropMin) || !pr.count(kOfxParamPropMax) || !pr.count(kOfxParamPropDisplayMin)
-                || !pr.count(kOfxParamPropDisplayMax)) {
-                fail("[%s] the int param %s has no range or display range", c.c_str(), name);
+        }
+        // Resolve clamps a numeric param without a range and display range (to (0,0) or (-1,1)): Support sets the
+        // spec's defaults (OFXS_SUPPORT_HAS_SPEC_PARAM_DEFAULTS), the plug-in may narrow them
+        const std::string& t = kv.second.type;
+        const bool isInt = (t == kOfxParamTypeInteger) || (t == kOfxParamTypeInteger2D) || (t == kOfxParamTypeInteger3D);
+        const bool isDouble = (t == kOfxParamTypeDouble) || (t == kOfxParamTypeDouble2D) || (t == kOfxParamTypeDouble3D);
+        if ((isInt || isDouble)
+            && (!pr.count(kOfxParamPropMin) || !pr.count(kOfxParamPropMax) || !pr.count(kOfxParamPropDisplayMin)
+                || !pr.count(kOfxParamPropDisplayMax))) {
+            fail("[%s] the %s param %s has no range or display range", c.c_str(), t.c_str(), name);
+        }
+    }
+    // The GenericReader and GenericWriter frame params: frames may be negative, and kParamOriginalFrameRange's
+    // default (INT_MIN, INT_MAX) means "not set by the host" (GenericReader getSequenceTimeDomainInternal()), so their
+    // range and display range must be the whole int range. Every reader has the five, every writer the first two.
+    static const struct { const char* name; int value; } kWholeIntRange[] = {
+        { kOfxParamPropMin, INT_MIN }, { kOfxParamPropMax, INT_MAX },
+        { kOfxParamPropDisplayMin, INT_MIN }, { kOfxParamPropDisplayMax, INT_MAX },
+    };
+    std::vector<const char*> frameParams;
+    if (c == kOfxImageEffectContextReader) {
+        frameParams = { "firstFrame", "lastFrame", "startingTime", "timeOffset", "originalFrameRange" };
+    } else if (c == kOfxImageEffectContextWriter) {
+        frameParams = { "firstFrame", "lastFrame" };
+    }
+    for (const char* name : frameParams) {
+        const std::map<std::string, Value>* pr = props(name);
+        if (!pr) {
+            fail("[%s] no frame param %s", c.c_str(), name);
+            continue;
+        }
+        for (const auto& r : kWholeIntRange) {
+            auto it = pr->find(r.name);
+            if ((it == pr->end()) || it->second.i.empty()
+                || !std::all_of(it->second.i.begin(), it->second.i.end(), [&r](int v) { return v == r.value; })) {
+                fail("[%s] the frame param %s: %s is not %d", c.c_str(), name, r.name, r.value);
             }
         }
     }

@@ -4591,8 +4591,6 @@ SeExprPluginFactory<simple>::describeInContext(ImageEffectDescriptor& desc,
             gHostSupportsDefaultCoordinateSystem = false; // no multithread here, see kParamDefaultsNormalised
         }
         param->setDefault(0., 0.);
-        param->setRange(-DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX);
-        param->setDisplayRange(-DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX);
         param->setIncrement(1.);
         param->setHint("Coordinates of the bottom left corner of the size rectangle.");
         param->setDigits(0);
@@ -4663,7 +4661,6 @@ SeExprPluginFactory<simple>::describeInContext(ImageEffectDescriptor& desc,
             param->setHint(kParamDoubleHint + istr);
             param->setAnimates(true);
             // param->setIsSecretAndDisabled(true); // done in the plugin constructor
-            param->setRange(-DBL_MAX, DBL_MAX);
             param->setDisplayRange(-1000., 1000.);
             param->setDoubleType(eDoubleTypePlain);
             param->setParent(*group);
@@ -4701,8 +4698,6 @@ SeExprPluginFactory<simple>::describeInContext(ImageEffectDescriptor& desc,
             param->setLabel(kParamDouble2DLabel + istr);
             param->setHint(kParamDouble2DHint + istr);
             param->setAnimates(true);
-            param->setRange(-DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX);
-            param->setDisplayRange(-DBL_MAX, -DBL_MAX, DBL_MAX, DBL_MAX);
             // param->setIsSecretAndDisabled(true); // done in the plugin constructor
             param->setDoubleType(eDoubleTypeXYAbsolute);
             bool hostHasNativeOverlayForPosition = param->getHostHasNativeOverlayHandle();

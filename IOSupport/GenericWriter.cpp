@@ -52,6 +52,13 @@
 #include "GenericOCIO.h"
 #endif
 
+// The frame params (first/last frame, ...) get their INT_MIN..INT_MAX range and display range from the Support
+// library (the spec's defaults): frames may be negative, and Resolve clamps a param without a range to 0..0. A stale
+// openfx would silently lose them, also in the per-plug-in Makefile builds, which compile no guarded SupportExt file.
+#ifndef OFXS_SUPPORT_HAS_SPEC_PARAM_DEFAULTS
+#error "openfx Support must set the spec's default param ranges (OFXS_SUPPORT_HAS_SPEC_PARAM_DEFAULTS, openfx 96a53ac4)"
+#endif
+
 #ifdef OFX_IO_USING_OCIO
 namespace OCIO = OCIO_NAMESPACE;
 #endif
@@ -3058,8 +3065,6 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamFirstFrame);
         param->setLabel(kParamFirstFrameLabel);
-        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
-        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setAnimates(true);
         if (page) {
@@ -3071,8 +3076,6 @@ GenericWriterDescribeInContextBegin(ImageEffectDescriptor& desc,
     {
         IntParamDescriptor* param = desc.defineIntParam(kParamLastFrame);
         param->setLabel(kParamLastFrameLabel);
-        param->setRange(INT_MIN, INT_MAX); // frames may be negative; Resolve requires range and display range
-        param->setDisplayRange(INT_MIN, INT_MAX); // no slider in Natron (as before)
         // param->setIsSecretAndDisabled(true); // done in the plugin constructor
         param->setAnimates(true);
         if (page) {
