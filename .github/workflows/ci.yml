@@ -3,10 +3,9 @@ name: Continuous Integration
 # Per push/PR: exactly three full CMake builds + tests (macOS/MacPorts, Linux, Windows/MSYS2 UCRT64): Release, C++17
 # (Natron's Qt5 builds); and the sanitizer tests, on Linux (linux-sanitizers, in parallel with the others). Extra
 # variants (Debug builds with C++20, Natron's Qt6 builds, also with CMake, and their tests) only run weekly or on demand.
-# Every build, test and dependency build uses CMake (and ctest). The Makefiles stay buildable (Natron's RB-2.6
-# build-plugins.sh uses them): a weekly Linux step only checks that they still build the plug-ins. Natron's Linux
-# testing bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes, weekly and on demand, not
-# for pull requests.
+# Every build, test and dependency build uses CMake (and ctest), openfx-io's only build system. Natron's Linux testing
+# bundle (linux-natron: Ubuntu 24.04, with its own FFmpeg build) is built on pushes, weekly and on demand, not for pull
+# requests.
 #
 # Weekly run (Saturdays): the jobs whose upstream moves (linux: Ubuntu 26.04's updates and runner image; windows:
 # MSYS2 UCRT64, a rolling distribution; macos: MacPorts, updated by "port selfupdate") run every week, even if master
@@ -243,12 +242,6 @@ jobs:
         # ctest --output-on-failure hides the output of the passing tests: list what they skipped (#309)
         if: ${{ !cancelled() }}
         run: bash tests/ctest_skips.sh build build-debug
-      - name: Build (release, Makefiles)
-        # The Makefiles are not CI's build, but Natron's RB-2.6 build-plugins.sh still uses them: check that they build
-        # the plug-ins (only, without the tests), with the compiler's default C++ standard (no -std= in CXX), and
-        # nothing else. Weekly and on demand only, on Linux.
-        if: env.EXTRA_VARIANTS == 'true'
-        run: make -j4 CONFIG=release SEEXPR_HOME=$PWD/SeExprBuild
       - name: Generate testing bundle
         run: |
           # A self-contained bundle for testing on Ubuntu 26.04 (Natron's CI uses linux-natron's, for Ubuntu 24.04). It
@@ -567,8 +560,8 @@ jobs:
           port installed
       - name: Target the runner's macOS
         # CI bundles aren't shipped: target the runner's macOS (e.g. 15.0 on macos-15), for the later steps (SeExpr,
-        # CMake, the load check). Release bundles target macOS 14.0 (the default of Makefile.master and
-        # CMakeLists.txt) and are built on macOS 14. Trade-off: CI no longer catches uses of APIs newer than macOS 14;
+        # CMake, the load check). Release bundles target macOS 14.0 (the default of CMakeLists.txt)
+        # and are built on macOS 14. Trade-off: CI no longer catches uses of APIs newer than macOS 14;
         # only the release builds on macOS 14 do.
         run: echo "MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0" >> "$GITHUB_ENV"
       - name: Prepare the SeExpr prefix
@@ -592,8 +585,8 @@ jobs:
       - name: Build (release, C++17, CMake)
         run: |
           export PATH=/opt/local/bin:/opt/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
-          # MacPorts' cmake, the system (Xcode) clang; OFX_DEPLOY_BUNDLES: osxDeploy.sh at install, as the Makefiles do
-          # for release builds. The tests that link ReadOIIO build its RAW support, as the bundle (IO_TESTS_WITH_LIBRAW).
+          # MacPorts' cmake, the system (Xcode) clang; OFX_DEPLOY_BUNDLES: osxDeploy.sh at install, as for release
+          # builds. The tests that link ReadOIIO build its RAW support, as the bundle (IO_TESTS_WITH_LIBRAW).
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOFX_IO_REQUIRE_ALL=ON -DCMAKE_CXX_COMPILER=/usr/bin/clang++ -DOFX_CXX_STANDARD=17 \
             -DSEEXPR_HOME=$SEEXPR_HOME -DFFMPEG_PKG_CONFIG_PATH="$FFMPEG_PKG_CONFIG_PATH" -DOFX_DEPLOY_BUNDLES=ON \
             -DCMAKE_INSTALL_PREFIX=$PWD -DPLUGIN_INSTALLDIR=Bundle -DIO_HOSTDEMO_TESTS=ON -DPython_EXECUTABLE=/opt/local/bin/python3.11

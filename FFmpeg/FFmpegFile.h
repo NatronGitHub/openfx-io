@@ -60,8 +60,8 @@ extern "C" {
 }
 
 // FFmpeg 8.0.1 or later. First, the versions of the libraries in the n8.0 release (their libavcodec/version.h,
-// libavformat/version.h, libavutil/version.h and libswscale/version.h). CMakeLists.txt and Makefile.master check
-// the same versions with pkg-config.
+// libavformat/version.h, libavutil/version.h and libswscale/version.h). CMakeLists.txt checks the
+// same versions with pkg-config.
 #if (LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)) || (LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(62, 3, 100)) \
     || (LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 8, 100)) || (LIBSWSCALE_VERSION_INT < AV_VERSION_INT(9, 1, 100))
 #error "The FFmpeg plug-ins require FFmpeg 8.0.1 or later (libavcodec 62.11.100, libavformat 62.3.100, libavutil 60.8.100, libswscale 9.1.100)"

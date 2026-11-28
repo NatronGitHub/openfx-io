@@ -54,7 +54,7 @@
 
 // The frame params (first/last frame, ...) get their INT_MIN..INT_MAX range and display range from the Support
 // library (the spec's defaults): frames may be negative, and Resolve clamps a param without a range to 0..0. A stale
-// openfx would silently lose them, also in the per-plug-in Makefile builds, which compile no guarded SupportExt file.
+// openfx would silently lose them.
 #ifndef OFXS_SUPPORT_HAS_SPEC_PARAM_DEFAULTS
 #error "openfx Support must set the spec's default param ranges (OFXS_SUPPORT_HAS_SPEC_PARAM_DEFAULTS, openfx 96a53ac4)"
 #endif

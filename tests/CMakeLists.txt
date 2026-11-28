@@ -1,29 +1,29 @@
-# The tests of tests/Makefile, as ctest tests of the CMake build (add_subdirectory(tests) from the top-level
-# CMakeLists.txt, with BUILD_TESTING): the same programs, sources, defines and flags, and the same runs, one ctest test
-# per run (test-<Makefile target>[-<variant>]). They need the libraries of the plug-ins they link (the groups of
-# _io_groups) and use this build's compiler, C++ standard (OFX_CXX_STANDARD) and FFmpeg (FFMPEG_PKG_CONFIG_PATH).
+# The tests of tests/, as ctest tests of the CMake build (add_subdirectory(tests) from the top-level CMakeLists.txt,
+# with BUILD_TESTING), one ctest test per run (test-<name>[-<variant>]). They need the libraries of the plug-ins they
+# link (the groups of _io_groups) and use this build's compiler, C++ standard (OFX_CXX_STANDARD) and FFmpeg
+# (FFMPEG_PKG_CONFIG_PATH).
 # The programs are built in build/tests, by the default target; they run there (their output files too).
 #
-# Like tests/Makefile, the build type doesn't apply to the test programs: -O0 -g for the tests that link the plug-ins,
+# The build type doesn't apply to the test programs: -O0 -g for the tests that link the plug-ins,
 # -O2 -g -Wall for the others, and assert() is enabled (no NDEBUG, no DEBUG).
 #
 # Options:
 #   IO_TESTS_WITH_LIBRAW  the tests that link ReadOIIO also build its RAW support (OFX_IO_USING_LIBRAW), when the bundle
-#                         has it (as tests/Makefile's WITH_LIBRAW=1); default ON
+#                         has it; default ON
 #   IO_TESTS_TIMEOUT      time limit of each test, in seconds (test-ffmpeg: twice as much); default 1800
-#   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim (tests/Makefile's FUZZ_OPS); default 2000
-#   IO_TESTS_SANITIZERS   also build and run the sanitizer variants that tests/Makefile's `make test` doesn't run (the
-#                         tests registered under if(IO_TESTS_SANITIZERS ...) below): test-readffmpeg-views-concurrent-tsan,
+#   IO_TESTS_FUZZ_OPS     operations of each short fuzz run of test-ocio-anim; default 2000
+#   IO_TESTS_SANITIZERS   also build and run the sanitizer variants (the tests registered under
+#                         if(IO_TESTS_SANITIZERS ...) below): test-readffmpeg-views-concurrent-tsan,
 #                         test-writeffmpeg-codec-edit-during-begin-tsan, test-ocio-processor-cache[-renders]-tsan,
 #                         test-oiio-threads-tsan, test-oiio-layer-menu-tsan, test-ofx14-scan-asan[-full],
 #                         test-exr[-multiplanar]-tsan, test-exr[-multiplanar]-ubsan, test-exr-tsan-debug,
 #                         test-reader-hooks-tsan-debug (needs a compiler with -fsanitize=thread,undefined; not on MS
 #                         Windows: MinGW has neither); default OFF
-# (tests/Makefile's bench-exr is not a test: run it with make.)
+# bench-exr is not a test: cmake --build <dir> --target bench-exr.
 
 option(IO_TESTS_WITH_LIBRAW "Build ReadOIIO's RAW support in the tests that link it, when the bundle has it" ON)
 set(IO_TESTS_FUZZ_OPS 2000 CACHE STRING "Operations of each short fuzz run of test-ocio-anim")
-option(IO_TESTS_SANITIZERS "Also build and run the ThreadSanitizer, UBSan and ASan variants that `make test` doesn't run" OFF)
+option(IO_TESTS_SANITIZERS "Also build and run the ThreadSanitizer, UBSan and ASan variants of the tests" OFF)
 
 set(S "${PROJECT_SOURCE_DIR}")
 set(T "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -53,8 +53,8 @@ if(_io_t_libraw AND "${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIB
   set(_io_libraw_openmp ON)
 endif()
 
-# The build type's flags (e.g. Release's -O3 -DNDEBUG) don't apply in this directory: each program gets those of
-# tests/Makefile
+# The build type's flags (e.g. Release's -O3 -DNDEBUG) don't apply in this directory: each program gets its own
+# (io_test_program)
 foreach(_c DEBUG RELEASE RELWITHDEBINFO MINSIZEREL ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
   string(TOUPPER "${_c}" _c)
   set(CMAKE_CXX_FLAGS_${_c} "")
@@ -63,7 +63,7 @@ endforeach()
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-# AddressSanitizer, except with MinGW (MS Windows), which doesn't have it (tests/Makefile's OCIO_FT_ASAN)
+# AddressSanitizer, except with MinGW (MS Windows), which doesn't have it
 if(WIN32)
   set(_io_asan "")
 else()
@@ -79,7 +79,7 @@ else()
                     -fno-sanitize-recover=float-cast-overflow,signed-integer-overflow)
 endif()
 
-# the OFX C++ Support library (host-facing plug-in runtime), as tests/Makefile's OFX_SUPPORT: ofxsDrawContextOpenGL.cpp
+# the OFX C++ Support library (host-facing plug-in runtime): ofxsDrawContextOpenGL.cpp
 # (DrawArgs::isOpenGLContextCurrent, used by SupportExt's OverlayDraw) loads OpenGL at run time
 set(_io_ofx_support
   ${S}/openfx/Support/Library/ofxsCore.cpp ${S}/openfx/Support/Library/ofxsImageEffect.cpp
@@ -88,7 +88,7 @@ set(_io_ofx_support
   ${S}/openfx/Support/Library/ofxsProperty.cpp ${S}/openfx/Support/Library/ofxsPropertyValidation.cpp
   ${S}/openfx/Support/Library/ofxsDrawContextOpenGL.cpp)
 
-# the libraries of the OFX tests (tests/Makefile's OFX_CXXFLAGS and OFX_LIBS): OpenColorIO, OpenImageIO, FFmpeg (and
+# the libraries of the OFX tests: OpenColorIO, OpenImageIO, FFmpeg (and
 # OpenEXR: IOSupport/ExrThreads.cpp includes <IlmThreadPool.h>), the plug-ins' defines and in-repo include paths
 if(_io_t_ocio AND _io_t_oiio AND _io_t_ffmpeg)
   add_library(io_tests_ofx INTERFACE)
@@ -106,7 +106,7 @@ if(_io_t_ocio AND _io_t_oiio AND _io_t_ffmpeg)
     target_compile_definitions(io_tests_ofx INTERFACE OFX_IO_USING_LIBRAW)
     target_link_libraries(io_tests_ofx INTERFACE PkgConfig::LIBRAW)
   endif()
-  # Work around a oneTBB 2023.2 exit crash (tests/Makefile's TBBMALLOC_LIBS): libtbb dlopen()s libtbbmalloc and frees
+  # Work around a oneTBB 2023.2 exit crash: libtbb dlopen()s libtbbmalloc and frees
   # memory through it from a static destructor at exit, after it was unloaded, in programs that link TBB (through
   # OpenImageIO) but never use it. Linking libtbbmalloc keeps it loaded. Only if it is installed next to libtbb.
   if(PKG_CONFIG_FOUND)
@@ -122,8 +122,8 @@ endif()
 
 # io_test_program(<name> [OFX] [THREADS] SOURCES <file>... [DEFINITIONS <def>...] [INCLUDES <dir>...]
 #                 [SANITIZE <flag>...] [LIBS <lib>...])
-# A test program, built from its sources only (as tests/Makefile, which compiles every source with the flags of the
-# program). OFX: one that links the plug-ins (OFX_SUPPORT, io_tests_ofx, -O0 -g); otherwise -O2 -g -Wall.
+# A test program, built from its sources only, each compiled with the flags of the
+# program. OFX: one that links the plug-ins (_io_ofx_support, io_tests_ofx, -O0 -g); otherwise -O2 -g -Wall.
 # THREADS: -pthread. SANITIZE: compile and link flags.
 function(io_test_program name)
   cmake_parse_arguments(PARSE_ARGV 1 P "OFX;THREADS" "" "SOURCES;DEFINITIONS;INCLUDES;SANITIZE;LIBS")
@@ -228,9 +228,9 @@ io_test_program(sequence_parsing_utf8_test SOURCES ${T}/sequence_parsing_utf8_te
                 SANITIZE ${_io_sp_ubsan})
 io_test(test-sequence-parsing-utf8 COMMAND $<TARGET_FILE:sequence_parsing_utf8_test>)
 
-# ---- the tests that link the plug-ins (tests/Makefile's OFX_PKGS: OpenColorIO, OpenImageIO, FFmpeg)
+# ---- the tests that link the plug-ins (OpenColorIO, OpenImageIO, FFmpeg)
 if(TARGET io_tests_ofx)
-  # the reader/writer plug-ins and their in-repo dependencies (tests/Makefile's PLUGIN_SRCS)
+  # the reader/writer plug-ins and their in-repo dependencies
   set(_io_plugin_srcs
     ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/WriteFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp ${S}/FFmpeg/PixelFormat.cpp
     ${S}/OIIO/ReadOIIO.cpp ${S}/OIIO/WriteOIIO.cpp ${S}/OIIO/OIIOGlobal.cpp
@@ -244,8 +244,8 @@ if(TARGET io_tests_ofx)
     ${S}/IOSupport/GenericReader.cpp ${S}/IOSupport/ExrThreads.cpp ${S}/IOSupport/GenericOCIO.cpp ${S}/IOSupport/SequenceParsing/SequenceParsing.cpp
     ${S}/SupportExt/ofxsMultiPlane.cpp ${S}/SupportExt/ofxsThreadSuite.cpp
     ${S}/SupportExt/ofxsFileOpen.cpp ${S}/SupportExt/ofxsLut.cpp)
-  # OpenGL render support, as in ../Makefile.master (OCIOPluginBase.cpp needs it): OCIO_CDL_CXXFLAGS and the
-  # OpenGL sources of OCIO_CDL_SRCS; OCIO_CDL_LIBS: OpenGL, and libdl (glad's loaders use dlopen(), in libdl before
+  # OpenGL render support, as in the bundle (OCIOPluginBase.cpp needs it): its define, include paths and OpenGL
+  # sources; libraries: OpenGL, and libdl (glad's loaders use dlopen(), in libdl before
   # glibc 2.34)
   set(_io_gl_defs OFX_SUPPORTS_OPENGLRENDER)
   set(_io_gl_incs ${S}/OCIO ${S}/SupportExt/glad ${S}/openfx/Support/Plugins/include)
@@ -489,7 +489,7 @@ if(TARGET io_tests_ofx)
                   DEFINITIONS ${_io_rw_defs} INCLUDES ${S}/PFM ${S}/PNG SANITIZE ${_io_rw_sanitize} LIBS ${_io_rw_libs})
   io_test(test-reader-window DIR "${B}/.reader_window" ENV "${_io_ocio_env}" "${_io_asan_env}"
           COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window")
-  # the 2-part EXR test, in a Natron-like host (tests/Makefile's second run of reader_window_test)
+  # the 2-part EXR test, in a Natron-like host (the second run of reader_window_test)
   io_test(test-reader-window-multiplane DIR "${B}/.reader_window_multiplane" ENV "${_io_ocio_env}" "${_io_asan_env}"
           READER_WINDOW_MULTIPLANE=1 COMMAND $<TARGET_FILE:reader_window_test> "${B}/.reader_window_multiplane")
 
@@ -540,7 +540,7 @@ if(TARGET io_tests_ofx)
       set_target_properties(${name} PROPERTIES CXX_STANDARD ${OFX_CXX_STANDARD} CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     endfunction()
     io_hostdemo_program(reader_window_host ${T}/hostdemo/reader_window.cpp)
-    # the bundle (tests/Makefile's RW_BUNDLE_BINARY), with the flags of the tests that link the plug-ins
+    # the bundle, with the flags of the tests that link the plug-ins
     set(_io_rw_bundle "${B}/.reader_window_host/plugins/ReaderWindow.ofx.bundle/Contents/${ARCHDIR}")
     add_library(io_reader_window_plugins MODULE ${_io_rw_srcs} ${S}/FFmpeg/ReadFFmpeg.cpp ${S}/FFmpeg/FFmpegFile.cpp
                 ${S}/FFmpeg/PixelFormat.cpp ${_io_reader_srcs} ${_io_ofx_support})
@@ -613,8 +613,19 @@ if(TARGET io_tests_ofx)
     io_test(test-exr DIR "${B}/.exr_read" ENV "${_io_ocio_env}" COMMAND $<TARGET_FILE:exr_read_test> "${B}/.exr_read")
     io_test(test-exr-multiplanar DIR "${B}/.exr_read_multiplanar" ENV "${_io_ocio_env}"
             COMMAND $<TARGET_FILE:exr_read_test> --multiplanar "${B}/.exr_read_multiplanar")
+    # bench-exr (not a test, not built by default: cmake --build <dir> --target bench-exr): ReadEXR's render time on
+    # 2048x1556 RGBA half files, ZIP, PIZ and DWAA (EXR_THREADS: OpenEXR's thread count). exr_read_test, optimized
+    # (-O2 after io_test_program's -O0: the last one wins), as the plug-in is in a release build.
+    io_test_program(exr_read_bench OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO)
+    target_compile_options(exr_read_bench PRIVATE -O2)
+    set_target_properties(exr_read_bench PROPERTIES EXCLUDE_FROM_ALL ON)
+    add_custom_target(bench-exr
+      COMMAND "${CMAKE_COMMAND}" -E rm -rf "${B}/.exr_bench"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${B}/.exr_bench"
+      COMMAND "${CMAKE_COMMAND}" -E env "${_io_ocio_env}" $<TARGET_FILE:exr_read_bench> --bench "${B}/.exr_bench"
+      DEPENDS exr_read_bench WORKING_DIRECTORY "${B}" USES_TERMINAL VERBATIM)
 
-    # test-ofx14 and test-ofx14-scan: every plug-in of IO.ofx (the sources of ../IO/Makefile; the SeExpr and PNG ones
+    # test-ofx14 and test-ofx14-scan: every plug-in of IO.ofx (the sources of the IO target; the SeExpr and PNG ones
     # if the bundle has them), in the OFX 1.4-only host of ofx_test_host.h, and in the full host, with OpenGL render
     # support
     set(_io_ofx14_srcs ${T}/ofx14_host_test.cpp
@@ -700,7 +711,7 @@ if(TARGET io_tests_ofx)
               "${_io_tsan_env}"
               COMMAND $<TARGET_FILE:exr_read_test_tsan> --multiplanar "${B}/.exr_read_multiplanar_tsan")
       # test-exr-ubsan: with UndefinedBehaviorSanitizer, stopping at the first error, with an allocator that fills new
-      # memory with a pattern (tests/Makefile's test-exr-ubsan)
+      # memory with a pattern
       io_test_program(exr_read_test_ubsan OFX THREADS SOURCES ${_io_exr_srcs} INCLUDES ${S}/EXR ${S}/OIIO
                       SANITIZE -fsanitize=undefined,float-cast-overflow -fno-sanitize=pointer-overflow -fno-sanitize-recover=all)
       io_test(test-exr-ubsan DIR "${B}/.exr_read_ubsan" ENV "${_io_ocio_env}" MallocPreScribble=1 MallocScribble=1

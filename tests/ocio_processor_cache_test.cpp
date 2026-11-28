@@ -8,7 +8,7 @@
  *    frames, another at even ones), and 4 threads render the instance at alternating frames, each its own row of the
  *    output image. Every row must have the value of its frame. Before the fix, OCIODisplay, OCIOFileTransform and
  *    OCIOLogConvert copied the cached processor after releasing its mutex, while another thread replaced it: a data
- *    race (reported by ThreadSanitizer: make test-ocio-processor-cache-tsan) that can also apply the processor of the
+ *    race (reported by ThreadSanitizer: ctest test-ocio-processor-cache-tsan) that can also apply the processor of the
  *    other frame. (OCIOLogConvert replaced it at every render: its key was never set.) Also, the main thread changes
  *    the OCIO config file param of OCIOLogConvert, OCIOColorSpace and OCIODisplay (GenericOCIO, #275) while 3 threads
  *    render: their config was reset and reloaded without a lock. OCIOColorSpace is also rendered with its Inverse
@@ -29,7 +29,7 @@
  *    rewritten with a slope of 3, and the host purges the caches (kOfxActionPurgeCaches): the next render must use the
  *    new slope. Before the fix, none of them handled the action, and GenericOCIO::purgeCaches() (the readers and
  *    writers) cleared OCIO's file caches but not the processor caches of its config and its instance. Then the main
- *    thread purges the caches while 3 threads render (make test-ocio-processor-cache-tsan checks the data races).
+ *    thread purges the caches while 3 threads render (ctest test-ocio-processor-cache-tsan checks the data races).
  * 5. An OCIO 2 view (#354): the display "none" of the configs has the shared view Film, whose view transform scales by
  *    4. OCIODisplay must render it. (Its View menu is only built in Natron, which this host is not.)
  *

@@ -45,7 +45,7 @@
  * each plug-in renders four times, with the images of every RowLayout of ofx_test_host.h: packed bottom-up rows, padded
  * rows, top-down rows (a negative kOfxImagePropRowBytes) and padded top-down rows. Each render must give the same
  * output image (or the same file, for a writer) as the packed one, and leave the padding of the rows untouched.
- * `make test-ofx14-rowbytes` runs it with AddressSanitizer and UBSan's pointer-overflow check.
+ * `ctest -R test-ofx14-rowbytes` runs it with AddressSanitizer and UBSan's pointer-overflow check.
  *
  * Usage: ofx14_host_test [--full] [--scan] [--only <plug-in identifier>] <work directory>
  *   --full: the same tests in the full host (the default mode of ofx_test_host.h), for comparison. In that mode, a

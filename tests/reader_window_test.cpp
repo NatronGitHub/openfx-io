@@ -19,7 +19,7 @@
 /*
  * reader_window_test — render windows and render scales of ReadOIIO, ReadPFM and ReadPNG (issues #160, #163, #232,
  * #234, #371), driven by the in-process host (ofx_test_host.h). Built with AddressSanitizer and UBSan's
- * signed-integer-overflow check (make test-reader-window), and the output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it
+ * signed-integer-overflow check (ctest test-reader-window), and the output image is between two guard pages (PROT_NONE), flush against one of them, so that a write out of it
  * crashes.
  *
  *  - render scale 1/2: GenericReader decodes a full-resolution window into its buffer, then downscales it; decode()
@@ -56,7 +56,7 @@
  *    windows are written, alpha is 1 in the image and 0 in the black (Opaque files); ReadOIIO also while the TIFF
  *    file is overwritten in place (#242): the renders may fail, but must not crash or write out of their windows
  *
- * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/Makefile, and swap.ocio in its directory)
+ * Usage: reader_window_test <scratch dir>   (needs $OCIO, see tests/CMakeLists.txt, and swap.ocio in its directory)
  *        $READER_WINDOW_ONLY: run only the tests whose title contains it (e.g. "ReadPFM", "rewrite", "scale 0.5")
  *        $READER_WINDOW_MULTIPLANE=1: only the 2-part EXR test, in a Natron-like host (dynamic choices, plane suite)
  *        $READER_WINDOW_DUMP: a directory where the render of the whole RoD of each test is written (raw RGBA float)

@@ -55,7 +55,7 @@
  * reader instead fills the image with known content (a function of x, y and the channel)
  * over frame bounds that have an odd size and an odd offset.
  *
- * Usage: reader_hooks_test <scratch file prefix>   (needs $OCIO, see tests/Makefile)
+ * Usage: reader_hooks_test <scratch file prefix>   (needs $OCIO, see tests/CMakeLists.txt)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"

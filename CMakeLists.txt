@@ -17,9 +17,8 @@
 # along with openfx-io.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-# CMake build of the IO.ofx bundle. It builds what IO/Makefile builds (same plug-ins, sources, defines, include
-# paths and resources), except that a group of plug-ins is left out when its libraries are not found (unless
-# OFX_IO_REQUIRE_ALL is ON).
+# CMake build of the IO.ofx bundle, openfx-io's only build system. A group of plug-ins is left out when its libraries
+# are not found (unless OFX_IO_REQUIRE_ALL is ON).
 #
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
 #   cmake --build build
@@ -28,9 +27,8 @@
 # The bundle is also assembled in build/Plugins/IO.ofx.bundle. Options:
 #   SEEXPR_HOME             SeExpr 2.11 prefix (SeExpr 1 API: include/SeExpression.h, lib/libSeExpr)
 #   FFMPEG_PKG_CONFIG_PATH  pkg-config directory of the FFmpeg to use (e.g. /opt/local/libexec/ffmpeg8/lib/pkgconfig)
-#   OFX_DEPLOY_BUNDLES      install step that makes the bundle self-contained (macOS: osxDeploy.sh, like the
-#                           Makefile's release builds)
-#   BUILD_TESTING           build the tests of tests/ (tests/CMakeLists.txt, the programs of tests/Makefile), and run
+#   OFX_DEPLOY_BUNDLES      install step that makes the bundle self-contained (macOS: osxDeploy.sh)
+#   BUILD_TESTING           build the tests of tests/ (tests/CMakeLists.txt), and run
 #                           them with ctest; IO_TESTS_WITH_LIBRAW, IO_TESTS_FUZZ_OPS, IO_TESTS_SANITIZERS: see there
 #   OFX_IO_WITH_<group>     build the group if its libraries are found (default ON): OCIO EXR FFMPEG OIIO LIBRAW
 #                           PNG SEEXPR RUNSCRIPT
@@ -122,7 +120,7 @@ endforeach()
 # silently building a bundle without it
 option(OFX_IO_REQUIRE_ALL "Fail if the libraries of a plug-in group that is not disabled (OFX_IO_WITH_<group>) are not found" OFF)
 
-# Makefile.master links -lGL (Linux, FreeBSD), -weak_framework OpenGL, -lopengl32: the legacy libGL, not GLVND's
+# Link -lGL (Linux, FreeBSD), -weak_framework OpenGL, -lopengl32: the legacy libGL, not GLVND's
 # libOpenGL + libGLX
 if(NOT DEFINED OpenGL_GL_PREFERENCE)
   set(OpenGL_GL_PREFERENCE LEGACY)
@@ -234,7 +232,7 @@ else()
   endif()
 endif()
 
-# FFmpeg: PkgConfig::FFMPEG. FFMPEG_PKG_CONFIG_PATH selects another FFmpeg, as in Makefile.master; the imported
+# FFmpeg: PkgConfig::FFMPEG. FFMPEG_PKG_CONFIG_PATH selects another FFmpeg; the imported
 # target links the libraries by full path, so another -L on the link line cannot pick a different FFmpeg.
 set(FFMPEG_PKG_CONFIG_PATH "" CACHE PATH
     "pkg-config directory of FFmpeg (e.g. /opt/local/libexec/ffmpeg8/lib/pkgconfig for MacPorts' ffmpeg8); empty: the default search path")
@@ -271,7 +269,7 @@ if(OFX_IO_WITH_FFMPEG AND NOT CMAKE_DISABLE_FIND_PACKAGE_FFmpeg AND PKG_CONFIG_F
   set(ENV{PKG_CONFIG_PATH} "${_io_saved_pkg_config_path}")
 endif()
 
-# macOS guard (Makefile.master): if OpenImageIO and the plug-ins link two different FFmpeg builds with the same
+# macOS guard: if OpenImageIO and the plug-ins link two different FFmpeg builds with the same
 # file name (e.g. MacPorts' ffmpeg8 in /opt/local/libexec/ffmpeg8 and Natron's ffmpeg in /opt/local/lib, both
 # libavcodec.62.dylib), osxDeploy.sh, which copies libraries by name, silently bundles only one of them. Fail instead.
 if(APPLE AND TARGET PkgConfig::FFMPEG AND TARGET OpenImageIO::OpenImageIO)
@@ -310,7 +308,7 @@ if(APPLE AND TARGET PkgConfig::FFMPEG AND TARGET OpenImageIO::OpenImageIO)
 endif()
 
 # SeExpr: the SeExpr 1 API of SeExpr 2.11 (SeExpression.h, libSeExpr), not SeExpr2 (SeExpr2/Expression.h).
-# SEEXPR_HOME is its prefix, as in Makefile.master; empty: CMake's default search paths.
+# SEEXPR_HOME is its prefix; empty: CMake's default search paths.
 set(SEEXPR_HOME "" CACHE PATH "SeExpr 2.11 prefix (include/SeExpression.h, lib/libSeExpr)")
 if(NOT "${SEEXPR_HOME}" STREQUAL "${_IO_SEEXPR_HOME}")
   unset(SEEXPR_INCLUDE_DIR CACHE)
@@ -340,7 +338,7 @@ ofx_target_filter_missing_includes(OpenColorIO::OpenColorIO OpenEXR::OpenEXR Ope
                                    PkgConfig::LIBRAW io_png PkgConfig::FFMPEG SeExpr::SeExpr)
 
 # ---------------------------------------------------------------------------------------------------------------
-# The IO.ofx bundle (IO/Makefile)
+# The IO.ofx bundle
 
 # Install rpath (Linux, FreeBSD), which the build-tree IO.ofx has too (OFX_PLUGIN_BUILD_WITH_INSTALL_RPATH):
 # add_ofx_plugin's $ORIGIN/../../Libraries, then the directories of the linked libraries
@@ -379,15 +377,14 @@ if(_io_extra_rpath)
 endif()
 # (add_ofx_plugin links openfx::Api only)
 target_link_libraries(IO PRIVATE openfx::Support)
-# no IO_EXPORTS define, which CMake adds to modules (the Makefiles have none; OfxExport does the exporting)
+# no IO_EXPORTS define, which CMake adds to modules (OfxExport does the exporting)
 set_target_properties(IO PROPERTIES DEFINE_SYMBOL "")
 
-# Include paths of IO/Makefile and Makefile.master (which also has openfx/Support/Plugins/include, for
-# ofxsProcessing.H)
+# Include paths: the plug-in directories, and openfx/Support/Plugins/include (for ofxsProcessing.H)
 target_include_directories(IO PRIVATE
   EXR FFmpeg OIIO PFM OCIO SeExpr PNG "${OPENFX_PATH}/Support/Plugins/include")
 
-# Always built: SupportExt, IOSupport and PFM (IO/Makefile's PLUGINOBJECTS and OCIO_OPENGL_OBJS).
+# Always built: SupportExt, IOSupport and PFM.
 # Resources: ofx_plugin_resources(), recording the names, so that the resources of groups that are no longer
 # built are removed from the bundle in the build tree (below)
 set(_io_resource_names "")
@@ -399,10 +396,8 @@ macro(io_resources)
   endforeach()
 endmacro()
 
-# The plug-in sources are added at the end, in the order of IO/Makefile's PLUGINOBJECTS, which is the order of the
-# plug-ins in the bundle.
-# SupportExt: IO/Makefile's objects (ofxsGenerator and the text renderer are in IO/Makefile; the OpenGL ones, in
-# its OCIO_OPENGL_OBJS, come with OpenColorIO below)
+# The plug-in sources are added at the end, in the order of the plug-ins in the bundle.
+# SupportExt (ofxsGenerator and the text renderer included; the OpenGL ones come with OpenColorIO below)
 supportext_add_sources(IO COMPONENTS THREADS FILEOPEN MULTIPLANE GENERATOR TEXT)
 # GenericReader, GenericWriter, GenericOCIO, SequenceParsing; with OpenColorIO: OFX_IO_USING_OCIO and GenericOCIO's
 # OpenGL rendering (+ SupportExt's OPENGL)
@@ -414,7 +409,7 @@ endif()
 foreach(_g SEEXPR OCIO EXR FFMPEG OIIO PNG RUNSCRIPT)
   set(_io_src_${_g} "")
 endforeach()
-# OpenGL, also without the OpenGL sources, linked as openfx's Makefile.master does (openfx#171): weak-linked on
+# OpenGL, also without the OpenGL sources, linked as openfx's plug-ins are (openfx#171): weak-linked on
 # macOS (-weak_framework OpenGL; also weak if OpenGL::GL adds -framework OpenGL), and --as-needed on ELF
 # platforms (-Wl,--as-needed -lGL), so that the bundle loads on a machine without OpenGL when it makes no OpenGL
 # call. LINK_OPTIONS come before the libraries on the link line: --as-needed applies to all of the IO target's
@@ -446,7 +441,7 @@ endmacro()
 if(OFX_IO_WITH_OCIO AND TARGET OpenColorIO::OpenColorIO)
   string(APPEND _io_groups " OCIO")
   # OFX_IO_USING_OCIO, OpenColorIO::OpenColorIO and the OpenGL sources (SupportExt's OPENGL: glad, gladegl,
-  # ofxsOGLUtilities, as IO/Makefile's OCIO_OPENGL_OBJS): from ioSupport_add_sources(IO ALL) above
+  # ofxsOGLUtilities): from ioSupport_add_sources(IO ALL) above
   set(_io_src_OCIO
     OCIO/OCIOPluginBase.cpp OCIO/OCIOColorSpace.cpp OCIO/OCIODisplay.cpp OCIO/OCIOCDLTransform.cpp
     OCIO/OCIOFileTransform.cpp OCIO/OCIOLogConvert.cpp OCIO/OCIOLookTransform.cpp)
@@ -488,7 +483,7 @@ if(OFX_IO_WITH_OIIO AND TARGET OpenImageIO::OpenImageIO)
   string(APPEND _io_groups " OIIO")
   # (OIIOText draws with ofxsPositionInteract.h)
   supportext_add_sources(IO COMPONENTS THREADS MULTIPLANE POSITION_INTERACT)
-  # OIIOGlobal.cpp includes <IlmThreadPool.h>: OpenEXR's include paths too, as in Makefile.master
+  # OIIOGlobal.cpp includes <IlmThreadPool.h>: OpenEXR's include paths too
   target_link_libraries(IO PRIVATE OpenImageIO::OpenImageIO $<TARGET_NAME_IF_EXISTS:OpenEXR::OpenEXR>)
   set(_io_src_OIIO OIIO/ReadOIIO.cpp OIIO/WriteOIIO.cpp OIIO/OIIOGlobal.cpp OIIO/OIIOText.cpp OIIO/OIIOResize.cpp)
   io_resources(
@@ -501,7 +496,7 @@ if(OFX_IO_WITH_OIIO AND TARGET OpenImageIO::OpenImageIO)
     target_compile_definitions(IO PRIVATE OFX_IO_USING_LIBRAW)
     target_link_libraries(IO PRIVATE PkgConfig::LIBRAW)
     # LibRaw's headers include <omp.h> when compiled with OpenMP (_OPENMP): link OpenMP only if libraw_r.pc
-    # asks for it (e.g. -fopenmp), as the Makefiles do; MacPorts' LibRaw does not.
+    # asks for it (e.g. -fopenmp); MacPorts' LibRaw does not.
     if("${LIBRAW_CFLAGS_OTHER};${LIBRAW_LDFLAGS_OTHER};${LIBRAW_LIBRARIES}" MATCHES "openmp|(^|;)-?l?gomp(;|$)|(^|;)-?l?omp(;|$)")
       ofx_target_openmp(IO)
     endif()
@@ -537,7 +532,7 @@ else()
   _io_not_built(SEEXPR "SeExpr(SeExpr 2.11, SEEXPR_HOME)")
 endif()
 
-# RunScript, on every OS, as in IO/Makefile (RunScriptWin32.cpp is empty except on MS Windows)
+# RunScript, on every OS (RunScriptWin32.cpp is empty except on MS Windows)
 if(OFX_IO_WITH_RUNSCRIPT)
   string(APPEND _io_groups " RunScript")
   target_include_directories(IO PRIVATE RunScript)
@@ -555,7 +550,7 @@ if(_io_src_EXR OR _io_src_OIIO)
   endif()
 endif()
 
-# IO/Makefile's PLUGINOBJECTS order
+# the order of the plug-ins in the bundle
 target_sources(IO PRIVATE
   ${_io_src_SEEXPR}
   ${_io_src_EXR} ${_io_src_FFMPEG} ${_io_src_OIIO}
@@ -596,9 +591,8 @@ ofx_deploy_bundle(IO)
 #   variables: run it after cmake --install;
 # - io-cmake-unknown-arch: configuring for a system without an OFX bundle folder (CMAKE_SYSTEM_NAME Generic) fails
 #   (cmake/OpenFXLocal.cmake, #106);
-# - test-*: the tests of tests/Makefile, built by CMake in build/tests with this build's compiler, C++ standard and
-#   FFmpeg, when the libraries they link were found (tests/CMakeLists.txt: the same programs, sources and flags as
-#   tests/Makefile, one ctest test per run of `make test`).
+# - test-*: the tests of tests/, built by CMake in build/tests with this build's compiler, C++ standard and FFmpeg,
+#   when the libraries they link were found (tests/CMakeLists.txt).
 option(BUILD_TESTING "Build and run the tests with ctest" ON)
 if(IO_HOSTDEMO_TESTS AND NOT BUILD_TESTING)
   message(FATAL_ERROR "IO_HOSTDEMO_TESTS needs BUILD_TESTING")
@@ -746,7 +740,7 @@ if(BUILD_TESTING)
   # io-cmake-unknown-arch: a configure for a system that OpenFX.cmake has no ARCHDIR for (Generic: "unknown-arch") stops
   # with an error, instead of installing the plug-ins into Contents/unknown-arch, where no host looks (#106). In an
   # empty build directory each time (tests/run_test.cmake, whose failure doesn't matter: the error message passes).
-  # Single-config generators only (Makefiles, Ninja): Xcode and Visual Studio have no Generic platform.
+  # Single-config generators only (Unix Makefiles, Ninja): Xcode and Visual Studio have no Generic platform.
   get_property(_io_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
   if(NOT _io_multi_config)
     set(_io_ua "${CMAKE_CURRENT_BINARY_DIR}/cmake-unknown-arch")
@@ -767,6 +761,6 @@ if(BUILD_TESTING)
     endif()
   endforeach()
 
-  # the tests of tests/Makefile, built and run by CMake and ctest (tests/CMakeLists.txt)
+  # the tests of tests/, built and run by CMake and ctest (tests/CMakeLists.txt)
   add_subdirectory(tests)
 endif()

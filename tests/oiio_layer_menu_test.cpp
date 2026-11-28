@@ -28,9 +28,9 @@
  * image has the files' pixels, and the menu has the layers of the last file. Then the same with the diffuse layer
  * selected, and isIdentity only: an identity on the diffuse plane. Before the fix, decodePlane() and
  * isIdentity() read the menu without its lock: the assert on the menu's size in decodePlane() may fail, and
- * ThreadSanitizer (make test-oiio-layer-menu-tsan) reports the data race.
+ * ThreadSanitizer (ctest test-oiio-layer-menu-tsan) reports the data race.
  *
- * Usage: oiio_layer_menu_test <scratch dir>   (needs $OCIO, see tests/Makefile)
+ * Usage: oiio_layer_menu_test <scratch dir>   (needs $OCIO, see tests/CMakeLists.txt)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
