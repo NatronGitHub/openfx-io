@@ -1113,9 +1113,7 @@ WriteOIIOPlugin::beginEncodeParts(void* user_data,
 
     switch (finalBitDepth) {
     case eTuttlePluginBitDepthAuto:
-        throwSuiteStatusException(kOfxStatErrUnknown);
-
-        return;
+        persistentErrorAndThrow(*this, "Unsupported bit depth (Auto)");
     case eTuttlePluginBitDepth8:
         oiioBitDepth = TypeDesc::UINT8;
         bitsPerSample = 8;

@@ -6419,6 +6419,113 @@ int testWriterInputConnect(const std::string& outFile)
     return failures;
 }
 
+// #473: the writers fail render and beginSequenceRender with kOfxStatFailed and a persistent message, the failure that
+// the spec lists for these actions ("kOfxStatFailed, something wrong, but no error code appropriate, plugin to post
+// message", ofxImageEffect.h). They returned kOfxStatErrImageFormat or kOfxStatErrFormat, which are not listed.
+// kOfxActionInstanceChanged too fails with kOfxStatFailed (ofxCore.h).
+int testWriterStatusCodes(const std::string& outFile)
+{
+    std::printf("==== Writers: render and beginSequenceRender fail with kOfxStatFailed and an error message (issue #473) ====\n");
+    int failures = 0;
+    auto expect = [&failures](bool cond, const std::string& what) {
+        std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
+        failures += cond ? 0 : 1;
+    };
+    {
+        // GenericWriter (WritePFM): a file extension that the writer does not support
+        const std::string file = outFile + ".i473.xyz";
+        WriterSession s;
+        if (s.create(file, 8, 4, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
+        msgClear(nullptr);
+        OfxStatus st = s.begin(1);
+        std::string error = persistentError();
+        expect((st == kOfxStatFailed) && (error.find("Unsupported file extension") != std::string::npos),
+               "WritePFM, unsupported extension: beginSequenceRender = " + std::to_string(st) + " (kOfxStatFailed = "
+                   + std::to_string(kOfxStatFailed) + "), error: \"" + error + "\"");
+        s.end(1);
+        msgClear(nullptr);
+        st = s.render(1);
+        error = persistentError();
+        expect((st == kOfxStatFailed) && (error.find("Unsupported file extension") != std::string::npos),
+               "WritePFM, unsupported extension: render = " + std::to_string(st) + ", error: \"" + error + "\"");
+        // (a user edit: the message is sent, not persistent)
+        {
+            std::lock_guard<std::mutex> lock(gMessagesMutex);
+            gMessages.clear();
+        }
+        st = s.instanceChanged(kOfxTypeParameter, kOfxImageEffectFileParamName);
+        std::string messages;
+        {
+            std::lock_guard<std::mutex> lock(gMessagesMutex);
+            messages = gMessages;
+        }
+        if (!messages.empty() && (messages.back() == '\n')) messages.pop_back();
+        expect((st == kOfxStatFailed) && (messages.find("Unsupported file extension") != std::string::npos),
+               "WritePFM, unsupported extension: instanceChanged on the file = " + std::to_string(st) + ", messages: \"" + messages + "\"");
+        std::remove(file.c_str());
+    }
+    {
+        // WriteFFmpeg: a frame whose pixel aspect ratio is not the one of the first frame
+        const std::string file = outFile + ".i473.mov";
+        std::remove(file.c_str());
+        const int N = 2;
+        WriterSession s;
+        if (s.create(file, 16, 16, N, WriterParams())) return failures + 1;
+        msgClear(nullptr);
+        OfxStatus st = s.begin(N);
+        expect(ok(st), "WriteFFmpeg: beginSequenceRender = " + std::to_string(st) + " (error: \"" + persistentError() + "\")");
+        st = s.render(1);
+        expect(ok(st), "WriteFFmpeg: render frame 1 = " + std::to_string(st) + " (error: \"" + persistentError() + "\")");
+        // (the Format Type is Project Format by default: the project, 16x16 pixels at a PAR of 2)
+        s.setProject({ 32., 16. }, { 0., 0. }, 2.);
+        msgClear(nullptr);
+        st = s.render(2);
+        const std::string error = persistentError();
+        expect((st == kOfxStatFailed) && (error.find("pixel aspect ratio") != std::string::npos),
+               "WriteFFmpeg, frame 2 at another pixel aspect ratio: render = " + std::to_string(st) + ", error: \"" + error + "\"");
+        s.end(N);
+        std::remove(file.c_str());
+    }
+    if (!failures) std::printf("  PASS\n");
+    return failures;
+}
+
+// #474: the test host's instanceChanged() brackets kOfxActionInstanceChanged with kOfxActionBeginInstanceChanged and
+// kOfxActionEndInstanceChanged, with the same kOfxPropChangeReason ("are bracketed by a pair of
+// kOfxActionBeginInstanceChanged and kOfxActionEndInstanceChanged actions", ofxCore.h), as a conforming host does. A
+// plug-in that records the actions that it gets checks it.
+std::vector<std::string> gRecordedActions;
+
+OfxStatus recordAction(const char* action, const void* /*handle*/, OfxPropertySetHandle inArgs, OfxPropertySetHandle /*outArgs*/)
+{
+    const char* reason = nullptr;
+    if (inArgs) {
+        pGetString(inArgs, kOfxPropChangeReason, 0, &reason);
+    }
+    gRecordedActions.push_back(std::string(action) + (reason ? std::string(" ") + reason : std::string()));
+    return kOfxStatOK;
+}
+
+int testHostInstanceChangedBracketing()
+{
+    std::printf("==== Test host: instanceChanged() is bracketed by Begin/EndInstanceChanged (issue #474) ====\n");
+    OfxPlugin recorder = {};
+    recorder.mainEntry = recordAction;
+    Effect inst;
+    gRecordedActions.clear();
+    const OfxStatus st = instanceChanged(&recorder, inst, "param", kOfxChangePluginEdited);
+    const std::vector<std::string> expected = {
+        std::string(kOfxActionBeginInstanceChanged) + " " + kOfxChangePluginEdited,
+        std::string(kOfxActionInstanceChanged) + " " + kOfxChangePluginEdited,
+        std::string(kOfxActionEndInstanceChanged) + " " + kOfxChangePluginEdited,
+    };
+    std::string got;
+    for (const std::string& a : gRecordedActions) got += (got.empty() ? "" : ", ") + a;
+    const bool pass = ok(st) && (gRecordedActions == expected);
+    std::printf("  %s: the actions, with their change reason: %s\n", pass ? "PASS" : "FAIL", got.c_str());
+    return pass ? 0 : 1;
+}
+
 } // namespace
 
 int
@@ -6486,6 +6593,8 @@ main(int argc, char** argv)
             failures = testWriteFFmpegInteractive(outFile);
         } else if (mode == "--writer-input-connect") {
             failures = testWriterInputConnect(outFile);
+        } else if (mode == "--spec-statuses") {
+            failures = testWriterStatusCodes(outFile) + testHostInstanceChangedBracketing();
         } else if (mode == "--views-concurrent") {
             failures = testReadFFmpegViewsConcurrent(outFile) + testReadFFmpegViewsPixelFormat(outFile + ".pixfmt.mkv");
         } else {

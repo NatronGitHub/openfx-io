@@ -282,20 +282,18 @@ validRenderScale(const OfxPointD& rs)
 }
 
 /**
- * @brief Shows message as the persistent error of the effect, and fails the action with status (a failure, not
- * kOfxStatOK or a reply status): what the actions of the plug-ins do when they can't go on.
+ * @brief Shows message as the persistent error of the effect, and fails the action with kOfxStatFailed: what the
+ * actions of the plug-ins do when they can't go on. The OFX spec lists it as "something wrong, but no error code
+ * appropriate, plugin to post message" (ofxImageEffect.h, kOfxImageEffectActionRender).
  **/
 [[noreturn]] inline void
 persistentErrorAndThrow(OFX::ImageEffect& effect,
-                        const std::string& message,
-                        OfxStatus status = kOfxStatFailed)
+                        const std::string& message)
 {
-    // (throwSuiteStatusException() doesn't throw for these)
-    assert((status != kOfxStatOK) && (status != kOfxStatReplyDefault) && (status != kOfxStatReplyYes) && (status != kOfxStatReplyNo));
     effect.setPersistentMessage(OFX::Message::eMessageError, "", message);
-    OFX::throwSuiteStatusException(status);
-    // not reached for a failure status (throwSuiteStatusException() isn't declared [[noreturn]])
-    throw OFX::Exception::Suite(status);
+    OFX::throwSuiteStatusException(kOfxStatFailed);
+    // not reached (throwSuiteStatusException() isn't declared [[noreturn]])
+    throw OFX::Exception::Suite(kOfxStatFailed);
 }
 
 /**

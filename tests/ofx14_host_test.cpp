@@ -742,12 +742,7 @@ testPlugin(OfxPlugin* p,
     }
     if (s.kind == eReader) {
         // the file changed, as when the user sets it: the reader sets up its frame range and format
-        PropSet a = timeArgs(1.);
-        pSetString(PH(&a), kOfxPropType, 0, kOfxTypeParameter);
-        pSetString(PH(&a), kOfxPropName, 0, kOfxImageEffectFileParamName);
-        pSetString(PH(&a), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
-        st = p->mainEntry(kOfxActionInstanceChanged, EH(inst), PH(&a), nullptr);
-        if (!ok(st)) fail("InstanceChanged(%s) = %d", kOfxImageEffectFileParamName, st);
+        paramChanged(p, inst, kOfxImageEffectFileParamName, 1.);
         // (the file may have set params, e.g. the file colour space: the spec's values win)
         for (const auto& sp : s.strings) {
             setOverrideString(&ctx, sp.first.c_str(), expand(sp.second));

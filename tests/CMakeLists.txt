@@ -354,6 +354,10 @@ if(TARGET io_tests_ofx)
   # test-writer-input-connect (#457): connecting the input sets a writer's Input Premult, unless the user set it (also
   # in a loaded project)
   io_test(test-writer-input-connect ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --writer-input-connect)
+  # test-spec-statuses (#473, #474): the writers fail render and beginSequenceRender with kOfxStatFailed (the failure
+  # that the OFX spec lists for them) and an error message; the test host brackets instanceChanged with
+  # Begin/EndInstanceChanged
+  io_test(test-spec-statuses ENV "${_io_ocio_env}" COMMAND ofx_render_test "${B}/.render_out.mov" --spec-statuses)
   # test-writer-int-ranges (#184): GenericWriter's Project format and WriteFFmpeg's frame range, step, frames and fps,
   # with host values out of the range of int (or NaN): built with UBSan's float-cast-overflow and signed-integer-overflow
   # checks, stopping at the first error (ofx_render_test_ubsan); on MS Windows (MinGW has no UBSan runtime),

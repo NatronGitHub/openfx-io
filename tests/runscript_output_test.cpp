@@ -303,7 +303,13 @@ testPosix()
     // exec() failure, which RunScript reports as "cannot execute ...: No such file or directory"
     l.clear();
     CHECK(runScript("#!/nonexistent/interpreter\n", &l, &err) && err == ENOENT,
-          ("missing interpreter: started() is false, error() is ENOENT (" + string(err ? std::strerror(err) : "no error") + ")").c_str());
+          ("missing interpreter: started() is false, error() is ENOENT (" + (err ? RunScriptPosix::errorString(err) : string("no error")) + ")").c_str());
+
+    // the message of an errno value that RunScript shows (#474: the thread-safe strerror_r(), GNU or XSI), the same as
+    // the one of strerror(), on this thread only; the message of an unknown value has the value (the libc's text)
+    CHECK(RunScriptPosix::errorString(ENOENT) == std::strerror(ENOENT),
+          ("errorString(ENOENT) is strerror(ENOENT): \"" + RunScriptPosix::errorString(ENOENT) + "\"").c_str());
+    CHECK(RunScriptPosix::errorString(-12345).find("12345") != string::npos, ("errorString(-12345): \"" + RunScriptPosix::errorString(-12345) + "\"").c_str());
 }
 
 // the file descriptors of this process that are pipes

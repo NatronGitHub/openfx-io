@@ -5584,16 +5584,14 @@ WriteFFmpegPlugin::encode(const string& filename,
 
         try {
             if ((dstNComps != 4) && (dstNComps != 3)) {
-                persistentErrorAndThrow(*this, "can only write RGBA or RGB components images", kOfxStatErrFormat);
+                persistentErrorAndThrow(*this, "can only write RGBA or RGB components images");
             }
 
             if (!_isOpen || !_formatContext) {
                 persistentErrorAndThrow(*this, "file is not open");
             }
             if (!pixelData || !_streamVideo.stream) {
-                throwSuiteStatusException(kOfxStatErrBadHandle);
-
-                return;
+                persistentErrorAndThrow(*this, "no image or no video stream to encode");
             }
             // beginEncode() opened the file param at beginSequenceRender, and the frames of a movie can only go
             // to that file: the param at this frame (if it is animated, or was changed during the render) must
@@ -5606,7 +5604,7 @@ WriteFFmpegPlugin::encode(const string& filename,
             }
 
             if (pixelAspectRatio != _pixelAspectRatio) {
-                persistentErrorAndThrow(*this, "all images in the sequence do not have the same pixel aspect ratio", kOfxStatErrFormat);
+                persistentErrorAndThrow(*this, "all images in the sequence do not have the same pixel aspect ratio");
             }
 
             // The frame this thread waits for may never come to encode(): GenericWriterPlugin::render() returns before
@@ -5634,9 +5632,7 @@ WriteFFmpegPlugin::encode(const string& filename,
                 _error = CLEANUP;
 
                 if (!_streamVideo.stream) {
-                    throwSuiteStatusException(kOfxStatErrBadHandle);
-
-                    return;
+                    persistentErrorAndThrow(*this, "no video stream to encode");
                 }
                 assert(_formatContext);
                 if (!writeToFile(_formatContext, false, time, pixelData, &bounds, pixelDataNComps, dstNComps, rowBytes)) {

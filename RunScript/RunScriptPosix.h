@@ -36,6 +36,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <string.h> // strerror_r (POSIX, not in std)
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -48,6 +49,36 @@ extern char** environ;
 #include "RunScriptOutput.h"
 
 namespace RunScriptPosix {
+
+// strerror_r() returns an int (POSIX/XSI: macOS, musl) and writes the message in buf, also "Unknown error: N" when it
+// fails with EINVAL on macOS; or it returns the message, which may not be in buf (GNU: glibc with _GNU_SOURCE, which
+// g++ and clang++ define on Linux): one overload for each. buf is zero-initialised, so a libc that writes nothing
+// leaves it empty.
+inline const char*
+strerrorResult(int /*ret*/,
+               const char* buf)
+{
+    return buf;
+}
+
+inline const char*
+strerrorResult(const char* ret,
+               const char* /*buf*/)
+{
+    return ret;
+}
+
+// The message of the errno value err. Thread-safe, unlike std::strerror() ("The strerror function is not required to
+// avoid data races with other calls to the strerror function", C11 7.24.6.2), and renders of RunScript may run
+// concurrently (C++ Core Guidelines CP.2, https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rconc-races).
+inline std::string
+errorString(int err)
+{
+    char buf[256] = {};
+    const char* s = strerrorResult(strerror_r(err, buf, sizeof(buf)), buf);
+
+    return (s && *s) ? std::string(s) : ("error " + std::to_string(err));
+}
 
 // A file descriptor, closed by the destructor
 class UniqueFd
