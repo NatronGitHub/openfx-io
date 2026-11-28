@@ -796,7 +796,7 @@ FFmpegFile::getStreamStartTime(Stream& stream)
         if (av_seek_frame(_context, stream._idx, startPTS, AVSEEK_FLAG_BACKWARD) >= 0) {
 
             // Read frames until we get one for the video stream that contains a valid PTS.
-            while (av_read_frame(_context, avPacket.pkt()) >= 0) {
+            while (readPacket(stream, avPacket.pkt()) >= 0) {
                 if (avPacket->stream_index != stream._idx) {
                     continue;
                 }
@@ -894,7 +894,7 @@ bool
 FFmpegFile::nextPacketsLackPts(const Stream& stream, int maxPackets)
 {
     MyAVPacket avPacket;
-    while ((maxPackets > 0) && (av_read_frame(_context, avPacket.pkt()) >= 0)) {
+    while ((maxPackets > 0) && (readPacket(stream, avPacket.pkt()) >= 0)) {
         const bool inStream = (avPacket->stream_index == stream._idx);
         const bool lacksPts = inStream && (avPacket->pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE));
         av_packet_unref(avPacket.pkt());
@@ -973,6 +973,146 @@ FFmpegFile::seekToStreamStart(const Stream& stream)
     return byBytes ? av_seek_frame(_context, -1, 0, AVSEEK_FLAG_BYTE) : av_seek_frame(_context, stream._idx, stream._avstream->start_time, AVSEEK_FLAG_BACKWARD);
 }
 
+// A stream whose packets have no timestamps at all, in a format without timestamps (AVFMT_NOTIMESTAMPS): e.g. raw
+// H.264 and HEVC elementary streams, whose missing timestamps libavformat does not compute, unlike those of the other
+// raw streams (compute_pkt_fields(), libavformat/demux.c:993-995 and 1101-1102 in FFmpeg n9.0.2, 977-979 and 1085-1086
+// in n8.0.1). Neither the duration nor the timestamps then give the number of frames (it was 1), and libavformat cannot
+// seek in it: its generic index (demux.c:1670-1673 in n9.0.2, 1640-1643 in n8.0.1) refuses entries without a timestamp
+// (ff_add_index_entry(), libavformat/seek.c:76-77 in n9.0.2 and n8.0.1). The ffmpeg CLI gives each packet without a
+// DTS the DTS of the previous one plus its duration (ist_dts_update(), fftools/ffmpeg_demux.c:316-372 in n9.0.2,
+// 305-361 in n8.0.1), and ffprobe -count_frames counts the decoded frames.
+// Every packet of the stream is read once, at open, from the first keyframe (the packets before it cannot be decoded,
+// and are skipped, as a stream copy by the ffmpeg CLI does without -copyinkf): its byte position and the rank of its
+// frame are recorded (Stream::_untimedPackets), and each keyframe is added to the index at the timestamp of its rank,
+// which libavformat's generic seek then uses (seek_frame_generic(), libavformat/seek.c:526-595 in n9.0.2 and n8.0.1).
+// readPacket() gives every packet read the DTS of its rank, found from its position: the frames are then placed as
+// those of packets with a DTS and no PTS (e.g. AVI, see getStreamStartTime()). A raw parser gives a packet the position
+// of the start of its frame (demux.c:1290-1294 in n9.0.2, 1264-1268 in n8.0.1), which is the same after a seek.
+// A packet is a frame, or a field of a codec that codes the two fields of a frame separately (AV_CODEC_PROP_FIELDS, e.g.
+// H.264 PAFF), whose decoder outputs a pair as one frame: the two fields of a frame have the same rank (see the pairing
+// below). The field
+// packets are told by a parser of the codec (AVCodecParserContext::picture_structure), run on each packet (a complete
+// frame or field): the parser of the demuxer (av_stream_get_parser()) may already have parsed the next packets, which
+// it keeps in a queue (parse_packet(), demux.c:1173-1332 in n9.0.2). A codec without that property (e.g. HEVC, whose
+// parser gives the picture structure of the SEI, hevc/parser.c:72 in n9.0.2) decodes each field as a frame.
+// Not applied if the stream has a start time, a packet has no position, or the first packet has a timestamp (e.g.
+// MPEG-1/2, MPEG-4 Part 2 or MJPEG elementary streams, whose timestamps libavformat computes).
+void
+FFmpegFile::indexUntimedPackets(Stream& stream)
+{
+    // (a stream with timestamps has a start time: nothing is read for it, so that probeStreamStart() still reads the
+    // packets that avformat_find_stream_info() kept)
+    // (a byte seek "succeeds" without moving in an input that is not seekable, see seek(): nothing is read from one)
+    if (!(_context->iformat->flags & AVFMT_NOTIMESTAMPS) || (stream._avstream->start_time != int64_t(AV_NOPTS_VALUE)) || !_context->pb ||
+        !(_context->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        return;
+    }
+    _readAtOpen = true;
+    if (seekToStreamStart(stream) < 0) {
+        return;
+    }
+    // The parser that tells the fields of a frame (none if the codec does not code fields separately)
+    const AVCodecParameters* par = stream._avstream->codecpar;
+    const AVCodecDescriptor* desc = avcodec_descriptor_get(par->codec_id);
+    std::unique_ptr<AVCodecParserContext, void (*)(AVCodecParserContext*)> parser(nullptr, av_parser_close);
+    std::unique_ptr<AVCodecContext, void (*)(AVCodecContext*)> parserContext(nullptr, [](AVCodecContext* c) { avcodec_free_context(&c); });
+    if (desc && (desc->props & AV_CODEC_PROP_FIELDS)) {
+        parser.reset(av_parser_init(par->codec_id));
+        parserContext.reset(avcodec_alloc_context3(nullptr));
+        if (!parser || !parserContext || (avcodec_parameters_to_context(parserContext.get(), par) < 0)) {
+            parser.reset();
+        } else {
+            parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+        }
+    }
+    std::vector<Stream::UntimedPacket> packets;
+    std::vector<size_t> keyframes; // the packets (indexes in packets) that start the frame of a keyframe
+    int64_t frames = 0; // the frames complete so far: the rank of the next one
+    // The parity of the first field of the current frame (AV_PICTURE_STRUCTURE_TOP_FIELD or _BOTTOM_FIELD), or
+    // AV_PICTURE_STRUCTURE_UNKNOWN if none. As the decoder does (h264_field_start(), libavcodec/h264_slice.c:1573-1611 in
+    // n9.0.2, 1572-1610 in n8.0.1), a field is the second field of the pending one only if it has the other parity and
+    // the same frame number, which the parser tells by a field order (AVCodecParserContext::field_order, h264_parser.c:
+    // 552-561 in n9.0.2, 547-556 in n8.0.1). Otherwise (a frame, or another field) the pending field is unmatched, and
+    // not displayed: it is not counted, and has the rank of the next picture. Checked on FATE's CVFI1_Sony_D.jsv
+    // without one field, not in the tests (no sample). Not followed: the decoder displays unmatched fields if several
+    // follow each other (h264_slice.c:1687 in n9.0.2, 1682 in n8.0.1).
+    int pendingField = AV_PICTURE_STRUCTURE_UNKNOWN;
+    MyAVPacket avPacket;
+    bool untimed = true;
+    while (untimed && (av_read_frame(_context, avPacket.pkt()) >= 0)) {
+        if (avPacket->stream_index == stream._idx) {
+            untimed = (avPacket->pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts == int64_t(AV_NOPTS_VALUE)) && (avPacket->pos >= 0) &&
+                      (packets.empty() || (avPacket->pos > packets.back().pos));
+            if (untimed && (!packets.empty() || (avPacket->flags & AV_PKT_FLAG_KEY))) {
+                int structure = AV_PICTURE_STRUCTURE_FRAME;
+                if (parser) {
+                    uint8_t* out = nullptr;
+                    int outSize = 0;
+                    av_parser_parse2(parser.get(), parserContext.get(), &out, &outSize, avPacket->data, avPacket->size,
+                                     AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+                    if ((parser->picture_structure == AV_PICTURE_STRUCTURE_TOP_FIELD) ||
+                        (parser->picture_structure == AV_PICTURE_STRUCTURE_BOTTOM_FIELD)) {
+                        structure = parser->picture_structure;
+                    }
+                }
+                const bool secondField = (pendingField != AV_PICTURE_STRUCTURE_UNKNOWN) && (structure != AV_PICTURE_STRUCTURE_FRAME) &&
+                                         (structure != pendingField) &&
+                                         ((parser->field_order == AV_FIELD_TT) || (parser->field_order == AV_FIELD_BB));
+                const bool startsFrame = !secondField; // (the pending field, if any, is unmatched)
+                if (startsFrame && (avPacket->flags & AV_PKT_FLAG_KEY) && (keyframes.empty() || (packets[keyframes.back()].rank < frames))) {
+                    keyframes.push_back(packets.size());
+                }
+                packets.push_back({ avPacket->pos, frames });
+                if (structure == AV_PICTURE_STRUCTURE_FRAME) {
+                    pendingField = AV_PICTURE_STRUCTURE_UNKNOWN;
+                    ++frames;
+                } else if (startsFrame) {
+                    pendingField = structure; // a first field
+                } else {
+                    pendingField = AV_PICTURE_STRUCTURE_UNKNOWN; // the second field of the frame
+                    ++frames;
+                }
+            }
+        }
+        av_packet_unref(avPacket.pkt());
+    }
+    if (!untimed || (frames == 0)) {
+        return;
+    }
+    for (size_t i : keyframes) {
+        if (packets[i].rank < frames) { // (not a last field that is unmatched)
+            av_add_index_entry(stream._avstream, packets[i].pos, stream.untimedPacketDts(packets[i].rank), 0, 0, AVINDEX_KEYFRAME);
+        }
+    }
+    stream._untimedPackets = std::move(packets);
+    stream._untimedFrames = frames;
+    stream._seekFallsBackToStart = true;
+}
+
+int
+FFmpegFile::readPacket(const Stream& stream,
+                       AVPacket* pkt)
+{
+    for (;;) {
+        const int res = av_read_frame(_context, pkt);
+        if ((res < 0) || (pkt->stream_index != stream._idx) || stream._untimedPackets.empty() ||
+            (pkt->pts != int64_t(AV_NOPTS_VALUE)) || (pkt->dts != int64_t(AV_NOPTS_VALUE))) {
+            return res;
+        }
+        const std::vector<Stream::UntimedPacket>& packets = stream._untimedPackets;
+        const auto it = std::lower_bound(packets.begin(), packets.end(), pkt->pos,
+                                         [](const Stream::UntimedPacket& p, int64_t pos) { return p.pos < pos; });
+        if ((it != packets.end()) && (it->pos == pkt->pos)) {
+            pkt->dts = stream.untimedPacketDts(it->rank);
+            return res;
+        }
+        if (pkt->pos >= packets.front().pos) {
+            return res; // (not a packet read at open: left without a timestamp)
+        }
+        av_packet_unref(pkt); // before the first keyframe
+    }
+}
+
 // Read the first packets of the stream (from the start time, seeking if anything was read since
 // avformat_find_stream_info()), for a stream whose decoder delays frames (has_b_frames > 0):
 // - firstDTS: the DTS of the first packet;
@@ -1005,7 +1145,7 @@ FFmpegFile::probeStreamStart(Stream& stream)
     // Enough packets for the decoder to output a frame (its delay, with frame threads), but bounded.
     int packetsLeft = stream.getCodecDelay() + 16;
     while (avFrame && !eof && (packetsLeft > 0)) {
-        int res = av_read_frame(_context, avPacket.pkt());
+        int res = readPacket(stream, avPacket.pkt());
         if (res < 0) {
             eof = true;
         } else if (avPacket->stream_index != stream._idx) {
@@ -1323,7 +1463,7 @@ FFmpegFile::probeEnd(Stream& stream,
     }
     MyAVPacket avPacket;
     while (pb->bytes_read - bytesRead0 <= kMaxEndProbeBytes) {
-        const int res = av_read_frame(_context, avPacket.pkt());
+        const int res = readPacket(stream, avPacket.pkt());
         if ((res == AVERROR_EOF) && seekByBytes && (videoPackets < 8) && (byteSeekWindow < kMaxEndProbeBytes) && (byteSeekWindow < size)) {
             // too few video packets in the last bytes: read more
             byteSeekWindow = kMaxEndProbeBytes;
@@ -1615,6 +1755,11 @@ FFmpegFile::getStreamFrames(Stream& stream)
 #endif
     }
 
+    // A stream without timestamps (see indexUntimedPackets())
+    if (frames <= 0) {
+        frames = stream._untimedFrames;
+    }
+
     // If number of frames still unknown, obtain from stream's number of frames if specified. Will be 0 if
     // unknown.
     if (frames <= 0 && stream._avstream->nb_frames > 0) {
@@ -1652,10 +1797,26 @@ FFmpegFile::getStreamFrames(Stream& stream)
 
         int64_t maxPts = stream._startPTS;
 
-        // Seek last key-frame.
+        // Seek last key-frame. If that fails, read from the start, and decode from the start when a seek fails later
+        // (Stream::_seekFallsBackToStart). This path is for the streams without a duration or a number of frames:
+        // elementary streams whose timestamps libavformat computes (e.g. MPEG-1/2, MPEG-4 Part 2, MJPEG, whose duration
+        // estimated from the bit rate is not used, see above) and image pipes. libavformat's generic seek
+        // (seek_frame_generic(), FFmpeg n9.0.2 and n8.0.1 libavformat/seek.c:526-595), which their demuxers use, reads
+        // the file up to its end to index it, and fails if the index entry it would seek to has no position, which
+        // left the demuxer at the end of the file: a PNG image pipe was counted as 1 frame. The image pipe demuxer
+        // reads 4096-byte chunks, which the parser assembles into frames (libavformat/img2dec.c:200 and 452-458 in
+        // n9.0.2): a frame gets a position only when a new chunk started since the previous frame (the position of that
+        // chunk), and small frames, several per chunk, get none (ff_fetch_timestamp(), libavcodec/parser.c:99-111 in
+        // n9.0.2, 94-106 in n8.0.1).
+        // Counted from the start, a stream whose last reference frame has no PTS (with B-frames) may count one frame
+        // more (see below), which is better than one frame.
         _readAtOpen = true;
         stream.flushCodec();
-        av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD);
+        bool positioned = av_seek_frame(_context, stream._idx, stream.frameToPts(1 << 29), AVSEEK_FLAG_BACKWARD) >= 0;
+        if (!positioned) {
+            stream._seekFallsBackToStart = true;
+            positioned = seekToStreamStart(stream) >= 0;
+        }
 
         // Read up to last frame, extending max PTS for every valid PTS value found for the video stream.
         MyAVPacket avPacket;
@@ -1666,7 +1827,7 @@ FFmpegFile::getStreamFrames(Stream& stream)
         // frame (B-frames): e.g. the last reference frame is the last frame displayed.
         const int64_t frameTicks = stream.frameTicks();
         bool refPending = false; // a packet without a PTS was read
-        while (av_read_frame(_context, avPacket.pkt()) >= 0) {
+        while (positioned && (readPacket(stream, avPacket.pkt()) >= 0)) {
             if (avPacket->stream_index == stream._idx) {
                 int64_t pts = avPacket->pts;
                 if ((pts == int64_t(AV_NOPTS_VALUE)) && (avPacket->dts != int64_t(AV_NOPTS_VALUE))) {
@@ -1985,6 +2146,7 @@ FFmpegFile::FFmpegFile(const string& filename)
         stream->_aspect = Stream::GetStreamAspectRatio(stream.get());
 
         // set stream start time and numbers of frames
+        indexUntimedPackets(*stream);
         stream->_startPTS = getStreamStartTime(*stream);
         if (stream->_ptsOnFirstPacketOnly) {
 #if TRACE_FILE_OPEN
@@ -2961,7 +3123,6 @@ FFmpegFile::seekToTimestamp(Stream* stream, int64_t ts)
 bool
 FFmpegFile::seekToStart(Stream* stream)
 {
-    ++_startSeekCount;
     int64_t ts = 0;
     int seekFlags = AVSEEK_FLAG_FRAME | AVSEEK_FLAG_BACKWARD;
     const int64_t firstTimestamp = (std::min)(stream->_startPTS, stream->_startDTS);
@@ -2970,9 +3131,13 @@ FFmpegFile::seekToStart(Stream* stream)
         seekFlags = AVSEEK_FLAG_BACKWARD;
     }
     if (!seek(stream, ts, seekFlags)) {
+        ++_startSeekCount;
         return false;
     }
-    stream->_decodingFromStart = true;
+    if (!stream->_decodingFromStart) { // (otherwise seek() fell back to the start, and counted it)
+        ++_startSeekCount;
+        stream->_decodingFromStart = true;
+    }
     return true;
 }
 
@@ -3014,8 +3179,16 @@ FFmpegFile::seek(Stream* stream, int64_t ts, int seekFlags)
         }
     }
     if ((res = av_seek_frame(_context, stream->_idx, ts, seekFlags)) < 0) {
-        setDecodeError(res, "FFmpeg Reader Failed to seek frame: ");
-        return false;
+        // A stream whose index cannot be used (Stream::_seekFallsBackToStart, e.g. an image pipe, in which libavformat
+        // cannot seek, see getStreamFrames()) decodes from the start of the file. Only in a seekable input: a
+        // byte seek "succeeds" without moving in one that is not (seek_frame_byte() ignores the result of avio_seek(),
+        // libavformat/seek.c:505-524 in FFmpeg n9.0.2 and n8.0.1).
+        if (!stream->_seekFallsBackToStart || !_context->pb || !(_context->pb->seekable & AVIO_SEEKABLE_NORMAL) || (seekToStreamStart(*stream) < 0)) {
+            setDecodeError(res, "FFmpeg Reader Failed to seek frame: ");
+            return false;
+        }
+        ++_startSeekCount;
+        stream->_decodingFromStart = true;
     }
 
     return true;
@@ -3499,7 +3672,7 @@ FFmpegFile::demuxAndDecode(Stream* stream, AVFrame* avFrameOut, int64_t frame, b
     if (resendPending) {
         av_packet_move_ref(avPacket.pkt(), stream->_pendingPacket);
     }
-    while (resendPending || ((res = av_read_frame(_context, avPacket.pkt())) >= 0)) {
+    while (resendPending || ((res = readPacket(*stream, avPacket.pkt())) >= 0)) {
         const bool resending = resendPending;
         resendPending = false;
         if (stream->_restartSingleThread) {

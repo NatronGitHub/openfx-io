@@ -303,6 +303,22 @@ private:
         int64_t _nextDecodedPts; // the timestamp of the frame after the last decoded frame (AV_NOPTS_VALUE if none since the
         // last seek), for a decoded frame without a timestamp (e.g. the last frame of an AVI with B-frames)
         bool _timestampsMayShift; // set at open, see FFmpegFile::timestampsMayShift() and placeShiftedFrame()
+        // A packet of a stream without timestamps: its byte position, and the rank of its frame (0-based, in decoding
+        // order, from the first keyframe; the two fields of a frame have the same rank)
+        struct UntimedPacket
+        {
+            int64_t pos;
+            int64_t rank;
+        };
+        // The packets of the stream, in decoding order, if they have no timestamps (set at open, see
+        // FFmpegFile::indexUntimedPackets(), then constant; empty otherwise): FFmpegFile::readPacket() gives each one
+        // the DTS of its rank.
+        std::vector<UntimedPacket> _untimedPackets;
+        int64_t _untimedFrames; // the number of frames of _untimedPackets (0 if empty)
+        // The index of the stream cannot be used to seek (set at open: the seek to its last keyframe failed, see
+        // getStreamFrames(), or the stream has no timestamps): FFmpegFile::seek() then decodes from the start of the file
+        // if a seek fails.
+        bool _seekFallsBackToStart;
         int64_t _seekTargetTs; // the timestamp of the last seek (see armResync())
         int64_t _seekFirstTs; // the timestamp (PTS, else DTS, else _seekTargetTs) of the first packet read since the last
         // seek, if it may be the end of a frame cut by the seek (AV_NOPTS_VALUE otherwise), until a frame is used after
@@ -428,6 +444,9 @@ private:
             , _tooManyDroppedPackets(false)
             , _nextDecodedPts(AV_NOPTS_VALUE)
             , _timestampsMayShift(false)
+            , _untimedPackets()
+            , _untimedFrames(0)
+            , _seekFallsBackToStart(false)
             , _seekTargetTs(AV_NOPTS_VALUE)
             , _seekFirstTs(AV_NOPTS_VALUE)
             , _lastGapPts(AV_NOPTS_VALUE)
@@ -1003,6 +1022,13 @@ private:
             return av_rescale(AV_TIME_BASE, _fpsDen, _fpsNum);
         }
 
+        // The DTS of a packet of a stream without timestamps (_untimedPackets) whose frame has the given rank, in the
+        // time base of the stream.
+        int64_t untimedPacketDts(int64_t rank) const
+        {
+            return av_rescale(rank, int64_t(_avstream->time_base.den) * _fpsDen, int64_t(_avstream->time_base.num) * _fpsNum);
+        }
+
         // The duration of a frame, in the time base of the stream (that of frame 0, as frameToPts() rounds it)
         int64_t frameTicks() const
         {
@@ -1146,6 +1172,10 @@ private:
     bool nextPacketsLackPts(const Stream& stream, int maxPackets);
     bool timestampsMayShift(Stream& stream);
     int seekToStreamStart(const Stream& stream);
+    void indexUntimedPackets(Stream& stream);
+    // av_read_frame(), which gives a packet of stream without timestamps the DTS of its rank, and skips the packets of
+    // that stream before its first keyframe (Stream::_untimedPackets)
+    int readPacket(const Stream& stream, AVPacket* pkt);
 
     // The number of frames of the stream that are not displayed
     int64_t getDiscardedFrames(Stream& stream);
