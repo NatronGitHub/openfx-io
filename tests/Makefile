@@ -485,6 +485,21 @@ else ifeq ($(shell uname -m),x86_64)
 else
   RW_ARCH := Linux-$(shell uname -m)
 endif
+# only the OFX entry points are exported, with the export list of the real bundles (openfx's Makefile.master and
+# add_ofx_plugin, which also compile with hidden visibility; the export list alone is enough here): with GCC, the GNU
+# unique symbols (the static variables of inline functions and templates) in the dynamic symbol table make dlclose() a
+# no-op on Linux, so the binary stayed loaded after the unload (#264). The bundle depends on the list and on this
+# Makefile, so that a bundle linked without it is linked again.
+ifeq ($(OS),Windows_NT)
+  RW_BUNDLE_EXPORTS :=
+  RW_BUNDLE_LDFLAGS :=
+else ifeq ($(shell uname -s),Darwin)
+  RW_BUNDLE_EXPORTS := ../openfx/Support/include/osxSymbols
+  RW_BUNDLE_LDFLAGS := -Wl,-exported_symbols_list,$(RW_BUNDLE_EXPORTS)
+else
+  RW_BUNDLE_EXPORTS := ../openfx/Support/include/linuxSymbols
+  RW_BUNDLE_LDFLAGS := -Wl,--version-script=$(RW_BUNDLE_EXPORTS)
+endif
 RW_BUNDLE_BINARY := .reader_window_host/plugins/ReaderWindow.ofx.bundle/Contents/$(RW_ARCH)/ReaderWindow.ofx
 RW_PLUGIN_SRCS := $(filter-out $(READER_HOOKS_SRCS),$(READER_WINDOW_SRCS)) \
     ../FFmpeg/ReadFFmpeg.cpp ../FFmpeg/FFmpegFile.cpp ../FFmpeg/PixelFormat.cpp $(READER_HOOKS_SRCS)
@@ -492,9 +507,9 @@ RW_PLUGIN_SRCS := $(filter-out $(READER_HOOKS_SRCS),$(READER_WINDOW_SRCS)) \
 reader_window_host: $(RW_HOST_SRCS) ../openfx/HostSupport/examples/hostDemoClipInstance.h ../openfx/HostSupport/examples/hostDemoEffectInstance.h
 	$(CXX) $(RW_HOST_CXXFLAGS) $(filter %.cpp,$^) $(RW_HOST_LIBS) -o $@
 
-$(RW_BUNDLE_BINARY): $(RW_PLUGIN_SRCS) $(OFX_SUPPORT)
+$(RW_BUNDLE_BINARY): $(RW_PLUGIN_SRCS) $(OFX_SUPPORT) $(RW_BUNDLE_EXPORTS) Makefile
 	mkdir -p $(@D)
-	$(CXX) $(OFX_CXXFLAGS) -I../PFM -I../PNG $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) -fPIC -shared $^ $(OFX_LIBS) $(READER_WINDOW_LIBS) -o $@
+	$(CXX) $(OFX_CXXFLAGS) -I../PFM -I../PNG $(if $(HAVE_PNG),$(shell $(PKGCONF) --cflags libpng),) -fPIC -shared $(filter %.cpp,$^) $(OFX_LIBS) $(READER_WINDOW_LIBS) $(RW_BUNDLE_LDFLAGS) -o $@
 
 # a host that renders ReadOIIO, destroys its instance and exits without kOfxActionUnload, 10 times: it must exit
 # (#250; with the bundle of test-reader-window-host, and OpenImageIO, whose pool it also checks)

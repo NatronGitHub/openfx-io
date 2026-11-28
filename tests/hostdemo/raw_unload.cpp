@@ -82,6 +82,7 @@
 #include <dlfcn.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #else
 #include <dirent.h>
 #include <link.h>
@@ -216,6 +217,26 @@ mappedPluginBinary()
     return found;
 #endif
 }
+
+#if defined(__APPLE__)
+// Has the mapped image at this path thread-local variables? dyld never unloads such an image (#264): its criterion is
+// the MH_HAS_TLV_DESCRIPTORS header flag (MachOAnalyzer::neverUnload(), dyld common/MachOAnalyzer.cpp). (To delete,
+// with its caller, when the submodules have no thread-local variables left.)
+bool
+hasThreadLocalVariables(const std::string& path)
+{
+    const uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; ++i) {
+        const char* name = _dyld_get_image_name(i);
+        const struct mach_header* h = _dyld_get_image_header(i);
+        if (name && h && (path == name)) {
+            return (h->flags & MH_HAS_TLV_DESCRIPTORS) != 0;
+        }
+    }
+
+    return false;
+}
+#endif
 
 // The OpenMP runtime loaded in this process (its file name), or "" if none is
 std::string
@@ -555,11 +576,26 @@ main(int argc, char** argv)
     // the instance is destroyed: unload the plug-ins (kOfxActionUnload, and the binary)
     OFX::Host::PluginCache::clearPluginCache();
     const std::string runtimeAfterUnload = openMPRuntime();
-    // a diagnostic: if the plug-in binary stays mapped (e.g. its GNU unique symbols make dlclose() a no-op on Linux),
-    // the runtime stays loaded whatever the pin does
+    // the plug-in binary must be unmapped (#264): otherwise a reload gets the same image, with its static state, and
+    // the OpenMP runtime stays loaded whatever the pin does. GNU unique symbols made dlclose() a no-op on Linux: the
+    // bundle exports only the OFX entry points, as the real ones do.
     const std::string binaryAfterUnload = mappedPluginBinary();
     std::printf("plug-in binary after the unload: %s\n",
                 binaryAfterUnload.empty() ? "unmapped" : (binaryAfterUnload == "?") ? "unknown" : ("still mapped: " + binaryAfterUnload).c_str());
+    if (!binaryAfterUnload.empty() && (binaryAfterUnload != "?")) {
+#if defined(__APPLE__)
+        if (hasThreadLocalVariables(binaryAfterUnload)) {
+            // (openfx's Support library has thread_local variables; the PR that bumps the submodules past them deletes
+            // this branch, so that a thread_local added back fails)
+            std::printf("SKIPPED: the unload of the plug-in binary: it has thread-local variables, and macOS's dyld "
+                        "never unloads such an image (#264)\n");
+        } else
+#endif
+        {
+            std::printf("FAIL: the plug-in binary is still mapped after the unload (#264)\n");
+            ++failures;
+        }
+    }
     std::printf("threads: %d at start, %d after the render, %d after the unload (-1: not counted); OpenMP runtime: "
                 "%s after the render, %s after the unload\n",
                 threadsAtStart, threadsAfterRender, threadCount(), runtimeAfterRender.empty() ? "none" : runtimeAfterRender.c_str(),
