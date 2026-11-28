@@ -160,6 +160,9 @@
  *     - an EXR file with the zstd compression (issue #171): if the file read back is not zstd (OpenImageIO < 3.2.1, or
  *       its OpenEXR < 3.5, writes zip), the render must end with a persistent warning that names zstd; else no warning;
  *       a zip render of the same instance then ends without a warning
+ *     - a PFM file of more than 64 MiB (issue #476): its rows are in order
+ *     - a JPEG XL file (Natron#980; skipped without OpenImageIO's jpegxl plug-in): the Quality param is visible, quality
+ *       100 (the default) is lossless, and quality 50 is lossy and smaller
  *
  *   A writer of image files removes the partial file of a failed or aborted render (issue #251), with the option
  *   --writer-remove-partial-file (only this test):
@@ -3388,6 +3391,15 @@ int testWriteFFmpegEncodeFailureDiskFull(const std::string& outFile)
 #endif
 }
 
+// The source image of s: uniform noise (seed seed), which no codec compresses into a few KB
+void fillNoise(WriterSession& s, int W, int H, unsigned seed)
+{
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(0.f, 1.f);
+    float* pix = s.sourcePixels();
+    for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
+}
+
 #ifndef _WIN32
 // For a test, limits the size of the files that the process writes (RLIMIT_FSIZE), as on a full disk, and ignores
 // SIGXFSZ, so that a write beyond the limit fails with EFBIG instead of killing the process. The destructor restores
@@ -3444,15 +3456,6 @@ private:
     struct rlimit _old = {};
     bool _ok = false;
 };
-
-// The source image of s: uniform noise (seed seed), which no codec compresses into a few KB
-void fillNoise(WriterSession& s, int W, int H, unsigned seed)
-{
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<float> dist(0.f, 1.f);
-    float* pix = s.sourcePixels();
-    for (size_t i = 0; i < (size_t)W * H * 4; ++i) pix[i] = dist(rng);
-}
 
 // The status of the render of frame 1 by s, with the file size limited to maxSize bytes (as on a full disk); nothing
 // if the limit could not be set or restored
@@ -3707,6 +3710,88 @@ int testWriteOIIOEXRZstd(const std::string& outFile)
     }
     std::printf("  PASS\n");
     return 0;
+}
+
+// The RGBA float pixels of the image file (empty if it can not be read)
+std::vector<float> readPixelsOIIO(const std::string& file)
+{
+    auto in = OIIO::ImageInput::open(file);
+    if (!in) { std::printf("  FAIL: cannot read back %s: %s\n", file.c_str(), OIIO::geterror().c_str()); return {}; }
+    const OIIO::ImageSpec& spec = in->spec();
+    std::vector<float> pix((size_t)spec.width * spec.height * spec.nchannels);
+    if (!in->read_image(0, 0, 0, spec.nchannels, OIIO::TypeDesc::FLOAT, pix.data())) {
+        std::printf("  FAIL: cannot read back %s: %s\n", file.c_str(), in->geterror().c_str());
+        return {};
+    }
+    return pix;
+}
+
+// WriteOIIO, JPEG XL (Natron#980): the Quality param is visible for a .jxl file, the default (100) writes a lossless
+// file (the same pixels as a TIFF file, also 16 bits), and quality 50 a smaller lossy file. OpenImageIO 3.0.12 and
+// 3.1.7 compute the JPEG XL distance from the quality as libjxl does (OpenImageIO #4933): before, the distance was
+// 1/quality, and the lossy file is not always smaller. Skipped if OpenImageIO has no jpegxl plug-in.
+int testWriteOIIOJpegXL(const std::string& outFile)
+{
+    const int W = 64, H = 48;
+    std::printf("==== WriteOIIO JPEG XL: Quality, 100 is lossless (Natron#980) ====\n");
+    const std::string formatList = OIIO::get_string_attribute("format_list");
+    if (("," + formatList + ",").find(",jpegxl,") == std::string::npos) {
+        std::printf("  SKIPPED: OpenImageIO has no jpegxl plug-in (format_list \"%s\")\n", formatList.c_str());
+        return 0;
+    }
+    const std::string file = outFile + ".jxl";
+    const std::string tif = outFile + ".jxl.tif";
+    // the files are removed on every return
+    struct RemoveFiles {
+        const std::string& a;
+        const std::string& b;
+        ~RemoveFiles()
+        {
+            std::remove(a.c_str());
+            std::remove(b.c_str());
+        }
+    } removeFiles { file, tif };
+    std::remove(file.c_str());
+    std::remove(tif.c_str());
+    std::vector<float> ref;
+    {
+        WriterSession s;
+        if (s.create(tif, W, H, 1, WriterParams(), "fr.inria.openfx.WriteOIIO")) return 1;
+        fillNoise(s, W, H, 980);
+        if (s.renderAll(1)) return 1;
+        ref = readPixelsOIIO(tif);
+        if (ref.empty()) return 1;
+    }
+    WriterSession s;
+    if (s.create(file, W, H, 1, WriterParams(), "fr.inria.openfx.WriteOIIO")) return 1;
+    fillNoise(s, W, H, 980);
+    {
+        const Effect& ctx = s.context();
+        const auto it = ctx.params.find("quality");
+        int secret = 1;
+        if ((it == ctx.params.end()) || (pGetInt(PH(it->second.props), kOfxParamPropSecret, 0, &secret) != kOfxStatOK) || secret) {
+            std::printf("  FAIL: the Quality param is not visible for a .jxl file\n");
+            return 1;
+        }
+    }
+    if (s.renderAll(1)) return 1;
+    const long losslessSize = fileSize(file);
+    const std::vector<float> lossless = readPixelsOIIO(file);
+    std::remove(file.c_str());
+    s.setInt("quality", 50);
+    if (s.renderAll(1)) return 1;
+    const long lossySize = fileSize(file);
+    const std::vector<float> lossy = readPixelsOIIO(file);
+    std::printf("  quality 100: %ld bytes, %s the TIFF file; quality 50: %ld bytes, %s\n", losslessSize,
+                (lossless == ref) ? "the same pixels as" : "not the same pixels as", lossySize, (lossy == ref) ? "lossless" : "lossy");
+    int failures = 0;
+    if (lossless != ref) { std::printf("  FAIL: quality 100 is not lossless\n"); ++failures; }
+    if (lossy.empty() || (lossy.size() != ref.size()) || (lossy == ref)) { std::printf("  FAIL: quality 50 is not lossy\n"); ++failures; }
+    const int ver = OIIO::openimageio_version();
+    const bool libjxlDistance = (ver >= 30107) || ((ver >= 30012) && (ver < 30100)); // OpenImageIO #4933
+    if (libjxlDistance && (lossySize >= losslessSize)) { std::printf("  FAIL: quality 50 is not smaller than quality 100\n"); ++failures; }
+    if (!failures) std::printf(libjxlDistance ? "  PASS\n" : "  PASS (OpenImageIO < 3.0.12 or 3.1.7: the size is not checked)\n");
+    return failures;
 }
 
 // ---- #294, #296: the PFM plug-ins fail on write errors and on invalid headers (options --pfm-write-errors, --pfm-read-errors) ----
@@ -6362,7 +6447,7 @@ main(int argc, char** argv)
         } else if (mode == "--writeoiio-disk-full") {
             failures = testWriteOIIODiskFull(outFile);
         } else if (mode == "--writeoiio-files") {
-            failures = testWriteOIIOFiles(outFile) + testWriteOIIOEXRZstd(outFile) + testWriteOIIOPFMRows(outFile);
+            failures = testWriteOIIOFiles(outFile) + testWriteOIIOEXRZstd(outFile) + testWriteOIIOPFMRows(outFile) + testWriteOIIOJpegXL(outFile);
         } else if (mode == "--writer-remove-partial-file") {
             failures = testWriterRemovePartialFile(outFile);
         } else if (mode == "--swscale-exact") {

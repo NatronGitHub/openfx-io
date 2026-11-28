@@ -689,7 +689,7 @@ test-writer-remove-partial-file: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out --writer-remove-partial-file
 
 # #362: WriteOIIO, a 2-view multi-part EXR and an htj2k JPEG 2000 (OpenJPH), which OpenImageIO writes by name, are
-# written and read back
+# written and read back; also #171 (EXR zstd), #476 (PFM rows) and JPEG XL quality (Natron#980)
 test-writeoiio-files: ofx_render_test
 	OCIO=$(CURDIR)/test.ocio ./ofx_render_test $(CURDIR)/.render_out.i362 --writeoiio-files
 

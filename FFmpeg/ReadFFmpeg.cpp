@@ -975,7 +975,7 @@ ReadFFmpegPluginFactory::load()
 
         // OIIO and PFM extensions:
         "bmp", "cin", "dds", "dpx", "f3d", "fits", "hdr", "ico",
-        "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "exr", "png",
+        "iff", "jpg", "jpe", "jpeg", "jif", "jfif", "jfi", "jp2", "j2k", "jxl", "exr", "png",
         "pbm", "pgm", "ppm",
         "pfm",
         "psd", "pdd", "psb", "ptex", "rla", "sgi", "rgb", "rgba", "bw", "int", "inta", "pic", "tga", "tpic", "tif", "tiff", "tx", "env", "sm", "vsm", "zfile",

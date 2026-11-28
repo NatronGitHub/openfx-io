@@ -2592,6 +2592,7 @@ ReadOIIOPluginFactory::describe(ImageEffectDescriptor& desc)
                               "IFF (*.iff)\n"
                               "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi)\n"
                               "JPEG-2000 (*.jp2 *.j2k)\n"
+                              "JPEG XL (*.jxl)\n"
                               "OpenEXR (*.exr)\n"
                               "PNG / Portable Network Graphics (*.png)\n"
                               "PNM / Netpbm (*.pbm *.pgm *.ppm *.pfm)\n"
