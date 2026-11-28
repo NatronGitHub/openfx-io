@@ -2037,10 +2037,10 @@ ReadOIIOPlugin::decodePlane(const string& filename,
     assert(spec.x <= xbegin && xbegin < xend && xend <= spec.x + spec.width);
     assert(spec.y <= ybegin && ybegin < yend && yend <= spec.y + spec.height);
 
-    // Pixel offset to the start of the render window first line
-    size_t bottomScanLineDataStartOffset = (size_t)(renderWindowUnPadded.y1 - bounds.y1) * rowBytes + (size_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes;
+    // Pixel offset to the start of the render window first line (signed: rowBytes may be negative)
+    const std::ptrdiff_t bottomScanLineDataStartOffset = (std::ptrdiff_t)(renderWindowUnPadded.y1 - bounds.y1) * rowBytes + (std::ptrdiff_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes;
     // Pixel offset to the start of the last line of the render window
-    size_t topScanLineDataStartOffset = (size_t)(renderWindowUnPadded.y2 - 1 - bounds.y1) * rowBytes + (size_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes; // offset for line y2-1
+    const std::ptrdiff_t topScanLineDataStartOffset = (std::ptrdiff_t)(renderWindowUnPadded.y2 - 1 - bounds.y1) * rowBytes + (std::ptrdiff_t)(renderWindowUnPadded.x1 - bounds.x1) * pixelBytes; // offset for line y2-1
 
     std::size_t incr; // number of channels processed
     for (std::size_t i = 0; i < channels.size(); i += incr) {
@@ -2157,8 +2157,9 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                 int xBeginPadToTileSize = 0;
                 // This is the numner of extra pixels we decoded on the bottom
                 int yBeginPadToTileSize = 0;
-                std::size_t tiledBufferRowSize = rowBytes;
-                std::size_t tiledBufferPixelSize = xStride;
+                // (signed: rowBytes may be negative)
+                std::ptrdiff_t tiledBufferRowSize = rowBytes;
+                std::ptrdiff_t tiledBufferPixelSize = xStride;
                 if (!validRange) {
                     // If the tile range is invalid, expand to the closest enclosing valid tile range.
 
@@ -2186,7 +2187,7 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
                     tiledBufferPixelSize = getComponentBytes(eBitDepthFloat) * (chend - chbegin);
                     tiledBufferRowSize = (tiledXEnd - tiledXBegin) * tiledBufferPixelSize;
-                    std::size_t nBytes = tiledBufferRowSize * (tiledYEnd - tiledYBegin);
+                    const std::size_t nBytes = (std::size_t)tiledBufferRowSize * (std::size_t)(tiledYEnd - tiledYBegin);
                     try {
                         tiledBufferStorage.resize((nBytes + sizeof(float) - 1) / sizeof(float));
                     } catch (const std::bad_alloc&) {

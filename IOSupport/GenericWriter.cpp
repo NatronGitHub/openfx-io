@@ -485,10 +485,16 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
     assert(srcMappedComponentsCount != 0 && srcMappedComponents != ePixelComponentNone);
 
     bool renderWindowIsBounds = renderWindow.x1 == bounds->x1 && renderWindow.y1 == bounds->y1 && renderWindow.x2 == bounds->x2 && renderWindow.y2 == bounds->y2;
+    // encode() and encodePart() take packed bottom-up rows (GenericWriter.h): a host may give padded rows, or top-down
+    // rows with a negative rowBytes ("row bytes can be negative", ofxImageEffect.h kOfxImagePropRowBytes, #456)
+    const bool srcRowsPacked = srcRowBytes == (bounds->x2 - bounds->x1) * srcMappedComponentsCount * getComponentBytes(bitDepth);
+    // an Opaque input with an alpha channel: the copy below forces alpha to 1 (copyPixelsOpaque), so the input image
+    // can't be used as is
+    const bool forceOpaqueAlpha = (userPremult == eImageOpaque) && ((srcMappedComponents == ePixelComponentRGBA) || (srcMappedComponents == ePixelComponentAlpha));
 
-    if (renderWindowIsBounds && isOCIOIdentity && (noPremult || (userPremult == pluginExpectedPremult))) {
-        // Render window is of the same size as the input image and we don't need to apply colorspace conversion
-        // or premultiplication operations.
+    if (renderWindowIsBounds && srcRowsPacked && !forceOpaqueAlpha && isOCIOIdentity && (noPremult || (userPremult == pluginExpectedPremult))) {
+        // Render window is of the same size as the input image, its rows are packed, its alpha needs no change, and we
+        // don't need to apply colorspace conversion or premultiplication operations.
 
         *tmpMemPtr = (float*)srcPixelData;
         *rowBytes = srcRowBytes;
@@ -711,7 +717,7 @@ GenericWriterPlugin::fetchPlaneConvertAndCopy(const string& plane,
         // From now on, the data is the temporary buffer, which covers the render window,
         // and it still has to go through packing below (even if nothing was copied).
         *bounds = renderWindow;
-    } // if (renderWindowIsBounds && isOCIOIdentity && (noPremult || userPremult == pluginExpectedPremult))
+    } // if (renderWindowIsBounds && srcRowsPacked && !forceOpaqueAlpha && isOCIOIdentity && (noPremult || userPremult == pluginExpectedPremult))
 
     // Pack unless the selected channels are exactly the source channels, in order: a contiguous selection
     // that does not start at the first channel (e.g. G,B,A of an RGB source) must be packed too (#90).
@@ -1505,8 +1511,8 @@ public:
         const PIX* srcPix = (const PIX*)getSrcPixelAddress(procWindow.x1, procWindow.y1);
         assert(srcPix);
 
-        const int srcRowElements = _srcRowBytes / sizeof(PIX);
-        const int dstRowElements = _dstRowBytes / sizeof(PIX);
+        const int srcRowElements = _srcRowBytes / (int)sizeof(PIX); // (signed: rowBytes may be negative)
+        const int dstRowElements = _dstRowBytes / (int)sizeof(PIX);
         const int procWidth = procWindow.x2 - procWindow.x1;
 
         for (int y = procWindow.y1; y < procWindow.y2; ++y,
@@ -1672,8 +1678,8 @@ public:
         const PIX* srcPix = (const PIX*)getSrcPixelAddress(procWindow.x1, procWindow.y1);
         assert(srcPix);
 
-        const int srcRowElements = _srcRowBytes / sizeof(PIX);
-        const int dstRowElements = _dstRowBytes / sizeof(PIX);
+        const int srcRowElements = _srcRowBytes / (int)sizeof(PIX); // (signed: rowBytes may be negative)
+        const int dstRowElements = _dstRowBytes / (int)sizeof(PIX);
         const int procWidth = procWindow.x2 - procWindow.x1;
 
         for (int y = procWindow.y1; y < procWindow.y2; ++y,

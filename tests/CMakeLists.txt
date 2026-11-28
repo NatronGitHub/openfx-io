@@ -659,6 +659,22 @@ if(TARGET io_tests_ofx)
     io_test(test-ofx14-scan DIR "${B}/.ofx14scan" ENV "${_io_ocio_env}" COMMAND ${_p} --scan "${B}/.ofx14scan")
     io_test(test-ofx14-scan-full DIR "${B}/.ofx14scanfull" ENV "${_io_ocio_env}"
             COMMAND ${_p} --full --scan "${B}/.ofx14scanfull")
+    # test-ofx14-rowbytes: every plug-in renders with its images in packed, padded and top-down rows (a negative
+    # kOfxImagePropRowBytes; OFX14_ROWBYTES) and must give the same output in each layout (#456), in the OFX 1.4-only and
+    # full hosts; with AddressSanitizer and UBSan's pointer-overflow check, stopping at the first error (none with MinGW,
+    # which has neither)
+    if(WIN32)
+      set(_io_rowbytes_san "")
+    else()
+      set(_io_rowbytes_san ${_io_asan} -fsanitize=pointer-overflow -fno-sanitize-recover=pointer-overflow)
+    endif()
+    io_test_program(ofx14_host_test_rowbytes OFX THREADS SOURCES ${_io_ofx14_srcs}
+                    DEFINITIONS ${_io_gl_defs} INCLUDES ${_io_ofx14_incs} SANITIZE ${_io_rowbytes_san} LIBS ${_io_ofx14_libs})
+    set(_p $<TARGET_FILE:ofx14_host_test_rowbytes>)
+    set(_io_rowbytes_env "${_io_ocio_env}" "${_io_asan_env}" "UBSAN_OPTIONS=print_stacktrace=1 $ENV{UBSAN_OPTIONS}" OFX14_ROWBYTES=1)
+    io_test(test-ofx14-rowbytes DIR "${B}/.ofx14rowbytes" ENV ${_io_rowbytes_env} COMMAND ${_p} "${B}/.ofx14rowbytes")
+    io_test(test-ofx14-rowbytes-full DIR "${B}/.ofx14rowbytesfull" ENV ${_io_rowbytes_env}
+            COMMAND ${_p} --full "${B}/.ofx14rowbytesfull")
 
     if(IO_TESTS_SANITIZERS AND NOT WIN32)
       # test-ofx14-scan-asan: the same with AddressSanitizer (without LeakSanitizer, as the other ASan tests: the

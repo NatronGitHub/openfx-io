@@ -1724,7 +1724,7 @@ setOpaqueAlpha(const OfxRectI& renderWindow,
         return;
     }
     for (int y = w.y1; y < w.y2; ++y) {
-        // rowBytes may be negative (OFX images may be stored bottom-up): use signed offsets
+        // rowBytes may be negative (OFX images may be stored top-down): use signed offsets
         float* pix = (float*)((char*)pixelData + (ptrdiff_t)(y - bounds.y1) * (ptrdiff_t)rowBytes) + (ptrdiff_t)(w.x1 - bounds.x1) * pixelComponentCount + 3;
         for (int x = w.x1; x < w.x2; ++x, pix += pixelComponentCount) {
             *pix = 1.f;
@@ -3066,9 +3066,9 @@ public:
             assert(_srcBufferBounds.x1 <= procWindow.x1 && procWindow.x2 <= _srcBufferBounds.x2);
             assert(_dstBounds.x1 <= procWindow.x1 && procWindow.x2 <= _dstBounds.x2);
             const int srcRow = _srcBufferBounds.y2 - 1 - dsty;
-            // the first pixel of the row in each buffer (at x = bounds.x1)
-            float* dst_pixels = (float*)((char*)_dstPixelData + (size_t)_dstBufferRowBytes * (size_t)(dsty - _dstBounds.y1));
-            const SRCPIX* src_pixels = (const SRCPIX*)((const char*)_srcPixelData + (size_t)_srcBufferRowBytes * (size_t)srcRow);
+            // the first pixel of the row in each buffer (at x = bounds.x1); signed, as the row bytes may be negative
+            float* dst_pixels = (float*)((char*)_dstPixelData + (std::ptrdiff_t)(dsty - _dstBounds.y1) * _dstBufferRowBytes);
+            const SRCPIX* src_pixels = (const SRCPIX*)((const char*)_srcPixelData + (std::ptrdiff_t)srcRow * _srcBufferRowBytes);
 
             assert(dst_pixels && src_pixels);
 

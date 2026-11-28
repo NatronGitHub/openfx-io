@@ -1313,23 +1313,6 @@ GenericOCIO::colorspaceCheck(Side& side,
 }
 #endif // defined(OFX_IO_USING_OCIO) && defined(OFX_OCIO_CHOICE)
 
-void
-GenericOCIO::apply(double time,
-                   const OfxRectI& renderWindow,
-                   const OfxPointD& renderScale,
-                   Image* img)
-{
-    assert(_created);
-#ifdef OFX_IO_USING_OCIO
-    BitDepthEnum bitDepth = img->getPixelDepth();
-    if (bitDepth != eBitDepthFloat) {
-        throw std::runtime_error("OCIO: invalid pixel depth (only float is supported)");
-    }
-
-    apply(time, renderWindow, renderScale, (float*)img->getPixelData(), img->getBounds(), img->getPixelComponents(), img->getPixelComponentCount(), img->getRowBytes());
-#endif
-}
-
 #ifdef OFX_IO_USING_OCIO
 #if OCIO_VERSION_HEX < 0x02060000
 // the mutex of OCIOOptimizedProcessorLock (GenericOCIO.h): it guards OpenColorIO's static GetEnvVariable() string
@@ -1378,7 +1361,7 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     }
 
     pixelBytes = numChannels * sizeof(float);
-    // signed: _dstRowBytes may be negative (OFX images may be stored bottom-up)
+    // signed: _dstRowBytes may be negative (OFX images may be stored top-down)
     ptrdiff_t pixelDataOffset = (ptrdiff_t)(renderWindow.y1 - _dstBounds.y1) * (ptrdiff_t)_dstRowBytes + (ptrdiff_t)(renderWindow.x1 - _dstBounds.x1) * pixelBytes;
     float* pix = (float*)(((char*)_dstPixelData) + pixelDataOffset); // (char*)dstImg->getPixelAddress(renderWindow.x1, renderWindow.y1);
     try {

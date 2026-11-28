@@ -472,7 +472,10 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
     srcSpec.full_height = srcSpec.height;
     srcSpec.default_channel_names();
 
-    const ImageBuf srcBuf("src", srcSpec, const_cast<void*>(srcImg->getPixelAddress(srcBounds.x1, srcBounds.y1)));
+    // the host's row bytes, which may be padded or negative (top-down rows, #456). (The ImageBufs' y is OFX's, upwards:
+    // both images are flipped, which gives the same resize.) (OpenImageIO < 3.1 computes a negative stride's offset as
+    // a size_t (ImageBufImpl::pixeladdr): it wraps around, UB in OpenImageIO but the right address on flat targets)
+    const ImageBuf srcBuf(srcSpec, const_cast<void*>(srcImg->getPixelAddress(srcBounds.x1, srcBounds.y1)), AutoStride, srcImg->getRowBytes());
 
     /// This code assumes that the dstImg has the target size hence that we don't support tiles
     const OfxRectI dstBounds = dstImg->getBounds();
@@ -488,7 +491,8 @@ OIIOResizePlugin::renderInternal(const RenderArguments& args,
     dstSpec.full_height = dstSpec.height;
     dstSpec.default_channel_names();
 
-    ImageBuf dstBuf("dst", dstSpec, dstImg->getPixelAddress(dstBounds.x1, dstBounds.y1));
+    // (row bytes: see srcBuf)
+    ImageBuf dstBuf(dstSpec, dstImg->getPixelAddress(dstBounds.x1, dstBounds.y1), AutoStride, dstImg->getRowBytes());
     int filter;
     _filter->getValue(filter);
 

@@ -38,6 +38,11 @@
  * Environment variables select other hosts (see tests/README.md): OFX14_LEVEL=11 (OFX 1.1: no property of OFX 1.2 to
  * 1.4, no Message suite V2, no RGB), OFX14_GL=1 (the optional OpenGL render suite), OFX14_SEQSTATUS=0 (the sequential
  * render status), OFX14_NOSUITE, OFX14_COMPS, OFX14_DEPTHS, OFX14_SCALE...
+ * OFX14_ROWBYTES=1 (#456): the source is a pattern instead of a constant colour (so the colour checks are skipped), and
+ * each plug-in renders four times, with the images of every RowLayout of ofx_test_host.h: packed bottom-up rows, padded
+ * rows, top-down rows (a negative kOfxImagePropRowBytes) and padded top-down rows. Each render must give the same
+ * output image (or the same file, for a writer) as the packed one, and leave the padding of the rows untouched.
+ * `make test-ofx14-rowbytes` runs it with AddressSanitizer and UBSan's pointer-overflow check.
  *
  * Usage: ofx14_host_test [--full] [--scan] [--only <plug-in identifier>] <work directory>
  *   --full: the same tests in the full host (the default mode of ofx_test_host.h), for comparison. In that mode, a
@@ -65,6 +70,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <regex>
 #include <string>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -115,6 +121,7 @@ struct Variant {
     bool noTiles = false;             // OFX14_NOTILES
     bool noMultiRes = false;          // OFX14_NOMULTIRES
     bool noOverlays = false;          // OFX14_NOOVERLAYS
+    bool rowLayouts = false;          // OFX14_ROWBYTES: render in every RowLayout (see the top of this file)
 };
 Variant gVariant;
 
@@ -135,6 +142,7 @@ readVariant()
     v.noTiles = std::getenv("OFX14_NOTILES") != nullptr;
     v.noMultiRes = std::getenv("OFX14_NOMULTIRES") != nullptr;
     v.noOverlays = std::getenv("OFX14_NOOVERLAYS") != nullptr;
+    v.rowLayouts = std::getenv("OFX14_ROWBYTES") != nullptr;
     return v;
 }
 
@@ -208,18 +216,26 @@ setupImage(Clip* c,
     pSetDoubleN(PH(&c->props), kOfxImageEffectPropFrameRange, 2, fr);
 }
 
+// Fills the image of c with kColour, or with OFX14_ROWBYTES a pattern that differs in every row and column, alpha
+// included (in (0, 1], so that an unpremultiplication stays finite)
 void
 fillColour(Clip* c,
            const std::string& comps)
 {
     const int n = componentCount(comps.c_str());
     const std::string d = gDepth;
-    const size_t npix = c->buffer.size() / (bytesPerComponent(d.c_str()) * n);
+    std::vector<uint8_t> v(c->pixelRowBytes * c->rows);
+    const size_t w = c->pixelRowBytes / (bytesPerComponent(d.c_str()) * n);
+    const size_t npix = v.size() / (bytesPerComponent(d.c_str()) * n);
     for (size_t i = 0; i < npix; ++i) {
         for (int k = 0; k < n; ++k) {
-            setV(c->buffer, i * n + k, d, (n == 1) ? kColour[3] : kColour[k]);
+            const int x = (int)(i % w), y = (int)(i / w);
+            const float pattern = ((k == 3) || (n == 1)) ? (float)(1 + (x + 2 * y) % 4) / 4.f
+                                                         : (float)((3 * x + 7 * y + 5 * k) % 16) / 15.f;
+            setV(v, i * n + k, d, gVariant.rowLayouts ? pattern : ((n == 1) ? kColour[3] : kColour[k]));
         }
     }
+    setPackedPixels(c, v);
 }
 
 std::string
@@ -455,6 +471,15 @@ exerciseContext(OfxPlugin* p, const std::string& c, const std::string& file)
     std::printf("  context %s: instance, %d params changed\n", c.c_str(), nchanged);
 }
 
+// The contents of a written file, with the date and time of a TIFF DateTime tag ("YYYY:MM:DD HH:MM:SS", which
+// OpenImageIO writes) replaced by zeros
+std::string
+writtenContents(const std::string& file)
+{
+    static const std::regex dateTime("[0-9]{4}:[0-9]{2}:[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}");
+    return std::regex_replace(fileContents(file), dateTime, "0000:00:00 00:00:00");
+}
+
 // Run the tests of one plug-in.
 void
 testPlugin(OfxPlugin* p,
@@ -635,6 +660,13 @@ testPlugin(OfxPlugin* p,
     }
     if (s.kind == eWriter) {
         paramChanged(p, inst, kOfxImageEffectFileParamName, 1.);
+        // (the file may have set params, e.g. the output colour space from the file type: the spec's values win)
+        for (const auto& sp : s.strings) {
+            setOverrideString(&ctx, sp.first.c_str(), expand(sp.second));
+        }
+        for (const auto& ip : s.ints) {
+            setOverrideInt(&ctx, ip.first.c_str(), ip.second);
+        }
         // the Manual frame range starts at the time line bounds, here the input's frame range, which may be infinite
         // ("infinite if there are no non optional input clips"): the first and last frames are clamped to +-INT_MAX/2
         // (a conversion of infinity to int is undefined behaviour)
@@ -664,6 +696,13 @@ testPlugin(OfxPlugin* p,
         pSetString(PH(&a), kOfxPropChangeReason, 0, kOfxChangeUserEdited);
         st = p->mainEntry(kOfxActionInstanceChanged, EH(inst), PH(&a), nullptr);
         if (!ok(st)) fail("InstanceChanged(%s) = %d", kOfxImageEffectFileParamName, st);
+        // (the file may have set params, e.g. the file colour space: the spec's values win)
+        for (const auto& sp : s.strings) {
+            setOverrideString(&ctx, sp.first.c_str(), expand(sp.second));
+        }
+        for (const auto& ip : s.ints) {
+            setOverrideInt(&ctx, ip.first.c_str(), ip.second);
+        }
     }
 
     // clip preferences: the components of each clip (the depth is float, which every plug-in supports)
@@ -770,26 +809,68 @@ testPlugin(OfxPlugin* p,
         if (st == kOfxStatOK) std::printf("  identity\n");
     }
 
-    {
-        PropSet a = sequenceArgs(t);
-        st = p->mainEntry(kOfxImageEffectActionBeginSequenceRender, EH(inst), PH(&a), nullptr);
-        if (!ok(st)) fail("BeginSequenceRender = %d", st);
-    }
     const int on = componentCount(outComps.c_str());
     const size_t npix = (size_t)(rod[2] - rod[0]) * (rod[3] - rod[1]);
-    fillUnwrittenV(out->buffer, npix * on, gDepth);
-    {
-        PropSet a = makeRenderInArgs(t, kW, kH);
-        int win[4] = { rod[0], rod[1], rod[2], rod[3] };
-        pSetIntN(PH(&a), kOfxImageEffectPropRenderWindow, 4, win);
-        st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
-        if (!ok(st)) fail("Render = %d", st);
+    // the output image (packed), or the written file, of the render in the first layout (packed rows)
+    std::vector<uint8_t> output;
+    std::string written;
+    const std::vector<RowLayout> layouts = gVariant.rowLayouts
+        ? std::vector<RowLayout>{ RowLayout::ePacked, RowLayout::ePadded, RowLayout::eTopDown, RowLayout::eTopDownPadded }
+        : std::vector<RowLayout>{ RowLayout::ePacked };
+    for (RowLayout layout : layouts) {
+        // the source and output images in this layout (with the same pixels)
+        gRowLayout = layout;
+        if (src) {
+            setupImage(src, full, srcComps);
+            fillColour(src, srcComps);
+        }
+        setupImage(out, rod, outComps);
+        {
+            PropSet a = sequenceArgs(t);
+            st = p->mainEntry(kOfxImageEffectActionBeginSequenceRender, EH(inst), PH(&a), nullptr);
+            if (!ok(st)) fail("BeginSequenceRender = %d", st);
+        }
+        {
+            std::vector<uint8_t> v(out->pixelRowBytes * out->rows);
+            fillUnwrittenV(v, npix * on, gDepth);
+            setPackedPixels(out, v);
+        }
+        {
+            PropSet a = makeRenderInArgs(t, kW, kH);
+            int win[4] = { rod[0], rod[1], rod[2], rod[3] };
+            pSetIntN(PH(&a), kOfxImageEffectPropRenderWindow, 4, win);
+            st = p->mainEntry(kOfxImageEffectActionRender, EH(inst), PH(&a), nullptr);
+            if (!ok(st)) fail("Render = %d", st);
+        }
+        {
+            PropSet a = sequenceArgs(t);
+            st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, EH(inst), PH(&a), nullptr);
+            if (!ok(st)) fail("EndSequenceRender = %d", st);
+        }
+        if (layout == RowLayout::ePacked) {
+            output = packedPixels(out);
+            written = (s.kind == eWriter) ? writtenContents(file) : std::string();
+            continue;
+        }
+        // the same output as with packed rows, and nothing written in the padding of the rows
+        const char* name = rowLayoutName(layout);
+        if (!rowPaddingIntact(out) || (src && !rowPaddingIntact(src))) {
+            fail("%s rows: the padding of the rows was written", name);
+        }
+        if (s.kind == eWriter) {
+            const std::string w = writtenContents(file);
+            if (w != written) fail("%s rows: the file differs from the one written from packed rows (%zu bytes, not %zu)", name, w.size(), written.size());
+            else std::printf("  %s rows: the same file\n", name);
+        } else if (packedPixels(out) != output) {
+            const std::vector<uint8_t> o = packedPixels(out);
+            size_t nDiff = 0;
+            for (size_t i = 0; i < o.size(); ++i) nDiff += (o[i] != output[i]);
+            fail("%s rows: %zu of the %zu output bytes differ from the output with packed rows", name, nDiff, o.size());
+        } else {
+            std::printf("  %s rows: the same output\n", name);
+        }
     }
-    {
-        PropSet a = sequenceArgs(t);
-        st = p->mainEntry(kOfxImageEffectActionEndSequenceRender, EH(inst), PH(&a), nullptr);
-        if (!ok(st)) fail("EndSequenceRender = %d", st);
-    }
+    gRowLayout = RowLayout::ePacked;
 
     if (s.kind != eWriter) {
         size_t unwritten = 0;
@@ -797,11 +878,11 @@ testPlugin(OfxPlugin* p,
         double maxDiff = 0.;
         for (size_t i = 0; i < npix; ++i) {
             for (int k = 0; k < on; ++k) {
-                if (unwrittenV(out->buffer, i * on + k, gDepth)) {
+                if (unwrittenV(output, i * on + k, gDepth)) {
                     ++unwritten;
                     continue;
                 }
-                const float v = getV(out->buffer, i * on + k, gDepth);
+                const float v = getV(output, i * on + k, gDepth);
                 sum[k] += v;
                 const float expected = (on == 1) ? kColour[3] : kColour[k];
                 const double d = std::fabs((double)v - expected);
@@ -812,7 +893,9 @@ testPlugin(OfxPlugin* p,
         std::printf("  output %s, mean", outComps.c_str());
         for (int k = 0; k < on; ++k) std::printf(" %.4f", sum[k] / (double)npix);
         std::printf(", max |output - source colour| = %g\n", maxDiff);
-        if ((s.tol >= 0.) && !(maxDiff <= s.tol)) {
+        if (gVariant.rowLayouts) {
+            // (the source is a pattern, not the colour)
+        } else if ((s.tol >= 0.) && !(maxDiff <= s.tol)) {
             fail("the output differs from the source colour by %g (tolerance %g)", maxDiff, s.tol);
         }
     } else {
@@ -918,7 +1001,7 @@ main(int argc,
     initHost();
     gReqScale = gRS;
     const Variant& v = gVariant;
-    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d, opengl=%d, seqstatus=%s, hostname=%s\n", gOfxLevel, v.noSuite ? v.noSuite : "-", v.depths ? v.depths : "all", v.comps ? v.comps : "default", !v.noTiles, !v.noMultiRes, gRS, !v.noOverlays, (int)gOpenGLRender, v.seqStatus ? v.seqStatus : "1", v.hostName ? v.hostName : "-");
+    std::printf("variant: level %d, nosuite=%s, depths=%s, comps=%s, tiles=%d, multires=%d, scale=%g, overlays=%d, opengl=%d, seqstatus=%s, hostname=%s, rowbytes=%d\n", gOfxLevel, v.noSuite ? v.noSuite : "-", v.depths ? v.depths : "all", v.comps ? v.comps : "default", !v.noTiles, !v.noMultiRes, gRS, !v.noOverlays, (int)gOpenGLRender, v.seqStatus ? v.seqStatus : "1", v.hostName ? v.hostName : "-", (int)v.rowLayouts);
 
     // an identity 1D LUT for OCIOFileTransform (which has no default file)
     {
@@ -931,7 +1014,7 @@ main(int argc,
 
     // tolerances: lossless formats (with 8-bit quantization), lossy formats (MOV)
     const double kLossless = 0.003, kLossy = 0.03, kNone = -1.;
-    const std::vector<Spec> specs = {
+    std::vector<Spec> specs = {
         // writers first, then the readers of their files
         { "fr.inria.openfx.WritePNG", eWriter, "image.png", kNone, {}, {} },
         // the input format (formatType 0): without kOfxImageClipPropFormat (Natron), the input's RoD
@@ -940,6 +1023,7 @@ main(int argc,
         { "fr.inria.openfx.WritePFM", eWriter, "image.pfm", kNone, {}, {} },
         { "fr.inria.openfx.WriteOIIO", eWriter, "image.tif", kNone, {}, {} },
         { "fr.inria.openfx.WriteFFmpeg", eWriter, "movie.mov", kNone, {}, {} },
+        // (OFX14_ROWBYTES: the writers again, inserted here, and the readers again after the readers)
         { "fr.inria.openfx.ReadPNG", eReader, "image.png", kLossless, {}, {} },
         { "fr.inria.openfx.ReadEXR", eReader, "image.exr", kLossless, {}, {} },
         { "fr.inria.openfx.ReadPFM", eReader, "image.pfm", kLossless, {}, {} },
@@ -962,6 +1046,37 @@ main(int argc,
         { "net.sf.openfx.SeNoise", eFilter, "", kNone, {}, {} },
         { "fr.inria.openfx.RunScript", eFilter, "", kNone, {}, { { "validate", 1 } } },
     };
+
+    if (gVariant.rowLayouts) {
+        // the writers again, with the same input and output colour spaces, and an unpremultiplied or opaque input:
+        // GenericWriter may then give the input image itself to encode(), whose rows must be packed (GenericWriter.h),
+        // except for an opaque input with alpha, whose alpha it sets to 1 (it must not depend on the rows either)
+        const auto readers = std::find_if(specs.begin(), specs.end(), [](const Spec& sp) { return sp.kind == eReader; });
+        std::vector<Spec> writers;
+        for (auto it = specs.begin(); it != readers; ++it) {
+            if (it->ints.empty()) {
+                for (const int premult : { 2 /* UnPreMultiplied */, 0 /* Opaque */ }) {
+                    Spec w = *it;
+                    w.file = (premult ? "identity-unpremult-" : "identity-opaque-") + w.file;
+                    w.strings = { { "ocioInputSpace", "linear" }, { "ocioOutputSpace", "linear" } };
+                    w.ints = { { "inputPremult", premult } };
+                    writers.push_back(w);
+                }
+            }
+        }
+        const auto end = specs.insert(readers, writers.begin(), writers.end()) + writers.size();
+        // the readers again, with the same file and output colour spaces and an unpremultiplied output: GenericReader
+        // then decodes straight into the output image (GenericReader::render())
+        std::vector<Spec> readers2;
+        for (auto it = end; it != specs.end() && it->kind == eReader; ++it) {
+            Spec r = *it;
+            r.strings = { { "ocioInputSpace", "linear" }, { "ocioOutputSpace", "linear" } };
+            r.ints = { { "outputPremult", 2 } }; // UnPreMultiplied
+            readers2.push_back(r);
+        }
+        const auto filters = std::find_if(end, specs.end(), [](const Spec& sp) { return sp.kind == eFilter; });
+        specs.insert(filters, readers2.begin(), readers2.end());
+    }
 
     const int n = OfxGetNumberOfPlugins();
     std::printf("plugins=%d\n", n);
