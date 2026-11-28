@@ -636,6 +636,11 @@ if(TARGET io_tests_ofx)
     io_test(test-ofx14-resolve DIR "${B}/.ofx14-resolve" ENV "${_io_ocio_env}" OFX14_GL=1 OFX14_HOSTNAME=DaVinciResolve
             COMMAND ${_p} "${B}/.ofx14-resolve")
     io_test(test-ofx14-full DIR "${B}/.ofx14full" ENV "${_io_ocio_env}" COMMAND ${_p} --full "${B}/.ofx14full")
+    # render scales 0.75 (not a power of two) and 0.5, the writers at scale 1 (#194)
+    io_test(test-ofx14-scale075 DIR "${B}/.ofx14-scale075" ENV "${_io_ocio_env}" OFX14_SCALE=0.75 OFX14_SCALE_WRITERS1=1
+            COMMAND ${_p} "${B}/.ofx14-scale075")
+    io_test(test-ofx14-scale05 DIR "${B}/.ofx14-scale05" ENV "${_io_ocio_env}" OFX14_SCALE=0.5 OFX14_SCALE_WRITERS1=1
+            COMMAND ${_p} "${B}/.ofx14-scale05")
     # after a plug-in scan (Load and Describe every plug-in, then Unload them all), in the OFX 1.4-only and full hosts
     io_test(test-ofx14-scan DIR "${B}/.ofx14scan" ENV "${_io_ocio_env}" COMMAND ${_p} --scan "${B}/.ofx14scan")
     io_test(test-ofx14-scan-full DIR "${B}/.ofx14scanfull" ENV "${_io_ocio_env}"

@@ -2977,6 +2977,21 @@ public:
         return st;
     }
 
+    // the isIdentity action at time 1, view 0, over a window of the image at that render scale
+    OfxStatus isIdentity(double renderScale)
+    {
+        PropSet a;
+        pSetDouble(PH(&a), kOfxPropTime, 0, 1.);
+        double rs[2] = { renderScale, renderScale };
+        pSetDoubleN(PH(&a), kOfxImageEffectPropRenderScale, 2, rs);
+        pSetString(PH(&a), kOfxImageEffectPropFieldToRender, 0, kOfxImageFieldNone);
+        int win[4] = { 0, 0, 2, 1 };
+        pSetIntN(PH(&a), kOfxImageEffectPropRenderWindow, 4, win);
+        pSetInt(PH(&a), kFnOfxImageEffectPropView, 0, 0);
+        PropSet o;
+        return _p->mainEntry(kOfxImageEffectActionIsIdentity, EH(_inst), PH(&a), PH(&o));
+    }
+
     // begin, render each frame in order, end: 0 if all succeeded
     int renderAll(int nFrames)
     {
@@ -3827,44 +3842,56 @@ int testWritePFMDiskFull(const std::string& outFile)
 #endif
 }
 
-// #438: a writer (GenericWriter, here WritePFM) at a render scale other than 1. beginSequenceRender and render fail with
-// an error message that says why (they used to fail with no message), and write no file. getRegionOfDefinition fails
-// with no message: Natron calls it at scale 0.5 to find out whether the plug-in supports render scales
-// (Engine/OfxEffectInstance.cpp), then renders it at scale 1 only. At scale 1, the same instance writes the file.
+// #438: a writer (GenericWriter, here WritePFM) at a render scale other than 1 (0.5, and 0.75, which is not a power of
+// two, #194). beginSequenceRender and render fail with an error message that says why (they used to fail with no
+// message), and write no file. isIdentity returns "not an identity" (it used to fail with no message, #194).
+// getRegionOfDefinition fails with no message: Natron calls it at scale 0.5 to find out whether the plug-in supports
+// render scales (Engine/OfxEffectInstance.cpp), then renders it at scale 1 only. At scale 1, the same instance writes
+// the file.
 int testWriterRenderScale(const std::string& outFile)
 {
     const std::string file = outFile + ".i438.pfm";
-    std::printf("==== WritePFM at render scale 0.5: the render fails with an error message (issue #438) ====\n");
-    std::remove(file.c_str());
     int failures = 0;
-    WriterSession s;
-    if (s.create(file, 8, 4, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return 1;
     auto expect = [&failures](bool cond, const std::string& what) {
         std::printf("  %s: %s\n", cond ? "PASS" : "FAIL", what.c_str());
         failures += cond ? 0 : 1;
     };
     auto exists = [&file]() { return fileSize(file) >= 0; };
-    msgClear(nullptr);
-    OfxStatus st = s.regionOfDefinition(0.5);
-    std::string error = persistentError();
-    expect(!ok(st) && error.empty(), "getRegionOfDefinition at scale 0.5 fails (" + std::to_string(st) + ") without a message: \"" + error + "\"");
-    msgClear(nullptr);
-    st = s.begin(1, 0.5);
-    error = persistentError();
-    expect(!ok(st) && error.find("render scale") != std::string::npos,
-          "beginSequenceRender at scale 0.5 fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
-    s.end(1);
-    msgClear(nullptr);
-    st = s.render(1, 0.5);
-    error = persistentError();
-    expect(!ok(st) && error.find("render scale") != std::string::npos,
-          "render at scale 0.5 fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
-    expect(!exists(), "no file is written at scale 0.5");
-    // (no msgClear: a successful render must clear the error itself, as a host shows it until then)
-    expect(s.renderAll(1) == 0 && exists(), "at scale 1, the file is written");
-    error = persistentError();
-    expect(error.empty(), "after the render at scale 1, no error: \"" + error + "\"");
-    std::remove(file.c_str());
+    for (double scale : { 0.5, 0.75 }) {
+        char at[32];
+        std::snprintf(at, sizeof(at), "at scale %g", scale);
+        std::printf("==== WritePFM %s: the render fails with an error message (issues #438, #194) ====\n", at);
+        std::remove(file.c_str());
+        WriterSession s;
+        if (s.create(file, 8, 4, 1, WriterParams(), "fr.inria.openfx.WritePFM")) return failures + 1;
+        msgClear(nullptr);
+        OfxStatus st = s.regionOfDefinition(scale);
+        std::string error = persistentError();
+        expect(!ok(st) && error.empty(), std::string("getRegionOfDefinition ") + at + " fails (" + std::to_string(st) + ") without a message: \"" + error + "\"");
+        // isIdentity: a writer is never an identity, at any scale (it used to fail without a message, #194)
+        msgClear(nullptr);
+        st = s.isIdentity(scale);
+        error = persistentError();
+        expect(st == kOfxStatReplyDefault && error.empty(),
+               std::string("isIdentity ") + at + " is not an identity (" + std::to_string(st) + "), without a message: \"" + error + "\"");
+        msgClear(nullptr);
+        st = s.begin(1, scale);
+        error = persistentError();
+        expect(!ok(st) && error.find("render scale") != std::string::npos,
+              std::string("beginSequenceRender ") + at + " fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
+        s.end(1);
+        msgClear(nullptr);
+        st = s.render(1, scale);
+        error = persistentError();
+        expect(!ok(st) && error.find("render scale") != std::string::npos,
+              std::string("render ") + at + " fails (" + std::to_string(st) + ") with a message: \"" + error + "\"");
+        expect(!exists(), std::string("no file is written ") + at);
+        // (no msgClear: a successful render must clear the error itself, as a host shows it until then)
+        expect(s.renderAll(1) == 0 && exists(), std::string("after the failures ") + at + ", at scale 1, the file is written");
+        error = persistentError();
+        expect(error.empty(), std::string("after the failures ") + at + ", the render at scale 1 leaves no error: \"" + error + "\"");
+        std::remove(file.c_str());
+    }
     if (!failures) std::printf("  PASS\n");
     return failures;
 }

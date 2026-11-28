@@ -328,16 +328,14 @@ GenericWriterPlugin::checkExtension(const string& ext)
 }
 
 bool
-GenericWriterPlugin::isIdentity(const IsIdentityArguments& args,
+GenericWriterPlugin::isIdentity(const IsIdentityArguments& /*args*/,
                                 Clip*& /*identityClip*/,
                                 double& /*identityTime*/
                                 ,
                                 int& /*view*/, std::string& /*plane*/)
 {
-    if (!kSupportsRenderScale && ((args.renderScale.x != 1.) || (args.renderScale.y != 1.))) {
-        throwSuiteStatusException(kOfxStatFailed);
-    }
-
+    // A writer is never an identity, at any render scale: this action fetches no image, and failing here without a
+    // message would hide the render's error message about the render scale (#194)
     return false;
 }
 

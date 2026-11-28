@@ -10,7 +10,7 @@ with the compiler, C++ standard (`OFX_CXX_STANDARD`) and FFmpeg (`FFMPEG_PKG_CON
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ...   # from the repository root
 cmake --build build -j4
 ctest --test-dir build --output-on-failure          # everything (with io-load, io-icons, io-hostdemo: ../README.md)
-ctest --test-dir build -R '^test-ofx14(-11|-gl|-resolve|-full)?$'   # the runs of `make test-ofx14`
+ctest --test-dir build -R '^test-ofx14(-11|-gl|-resolve|-full|-scale075|-scale05)?$'   # the runs of `make test-ofx14`
 ```
 
 They are the programs of `tests/Makefile`, with the same sources, defines and flags (`-O0 -g` for those that link the
@@ -18,7 +18,8 @@ plug-ins, `-O2 -g -Wall` for the others, and `assert()` enabled, whatever the bu
 each ctest test is one run of a `make` target, named after it (`test-<target>`, plus a suffix when the target runs
 the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `make test-ofx`; `test-ocio-anim`,
 `test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
-`test-ofx14-11`, `test-ofx14-gl`, `test-ofx14-resolve` and `test-ofx14-full` are `make test-ofx14`; `test-ofx14-scan` and
+`test-ofx14-11`, `test-ofx14-gl`, `test-ofx14-resolve`, `test-ofx14-full`, `test-ofx14-scale075` and
+`test-ofx14-scale05` are `make test-ofx14`; `test-ofx14-scan` and
 `test-ofx14-scan-full` are `make test-ofx14-scan`; `test-runscript-win32` (MS Windows only), `test-runscript-output`
 and `test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
 it links (e.g. `test-seexpr`, with the SeExpr of the build). The programs run in `build/tests`, where they write their
@@ -92,7 +93,7 @@ make test-writeffmpeg-format-from-filename # WriteFFmpeg: the Format menu entry 
 make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
 make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
 make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
-make test-writer-render-scale # a writer at a render scale other than 1 fails with an error message (#438)
+make test-writer-render-scale # a writer at render scales 0.5 and 0.75 fails with an error message (#438, #194)
 make test-writer-no-overwrite # WriteFFmpeg, Overwrite unchecked: a new movie is written; an existing one fails the render and is kept (#470)
 make test-writer-image-overlapping-begins # two overlapping one-frame sequence renders of an image writer both succeed (#470)
 make test-writer-file-change-during-render # WriteFFmpeg: a file change from .mov to .png during a render doesn't block the next one (#470)
@@ -108,7 +109,7 @@ make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSan
 make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context, Reload, purge caches (#275, #282-#284, #361, #402)
 make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
 make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
-make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287), a render at scale 0.5 fails with an error message (#438), and a script that can only be written in part (RLIMIT_FSIZE of 64 bytes) fails the render instead of running
+make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287), a render at scale 0.5 fails with an error message (#438), InstanceChanged and getRegionsOfInterest at scales 0.75 and 0.5 succeed (#194), and a script that can only be written in part (RLIMIT_FSIZE of 64 bytes) fails the render instead of running
 make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
 make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
 make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
@@ -532,12 +533,15 @@ part is skipped when running as root). It is not run on MS Windows, which has no
 negative or huge size (more than 65535, as in `decode()`): `getRegionOfDefinition` must fail with an error that names
 the file, instead of giving the host that RoD; a valid 3x2 header gives the RoD `[0 0 3 2]`.
 
-`test-writer-render-scale` (issue #438) runs `ofx_render_test OUT --writer-render-scale`: WritePFM (GenericWriter) at
-render scale 0.5. `beginSequenceRender` and `render` must fail with an error message that says why, and write no
-file; `getRegionOfDefinition` must fail without a message, since Natron calls it at scale 0.5 to find out whether a
-plug-in supports render scales. At scale 1, the same instance writes the file. `test-runscript` checks the same
-message for RunScript's render (`runscript_render_test`, POSIX only), which also checks that a short write of the
-script file (RLIMIT_FSIZE of 64 bytes) fails the render with an error message instead of running the truncated script.
+`test-writer-render-scale` (issues #438, #194) runs `ofx_render_test OUT --writer-render-scale`: WritePFM
+(GenericWriter) at render scales 0.5 and 0.75. `beginSequenceRender` and `render` must fail with an error message
+that says why, and write no file; `isIdentity` must say "not an identity", without a message (it used to fail with no
+message, #194); `getRegionOfDefinition` must fail without a message, since Natron calls it at scale 0.5 to find out
+whether a plug-in supports render scales. At scale 1, the same instance writes the file. `test-runscript` checks the
+same message for RunScript's render (`runscript_render_test`, POSIX only), which also checks that a short write of the
+script file (RLIMIT_FSIZE of 64 bytes) fails the render with an error message instead of running the truncated script,
+and that InstanceChanged ("Number of Parameters", "Validate") and getRegionsOfInterest at render scales 0.75 and 0.5
+succeed, and update RunScript's params (they used to fail with no message, #194: they fetch no image).
 
 `test-writer-no-overwrite` (issue #470) runs `ofx_render_test OUT --writer-no-overwrite`: WriteFFmpeg with
 "Overwrite" unchecked renders 3 frames to a new movie, which must have 3 frames (on master, `beginEncode()` created
@@ -933,7 +937,7 @@ the project size, plus the project offset for a position), except where it rejec
 `kOfxParamPropDefaultCoordinateSystem` (OFX 1.1, Resolve); in every host, the default transform center of SeNoise must
 be the project centre, without setting its "center changed" flag.
 
-`make test-ofx14` runs it in five hosts:
+`make test-ofx14` runs it in five hosts, then twice more in the OFX 1.4-only host:
 
 * OFX 1.4 only;
 * OFX 1.1 (`OFX14_LEVEL=11`): also without the properties of OFX 1.2 to 1.4 (e.g.
@@ -943,7 +947,10 @@ be the project centre, without setting its "center changed" flag.
 * the same OpenGL render suite in a host named `DaVinciResolve` (`OFX14_HOSTNAME`), which never renders with it, and
   which rejects `kOfxParamPropDefaultCoordinateSystem`, as Resolve does: the OCIO plug-ins must disable their
   `enableGPU` param there, and SeNoise's default transform center must still be the project centre;
-* the full host (`--full`), where an OverlayInteractV2 also requires an OverlayInteractV1.
+* the full host (`--full`), where an OverlayInteractV2 also requires an OverlayInteractV1;
+* render scales 0.75 (not a power of two) and 0.5 (`OFX14_SCALE`), with the writers at scale 1
+  (`OFX14_SCALE_WRITERS1`), which render at scale 1 only (`test-writer-render-scale`): the readers read the writers'
+  files at that scale, and every plug-in that supports multiple resolutions writes its whole render window (#194).
 
 Other variants, from environment variables (see `ofx_test_host.h` and `ofx14_host_test.cpp`): `OFX14_NOSUITE` (suites
 to drop), `OFX14_COMPS` and `OFX14_DEPTHS` (the host's components and depths), `OFX14_NOTILES`, `OFX14_NOMULTIRES`,
@@ -985,6 +992,8 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   `albedo.G` (and wins over `specular.RGBA`, which sorts after it).
 * **render windows**: narrower than the data window (decode()'s buffer, in blocks of
   256 lines): exact inside, nothing written outside; render scale 1/2.
+* **render scales 0.75 and 1/2** (#194): every pixel of an RGB file's render is the area-weighted mean of the pixels
+  of its render at scale 1 that it covers (GenericReader used to write a crop of the image at 0.75).
 * **alpha 1 for files without alpha** (#234): an RGB and a grey PFM, TIFF, and an RGB PNG, read as RGBA with each
   `filePremult` (Opaque, PreMultiplied, UnPreMultiplied), without and with an OCIO conversion (from `x2` to `x1` of
   `swap.ocio`, next to `$OCIO`, which multiplies the colours by 2, so that GenericReader unpremultiplies, converts and

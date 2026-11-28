@@ -330,14 +330,16 @@ clean: clean-ofx14
 # no Message suite V2, no RGB); OFX 1.4 with the optional OpenGL render suite, and a sequential render status of 0;
 # a host named DaVinciResolve with the OpenGL render suite, which it never uses; then the full host
 test-ofx14: ofx14_host_test
-	rm -rf .ofx14 .ofx14-11 .ofx14-gl .ofx14-resolve .ofx14full
+	rm -rf .ofx14 .ofx14-11 .ofx14-gl .ofx14-resolve .ofx14full .ofx14-scale075 .ofx14-scale05
 	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test $(CURDIR)/.ofx14
+	OCIO=$(CURDIR)/test.ocio OFX14_SCALE=0.75 OFX14_SCALE_WRITERS1=1 ./ofx14_host_test $(CURDIR)/.ofx14-scale075
+	OCIO=$(CURDIR)/test.ocio OFX14_SCALE=0.5 OFX14_SCALE_WRITERS1=1 ./ofx14_host_test $(CURDIR)/.ofx14-scale05
 	OCIO=$(CURDIR)/test.ocio OFX14_LEVEL=11 ./ofx14_host_test $(CURDIR)/.ofx14-11
 	OCIO=$(CURDIR)/test.ocio OFX14_GL=1 OFX14_SEQSTATUS=0 ./ofx14_host_test $(CURDIR)/.ofx14-gl
 	OCIO=$(CURDIR)/test.ocio OFX14_GL=1 OFX14_HOSTNAME=DaVinciResolve ./ofx14_host_test $(CURDIR)/.ofx14-resolve
 	OCIO=$(CURDIR)/test.ocio ./ofx14_host_test --full $(CURDIR)/.ofx14full
 clean-ofx14:
-	rm -rf ofx14_host_test ofx14_host_test.dSYM .ofx14 .ofx14-11 .ofx14-gl .ofx14-resolve .ofx14full
+	rm -rf ofx14_host_test ofx14_host_test.dSYM .ofx14 .ofx14-11 .ofx14-gl .ofx14-resolve .ofx14full .ofx14-scale075 .ofx14-scale05
 
 # The same tests after a plug-in scan (--scan: Load and Describe every plug-in, then Unload them all, as a host that
 # unloads the binary after its scan, HostSupport's default since openfx #174), in the OFX 1.4-only host and in the
