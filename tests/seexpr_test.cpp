@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <cfenv> // feclearexcept, fetestexcept
 #include <pthread.h>
 #include <cstdint>
 #include <cstdio>
@@ -751,6 +752,11 @@ main(int /*argc*/,
         "frame < 1e6 ? 0 : cpixel(1, frame + spline(sqrt(frame - 20), 0, 1, 2, 3), x, y)",
         "frame < 1e6 ? 0 : cpixel(1, frame + noise(frame * 1e300), x, y)",
         "frame < 1e6 ? 0 : cpixel(1, frame + hash(sqrt(frame - 20)), x, y)",
+        // pick() and cycle() are evaluated for each component of a vector result (#286: pick() of [3, 3e6, 3] did
+        // alloca(3e6 * 8) twice, a stack overflow)
+        "frame < 1e6 ? 0 : cpixel(1, frame + pick(frame, [0, 0, 0], [3, 3e6, 3])[0], x, y)",
+        // a number that is too large for a double (1e400 is infinite): not a frame (#286)
+        "cpixel(1, frame + 1e400, x, y)",
     };
     for (const char* script : unknownScripts) {
         // the default range and the current frame (always fetched), and possibly the frames of the evaluation with NaN
@@ -792,16 +798,86 @@ main(int /*argc*/,
 
     std::printf("==== getFramesNeeded(): NaN intermediate values ====\n");
     {
-        // sqrt(-10) is NaN, which is true for ?: in SeExpr (which evaluates the whole expression, as the render does):
-        // frame + 3
+        // sqrt(-10) is NaN (true for ?: in the render): the analysis does not compute it (#286), the condition is
+        // unknown, both branches: frame + 3, and the default range for frame + x
         const char* script = "cpixel(1, sqrt(frame - 20) ? frame + 3 : frame + x, x, y)";
         const std::vector<double> r = framesNeeded(p, ctx, inst, script, 10.);
-        check(r == std::vector<double>({ 10., 10., 13., 13. }), "%s at 10: %s (expected [10,10] [13,13])", script, rangesString(r).c_str());
-        // the same through the partial evaluation (the plug-in's arithmetic, built with -ffast-math, does not handle NaN:
-        // the NaN condition is unknown, both branches): frame + 3, and the default range for frame + x
+        check(r == std::vector<double>({ 5., 15., 10., 10., 13., 13. }), "%s at 10: %s (expected [5,15] [10,10] [13,13])", script, rangesString(r).c_str());
+        // the same through the partial evaluation
         const char* script2 = "cpixel(1, (sqrt(frame - 20) + 0 * x) ? frame + 3 : frame + x, x, y)";
         const std::vector<double> r2 = framesNeeded(p, ctx, inst, script2, 10.);
         check(covers(r2, { 5., 15., 10., 10. }) && covers(r2, { 13., 13. }), "%s at 10: %s (expected at least [5,15] [10,10], which has 13)", script2, rangesString(r2).c_str());
+    }
+
+    std::printf("==== getFramesNeeded(): no NaN or infinite value is computed, the same with -ffast-math (#286) ====\n");
+    {
+        // The arguments of each operator and function are checked against its domain before it is evaluated: out of it
+        // (a NaN or an infinite value in SeExpr), or above 1e100, the value is unknown, which gives the default range
+        // (5..15) and frame 10. No floating-point exception is raised (invalid: NaN; overflow and division by zero:
+        // infinite values). The flags are evidence at -O2 only: without FENV_ACCESS (and with -fno-trapping-math, which
+        // -Ofast implies) the compiler may move or drop floating-point operations; at -Ofast, the evidence is the exact
+        // frames.
+        const struct {
+            const char* script;
+            std::vector<double> ranges;
+        } scripts[] = {
+            // domains: in them, the value; out of them (NaN in SeExpr), unknown
+            { "cpixel(1, frame + sqrt(frame - 1), x, y)", { 10., 10., 13., 13. } },
+            { "cpixel(1, frame + sqrt(frame - 20), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + acos(frame / 20), x, y)", { 10., 10., 11., 11. } }, // 11.05
+            { "cpixel(1, frame + acos(frame), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + fmod(frame, 4), x, y)", { 10., 10., 12., 12. } },
+            { "cpixel(1, frame + fmod(frame, 0), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + pow(-frame, 0.5), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + (-frame) ^ 0.5, x, y)", { 10., 10. } }, // ^ is 0 for a negative base (SeExpr)
+            { "cpixel(1, frame + noise(sqrt(frame - 20)), x, y)", { 5., 15., 10., 10. } }, // a guarded function
+            // hash() converts a negative fraction to uint32_t (undefined), also for the index of pick(): unknown, and
+            // pick() is one of the integers from lo to hi
+            { "cpixel(1, frame + hash(-frame) * 0, x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + pick(-frame, 0, 2), x, y)", { 10., 10., 11., 11., 12., 12. } },
+            { "cpixel(1, frame + ([1, 2, 3] / [1, 0, 1])[0], x, y)", { 5., 15., 10., 10. } }, // each component
+            // infinite values: log(0), 0 ^ -1, overflows, a division by 0 (partial evaluation), inf - inf
+            { "cpixel(1, frame + log(frame - 10), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + 0 ^ -1, x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + exp(frame * 100), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + exp(frame * 100) - exp(frame * 100), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + (x > 3 ? frame : -frame) / 0, x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + (x > 3 ? exp(frame * 70) : 1) * exp(frame * 70) * 0, x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + (x > 3 ? exp(frame * 100) : 0) - exp(frame * 100), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + gamma(frame, 0), x, y)", { 5., 15., 10., 10. } }, // pow(frame, 1 / 0)
+            // ortho() = norm(cross()): the length of a cross product of large operands overflows
+            { "cpixel(1, frame + ortho([1, 0, 0], [0, frame, 0])[2], x, y)", { 10., 10., 11., 11. } },
+            { "cpixel(1, frame + ortho([frame * 1e98, 0, 0], [0, 1e99, 0])[2], x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + norm(cross([frame * 1e98, 0, 0], [0, 1e99, 0]))[2], x, y)", { 5., 15., 10., 10. } },
+            // curve() and ccurve() with constant control points at distinct integer positions; otherwise unknown
+            { "cpixel(1, curve(frame, 0, 0, 1, 100, 50, 1), x, y)", { 5., 5., 10., 10. } },
+            { "cpixel(1, frame + ccurve(frame, 0, [0, 0, 0], 1, 100, [50, 50, 50], 1)[0], x, y)", { 10., 10., 15., 15. } },
+            { "cpixel(1, curve(frame, 5, 1, 4, 5, 2, 4), x, y)", { 5., 15., 10., 10. } }, // coincident positions
+            { "cpixel(1, curve(frame, 0, 0, 1, 99.5, 50, 1), x, y)", { 5., 15., 10., 10. } }, // not an integer
+            { "f = 100; cpixel(1, curve(frame, 0, 0, 1, f, 50, 1), x, y)", { 5., 15., 10., 10. } }, // read at the prep
+            { "cpixel(1, curve(frame * 1e40, 0, 0, 1, 100, 50, 1), x, y)", { 5., 15., 10., 10. } }, // a large parameter
+            // functions whose domain can not be checked from their arguments: not analyzed
+            { "cpixel(1, frame + angle([1, 0, 0], [0, 1, 0]), x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + up([1, 0, 0], [0, 1, 0])[0], x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + hsi([1, 0.5, 0.2], 0, 1, 1)[0], x, y)", { 5., 15., 10., 10. } },
+            { "cpixel(1, frame + midhsi([1, 0.5, 0.2], 0, 1, 1, 0.5)[0], x, y)", { 5., 15., 10., 10. } },
+            // a ?: evaluates only the selected branch (as SeExpr), && and || their second operand only if needed
+            { "cpixel(1, frame > 20 ? sqrt(frame - 20) : sin(frame) + frame, x, y)", { 9., 9., 10., 10. } }, // 9.46
+            { "cpixel(1, frame + (frame > 20 && sqrt(frame - 20) > 1) * 5, x, y)", { 10., 10. } },
+            { "cpixel(1, frame + (frame < 20 || log(frame - 10) > 1) * 5, x, y)", { 10., 10., 15., 15. } },
+        };
+        for (const auto& c : scripts) {
+            std::feclearexcept(FE_ALL_EXCEPT);
+            const std::vector<double> r = framesNeeded(p, ctx, inst, c.script, 10.);
+            const int raised = std::fetestexcept(FE_INVALID | FE_OVERFLOW | FE_DIVBYZERO);
+            check((r == c.ranges) && (raised == 0), "%s at 10: %s (expected %s)%s%s%s", c.script, rangesString(r).c_str(), rangesString(c.ranges).c_str(),
+                  (raised & FE_INVALID) ? ", raised FE_INVALID (a NaN)" : "", (raised & FE_OVERFLOW) ? ", raised FE_OVERFLOW" : "",
+                  (raised & FE_DIVBYZERO) ? ", raised FE_DIVBYZERO" : "");
+        }
+        // a curve retime (monotone spline) at its last control point, frame 100: frame 50 (as Natron 2.5.0)
+        const char* script = "cpixel(1, curve(frame, 1, 1, 4, 100, 50, 4), x, y)";
+        const std::vector<double> r = framesNeeded(p, ctx, inst, script, 100.);
+        check(r == std::vector<double>({ 50., 50., 100., 100. }), "%s at 100: %s (expected [50,50] [100,100])", script, rangesString(r).c_str());
     }
 
     std::printf("==== getFramesNeeded(): frames that depend only on the frame, through partial evaluation ====\n");
@@ -892,6 +968,32 @@ main(int /*argc*/,
         check(covers(cases[1].r, { 5., 15., 10., 10. }), "cpixel(1, frame + 0 + 0... - 2 (300 terms) at 10: %s (expected at least [5,15] [10,10]: deeper than the cap)", rangesString(cases[1].r).c_str());
     }
 
+    std::printf("==== getFramesNeeded(): the work of the whole evaluations is capped (kStubMaxEvalWork, 5e6 nodes) (#286) ====\n");
+    {
+        // floor(sin(sin(...(a + b)))) with a and b of 32 values each (1024 combinations): each node is evaluated by
+        // SeExpr after its children are checked, so the work is the sum of the subtree sizes, times 1024. With 90
+        // nested functions (4.6e6 nodes) the frames are exact; with 100 (5.6e6), the analysis stops: the default range
+        // and the current frame (the budget is spent before the call is recorded). Without the cap, 100 is exact too.
+        struct ChainCase {
+            int depth;
+            bool overBudget;
+        } cases[] = { { 90, false }, { 100, true } };
+        for (const ChainCase& c : cases) {
+            std::string e = "a + b";
+            for (int i = 0; i < c.depth; ++i) {
+                e = "sin(" + e + ")";
+            }
+            const std::string script = "a = pick(u, 0, 31); b = pick(v, 0, 31); cpixel(1, floor(" + e + "), x, y)";
+            const auto start = std::chrono::steady_clock::now();
+            const std::vector<double> r = framesNeeded(p, ctx, inst, script.c_str(), 10.);
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            const std::vector<double> exact({ -1., -1., 0., 0., 10., 10. }); // floor(sin(...)) is -1 or 0
+            const bool ok = (r == (c.overBudget ? std::vector<double>({ 5., 15., 10., 10. }) : exact));
+            check(ok && (seconds < 2.), "floor(sin(sin(... (%d nested) ...(a + b)))) at 10: %s in %.2f s (expected %s, in less than 2 s)", c.depth,
+                  rangesString(r).c_str(), seconds, c.overBudget ? "[5,15] [10,10]: over the budget" : "[-1,-1] [0,0] [10,10]: under the budget");
+        }
+    }
+
     std::printf("==== getFramesNeeded(): unknown and known frames of the same input: the default range and the known frames ====\n");
     {
         const char* script = "cpixel(1, frame + x, x, y) + cpixel(1, frame + 7, x, y)";
@@ -949,7 +1051,6 @@ main(int /*argc*/,
         } cases[] = {
             { "cpixel(1, frame + 1e12, x, y)", (double)INT_MAX },
             { "cpixel(1, frame - 1e12, x, y)", (double)INT_MIN },
-            { "cpixel(1, frame + 1e400, x, y)", (double)INT_MAX },
         };
         for (const auto& c : cases) {
             const std::vector<double> r = framesNeeded(p, ctx, inst, c.script, 10.);

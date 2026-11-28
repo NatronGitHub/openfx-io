@@ -29,6 +29,7 @@
 #include <map>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -270,7 +271,7 @@ OFXS_NAMESPACE_ANONYMOUS_ENTER
     "The frames fetched by cpixel/apixel to render a given output frame are computed automatically, for every call, even in a branch that is not taken:\n\n" \
     "- The frames of a call are computed if its `frame` argument (and its input index) is made only of `frame`, numbers, operators, `?:` and the usual math functions (e.g. floor, round, abs, min, max, clamp, sqrt, pow, sin...).\n" \
     "- Local variables computed the same way are followed, also through if blocks (`f = frame - 1; cpixel(1, f, x, y)`).\n" \
-    "- If the `frame` argument of a call depends on anything else (another variable, the color or alpha of a pixel, the result of another call to cpixel/apixel), the frames of the Input Frame Range parameter are asked for that input, in addition to the frames computed for it."
+    "- If the `frame` argument of a call depends on anything else (another variable, the color or alpha of a pixel, the result of another call to cpixel/apixel), or if a value it computes is out of the domain of a function or operator (e.g. `sqrt(frame - 20)` at frame 10, a division by 0) or larger than 1e100, or if it uses angle, up, hsi or midhsi, or a curve or ccurve whose control points are not constants at distinct integer positions, the frames of the Input Frame Range parameter are asked for that input, in addition to the frames computed for it."
 #define kPluginDescription kPluginDescriptionHead kPluginDescriptionMid kPluginDescriptionFoot
 #define kPluginDescriptionSimple kPluginDescriptionHead kPluginDescriptionMidSimple kPluginDescriptionFoot
 
@@ -317,6 +318,13 @@ clampPixelArg(double* v)
     return true;
 }
 
+// A frame (not NaN) clamped to [INT_MIN, INT_MAX] (#184): hosts convert frames to int
+static double
+clampFrameToIntRange(double v)
+{
+    return (v > (double)INT_MAX) ? (double)INT_MAX : ((v < (double)INT_MIN) ? (double)INT_MIN : v);
+}
+
 // The frame of cpixel() or apixel(), clamped to [INT_MIN, INT_MAX] (#184). Returns false if it is NaN.
 static bool
 clampPixelFrame(double* v)
@@ -324,11 +332,7 @@ clampPixelFrame(double* v)
     if (OFX::IsNaN(*v)) {
         return false;
     }
-    if (*v > (double)INT_MAX) {
-        *v = INT_MAX;
-    } else if (*v < (double)INT_MIN) {
-        *v = INT_MIN;
-    }
+    *v = clampFrameToIntRange(*v);
 
     return true;
 }
@@ -1089,20 +1093,22 @@ stubIsPureMathFunction(const string& name)
         "expand", "fit", "floor", "fmod", "gamma", "gaussstep", "hypot", "invert", "linearstep", "log", "log10", "max",
         "min", "mix", "pow", "rad", "remap", "round", "sin", "sind", "sinh", "smoothstep", "sqrt", "tan", "tand",
         "tanh", "trunc",
-        // selection and curves (functions of their arguments; choose() and wchoose() protect against NaN, their
-        // allocations depend only on the number of arguments)
+        // selection (functions of their arguments; their allocations depend only on the number of arguments), and
+        // curves (only with constant control points, see stubFunctionIsDefined())
         "choose", "wchoose", "curve", "ccurve",
         // vectors and colors
-        "length", "dist", "dot", "cross", "norm", "ortho", "up", "angle", "rotate", "rgbtohsl", "hsltorgb", "hsi",
-        "saturate",
+        "length", "dist", "dot", "cross", "norm", "ortho", "rotate", "rgbtohsl", "hsltorgb", "saturate",
     };
+    // Not here either, since their domain can not be checked from their arguments (stubFunctionIsDefined()): angle()
+    // and up() (acos() of a rounded cosine, which may be above 1), hsi() and midhsi() (a division by the difference of
+    // two components).
     // Not here: getVar() (a variable given by its name), printf() (a side effect), cpixel() and apixel() (see
     // StubFrameAnalysis::evaluateFunction() for getVar() and printf()); and the builtins that convert an argument to
     // int, divide by it, or allocate on the stack a size that comes from it: they are evaluated only with valid
     // arguments (stubIsGuardedFunction(), stubGuardedArgsAreValid()), since the calls of a branch that is not taken are
     // evaluated here, which must not crash where the render would not.
     // A function of the list redefined by a SeExpr plug-in (SE_EXPR_PLUGINS) is trusted to be a function of its
-    // arguments too.
+    // arguments too, defined and finite where the builtin is (stubFunctionIsDefined() checks the builtin's domain).
     for (std::size_t i = 0; i < sizeof(functions) / sizeof(functions[0]); ++i) {
         if (name == functions[i]) {
             return true;
@@ -1141,7 +1147,7 @@ stubIsGuardedFunction(const string& name)
         "voronoi", "cvoronoi", "pvoronoi", // cellnoise of the cells around the point, int(type), fbm
         "hash", // frexp(argument) to uint32_t
         "pick", // alloca(int(hi) - int(lo) + 1), twice
-        "cycle", "spline", "remap", "midhsi", // an argument to int
+        "cycle", "spline", "remap", // an argument to int
     };
     for (std::size_t i = 0; i < sizeof(functions) / sizeof(functions[0]); ++i) {
         if (name == functions[i]) {
@@ -1172,26 +1178,88 @@ stubFbmBound(double p,
     return bound;
 }
 
-// Is a value computed from the frame and constants finite, and in [lo, 2^29]? (OFX::IsNaN() and OFX::IsInfinite()
-// test it, it is not a marker)
+// The largest magnitude of the values of the frames-needed analysis: every value that it uses (a number, the frame, a
+// local variable, the operands and arguments of the nodes it evaluates) is in [-1e100, 1e100], or it is not known.
+// The analysis never computes a NaN or an infinite value (#286), so it never has to detect one: the sums, differences
+// and products of two or three such values are finite (at most a few 1e300), and the operators and functions that
+// may give NaN or an infinite value from them (a division, a domain such as sqrt(x < 0), an overflow such as
+// exp(1000)) are evaluated only if their operands are in their domain (stubOperatorIsDefined(),
+// stubFunctionIsDefined()). (The one infinite intermediate value is inside contrast(): see stubFunctionIsDefined().)
+constexpr double kStubValueLimit = 1e100;
+
+// Is a value in [-kStubValueLimit, kStubValueLimit]? (It is finite: no NaN is computed by the analysis. A number of the
+// expression that is too large for a double, e.g. 1e400, is infinite, and it is not in the range.)
+static bool
+stubIsBounded(double v)
+{
+    return (-kStubValueLimit <= v) && (v <= kStubValueLimit);
+}
+
+static bool
+stubIsBounded(const SeVec3d& v)
+{
+    return stubIsBounded(v[0]) && stubIsBounded(v[1]) && stubIsBounded(v[2]);
+}
+
+// Is num / den finite, for num and den computed from bounded values (stubIsBounded())? den is not 0, and the quotient is
+// at most kStubValueLimit in magnitude (|num| <= kStubValueLimit * |den| is finite, since |den| <= a few 1e100).
+static bool
+stubQuotientIsBounded(double num,
+                      double den)
+{
+    return (den != 0.) && (std::fabs(num) <= kStubValueLimit * std::fabs(den));
+}
+
+// The smallest |g| of gamma(x, g) = pow(max(x, 0), 1 / g) that the analysis evaluates: 1 / g is then at most 1e300
+// (finite), and b * log2(|a|) in stubPowIsFinite() at most about 1e303
+constexpr double kStubMinGamma = 1e-300;
+
+// The largest |param| of curve() and ccurve() that the analysis evaluates: the spline of the last segment, which ends
+// at the sentinel FLT_MAX (SeCurve.cpp), stays finite
+constexpr double kStubMaxCurveParam = 1e30;
+
+// The largest |position| of a control point of curve() and ccurve(): an integer of float (SeCurve::getValue() stores
+// the positions in float), 2^24
+constexpr double kStubMaxCurvePosition = 16777216.;
+
+// Is std::pow(a, b) finite, for bounded a and b? Not for a < 0 and a b that is not an integer (NaN), or for 0 to a
+// negative power (infinite); otherwise |b * log2(|a|)| is at most 1e100 * 1075 (finite), and the result is at most
+// 2^1000 in magnitude.
+static bool
+stubPowIsFinite(double a,
+                double b)
+{
+    if ((a < 0.) && (std::floor(b) != b)) {
+        return false;
+    }
+    if (a == 0.) {
+        return b >= 0.;
+    }
+
+    return b * std::log2(std::fabs(a)) <= 1000.;
+}
+
+// Is a value computed from the frame and constants (bounded, see stubIsBounded()) in [lo, 2^29]?
 static bool
 stubIsInGuardRange(double v,
                    double lo)
 {
-    return !OFX::IsNaN(v) && !OFX::IsInfinite(v) && (v <= kStubGuardLimit) && (v >= lo);
+    return (v <= kStubGuardLimit) && (v >= lo);
 }
 
 // The name given to stubGuardedArgsAreValid() for the bounds of a range (pick() and cycle()): not a function, the
-// arguments are only checked to be finite and in [-2^29, 2^29]
+// arguments are only checked to be in [-2^29, 2^29]
 constexpr const char kStubGuardedRange[] = "range";
 
 // Are the values of the arguments of a guarded node (a function of stubIsGuardedFunction(), or a subscript, name "[]")
-// such that it is defined, and does not allocate too much? They are computed from the frame and constants
-// (OFX::IsNaN() and OFX::IsInfinite() test them, they are not markers):
-// - all the components must be finite and in [-2^29, 2^29] (so that floor(v) + 1, the conversions to int and the
-//   int arithmetic of the builtins are defined);
+// such that it is defined, and does not allocate too much? They are computed from the frame and constants (bounded,
+// see stubIsBounded()):
+// - all the components must be in [-2^29, 2^29] (so that floor(v) + 1, the conversions to int and the int arithmetic
+//   of the builtins are defined);
 // - cellnoise(), ccellnoise(): in [0, 2^29] (a conversion to uint32_t);
-// - pick(index, lo, hi, ...): hi - lo at most 4096; cycle(index, lo, hi): hi - lo less than 2^29;
+// - hash(), and the index of pick() (its hash()): at least 0 (the fraction of frexp() is converted to uint32_t);
+// - pick(index, lo, hi, ...): hi - lo at most 4096; cycle(index, lo, hi): hi - lo less than 2^29 (each component: a
+//   scalar function is evaluated for each component of a vector result);
 // - fbm(p, octaves = 6, lacunarity = 2, gain = 0.5) and the others of the family: p * |lacunarity|^k + 1234...
 //   (the point of each octave) in [-2^29, 2^29];
 // - pnoise(p, period): int(period) at least 1 (it is the divisor of %);
@@ -1220,12 +1288,29 @@ stubGuardedArgsAreValid(const string& name,
             }
         }
     }
-    if (name == "pick") {
-        // pick(index, lo, hi, weights...)
-        return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] <= 4096);
+    if ((name == "hash") || (name == "pick")) {
+        const std::size_t n = (name == "hash") ? args.size() : (std::size_t)1;
+        for (std::size_t i = 0; i < n; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                if (args[i][c] < 0.) {
+                    return false;
+                }
+            }
+        }
     }
-    if (name == "cycle") {
-        return (args.size() >= 3) && ((int)args[2][0] - (int)args[1][0] < (int)kStubGuardLimit);
+    if ((name == "pick") || (name == "cycle")) {
+        // pick(index, lo, hi, weights...), cycle(index, lo, hi)
+        if (args.size() < 3) {
+            return false;
+        }
+        for (int c = 0; c < 3; ++c) {
+            const int range = (int)args[2][c] - (int)args[1][c];
+            if ((name == "pick") ? (range > 4096) : (range >= (int)kStubGuardLimit)) {
+                return false;
+            }
+        }
+
+        return true;
     }
     if ((name == "fbm") || (name == "vfbm") || (name == "cfbm") || (name == "turbulence") || (name == "vturbulence")
         || (name == "cturbulence")) {
@@ -1263,14 +1348,161 @@ stubGuardedArgsAreValid(const string& name,
     return true;
 }
 
+static bool stubIsPureExpression(const SeExprNode* node, vector<const SeExprVarNode*>* vars);
+
+// Is curve(param, pos0, val0, interp0, pos1, ...) or ccurve() defined and finite (SeExprBuiltins.cpp CurveFuncX,
+// SeCurve.cpp)? Its control points are read at the prep (CurveFuncX::prep()): they must be constants (no variable in
+// their subtrees), so that their values here are those of the prep. The positions must be pairwise distinct integers
+// in [-2^24, 2^24] (exact in float, and at least 1 apart: preparePoints() and getValue() divide by their differences),
+// the interpolations in 0..4, and each component of the parameter at most kStubMaxCurveParam in magnitude (the spline
+// of the last segment, up to FLT_MAX). The values are bounded (at most 1e100): the derivatives are at most 2e100, and
+// every term of the spline is finite.
+static bool
+stubCurveIsDefined(const SeExprFuncNode* func,
+                   const vector<SeVec3d>& args)
+{
+    if ((args.size() < 1) || ((args.size() - 1) % 3 != 0)) {
+        return false;
+    }
+    for (int c = 0; c < 3; ++c) {
+        if (std::fabs(args[0][c]) > kStubMaxCurveParam) {
+            return false;
+        }
+    }
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        vector<const SeExprVarNode*> vars;
+        if (!stubIsPureExpression(func->child((int)i), &vars) || !vars.empty()) {
+            return false;
+        }
+    }
+    for (std::size_t k = 1; k < args.size(); k += 3) {
+        const double pos = args[k][0];
+        const double interp = args[k + 2][0];
+        if ((std::fabs(pos) > kStubMaxCurvePosition) || (std::floor(pos) != pos) || (interp < 0.) || (interp >= 5.)) {
+            return false;
+        }
+        for (std::size_t j = 1; j < k; j += 3) {
+            if (args[j][0] == pos) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+// Is a function of stubIsPureMathFunction() or stubIsGuardedFunction() defined, with a finite result, for the values of
+// its arguments (bounded, see stubIsBounded(); a scalar argument is broadcast)? The domains of the builtins of SeExpr
+// 2.11 (SeExprBuiltins.cpp, SeExprBuiltins.h), checked for each component (a scalar function is evaluated for each
+// component of a vector result); the other functions are defined (and finite) for all bounded arguments. Only the
+// arguments are tested, never a result.
+static bool
+stubFunctionIsDefined(const SeExprFuncNode* func,
+                      const vector<SeVec3d>& args)
+{
+    const string name = func->name();
+    if (stubIsGuardedFunction(name)) {
+        return stubGuardedArgsAreValid(name, args);
+    }
+    if (name == "rotate") {
+        // float angle = args[2][0]: converting a double out of the range of float is undefined behaviour ([conv.double]);
+        // 1e30 leaves a margin below FLT_MAX
+        return (args.size() == 3) && (std::fabs(args[2][0]) <= 1e30);
+    }
+    if (name == "ortho") {
+        // ortho(a, b) = norm(cross(a, b)): the squares of the components of the cross product in its length must be
+        // finite, |cross| <= 2 * max|a| * max|b|
+        if (args.size() != 2) {
+            return false;
+        }
+        double maxA = 0., maxB = 0.;
+        for (int c = 0; c < 3; ++c) {
+            maxA = (std::max)(maxA, std::fabs(args[0][c]));
+            maxB = (std::max)(maxB, std::fabs(args[1][c]));
+        }
+
+        return maxA * maxB <= 1e150;
+    }
+    if ((name == "curve") || (name == "ccurve")) {
+        return stubCurveIsDefined(func, args);
+    }
+    for (int c = 0; c < 3; ++c) {
+        // the arguments of a scalar function, for component c
+        double a[5] = { 0., 0., 0., 0., 0. };
+        for (std::size_t i = 0; (i < args.size()) && (i < 5); ++i) {
+            a[i] = args[i][c];
+        }
+        const double x = a[0];
+        bool defined = true;
+        if (name == "sqrt") {
+            defined = x >= 0.;
+        } else if ((name == "log") || (name == "log10")) {
+            defined = x > 0.;
+        } else if ((name == "acos") || (name == "asin") || (name == "acosd") || (name == "asind")) {
+            defined = (-1. <= x) && (x <= 1.);
+        } else if (name == "acosh") {
+            defined = x >= 1.;
+        } else if (name == "atanh") {
+            defined = (-1. < x) && (x < 1.);
+        } else if (name == "exp") {
+            defined = x <= 709.; // exp(709.79) overflows
+        } else if ((name == "cosh") || (name == "sinh")) {
+            defined = std::fabs(x) <= 709.;
+        } else if (name == "fmod") {
+            defined = a[1] != 0.;
+        } else if (name == "pow") {
+            defined = stubPowIsFinite(x, a[1]);
+        } else if (name == "expand") {
+            // expand(x, lo, hi): lo == hi ? (x < lo ? 0 : 1) : (x - lo) / (hi - lo)
+            defined = (a[1] == a[2]) || stubQuotientIsBounded(x - a[1], a[2] - a[1]);
+        } else if (name == "fit") {
+            // fit(x, a1, b1, a2, b2) = (x * (b2 - a2) - a1 * b2 + b1 * a2) / (b1 - a1): the bound of the numerator,
+            // whatever the rounding of its terms
+            defined = stubQuotientIsBounded(std::fabs(x * (a[4] - a[3])) + std::fabs(a[1] * a[4]) + std::fabs(a[2] * a[3]), a[2] - a[1]);
+        } else if (name == "gamma") {
+            // gamma(x, g) = pow(max(x, 0), 1 / g)
+            defined = (std::fabs(a[1]) >= kStubMinGamma) && stubPowIsFinite((std::max)(x, 0.), 1. / a[1]);
+        } else if (name == "bias") {
+            // bias(x, b) = pow(max(x, 0), log(b) / log(0.5))
+            defined = (a[1] > 0.) && stubPowIsFinite((std::max)(x, 0.), std::log(a[1]) * (1. / std::log(0.5)));
+        }
+        // contrast(x, c) is 0.5 for c <= 0; otherwise x is clamped to [0, 1], and its pow() has a base in [0, 1]
+        // and an exponent in [0, +inf] (the log of 0, for x = 0 or 1, is -inf): it is in [0, 1], never NaN
+        if (!defined) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Is a binary operator of SeExpr 2.11 (SeExprNode.cpp) finite for bounded operands a and b (a component)? Not for
+// a / b with a b of 0 or too small, a % b (niceMod(): a - floor(a / b) * b, 0 if b is 0) with a too large for b, and
+// a ^ b (std::pow(), with a set to 0 if a < 0 and b is not an integer) outside of stubPowIsFinite(). The other
+// operators are finite: their results are at most 1e200 in magnitude.
+static bool
+stubOperatorIsDefined(const SeExprNode* node,
+                      double a,
+                      double b)
+{
+    if (dynamic_cast<const SeExprDivNode*>(node)) {
+        return stubQuotientIsBounded(a, b);
+    }
+    if (dynamic_cast<const SeExprModNode*>(node)) {
+        return (b == 0.) || stubQuotientIsBounded(a, b);
+    }
+    if (dynamic_cast<const SeExprExpNode*>(node)) {
+        return stubPowIsFinite(((a < 0.) && (std::floor(b) != b)) ? 0. : a, b);
+    }
+
+    return true;
+}
+
 // Is the subtree made only of numbers, variables, the operators of stubIsPureOperator() and the functions of
-// stubIsPureMathFunction() and stubIsGuardedFunction()? Its variable nodes are added to vars, its guarded nodes (the
-// calls to guarded functions, and the subscripts, whose index is converted to int) to guarded (in postorder: the inner
-// ones first).
+// stubIsPureMathFunction() and stubIsGuardedFunction()? Its variable nodes are added to vars.
 static bool
 stubIsPureExpression(const SeExprNode* node,
-                     vector<const SeExprVarNode*>* vars,
-                     vector<const SeExprNode*>* guarded = NULL)
+                     vector<const SeExprVarNode*>* vars)
 {
     if (const SeExprVarNode* var = dynamic_cast<const SeExprVarNode*>(node)) {
         vars->push_back(var);
@@ -1289,12 +1521,9 @@ stubIsPureExpression(const SeExprNode* node,
         return false;
     }
     for (int i = 0; i < node->numChildren(); ++i) {
-        if (!stubIsPureExpression(node->child(i), vars, guarded)) {
+        if (!stubIsPureExpression(node->child(i), vars)) {
             return false;
         }
-    }
-    if (guarded && ((func && stubIsGuardedFunction(func->name())) || dynamic_cast<const SeExprSubscriptNode*>(node))) {
-        guarded->push_back(node);
     }
 
     return true;
@@ -1332,20 +1561,6 @@ stubGuardedName(const SeExprNode* node)
     const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node);
 
     return func ? string(func->name()) : string("[]");
-}
-
-// Is a computed value finite (all its components)? A value that is not (e.g. sqrt(frame - 20) at frame 10) is not used:
-// the set arithmetic of the analysis, compiled with -ffast-math, would not handle it.
-static bool
-stubIsFinite(const SeVec3d& v)
-{
-    for (int c = 0; c < 3; ++c) {
-        if (OFX::IsNaN(v[c]) || OFX::IsInfinite(v[c])) {
-            return false;
-        }
-    }
-
-    return true;
 }
 
 // The variables other than frame, in the stub expression: their values are not known. Reading one (eval()) sets the
@@ -1749,20 +1964,14 @@ stubAddUnknown(int input,
     (*frames)[input];
 }
 
-// A frame of an input: a NaN frame gives the default frame range (cpixel() gives black; the frame is computed from the
-// frame and constants, and tested with OFX::IsNaN()), the frame is clamped as in the render (clampPixelFrame()), and
-// rounded as before #176 (bc4c45c)
+// A frame of an input, computed from the frame and constants (finite: the analysis computes no NaN or infinite value):
+// it is clamped to the range of int as in the render (clampFrameToIntRange()), and rounded as before #176 (bc4c45c)
 static void
 stubAddFrame(int input,
              double frame,
-             FramesNeeded* frames,
-             std::set<int>* unknownFrames)
+             FramesNeeded* frames)
 {
-    if (!clampPixelFrame(&frame)) {
-        stubAddUnknown(input, frames, unknownFrames);
-
-        return;
-    }
+    frame = clampFrameToIntRange(frame);
     vector<OfxTime>& times = (*frames)[input];
     const OfxTime t = SeExpr::round(frame);
     if (std::find(times.begin(), times.end(), t) == times.end()) {
@@ -1840,6 +2049,12 @@ typedef map<string, StubValues> StubState; // the values of the local variables,
 #define kStubMaxWork 100000. // the maximum of (the number of nodes of the parse tree) * (the number of locals + 1)
 #define kStubMaxDepth 256 // the maximum depth of the parse tree (the analysis is recursive: its stack grows with it)
 #define kStubMaxWalk 1000000. // the maximum of (the sum of the sizes of the subtrees of all the nodes) * (the number of locals + 1)
+// The maximum number of nodes that SeExpr evaluates in the whole evaluations of the analysis (evaluateChecked(): each
+// node->eval() evaluates its subtree, after its children were checked, so a whole evaluation costs the sum of its
+// subtree sizes, for each combination of the values of the locals, and again for the subtrees of the partial
+// evaluation). Above, every whole evaluation is unknown, and so are the frames that depend on it: their inputs use the
+// default frame range (the frames of the partial evaluation, e.g. 0 or 1 for a comparison, are still a superset).
+#define kStubMaxEvalWork 5000000.
 
 // The variables assigned in the text of an expression, in order (without '$'), found with the rules of the lexer of
 // SeExpr 2.11 (SeExprParserLex.l): the tokens are skipped up to each variable (VAR, $name or $name::name, or NAME,
@@ -1980,6 +2195,10 @@ class StubFrameAnalysis
     bool _namesKnown;
     map<const SeExprNode*, string> _assignmentNames;
     map<const SeExprNode*, std::size_t> _order; // the position of each node in the parse tree (preorder)
+    map<const SeExprNode*, std::size_t> _subtreeSize; // the number of nodes of the subtree of each node
+    mutable double _evalWork; // the nodes evaluated by SeExpr in evaluateChecked() (see kStubMaxEvalWork)
+    mutable bool _overBudget; // _evalWork went above kStubMaxEvalWork: the whole evaluations are unknown
+    mutable vector<vector<SeVec3d>> _argBuffers; // the values of the children in evaluateChecked(), by depth
     map<string, std::size_t> _firstAssignmentEnd; // the position after the first assignment of each local variable
     std::set<const SeExprNode*> _analyzedCalls;
 
@@ -1996,6 +2215,10 @@ public:
         , _namesKnown(true)
         , _assignmentNames()
         , _order()
+        , _subtreeSize()
+        , _evalWork(0.)
+        , _overBudget(false)
+        , _argBuffers()
         , _firstAssignmentEnd()
         , _analyzedCalls()
     {
@@ -2118,10 +2341,19 @@ private:
     void numberNodes(const SeExprNode* node,
                      std::size_t* position)
     {
-        _order[node] = (*position)++;
+        const std::size_t start = (*position)++;
+        _order[node] = start;
         for (int i = 0; i < node->numChildren(); ++i) {
             numberNodes(node->child(i), position);
         }
+        _subtreeSize[node] = *position - start;
+    }
+
+    std::size_t subtreeSize(const SeExprNode* node) const
+    {
+        map<const SeExprNode*, std::size_t>::const_iterator it = _subtreeSize.find(node);
+
+        return (it != _subtreeSize.end()) ? it->second : 1;
     }
 
     // the position after the subtree of node
@@ -2159,13 +2391,13 @@ private:
         return (it != _firstAssignmentEnd.end()) && (_order.find(var)->second >= it->second);
     }
 
-    // the values of an expression, or unknown (see the class description); allowInfinite: the frame of a call, whose
-    // infinite values the render clamps
+    // the values of an expression, or unknown (see the class description); allowLarge: the frame of a call, which the
+    // render clamps to the range of int, may be larger than kStubValueLimit (but finite)
     StubValues evaluate(const SeExprNode* node,
                         const StubState& state,
-                        bool allowInfinite = false) const
+                        bool allowLarge = false) const
     {
-        StubValues result = evaluateWhole(node, state, allowInfinite);
+        StubValues result = evaluateWhole(node, state, allowLarge);
         if (!result.known) {
             StubValues partial = evaluatePartial(node, state);
             if (partial.known || (partial.values.size() > result.values.size())) {
@@ -2297,8 +2529,8 @@ private:
                     const double x = a.values[i][k];
                     v[k] = dynamic_cast<const SeExprNegNode*>(node) ? -x : (dynamic_cast<const SeExprNotNode*>(node) ? (double)!x : 1 - x);
                 }
-                if (!stubIsFinite(v)) {
-                    return StubValues();
+                if (!stubIsBounded(v)) {
+                    return StubValues(); // 1 - x of a bounded x may be above the bound
                 }
                 result.add(v);
             }
@@ -2330,15 +2562,14 @@ private:
                     // a scalar operand: its components are equal (evaluateWhole() broadcasts them)
                     const double x = a.values[i][(logical || comparison) ? 0 : c];
                     const double y = b.values[k][(logical || comparison) ? 0 : c];
-                    if (dynamic_cast<const SeExprDivNode*>(node) && (y == 0.)) {
-                        // a division by 0 (inf or NaN) is not computed here
+                    if (!stubOperatorIsDefined(node, x, y)) {
+                        // a NaN or an infinite value (e.g. a division by 0) is not computed here: unknown
                         return StubValues();
                     }
                     v[c] = binaryOperator(node, x, y);
                 }
-                if (!stubIsFinite(v)) {
-                    // a NaN or an infinite value is not used (unknown)
-                    return StubValues();
+                if (!stubIsBounded(v)) {
+                    return StubValues(); // e.g. a product of two bounded values
                 }
                 result.add(v);
             }
@@ -2388,7 +2619,7 @@ private:
 
                 return (v != state.end()) ? v->second : StubValues(); // a local variable
             }
-            if (var == kSeExprCurrentTimeVarName) {
+            if ((var == kSeExprCurrentTimeVarName) && stubIsBounded(_time)) {
                 return StubValues(SeVec3d(_time)); // the external frame variable
             }
 
@@ -2556,13 +2787,112 @@ private:
         return std::pow(a, b);
     }
 
+    // Evaluates a pure subtree (stubIsPureExpression()) with SeExpr, for the current values of the local variables, if
+    // that evaluation reads no variable that is not known, and computes no NaN or infinite value: as SeExpr does, the
+    // condition of a ?: is evaluated, then only the branch that it selects, and the second operand of && and || only
+    // if the first one does not give the result; every other node is evaluated (node->eval()) only if the values of
+    // its children are bounded (stubIsBounded()) and in its domain (stubOperatorIsDefined(), stubFunctionIsDefined(),
+    // stubGuardedArgsAreValid()). Its value is finite, but it may be larger than kStubValueLimit. A scalar value is
+    // broadcast. Nothing (std::nullopt) if it is not defined, reads an unknown variable, or the work budget of the
+    // analysis (kStubMaxEvalWork) is spent. depth: the depth of node below the subtree evaluated (an index of
+    // _argBuffers, the values of the children at each depth, reused).
+    std::optional<SeVec3d> evaluateChecked(const SeExprNode* node,
+                                           std::size_t depth = 0) const
+    {
+        if (dynamic_cast<const SeExprCondNode*>(node) && (node->numChildren() == 3)) {
+            const std::optional<SeVec3d> c = evaluateChecked(node->child(0), depth + 1);
+            if (!c) {
+                return std::nullopt;
+            }
+            std::optional<SeVec3d> v = evaluateChecked((*c)[0] ? node->child(1) : node->child(2), depth + 1);
+            if (v && !node->isVec()) {
+                // (SeExprCondNode::eval() broadcasts a scalar branch, as evaluateChecked())
+                (*v)[1] = (*v)[2] = (*v)[0];
+            }
+
+            return v;
+        }
+        const bool isAnd = dynamic_cast<const SeExprAndNode*>(node) != NULL;
+        if ((isAnd || dynamic_cast<const SeExprOrNode*>(node)) && (node->numChildren() == 2)) {
+            const std::optional<SeVec3d> a = evaluateChecked(node->child(0), depth + 1);
+            if (!a) {
+                return std::nullopt;
+            }
+            if (isAnd ? !(*a)[0] : ((*a)[0] != 0.)) {
+                return SeVec3d(isAnd ? 0. : 1.);
+            }
+            const std::optional<SeVec3d> b = evaluateChecked(node->child(1), depth + 1);
+            if (!b) {
+                return std::nullopt;
+            }
+
+            return SeVec3d((double)((*b)[0] != 0.));
+        }
+        if (dynamic_cast<const SeExprVecNode*>(node) && !node->isVec() && (node->numChildren() > 0)) {
+            // SeExprVecNode::eval() of a scalar: its first component only
+            return evaluateChecked(node->child(0), depth + 1);
+        }
+        const int n = node->numChildren();
+        if (n > 0) {
+            if (depth >= _argBuffers.size()) {
+                _argBuffers.resize(depth + 1);
+            }
+            // (_argBuffers[depth] is indexed again after each call: a deeper call may resize _argBuffers)
+            _argBuffers[depth].resize(n);
+            for (int i = 0; i < n; ++i) {
+                const std::optional<SeVec3d> arg = evaluateChecked(node->child(i), depth + 1);
+                if (!arg || !stubIsBounded(*arg)) {
+                    return std::nullopt;
+                }
+                _argBuffers[depth][i] = *arg;
+            }
+            const vector<SeVec3d>& args = _argBuffers[depth];
+            if (const SeExprFuncNode* func = dynamic_cast<const SeExprFuncNode*>(node)) {
+                if (!stubFunctionIsDefined(func, args)) {
+                    return std::nullopt;
+                }
+            } else if (dynamic_cast<const SeExprSubscriptNode*>(node)) {
+                if (!stubGuardedArgsAreValid(stubGuardedName(node), args)) {
+                    return std::nullopt;
+                }
+            } else if (n == 2) {
+                for (int c = 0; c < 3; ++c) {
+                    if (!stubOperatorIsDefined(node, args[0][c], args[1][c])) {
+                        return std::nullopt;
+                    }
+                }
+            }
+        }
+        // node->eval() evaluates the whole subtree again: its size is charged to the work budget
+        _evalWork += (double)subtreeSize(node);
+        if (_evalWork > kStubMaxEvalWork) {
+            _overBudget = true;
+
+            return std::nullopt;
+        }
+        SeVec3d v;
+        node->eval(v);
+        if (_expr.touched()) {
+            // it read a variable that is not known (a leaf: the nodes above are not evaluated)
+            return std::nullopt;
+        }
+        if (!node->isVec()) {
+            v[1] = v[2] = v[0];
+        }
+        if ((n == 0) && !stubIsBounded(v)) {
+            // a number, the frame or a local variable must be bounded (e.g. not 1e400, which is infinite)
+            return std::nullopt;
+        }
+
+        return v;
+    }
+
     StubValues evaluateWhole(const SeExprNode* node,
                              const StubState& state,
-                             bool allowInfinite) const
+                             bool allowLarge) const
     {
         vector<const SeExprVarNode*> varNodes;
-        vector<const SeExprNode*> guarded;
-        if (!stubIsPureExpression(node, &varNodes, &guarded)) {
+        if (_overBudget || !stubIsPureExpression(node, &varNodes)) {
             return StubValues();
         }
         // the local variables read, and their values
@@ -2602,37 +2932,12 @@ private:
                 rest /= values[i].values.size();
             }
             _expr.resetTouched();
-            // the arguments of the guarded functions (inner calls first)
-            for (std::size_t g = 0; g < guarded.size(); ++g) {
-                vector<SeVec3d> args(guarded[g]->numChildren());
-                for (int a = 0; a < guarded[g]->numChildren(); ++a) {
-                    guarded[g]->child(a)->eval(args[a]);
-                    if (!guarded[g]->child(a)->isVec()) {
-                        // a scalar argument is broadcast (its other components are not set)
-                        args[a][1] = args[a][2] = args[a][0];
-                    }
-                }
-                if (_expr.touched() || !stubGuardedArgsAreValid(stubGuardedName(guarded[g]), args)) {
-                    return StubValues();
-                }
-            }
-            SeVec3d v;
-            node->eval(v);
-            if (_expr.touched()) {
-                // it depends on a variable that is not known
+            const std::optional<SeVec3d> v = evaluateChecked(node);
+            if (!v || (!allowLarge && !stubIsBounded(*v))) {
+                // it depends on a variable that is not known, or it is not defined (or too large) for these values
                 return StubValues();
             }
-            if (!node->isVec()) {
-                v[1] = v[2] = v[0];
-            }
-            // a NaN (or an infinite value, except for the frame of a call, which the render clamps) is not used: it is
-            // unknown (OFX::IsNaN() and OFX::IsInfinite() test the bits of the computed value)
-            for (int k = 0; k < 3; ++k) {
-                if (OFX::IsNaN(v[k]) || (!allowInfinite && OFX::IsInfinite(v[k]))) {
-                    return StubValues();
-                }
-            }
-            result.add(v);
+            result.add(*v);
             if (result.values.size() > kStubMaxValues) {
                 result.cap();
 
@@ -2666,15 +2971,11 @@ private:
             return;
         }
         const StubValues indexes = evaluate(node->child(0), state);
-        const StubValues frameValues = evaluate(node->child(1), state, /*allowInfinite=*/true);
+        const StubValues frameValues = evaluate(node->child(1), state, /*allowLarge=*/true);
         vector<int> inputs;
         bool allInputs = !indexes.known; // (all the inputs: those of the known values among them)
         for (std::size_t i = 0; !allInputs && (i < indexes.values.size()); ++i) {
-            if (OFX::IsNaN(indexes.values[i][0])) {
-                allInputs = true;
-            } else {
-                inputs.push_back(pixelInputIndex(indexes.values[i][0]));
-            }
+            inputs.push_back(pixelInputIndex(indexes.values[i][0])); // (a bounded value)
         }
         if (allInputs) {
             // the input is not known: all the inputs, with the frames of the call if they are known
@@ -2691,7 +2992,7 @@ private:
                 stubAddUnknown(inputs[i], _frames, _unknownFrames);
             }
             for (std::size_t k = 0; k < frameValues.values.size(); ++k) {
-                stubAddFrame(inputs[i], frameValues.values[k][0], _frames, _unknownFrames);
+                stubAddFrame(inputs[i], frameValues.values[k][0], _frames);
             }
         }
     }
