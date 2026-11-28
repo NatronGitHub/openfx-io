@@ -476,7 +476,7 @@ if(TARGET io_tests_ofx)
     set(_io_rw_libs io_png)
   endif()
   # also UBSan's signed-integer-overflow check, stopping at the first error (PNG offsets near the limits of an int at
-  # scales 1/2 and 1/4, #371), except with MinGW, as AddressSanitizer
+  # scales 1/2 and 1/4, #371; tiled data windows that end near INT_MAX, #466), except with MinGW, as AddressSanitizer
   set(_io_rw_sanitize ${_io_asan})
   if(NOT WIN32)
     list(APPEND _io_rw_sanitize -fsanitize=signed-integer-overflow -fno-sanitize-recover=signed-integer-overflow)

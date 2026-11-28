@@ -42,6 +42,10 @@
  *    an OCIO conversion (x2 to x1 of swap.ocio, next to $OCIO): the file's colours (times 2) and alpha 1 (#234)
  *  - ReadPNG files with an offset (oFFs) near the limits of an int, at scales 1/2 and 1/4: the render of the file
  *    without an offset, translated (#371)
+ *  - ReadOIIO, tiled data windows that end near INT_MAX, in a synthetic OpenImageIO format: the windows are the ones
+ *    of the same pixels at x = y = 128 if the last tile ends at INT_MAX, and the renders fail with an error message
+ *    if it ends past it (#466: the rounding to the tiles overflowed an int, and so does OpenImageIO's read_tiles()
+ *    before 3.1.19 and 3.2.2)
  *  - render scales that are not a power of two (0.75, 1/3), not the same in x and y (0.5 x 0.75, 1 x 0.5), or above 1
  *    (2): the file's image, scaled (the mean of the pixels that each pixel covers, premultiplied after the mean for an
  *    UnPreMultiplied file), and the windows as above (#194); and the PNG offsets above at scale 0.75
@@ -69,6 +73,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -1061,6 +1066,160 @@ testLargeOffsets(OfxPlugin* p,
 }
 #endif
 
+// A synthetic tiled image format for testTiledNearIntMax() (#466), registered with OIIO::declare_imageio_format(): a
+// file "*.rw466tile" holds two integers, the origin of the data window (x = y, also the display window) and the tile
+// size; the image is kTiledW x kTiledH, 3 float channels, with the pixel values floatValue(x - origin, y - origin, c).
+// No real format can carry such an origin on every OpenImageIO: OpenEXR rejects data windows beyond INT_MAX / 2, the
+// TIFF reader drops origins of 2^30 or more from OpenImageIO 3.1.18, and check_open() rejects origin + size >
+// INT_MAX from 3.1.19 and 3.2.2.
+const int kTiledW = 37, kTiledH = 9, kTiledNch = 3;
+
+class NearIntMaxInput : public OIIO::ImageInput {
+public:
+    const char* format_name() const override { return "rw466tile"; }
+    using OIIO::ImageInput::open; // (the other overloads, not hidden by the override below)
+    bool open(const std::string& name, OIIO::ImageSpec& newspec) override
+    {
+        std::FILE* file = std::fopen(name.c_str(), "r");
+        if (!file) {
+            return false;
+        }
+        const bool read = std::fscanf(file, "%d %d", &_origin, &_tile) == 2;
+        std::fclose(file);
+        if (!read || (_tile <= 0)) {
+            return false;
+        }
+        m_spec = OIIO::ImageSpec(kTiledW, kTiledH, kTiledNch, OIIO::TypeDesc::FLOAT);
+        m_spec.x = m_spec.y = m_spec.full_x = m_spec.full_y = _origin;
+        m_spec.tile_width = m_spec.tile_height = _tile;
+        m_spec.tile_depth = 1;
+        newspec = m_spec;
+
+        return true;
+    }
+    bool close() override { return true; }
+    bool read_native_scanline(int, int, int, int, void*) override { return false; } // a tiled image
+    bool read_native_tile(int subimage, int miplevel, int x, int y, int /*z*/, void* data) override
+    {
+        if ((subimage != 0) || (miplevel != 0)) {
+            return false;
+        }
+        // (in 64 bits: past the data window, x + i and y + j may be past INT_MAX)
+        float* out = static_cast<float*>(data);
+        for (int j = 0; j < _tile; ++j) {
+            for (int i = 0; i < _tile; ++i) {
+                const std::int64_t fx = (std::int64_t)x + i - _origin;
+                const std::int64_t fy = (std::int64_t)y + j - _origin;
+                const bool in = fx >= 0 && fx < kTiledW && fy >= 0 && fy < kTiledH;
+                for (int c = 0; c < kTiledNch; ++c) {
+                    *out++ = in ? floatValue((int)fx, (int)fy, c) : 0.f;
+                }
+            }
+        }
+
+        return true;
+    }
+
+private:
+    int _origin = 0, _tile = 1;
+};
+
+OIIO::ImageInput*
+createNearIntMaxInput()
+{
+    return new NearIntMaxInput;
+}
+
+// Tiled data windows that end near INT_MAX (#466), in x and in y, read through the synthetic format above. The display
+// window is the data window, which ReadOIIO shifts to the origin.
+//  - origin INT_MAX - 128, tiles of 128: the last tile ends at INT_MAX. The renders of the narrow windows and of the
+//    RoD are the ones of the same pixels at x = y = 128, bit for bit.
+//  - origin INT_MAX - 128, tiles of 129: the last tile ends past INT_MAX. ReadOIIO rounded a render window that is not
+//    on the tile grid to the tiles in int, which overflowed (undefined behaviour: this test is built with
+//    -fsanitize=signed-integer-overflow), and OpenImageIO's read_tiles() before 3.1.19 and 3.2.2 steps from tile to
+//    tile in int too: every render must fail, with an error message, and write nothing.
+void
+testTiledNearIntMax(OfxPlugin* p,
+                    const std::string& dir)
+{
+    const std::string title = "ReadOIIO tiled data window near INT_MAX";
+    if (!selected(title)) {
+        return;
+    }
+    std::printf("==== %s ====\n", title.c_str());
+    static const char* extensions[] = { "rw466tile", nullptr };
+    OIIO::declare_imageio_format("rw466tile", createNearIntMaxInput, extensions, nullptr, nullptr, "1");
+    struct TiledFile {
+        const char* name;
+        int origin, tile;
+    };
+    const TiledFile files[] = {
+        { "tiled128-origin128", 128, 128 },
+        { "tiled128-near-intmax", INT_MAX - 128, 128 },
+        { "tiled129-near-intmax", INT_MAX - 128, 129 },
+    };
+    Reader r[3];
+    for (int k = 0; k < 3; ++k) {
+        const std::string path = dir + "/" + files[k].name + ".rw466tile";
+        std::FILE* file = std::fopen(path.c_str(), "w");
+        const bool written = file && (std::fprintf(file, "%d %d\n", files[k].origin, files[k].tile) > 0);
+        if (!file || (std::fclose(file) != 0) || !written) {
+            check(false, "write %s", path.c_str());
+
+            return;
+        }
+        if (!r[k].create(p, path, 0)) {
+            check(false, "create %s", files[k].name);
+
+            return;
+        }
+        const OfxStatus st = r[k].getRoD(1.);
+        const bool rodOK = ok(st) && r[k].rod.x1 == 0 && r[k].rod.y1 == 0 && r[k].rod.x2 == kTiledW && r[k].rod.y2 == kTiledH;
+        check(rodOK, "%s: RoD %d,%d,%d,%d (status %d)", files[k].name, r[k].rod.x1, r[k].rod.y1, r[k].rod.x2, r[k].rod.y2, st);
+        if (!rodOK) {
+            return;
+        }
+    }
+    std::vector<OfxRectI> wins = windows(r[0].rod);
+    wins.push_back(r[0].rod);
+    int failed = 0, bad = 0, succeeded = 0, noError = 0, written = 0;
+    for (const OfxRectI& win : wins) {
+        for (int k = 0; k < 3; ++k) {
+            r[k].setImage(win, 1., true);
+            gPersistentError.clear();
+            const OfxStatus st = r[k].render(win, 1., false);
+            if (k < 2) {
+                failed += (ok(st) && gPersistentError.empty()) ? 0 : 1;
+            } else {
+                succeeded += ok(st) ? 1 : 0;
+                noError += gPersistentError.empty() ? 1 : 0;
+                const size_t n = (size_t)(win.x2 - win.x1) * (win.y2 - win.y1) * 4;
+                for (size_t i = 0; i < n; ++i) {
+                    written += isUnwrittenBits(&r[k].data[i]) ? 0 : 1;
+                }
+            }
+        }
+        for (int y = win.y1; y < win.y2; ++y) {
+            for (int x = win.x1; x < win.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    if (!sameBits(&r[1].pixel(x, y)[c], &r[0].pixel(x, y)[c])) {
+                        if (bad < 3) {
+                            std::printf("  window %d,%d,%d,%d pixel (%d,%d) channel %d: %.9g, expected %.9g\n", win.x1, win.y1,
+                                        win.x2, win.y2, x, y, c, r[1].pixel(x, y)[c], r[0].pixel(x, y)[c]);
+                        }
+                        ++bad;
+                    }
+                }
+            }
+        }
+    }
+    check(failed == 0 && bad == 0, "tiles of 128, ending at INT_MAX: %d renders, %d failed, %d values differ from the file at 128",
+          (int)wins.size() * 2, failed, bad);
+    check(succeeded == 0 && noError == 0 && written == 0,
+          "tiles of 129, ending past INT_MAX: %d renders, %d succeeded, %d without an error message, %d values written", (int)wins.size(),
+          succeeded, noError, written);
+}
+
 // An RGB or grey file (no alpha) read as RGBA with every filePremult, without and with an OCIO conversion (#234): the
 // output is the file's colours (converted, if OCIO is not identity; R = G = B for a grey file) and alpha is 1, as
 // GenericReader sets it for Opaque files. ReadPFM used to write alpha = 0, which GenericReader premultiplied by
@@ -1509,6 +1668,8 @@ main(int argc,
     testFile(oiio, dir, "rgba", tiffRGBA);
     testFile(oiio, dir, "datawindow", exr);
     testFile(oiio, dir, "datawindow-tiled", exrTiled);
+    // a tiled data window that ends near INT_MAX (#466)
+    testTiledNearIntMax(oiio, dir);
     // grey (R = G = B: the duplicated channels), and a data window with a negative origin that extends past the
     // display window (overscan)
     const File tiffGrey = { "fr.inria.openfx.ReadOIIO", eTIFF, 61, 47, 1, 0, 0, 0, 0 };

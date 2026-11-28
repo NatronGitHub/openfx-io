@@ -394,8 +394,9 @@ clean-exr-ubsan:
 
 # ReadOIIO, ReadPFM and ReadPNG (if pkg-config finds libpng): render windows narrower than the image, render scale
 # 1/2, files rewritten while rendering (#160, #163), PNG offsets near the limits of an int at scales 1/2 and 1/4
-# (#371). With AddressSanitizer and UBSan's signed-integer-overflow check, stopping at the first error (ASAN_SIO_FLAGS:
-# not on MS Windows), and guard pages around the output image. -pthread: the test uses std::thread.
+# (#371), tiled data windows that end near INT_MAX (#466). With AddressSanitizer and UBSan's
+# signed-integer-overflow check, stopping at the first error (ASAN_SIO_FLAGS: not on MS Windows), and guard pages
+# around the output image. -pthread: the test uses std::thread.
 READER_WINDOW_SRCS := ../OIIO/ReadOIIO.cpp ../OIIO/OIIOGlobal.cpp ../PFM/ReadPFM.cpp $(if $(HAVE_PNG),../PNG/ReadPNG.cpp,) \
     $(READER_HOOKS_SRCS)
 READER_WINDOW_CXXFLAGS := -I../PFM -I../PNG -pthread $(ASAN_SIO_FLAGS) \

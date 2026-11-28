@@ -27,6 +27,7 @@
 #include <climits>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring> // memset
 #include <fstream>
 #include <iostream>
@@ -1638,6 +1639,16 @@ sameLayout(const ImageSpec& a,
         && a.alpha_channel == b.alpha_channel && a.channelnames == b.channelnames && a.deep == b.deep;
 }
 
+// The end of the tiles of size tile, in a grid that starts at origin, that cover [origin, origin + length) (length
+// >= 0): in 64 bits, because it may be past INT_MAX for a data window that ends near it (#466).
+static std::int64_t
+tileGridEnd(int origin,
+            int length,
+            int tile)
+{
+    return (tile > 0) ? origin + ((std::int64_t)length + tile - 1) / tile * tile : (std::int64_t)origin + length;
+}
+
 // The data window of a subimage in OFX pixel coordinates (y up), without the black border of the edge pixels mode,
 // and the X offset of the data (dataOffset, also used to read it): with offsetNegativeDisplayWindow, or a positive
 // display window origin, the data and the display window are shifted so that the display window starts at x = 0.
@@ -1991,6 +2002,18 @@ ReadOIIOPlugin::decodePlane(const string& filename,
 
         return;
     }
+    // A tiled file whose last tile ends past INT_MAX (a crafted or broken file, #466): OpenImageIO before 3.1.19 and
+    // 3.2.2 (OpenImageIO#5494) steps from tile to tile in int in read_tiles() (y += tile_height, x += tile_width),
+    // and format readers' own tile loops still do (TIFF, 3.2.2), which overflows on the last tile row or column. Refuse
+    // the whole file, not only the windows that reach its last tiles: one consistent error, and it keeps the rounding
+    // of the decode window to the tiles below in the range of int.
+    if ((spec.tile_width != 0)
+        && ((tileGridEnd(spec.x, spec.width, spec.tile_width) > INT_MAX) || (tileGridEnd(spec.y, spec.height, spec.tile_height) > INT_MAX))) {
+        setPersistentMessage(Message::eMessageError, "", string("ReadOIIO: cannot read the tiles of this file, its data window ends too close to the largest int for its tile size: ") + filename);
+        throwSuiteStatusException(kOfxStatFailed);
+
+        return;
+    }
 
     const int pixelBytes = numChannels * getComponentBytes(eBitDepthFloat);
     const int xStride = pixelBytes;
@@ -2145,16 +2168,15 @@ ReadOIIOPlugin::decodePlane(const string& filename,
                     // tiledYBegin must be at a valid multiple of tile_height from spec.y
                     tiledYBegin = spec.y + (int)std::floor((double)(ybeginClamped - spec.y) / spec.tile_height) * spec.tile_height;
 
-                    // tiledXEnd must be at a valid multiple of tile_width from spec.x
-                    tiledXEnd = spec.x + (int)std::ceil((double)(xendClamped - spec.x) / spec.tile_width) * spec.tile_width;
+                    // tiledXEnd must be at a valid multiple of tile_width from spec.x, or the end of the data window.
+                    // (The int conversions are safe: the tile grid ends at INT_MAX at most, checked above.)
+                    tiledXEnd = (int)(std::min)(tileGridEnd(spec.x, xendClamped - spec.x, spec.tile_width), (std::int64_t)spec.x + spec.width);
 
-                    // tiledYEnd must be at a valid multiple of tile_height from spec.y
-                    tiledYEnd = spec.y + (int)std::ceil((double)(yendClamped - spec.y) / spec.tile_height) * spec.tile_height;
+                    // tiledYEnd must be at a valid multiple of tile_height from spec.y, or the end of the data window
+                    tiledYEnd = (int)(std::min)(tileGridEnd(spec.y, yendClamped - spec.y, spec.tile_height), (std::int64_t)spec.y + spec.height);
 
                     tiledXBegin = (std::max)(spec.x, tiledXBegin);
                     tiledYBegin = (std::max)(spec.y, tiledYBegin);
-                    tiledXEnd = (std::min)(spec.x + spec.width, tiledXEnd);
-                    tiledYEnd = (std::min)(spec.y + spec.height, tiledYEnd);
 
                     // Check that we made up a correct tile range
                     assert(spec.valid_tile_range(tiledXBegin, tiledXEnd, tiledYBegin, tiledYEnd, zbegin, zend));
