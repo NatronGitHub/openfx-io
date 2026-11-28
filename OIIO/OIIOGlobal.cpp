@@ -49,7 +49,7 @@ GCC_DIAG_OFF(unused-parameter)
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 
-// (also checked by CMakeLists.txt and Makefile.master; this file is in every build of the OIIO plug-ins)
+// (also checked by CMakeLists.txt; this file is in every build of the OIIO plug-ins)
 #if OIIO_VERSION < 20400
 #error "The OpenImageIO plug-ins (ReadOIIO, WriteOIIO, OIIOText, OIIOResize) require OpenImageIO 2.4 or later"
 #endif

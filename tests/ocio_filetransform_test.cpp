@@ -1,6 +1,6 @@
 /*
  * ocio_filetransform_test — OCIOFileTransform's CCC Id param (OCIO/OCIOFileTransform.cpp), built with AddressSanitizer
- * (tests/Makefile: test-ocio-filetransform).
+ * (ctest test-ocio-filetransform).
  *
  * The CCC Id param is shown only for a .cdl, .cc or .ccc file. updateCCCId() compared the end of the file name with "ccc"
  * and "cc" by std::equal on the reversed strings, which reads before the start of a file name shorter than the
@@ -15,7 +15,7 @@
  * old bug. The test still checks which files show the param.
  *
  * The plug-in is linked directly and driven through the OFX actions by the in-process host of ofx_test_host.h.
- * Usage: ocio_filetransform_test   (needs $OCIO, see tests/Makefile)
+ * Usage: ocio_filetransform_test   (needs $OCIO, see tests/CMakeLists.txt)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -52,7 +52,7 @@ int
 main(int, char**)
 {
     if (!std::getenv("OCIO")) {
-        std::printf("FAIL: $OCIO is not set (see tests/Makefile)\n");
+        std::printf("FAIL: $OCIO is not set (see tests/CMakeLists.txt)\n");
 
         return 1;
     }

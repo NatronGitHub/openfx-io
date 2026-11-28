@@ -15,9 +15,9 @@
  *  - a truncated file: the render fails, with an error message (it used to succeed with rows left unwritten)
  *  - concurrent renders (ReadEXR is kOfxImageEffectRenderFullySafe): several instances render the same file
  *    and another one from several threads at once, and each must get the same image as a single render. Build
- *    with ThreadSanitizer (make test-exr-tsan) to check for data races too.
+ *    with ThreadSanitizer (ctest test-exr-tsan) to check for data races too.
  *
- * Usage: exr_read_test <scratch dir>             (needs $OCIO, see tests/Makefile)
+ * Usage: exr_read_test <scratch dir>             (needs $OCIO, see tests/CMakeLists.txt)
  *        exr_read_test --bench <scratch dir> [n]  times n renders (default 5) of 2048x1556 RGBA half files,
  *                                                 ZIP, PIZ and DWAA (OpenEXR's thread count: $EXR_THREADS)
  * Exit status: 0 = all checks passed.
@@ -1117,7 +1117,7 @@ testLayersViews(OfxPlugin* p, OfxPlugin* oiio, const std::string& dir)
 // getClipComponents and renders on other threads while the main thread switches files (instanceChanged reads the
 // layers of the new file): getClipComponents returns the planes of one of the files, and nothing else, and a render
 // that succeeds is the color plane of one of them (the same values: diffuse.RGBA and R, G, B, A are their first 4
-// channels). The data races are caught only under ThreadSanitizer (make test-exr-tsan).
+// channels). The data races are caught only under ThreadSanitizer (ctest test-exr-tsan).
 void
 testPlanesWhileFileChanges(OfxPlugin* p, const std::string& dir)
 {

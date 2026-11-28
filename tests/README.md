@@ -10,31 +10,30 @@ with the compiler, C++ standard (`OFX_CXX_STANDARD`) and FFmpeg (`FFMPEG_PKG_CON
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ...   # from the repository root
 cmake --build build -j4
 ctest --test-dir build --output-on-failure          # everything (with io-load, io-icons, io-hostdemo: ../README.md)
-ctest --test-dir build -R '^test-ofx14(-11|-gl|-resolve|-full|-scale075|-scale05)?$'   # the runs of `make test-ofx14`
+ctest --test-dir build -R '^test-ofx-actions$'        # one test
+ctest --test-dir build -R '^test-ofx14(-11|-gl|-resolve|-full|-scale075|-scale05)?$'   # the runs of test-ofx14
+cmake --build build --target ofx_render_test          # one test program
 ```
 
-They are the programs of `tests/Makefile`, with the same sources, defines and flags (`-O0 -g` for those that link the
-plug-ins, `-O2 -g -Wall` for the others, and `assert()` enabled, whatever the build type), and the same runs:
-each ctest test is one run of a `make` target, named after it (`test-<target>`, plus a suffix when the target runs
-the program more than once: `test-ofx-entrypoints` and `test-ofx-actions` are `make test-ofx`; `test-ocio-anim`,
-`test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*` runs are `make test-ocio-anim`; `test-ofx14`,
-`test-ofx14-11`, `test-ofx14-gl`, `test-ofx14-resolve`, `test-ofx14-full`, `test-ofx14-scale075` and
-`test-ofx14-scale05` are `make test-ofx14`; `test-ofx14-scan` and
-`test-ofx14-scan-full` are `make test-ofx14-scan`; `test-ofx14-rowbytes` and `test-ofx14-rowbytes-full` are `make
-test-ofx14-rowbytes`; `test-runscript-win32` (MS Windows only), `test-runscript-output`
-and `test-runscript-render` (POSIX only) are `make test-runscript`). A test is only added if the bundle has the plug-ins
+The test programs are compiled with their own flags (`-O0 -g` for those that link the plug-ins, `-O2 -g -Wall` for
+the others, and `assert()` enabled), whatever the build type. Each ctest test is one run of a program, and a group
+of runs shares a name prefix (`test-<name>`, plus a suffix for each further run: `test-ofx-entrypoints` and
+`test-ofx-actions` are `test-ofx`; `test-ocio-anim`, `test-ocio-anim-not-natron` and the `test-ocio-anim-fuzz-*`
+runs are `test-ocio-anim`; `test-ofx14`, `test-ofx14-11`, `test-ofx14-gl`, `test-ofx14-resolve`, `test-ofx14-full`,
+`test-ofx14-scale075` and `test-ofx14-scale05` are `test-ofx14`; `test-ofx14-scan` and `test-ofx14-scan-full` are
+`test-ofx14-scan`; `test-ofx14-rowbytes` and `test-ofx14-rowbytes-full` are `test-ofx14-rowbytes`;
+`test-runscript-win32` (MS Windows only), `test-runscript-output` and `test-runscript-render` (POSIX only) are
+`test-runscript`). A test is only added if the bundle has the plug-ins
 it links (e.g. `test-seexpr`, with the SeExpr of the build). The programs run in `build/tests`, where they write their
 files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
 
-* `IO_TESTS_WITH_LIBRAW` (ON): the tests that link ReadOIIO also build its RAW support, when the bundle has it
-  (`make WITH_LIBRAW=1`);
+* `IO_TESTS_WITH_LIBRAW` (ON): the tests that link ReadOIIO also build its RAW support, when the bundle has it;
 * `IO_TESTS_TIMEOUT` (1800): the time limit of each test, in seconds (`test-ffmpeg`: twice as much);
-* `IO_TESTS_FUZZ_OPS` (2000): `make FUZZ_OPS=...`;
+* `IO_TESTS_FUZZ_OPS` (2000): the operations of each short fuzz run of `test-ocio-anim`;
 * `IO_TESTS_SANITIZERS` (OFF): also `test-ofx14-scan-asan` (and `-full`), `test-exr-tsan`, `test-exr-ubsan`,
   `test-exr-multiplanar-tsan`, `test-exr-multiplanar-ubsan`, `test-oiio-layer-menu-tsan`, `test-oiio-threads-tsan`,
   `test-ocio-processor-cache-tsan` (and `-renders-tsan`), `test-exr-tsan-debug`, `test-reader-hooks-tsan-debug`,
-  `test-readffmpeg-views-concurrent-tsan` and `test-writeffmpeg-codec-edit-during-begin-tsan`, which `make test`
-  doesn't run either: `ctest --test-dir build -R '[-](a|t|ub)san([-]|$)'` (`[-]`: a value of `-R` can't start with `-`).
+  `test-readffmpeg-views-concurrent-tsan` and `test-writeffmpeg-codec-edit-during-begin-tsan`: `ctest --test-dir build -R '[-](a|t|ub)san([-]|$)'` (`[-]`: a value of `-R` can't start with `-`).
   CI's `linux-sanitizers` job (Ubuntu 26.04, #399) builds with it and runs those that are reliable against Ubuntu's
   libraries, which are not built with TSan: the ASan and UBSan tests, and `test-readffmpeg-views-concurrent-tsan`,
   `test-writeffmpeg-codec-edit-during-begin-tsan`, `test-oiio-threads-tsan`, `test-oiio-layer-menu-tsan`,
@@ -42,12 +41,11 @@ files. CMake options (see [`CMakeLists.txt`](CMakeLists.txt)):
   `test-ocio-processor-cache-tsan`, `test-exr-tsan`, `test-exr-multiplanar-tsan` and `test-exr-tsan-debug`: TSan
   reports races that OpenColorIO's file cache (the purges during renders) and OpenEXR order with synchronisation it
   can't see ([#471](https://github.com/NatronGitHub/openfx-io/issues/471)).
-  `test-ocio-processor-cache-renders-tsan` is `ocio_processor_cache_test_tsan --no-purge-during-renders` (`make
-  test-ocio-processor-cache-renders-tsan`): the same tests without the purges while 3 threads render, so that the
+  `test-ocio-processor-cache-renders-tsan` is `ocio_processor_cache_test_tsan --no-purge-during-renders`: the same tests without the purges while 3 threads render, so that the
   concurrent renders (e.g. the GetEnvVariable() race of OpenColorIO < 2.6) are checked in CI. The excluded tests stay
   registered and run locally, e.g. on macOS, where TSan ignores uninstrumented libraries
   (`ignore_noninstrumented_modules=1` by default on Darwin). The
-  ThreadSanitizer runs use [`tsan.supp`](tsan.supp) (`TSAN_OPTIONS=suppressions=...`, in CMake and the Makefile): one
+  ThreadSanitizer runs use [`tsan.supp`](tsan.supp) (`TSAN_OPTIONS=suppressions=...`): one
   entry, `called_from_lib:libOpenImageIO_Util.so` (OpenImageIO's thread pool), with its stacks, its reason and what it
   hides. TSan then ignores the interceptors (allocation, `memcpy`, mutexes) called directly from that library, also
   their synchronisation, while the accesses of instrumented code, ours included, are still checked. The same entries
@@ -63,81 +61,79 @@ nothing (e.g. a control clip of `test-ffmpeg` that no longer shows its bug): `ct
 apart from the skips (a notice per test in CI), and they don't fail `FFMPEG_READ_TEST_STRICT=1`. A test that can never
 run on a platform is not registered there.
 
-`make bench-exr` is not a ctest test. Without CMake, `tests/Makefile` builds and runs the same tests in `tests/`,
-with `pkg-config`:
+`bench-exr` is not a ctest test: `cmake --build build --target bench-exr`. The tests (ctest names, or the prefixes of
+the groups above):
 
 ```sh
-cd tests
-make test          # builds + runs everything
-# individually:
-make test-ffmpeg   # FFmpeg reader-core: frame-accuracy + seek validation
-make test-oiio     # OpenImageIO format roundtrip sanity check
-make test-ofx      # OFX entry-point + action tests (plugin code linked directly)
-make test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
-make test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's encoder must not abort (#267)
-make test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender after a render, then endSequenceRender (#289)
-make test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305); DNxHR below 256x120 fails clearly (#248)
-make test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
-make test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
-make test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
-make test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171); PFM row order (#476); JPEG XL quality (Natron#980)
-make test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
-make test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
-make test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
-make test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
-make test-writeffmpeg-codec-edit-during-begin # WriteFFmpeg: the Codec edited during beginSequenceRender (#319)
-make test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitizer: no data race (not in make test)
-make test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218); pixel format codings (#403)
-make test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
-make test-writeffmpeg-missing-encoder # WriteFFmpeg fails the render if the selected encoder is missing (#388)
-make test-writeffmpeg-format-from-filename # WriteFFmpeg: the Format menu entry chosen from the output filename (#382)
-make test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
-make test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
-make test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
-make test-writer-render-scale # a writer at render scales 0.5 and 0.75 fails with an error message (#438, #194)
-make test-writer-no-overwrite # WriteFFmpeg, Overwrite unchecked: a new movie is written; an existing one fails the render and is kept (#470)
-make test-writer-image-overlapping-begins # two overlapping one-frame sequence renders of an image writer both succeed (#470)
-make test-writer-file-change-during-render # WriteFFmpeg: a file change from .mov to .png during a render doesn't block the next one (#470)
-make test-writeffmpeg-interactive # WriteFFmpeg writes a movie when the host sets kOfxPropIsInteractive for several frames (#460)
-make test-writer-input-connect # connecting the input keeps the Input Premult that the user set (#457)
-make test-spec-statuses # the writers fail with kOfxStatFailed and a message; the test host brackets instanceChanged (#473, #474)
-make test-writer-int-ranges # GenericWriter and WriteFFmpeg with host values out of the range of int, with UBSan (#184)
-make test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
-make test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
-make test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
-make test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
-make test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back; the premult checkbox and the input (#457)
-make test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
-make test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context, Reload, purge caches (#275, #282-#284, #361, #402)
-make test-ocio-processor-cache-tsan # the same with ThreadSanitizer (not in make test)
-make test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
-make test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287), a render at scale 0.5 fails with an error message (#438), InstanceChanged and getRegionsOfInterest at scales 0.75 and 0.5 succeed (#194), and a script that can only be written in part (RLIMIT_FSIZE of 64 bytes) fails the render instead of running
-make test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
-make test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
-make test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
-make test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
-make test-sequence-parsing # SequenceParsing: its own test (patterns, views, UTF-8, negative frames, %d, padding, int limits) and UTF-8 cases (UBSan)
-make test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
-make test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders, layers, views
-make test-exr-tsan # test-exr, built with ThreadSanitizer
-make test-exr-ubsan # test-exr, built with UndefinedBehaviorSanitizer
-make test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
-make test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales (1/2, 1/4, 0.75, 1/3, 0.5 x 0.75, 1 x 0.5, 2), rewritten files (ASan, UBSan, guard pages)
-make test-oiio-layer-menu # ReadOIIO: the output-layer menu rebuilt by a file change while renders and isIdentity run on other threads (#298)
-make test-oiio-layer-menu-tsan # the same with ThreadSanitizer (not in make test)
-make test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, UBSan, no leak)
-make test-reader-window-host # the same readers and ReadFFmpeg in a host built on openfx's HostSupport (needs expat, oiiotool, ffmpeg)
-make test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
-make test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
-make test-ofx14-scan-asan # the same, built with AddressSanitizer
-make test-ofx14-rowbytes # every plug-in with images in padded and top-down rows (negative kOfxImagePropRowBytes), with ASan and UBSan's pointer-overflow check (#456)
-make test-seexpr   # SeExpr's frames needed, cpixel() domain and param variables at the render time, SeNoise/SeGrain degenerate params (SEEXPR_HOME=..., SEEXPR_LIBDIR=...)
-make bench-exr     # ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
+test-ffmpeg   # FFmpeg reader-core: frame-accuracy + seek validation
+test-oiio     # OpenImageIO format roundtrip sanity check
+test-ofx      # OFX entry-point + action tests (plugin code linked directly)
+test-render   # full WriteFFmpeg encode -> ReadFFmpeg decode round-trip
+test-dnxhr444-noise # WriteFFmpeg DNxHR 444 on binary RGB noise: FFmpeg's encoder must not abort (#267)
+test-writeffmpeg-begin-failure # WriteFFmpeg: a failed beginSequenceRender after a render, then endSequenceRender (#289)
+test-writeffmpeg-dnxhd-profiles # WriteFFmpeg: each DNxHD/DNxHR profile in 1080p and 720p uses the expected CID (#305); DNxHR below 256x120 fails clearly (#248)
+test-writeffmpeg-encode-failure # WriteFFmpeg: frame 1 is aborted or fails while other threads wait (#288)
+test-writeffmpeg-encode-failure-disk-full # the same, frame 1 fails to be written (#288; not on MS Windows)
+test-writeoiio-disk-full # WriteOIIO: a write that runs out of space fails the render (#292, #362; not on MS Windows)
+test-writeoiio-files # WriteOIIO: multi-part EXR and OpenJPH files, which OpenImageIO writes by name (#362); EXR zstd warning (#171); PFM row order (#476); JPEG XL quality (Natron#980)
+test-writer-remove-partial-file # a failed or aborted render of an image file leaves no partial file (#251; the WritePNG part: not on MS Windows, needs libpng)
+test-swscale-exact # ReadFFmpeg/WriteFFmpeg Y'CbCr <-> RGB conversions give exact values (#207, #220, #316)
+test-writeffmpeg-param-change # WriteFFmpeg: param and clip changes, sync private data, during a render (#304)
+test-writeffmpeg-codec-params # WriteFFmpeg: the settings and pixel formats of each encoder, and its movies (#343)
+test-writeffmpeg-codec-edit-during-begin # WriteFFmpeg: the Codec edited during beginSequenceRender (#319)
+test-writeffmpeg-codec-edit-during-begin-tsan # the same with ThreadSanitizer: no data race (IO_TESTS_SANITIZERS)
+test-writeffmpeg-pixfmt-choice # WriteFFmpeg: the selected pixel format fits the Pref. Pixel Coding (#218); pixel format codings (#403)
+test-writeffmpeg-selected-encoder # WriteFFmpeg encodes with the encoder selected in the Codec menu (#348)
+test-writeffmpeg-missing-encoder # WriteFFmpeg fails the render if the selected encoder is missing (#388)
+test-writeffmpeg-format-from-filename # WriteFFmpeg: the Format menu entry chosen from the output filename (#382)
+test-readffmpeg-destroy-closes-file # ReadFFmpeg: DestroyInstance closes the movie, before Unload (#290)
+test-pfm-write-errors # WritePFM fails the render on a full disk (#294; not on MS Windows)
+test-pfm-read-errors # ReadPFM's RoD fails on a header with an invalid size (#296)
+test-writer-render-scale # a writer at render scales 0.5 and 0.75 fails with an error message (#438, #194)
+test-writer-no-overwrite # WriteFFmpeg, Overwrite unchecked: a new movie is written; an existing one fails the render and is kept (#470)
+test-writer-image-overlapping-begins # two overlapping one-frame sequence renders of an image writer both succeed (#470)
+test-writer-file-change-during-render # WriteFFmpeg: a file change from .mov to .png during a render doesn't block the next one (#470)
+test-writeffmpeg-interactive # WriteFFmpeg writes a movie when the host sets kOfxPropIsInteractive for several frames (#460)
+test-writer-input-connect # connecting the input keeps the Input Premult that the user set (#457)
+test-spec-statuses # the writers fail with kOfxStatFailed and a message; the test host brackets instanceChanged (#473, #474)
+test-writer-int-ranges # GenericWriter and WriteFFmpeg with host values out of the range of int, with UBSan (#184)
+test-readffmpeg-views-concurrent # ReadFFmpeg: concurrent renders of the views of a stereo movie get their own view (#291)
+test-readffmpeg-views-concurrent-tsan # the same with ThreadSanitizer
+test-layers   # ReadOIIO EXR channel names -> views/layers (multi-view EXRs)
+test-reader-hooks # GenericReader's isOutputFrameVarying()/getRenderTime()/refreshFrameBounds()/clipToFile() hooks
+test-ocio-cdl # OCIOCDLTransform's Export writes a .cc file that OCIO reads back; the premult checkbox and the input (#457)
+test-ocio-filetransform # OCIOFileTransform's CCC Id param, with AddressSanitizer
+test-ocio-processor-cache # the OCIO plug-ins' processor caches and configs: concurrent renders, changed config or context, Reload, purge caches (#275, #282-#284, #361, #402)
+test-ocio-processor-cache-tsan # the same with ThreadSanitizer (IO_TESTS_SANITIZERS)
+test-ocio-anim # GenericOCIO's animated colorspaces, in a Natron-like host (menus, keys, Swap, undo)
+test-runscript # RunScript: stderr line splitting (all systems); on MS Windows, quoting, program/batch/shebang launch, abort; on POSIX, an aborted render kills the script and its process group (#287), a render at scale 0.5 fails with an error message (#438), InstanceChanged and getRegionsOfInterest at scales 0.75 and 0.5 succeed (#194), and a script that can only be written in part (RLIMIT_FSIZE of 64 bytes) fails the render instead of running
+test-oiio-threads # OIIO's thread pool is stopped by the last OIIO instance's destruction and the last OIIO plug-in's unload
+test-oiio-threads-tsan # the same with ThreadSanitizer (instances counted from several threads)
+test-exit-without-unload # a host renders ReadOIIO, destroys the instance and exits without kOfxActionUnload (10 times)
+test-raw-unload # a host renders a DNG file with ReadOIIO (LibRaw, OpenMP), unloads IO.ofx, keeps running, exits (5 times)
+test-sequence-parsing # SequenceParsing: its own test (patterns, views, UTF-8, negative frames, %d, padding, int limits) and UTF-8 cases (UBSan)
+test-oiio-edge # OIIOResize and OIIOText with degenerate inputs (empty source, huge RoDs and positions, missing font)
+test-exr      # ReadEXR: pixels, data/display windows, UINT, truncated file, concurrent renders, layers, views
+test-exr-tsan # test-exr, built with ThreadSanitizer
+test-exr-ubsan # test-exr, built with UndefinedBehaviorSanitizer
+test-exr-tsan-debug # test-exr and test-reader-hooks, DEBUG builds with ThreadSanitizer
+test-reader-window # ReadOIIO, ReadPFM, ReadPNG: narrow render windows, render scales (1/2, 1/4, 0.75, 1/3, 0.5 x 0.75, 1 x 0.5, 2), rewritten files (ASan, UBSan, guard pages)
+test-oiio-layer-menu # ReadOIIO: the output-layer menu rebuilt by a file change while renders and isIdentity run on other threads (#298)
+test-oiio-layer-menu-tsan # the same with ThreadSanitizer (IO_TESTS_SANITIZERS)
+test-png-corrupt # ReadPNG and WritePNG on libpng errors: corrupt PNG files fail cleanly (ASan, UBSan, no leak)
+test-reader-window-host # the same readers and ReadFFmpeg in a host built on openfx's HostSupport (needs expat, oiiotool, ffmpeg)
+test-ofx14    # every plug-in described, instantiated and rendered in an OFX 1.4-only host (and the full host)
+test-ofx14-scan # the same after a plug-in scan (Load, Describe, then Unload of every plug-in, openfx #174)
+test-ofx14-scan-asan # the same, built with AddressSanitizer
+test-ofx14-rowbytes # every plug-in with images in padded and top-down rows (negative kOfxImagePropRowBytes), with ASan and UBSan's pointer-overflow check (#456)
+test-seexpr   # SeExpr's frames needed, cpixel() domain and param variables at the render time, SeNoise/SeGrain degenerate params (the SeExpr of the build, SEEXPR_HOME)
+bench-exr     # not a test: ReadEXR's render time, 2048x1556 RGBA half, ZIP/PIZ/DWAA (EXR_THREADS=n: OpenEXR's threads)
 ```
 
-Requires: a C++17 compiler, `pkg-config` (or CMake), and dev libs for FFmpeg, OpenColorIO 2.x,
+Requires: a C++17 compiler, CMake, `pkg-config`, and dev libs for FFmpeg, OpenColorIO 2.x,
 OpenImageIO (+ `fmt`), plus the `ffmpeg` and `oiiotool` CLIs for the media harnesses (`test-ffmpeg`, `test-oiio`,
-bash scripts; `FFMPEG_READ_TEST_BIN`: the `ffmpeg_read_test` to run, default the one next to the script).
+bash scripts; `FFMPEG_READ_TEST_BIN`, required: the `ffmpeg_read_test` to run, which ctest sets, e.g.
+`build/tests/ffmpeg_read_test` by hand).
 
 ## The tests
 
@@ -164,8 +160,7 @@ No `.ofx` bundle, no `dlopen`, no external host.
   asserting each returns `kOfxStatOK`/`kOfxStatReplyDefault`.
 
 Current result: all five plugins pass Load/Describe/DescribeInContext/Unload.
-RAW support (LibRaw) is only built with `make WITH_LIBRAW=1` (which may need OpenMP), or in the CMake build when the
-bundle has it (`IO_TESTS_WITH_LIBRAW`); it is not needed to exercise the entry points.
+RAW support (LibRaw, which may need OpenMP) is only built when the bundle has it (`IO_TESTS_WITH_LIBRAW`); it is not needed to exercise the entry points.
 
 `kOfxActionCreateInstance` + the render action are covered by `test-render`
 (section 1b), which drives a full encode/decode round-trip through the plugins.
@@ -473,7 +468,7 @@ render thread, which the test host's `setPersistentMessage` stops there (`gPersi
 synchronizing with the main thread (relaxed atomics), while the main thread calls `kOfxActionInstanceChanged` on the
 Codec (a user edit), as Natron may do: the OFX spec says that "an instance must be able to handle simultaneous actions
 called on the main and render threads". Then the frames are rendered, and the file must be complete.
-`make test-writeffmpeg-codec-edit-during-begin-tsan` runs it in `ofx_render_test_tsan`, built with
+`test-writeffmpeg-codec-edit-during-begin-tsan` runs it in `ofx_render_test_tsan`, built with
 [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-writeffmpeg-codec-edit-during-begin-tsan`,
 with `IO_TESTS_SANITIZERS`): the replaced codec of a project (`_codecReplaced`), which `beginSequenceRender` reads and
 the Codec edit clears, was not guarded, and ThreadSanitizer reported the data race.
@@ -741,7 +736,7 @@ It writes its own OCIO configs and CDL files in its directory, and sets `$OCIO` 
   cache unchanged.
 - Before the fixes, three of the plug-ins copied the cached processor after releasing its mutex while another
   thread replaced it, and GenericOCIO reset and reloaded its config without a lock (a crash on a null config).
-  `make test-ocio-processor-cache-tsan` reports these data races: it is the same test, built with
+  `test-ocio-processor-cache-tsan` reports these data races: it is the same test, built with
   [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-ocio-processor-cache-tsan`, with
   `IO_TESTS_SANITIZERS`; no CI job runs it).
 - A changed context or config: OCIODisplay and OCIOLookTransform render the colorspace `ctx`, a CDL file whose name
@@ -763,7 +758,7 @@ It writes its own OCIO configs and CDL files in its directory, and sets `$OCIO` 
 ### 1e. `test-ocio-anim` — GenericOCIO's animated colorspaces (#128)
 
 `ocio_colorspace_anim_test.cpp` drives `OCIOColorSpace`, `WriteOIIO` and `ReadOIIO`
-(linked with `PLUGIN_SRCS` and the OpenGL sources of `ocio_cdl_test`) with `ofx_test_host.h`,
+(linked with the reader/writer plug-ins of the tests and the OpenGL sources of `ocio_cdl_test`) with `ofx_test_host.h`,
 whose parameter suite it replaces with one that animates string and choice params like
 Natron, and declares `kNatronOfxHostIsNatron` (GenericOCIO then builds the menus of each
 instance):
@@ -811,8 +806,8 @@ save/load, file names, expressions, time changes) to OCIOColorSpace, WriteOIIO o
 and checks after each one that the menus have the keys and values of the strings, that no key
 is set outside of an instance changed action, that there is no loop, that the renders follow
 the strings, that ops that add no key add none, and that undoing a swap of keyed sides
-restores them. `make test-ocio-anim` runs 2000 operations on each plug-in with fixed seeds
-(`FUZZ_OPS=n` for more), a run with `FUZZ_NEAR=1` (keys and times near frames), and the seeds
+restores them. `test-ocio-anim` runs 2000 operations on each plug-in with fixed seeds
+(`-DIO_TESTS_FUZZ_OPS=n` for more), a run with `FUZZ_NEAR=1` (keys and times near frames), and the seeds
 that found bugs in the review (`FUZZ_NEAR=1`: reader 32, and cs 77 and 102 with 50000 operations).
 `FUZZ_STRICT_A=1` doesn't skip params taken for expressions because of a hidden key next to
 keys at 0 and 1; `FUZZ_NO_EXPR=1` sets no expression; `OCIO_ANIM_NO_ROUND=1` doesn't round the time of the string
@@ -829,7 +824,7 @@ NatronGitHub/Natron#1341), which ends
 an edit block when the instance changed action of its first change returns (so that undoing a
 swap only undoes its first change); `ocio_anim_fuzz scenario 0 0` with `SCEN=main` or
 `SCEN=exact` prints some repros. `OCIO_ANIM_NOT_NATRON=1` models another host than Natron (no
-`kNatronOfxHostIsNatron`, string params read at the given time): `make test-ocio-anim` also
+`kNatronOfxHostIsNatron`, string params read at the given time): `test-ocio-anim` also
 runs the test and a fuzz run so.
 
 ### 1f. `test-oiio-threads` — OpenImageIO's thread pool, shared by the OIIO plug-ins (#118, #250, #256)
@@ -851,13 +846,13 @@ is the last OIIO plug-in loaded. The test checks that:
   threads), while the plug-ins are still loaded, and a new instance starts it again;
 * the unload of the last OIIO plug-in leaves it stopped;
 * 8 threads create and destroy `OIIOThreadsUser` objects concurrently: the pool must run while each one exists, and
-  be stopped at the end. `make test-oiio-threads-tsan` builds and runs it with
+  be stopped at the end. `test-oiio-threads-tsan` builds and runs it with
   [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) (ctest `test-oiio-threads-tsan`, with
   `IO_TESTS_SANITIZERS`).
 
 It sets `OCIO=test.ocio`.
 
-`make test-exit-without-unload` (ctest `test-exit-without-unload`, when the build has HostSupport) builds
+`test-exit-without-unload` (when the build has HostSupport) builds
 `hostdemo/exit_without_unload.cpp`, a host built on HostSupport and linked with OpenImageIO, and runs it 10 times
 (`hostdemo/exit_without_unload.sh`, with a 120 s watchdog each) with the bundle of `test-reader-window-host`: it renders
 a TIFF file (written by `oiiotool`) with ReadOIIO, destroys the instance, and returns from `main()` without
@@ -865,7 +860,7 @@ kOfxActionUnload. Each run must exit. When the plug-in uses the program's OpenIm
 its own copy), and OpenImageIO can stop its pool (2.5.3 or later; not Ubuntu 24.04's 2.4), the pool must have
 `hardware_concurrency() - 1` threads with the instance, and 0 after it was destroyed.
 
-`make test-raw-unload` (ctest `test-raw-unload`, when the build has HostSupport, #239) builds `hostdemo/raw_unload.cpp`,
+`test-raw-unload` (when the build has HostSupport, #239) builds `hostdemo/raw_unload.cpp`,
 a host built on HostSupport, not linked with OpenImageIO, LibRaw or OpenMP (so that nothing else keeps them loaded),
 and runs it 5 times (`hostdemo/raw_unload.sh`, with `OMP_NUM_THREADS=4` and `OMP_WAIT_POLICY=active`, and a 120 s
 watchdog each) with the bundle of `test-reader-window-host`. It renders a 640x480 DNG file with ReadOIIO, destroys the
@@ -887,9 +882,8 @@ outlive the render: ReadOIIO keeps the OpenMP runtime loaded (`pinOpenMPRuntime(
   library), the check prints a `SKIPPED: ` line instead of failing. The PR that bumps the submodules past them deletes
   that branch.
 
-It also prints the thread counts (Linux, MS Windows). macOS does not exercise the pin: MacPorts' LibRaw has no OpenMP;
-with `WITH_LIBRAW=1` the test bundle links libomp itself (`tests/Makefile`), so the pin runs, but libomp then stays
-loaded with or without it.
+It also prints the thread counts (Linux, MS Windows). macOS does not exercise the pin: MacPorts' LibRaw has no OpenMP,
+so the test bundle links no OpenMP runtime.
 The DNG file is written by `raw_unload --write-dng`: an uncompressed 16-bit RGGB CFA DNG with the minimal DNG tags,
 which LibRaw reads (OpenImageIO's `raw` reader), since no RAW file can be committed, and a download would make the
 test depend on the network.
@@ -913,15 +907,16 @@ OIIOText needs one of OpenImageIO's default fonts (DroidSans, cour, Courier New 
 `fonts-freefont-ttf`), or a directory with one of them in `OPENIMAGEIO_FONTS` (OpenImageIO only searches the system
 font directories one level deep, see `.github/workflows/ci.yml`).
 
-The conversions are only detected by UBSan: build it with
-`make oiio_edge_test CXX="clang++ -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`.
+The conversions are only detected by UBSan: build it in a separate build directory configured with
+`-DCMAKE_CXX_FLAGS="-fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"`
+(`cmake --build <dir> --target oiio_edge_test`).
 It sets `OCIO=test.ocio`.
 
 ### 1f3. `test-ofx14` — every plug-in in an OFX 1.4-only host
 
 Every plug-in must work in a host that supports only OFX 1.4 or older: the features of OFX 1.5 and later, and the
 Natron, Nuke, Vegas and other extensions, are optional. `ofx14_host_test.cpp` links every plug-in of `IO.ofx` (the
-sources of `../IO/Makefile`, with OpenGL render support as in the bundle; the SeExpr plug-ins if SeExpr 2.11 is in
+sources of the `IO` target of [`../CMakeLists.txt`](../CMakeLists.txt), with OpenGL render support as in the bundle; the SeExpr plug-ins if SeExpr 2.11 is in
 `SEEXPR_HOME`, the PNG ones if pkg-config finds libpng) with the host of `ofx_test_host.h` in its OFX 1.4-only mode
 (`gOfx14Only`):
 
@@ -963,7 +958,7 @@ host that resets the display range when the range is set, as OFX 1.5.1 asks (`of
 "Setting this will also reset ::kOfxParamPropDisplayMin"; `gResetDisplayRangeOnSetRange` in `ofx_test_host.h`): every
 param must keep its display range there, i.e. the plug-in sets the range before the display range.
 
-`make test-ofx14` runs it in five hosts, then twice more in the OFX 1.4-only host:
+`test-ofx14` runs it in five hosts, then twice more in the OFX 1.4-only host:
 
 * OFX 1.4 only;
 * OFX 1.1 (`OFX14_LEVEL=11`): also without the properties of OFX 1.2 to 1.4 (e.g.
@@ -983,22 +978,22 @@ to drop), `OFX14_COMPS` and `OFX14_DEPTHS` (the host's components and depths), `
 `OFX14_NOOVERLAYS`, `OFX14_SCALE` (the render scale, if the plug-in supports multiple resolutions, or always with
 `OFX14_FORCESCALE`; `OFX14_SCALE_WRITERS1`: the writers at scale 1), `OFX14_SETINT` (`param=value,...`),
 `OFX14_SKIPPARAMS`, `OFX14_NOCTX` (no instance in every context), `OFX14_KEEPMSG2` (the Message suite V2 even with
-`OFX14_LEVEL` below 12), and `--only <plug-in identifier>`. It sets `OCIO=test.ocio`; `make test-ofx14 SEEXPR_HOME=/opt/local` (the
+`OFX14_LEVEL` below 12), and `--only <plug-in identifier>`. It sets `OCIO=test.ocio`; a build configured with `-DSEEXPR_HOME=/opt/local` (the
 [`seexpr211`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts/graphics/seexpr211) port of Natron's
 MacPorts tree) includes the SeExpr plug-ins.
 
-`make test-ofx14-scan` runs the OFX 1.4-only and the full hosts with `--scan`: before the tests, every plug-in gets
+`test-ofx14-scan` runs the OFX 1.4-only and the full hosts with `--scan`: before the tests, every plug-in gets
 Load and Describe, then they all get Unload, as in the plug-in scan of a host that unloads the binary after it (the
 default of openfx's HostSupport since [openfx #174](https://github.com/NatronGitHub/openfx/pull/174), whose hostDemo
 keeps it loaded with `OFX_HOSTDEMO_KEEP_LOADED=1`). Each test then loads, describes and uses its plug-in again, in the
 same process, as a host does when the binary stays in memory (on macOS, a binary with thread-local variables is never
 unmapped): the plug-ins' global state must survive Unload and be initialised again by Load and Describe. After the
 scan, the Support library must have forgotten the host description, and the plug-ins must not have stopped OpenEXR's
-global thread pool, which they did not start. `make test-ofx14-scan-asan` runs the same with
+global thread pool, which they did not start. `test-ofx14-scan-asan` runs the same with
 [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html). The real unload of the binary (`dlclose`) is
 tested by `io-hostdemo` (CMake, `IO_HOSTDEMO_TESTS`), whose hostDemo unloads it after its scan.
 
-`make test-ofx14-rowbytes` ([#456](https://github.com/NatronGitHub/openfx-io/issues/456)) runs the OFX 1.4-only and the
+`test-ofx14-rowbytes` ([#456](https://github.com/NatronGitHub/openfx-io/issues/456)) runs the OFX 1.4-only and the
 full hosts with `OFX14_ROWBYTES=1`, built with [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) and
 [UBSan](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)'s `pointer-overflow` check (stopping at the first
 error; neither with MinGW). "Row bytes can be negative, which allows hosts with a native top down row order
@@ -1061,7 +1056,7 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   instance created and destroyed while a ReadEXR instance exists (as Natron's Read node does with a temporary ReadOIIO)
   leaves it running (it is linked with `OIIOGlobal.cpp` for this).
 * **a multi-view file in a host without planes**: the color plane of view 0 is the default view's R, G, B, A (#386).
-* **layers and views** (#386), in a second run (`exr_read_test --multiplanar`, also run by `make test-exr`,
+* **layers and views** (#386), in a second run (`exr_read_test --multiplanar`, also run by `test-exr`,
   `test-exr-tsan` and `test-exr-ubsan`; ctest: `test-exr-multiplanar`, and `test-exr-multiplanar-tsan` and
   `test-exr-multiplanar-ubsan` with `IO_TESTS_SANITIZERS`), in a Natron-like host (multiple planes, dynamic choices,
   the host's views by name):
@@ -1081,15 +1076,15 @@ the in-process host of `ofx_test_host.h`, in the Reader context:
   thread creates and destroys 400 `OIIOThreadsUser`, under a 300 s watchdog: stopping OpenEXR's pool while a render
   adds tasks could leave a task that no thread runs, and the render waiting forever.
 
-`make test-exr-tsan` builds and runs it with ThreadSanitizer (`-fsanitize=thread`,
+`test-exr-tsan` builds and runs it with ThreadSanitizer (`-fsanitize=thread`,
 with the suppressions of [`tsan.supp`](tsan.supp)). OpenEXR itself is not instrumented, so the race on a shared
 `Imf::InputFile` is found by the image comparison, not by ThreadSanitizer.
-`make test-exr-tsan-debug` builds and runs this test and `test-reader-hooks` (which renders
+`test-exr-tsan-debug` builds and runs this test and `test-reader-hooks` (which renders
 from two threads) with `-fsanitize=thread -DDEBUG`, also with `halt_on_error=1` and the same
 suppressions (and `abort_on_error=0`: a race exits with an error, without a crash report). `DEBUG` enables the OFX Support library's property validation and logging,
 which run while other threads render: this catches races in the Support library itself, such as
 those on `PropertySet::_gPropLogging` and `PropertyDescription::_exists` fixed by openfx #144.
-`make bench-exr` (optimized build) times 5 renders of 2048x1556 RGBA half files with ZIP,
+`bench-exr` (`cmake --build build --target bench-exr`, an optimized build of the test) times 5 renders of 2048x1556 RGBA half files with ZIP,
 PIZ and DWAA compression (`EXR_THREADS=n` sets OpenEXR's global thread count).
 It sets `OCIO=test.ocio`.
 
@@ -1201,7 +1196,7 @@ It sets `OCIO=test.ocio`.
 
 `hostdemo/reader_window.cpp` (adapted from openfx-arena's `tests/readerwindow/reader_window.cpp`) is a host built on
 openfx's HostSupport and hostDemo's host classes (`openfx/HostSupport/examples`; hostDemo itself renders the whole RoD
-of a plug-in without tiles, whatever its `--window`). `make test-reader-window-host` builds it (with expat, from
+of a plug-in without tiles, whatever its `--window`). `test-reader-window-host` builds it (with expat, from
 `pkg-config`) and a bundle of ReadOIIO, ReadPFM, ReadPNG and ReadFFmpeg (`.reader_window_host/plugins`), then
 `hostdemo/reader_window.sh` writes files with `oiiotool` (8-bit RGB and 16-bit RGBA PNG, float RGB and RGBA TIFF, an
 EXR with a data window, a tiled EXR), `reader_window --write-pfm` (an RGB PFM: OpenImageIO 2.4's oiiotool, in Ubuntu
@@ -1610,7 +1605,7 @@ matches `FFMPEG_READ_TEST_EXPECTED_SKIPS`, a bash extended regular expression (e
 FFmpeg, e.g. `'^no hap encoder'` on MS Windows). A section that the harness skips (exit status 77) has the reason
 `no decoder in the linked libavcodec: <clip>`. An invalid expression is an error (exit status 2); one that never
 matches is allowed silently. Off by default, so that a minimal `ffmpeg` CLI still runs the rest.
-`make test-ffmpeg-strict` (ctest `test-ffmpeg-strict`, [`ffmpeg_read_strict_test.sh`](ffmpeg_read_strict_test.sh))
+`test-ffmpeg-strict` ([`ffmpeg_read_strict_test.sh`](ffmpeg_read_strict_test.sh))
 checks the strict mode in a few seconds, with `ffmpeg`, `ffprobe` and harness stubs that make every section skip (one
 through the harness's exit status 77): the run must pass by default with at least today's number of skipped sections
 (so that a section that skips without a `SKIPPED` line is caught), fail with `FFMPEG_READ_TEST_STRICT=1` (one `FAIL`
@@ -1639,7 +1634,7 @@ not the plugin code itself (the OFX-level coverage is `test-ofx`).
 
 ### 4. `io-hostdemo` — every plug-in of the installed bundle, rendered by openfx's Python host
 
-Not a `tests/Makefile` target: a ctest test of the CMake build, with `-DIO_HOSTDEMO_TESTS=ON` (CI turns it on),
+A ctest test of the CMake build, with `-DIO_HOSTDEMO_TESTS=ON` (CI turns it on),
 which builds openfx's Python host from the `openfx` submodule: the ofxh module (`openfx/HostSupport/python`,
 `OFX_PYTHON_BINDINGS`, with HostSupport, which needs the system expat, and with Python >= 3.10,
 [nanobind](https://github.com/wjakob/nanobind) and [NumPy](https://numpy.org); `-DPython_EXECUTABLE=...` chooses the
@@ -1711,8 +1706,8 @@ files), and real camera RAW or DNG files are much larger than the few KB a test 
 
 The FFmpeg plug-ins support [FFmpeg](https://ffmpeg.org) 8.0.1 and later (libavcodec 62.11.100, libavformat 62.3.100,
 libavutil 60.8.100 and libswscale 9.1.100, the versions of the [n8.0 release](https://github.com/FFmpeg/FFmpeg/blob/n8.0/doc/APIchanges),
-which 8.0.1 keeps): `FFmpeg/FFmpegFile.h` stops with an `#error` with older libraries, and the CMake configuration and
-the Makefiles with an error message. 8.0 itself has the same library versions as 8.0.1, so `FFmpegFile.h` rejects it by
+which 8.0.1 keeps): `FFmpeg/FFmpegFile.h` stops with an `#error` with older libraries, and the CMake configuration with an
+error message. 8.0 itself has the same library versions as 8.0.1, so `FFmpegFile.h` rejects it by
 its release name (`FFMPEG_VERSION`, a `static_assert`), and the plug-ins' load action fails if `av_version_info()` is
 8.0 at run time. CI builds with FFmpeg 8.0.1 (Linux, [Ubuntu 26.04](https://packages.ubuntu.com/resolute/libavcodec-dev)),
 8.x (macOS, MacPorts' `ffmpeg8`) and 9 (Windows). `ffmpeg_syntax_check.sh` compiles `WriteFFmpeg.cpp`, `ReadFFmpeg.cpp`,
@@ -1773,15 +1768,14 @@ podman run --rm -v "$PWD":/src:ro -w /src docker.io/library/ubuntu:26.04 sh -c '
 | `verify_plugin_loads.cpp`   | Loads an `IO.ofx` with openfx's HostSupport and lists its plug-ins (ctest `io-load`, the CI load checks, `tools/compare_bundles.sh`); linked with a copy of openfx's `ofxhBinary.cpp` that uses `RTLD_NOW` instead of `RTLD_LAZY`, so that a missing symbol makes loading fail. |
 | `check_icons.cmake`         | Every plug-in of the CMake build tree's bundle has its icon, `Contents/Resources/<identifier>.png` (ctest `io-icons`). |
 | `hostdemo/compare.py`       | Compares a reader's images with its writer's, from hostDemo's `--report` files (for `run.sh`). |
-| `CMakeLists.txt`            | The same test programs and runs, as ctest tests of the CMake build (`test-*`). |
+| `CMakeLists.txt`            | The test programs and their runs, as ctest tests of the CMake build (`test-*`), and the `bench-exr` target. |
 | `run_test.cmake`            | ctest helper: empties a work directory, then runs a test program (`test-exr`, `test-ofx14`, ...). |
 | `ctest_skips.sh`            | Lists the `SKIP: `/`SKIPPED: ` lines (and, apart, the `NOTE: ` lines) of all tests of the last ctest run (`ctest_skips.sh build`), which `ctest --output-on-failure` hides, e.g. the sections of `test-ffmpeg` without their encoder; CI runs it after ctest (#309). |
-| `Makefile`                  | The tests without CMake: `make test` and the targets listed above. |
 
 ## Notes / limitations
 
 * The OFX action tests link a curated subset of the plug-ins and their dependencies (LibRaw only with
-  `WITH_LIBRAW=1`); this is enough for the entry points. The tests that need OpenGL (`test-ocio-cdl`, `test-ofx14`,
+  `IO_TESTS_WITH_LIBRAW`, when the bundle has it); this is enough for the entry points. The tests that need OpenGL (`test-ocio-cdl`, `test-ofx14`,
   `test-oiio-edge`...), SeExpr (`test-seexpr`) or OpenEXR (`test-exr`) link them.
 * Building the loadable `IO.ofx` and running it in a real host (Natron/Nuke) remains
   the way to test end-to-end rendering with UI; the harnesses here cover the

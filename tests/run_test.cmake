@@ -1,5 +1,5 @@
-# ctest helper for the tests of tests/CMakeLists.txt that need an empty work directory, as tests/Makefile's
-# `rm -rf <dir> && mkdir -p <dir>`:
+# ctest helper for the tests of tests/CMakeLists.txt that need an empty work directory (`rm -rf <dir> && mkdir -p
+# <dir>`):
 #
 #   cmake -DDIR=<dir> -P run_test.cmake -- <program> [<arguments>...]
 #

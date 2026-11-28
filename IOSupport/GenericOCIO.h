@@ -378,9 +378,8 @@ private:
 // Processor.cpp:352): concurrent renders race on it (ThreadSanitizer, test-ocio-processor-cache-tsan). The lock
 // guards only that string. OCIO takes its own locks under it and calls no plug-in code, so it can't be part of a
 // lock-order cycle. It orders only the calls of this bundle (one mutex per binary): the host (e.g. Natron),
-// OpenImageIO's own OCIO calls and other bundles (make nomulti builds one per plug-in group) may still race on the
-// same string with OpenColorIO < 2.6. OpenColorIO 2.6 makes the string thread_local (2.6.0 Platform.cpp:25): no lock
-// there.
+// OpenImageIO's own OCIO calls and other bundles may still race on the same string with OpenColorIO < 2.6.
+// OpenColorIO 2.6 makes the string thread_local (2.6.0 Platform.cpp:25): no lock there.
 class OCIOOptimizedProcessorLock {
 public:
     OCIOOptimizedProcessorLock();

@@ -14,9 +14,6 @@ DerivedData/*
 *.pbxuser
 *Debug
 *Release
-*release
-*relwithdebinfo
-*debug
 Cache
 TestImages
 TestWrite

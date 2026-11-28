@@ -18,7 +18,7 @@
  * ***** END LICENSE BLOCK ***** */
 /*
  * png_corrupt_test — ReadPNG and WritePNG on libpng errors (issue #235), driven by the in-process host
- * (ofx_test_host.h), built with AddressSanitizer (make test-png-corrupt).
+ * (ofx_test_host.h), built with AddressSanitizer (ctest test-png-corrupt).
  *
  * libpng reports an error by longjmp()ing to the jmp_buf set with setjmp(png_jmpbuf(png)). ReadPNG set it in a
  * function that then returned, so the first libpng error after it (png_read_info() on a corrupt header, png_read_row()
@@ -48,7 +48,7 @@
  *    number of bytes allocated (__sanitizer_get_current_allocated_bytes) and the lowest free file descriptor must be
  *    the same as before.
  *
- * Usage: png_corrupt_test <scratch dir>   (needs $OCIO, see tests/Makefile)
+ * Usage: png_corrupt_test <scratch dir>   (needs $OCIO, see tests/CMakeLists.txt)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"

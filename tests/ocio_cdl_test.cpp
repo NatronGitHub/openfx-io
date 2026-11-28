@@ -25,7 +25,7 @@
  * The plug-in is linked directly and driven through the OFX actions by the in-process host
  * of ofx_test_host.h; the exported file is read back by an OCIO FileTransform.
  *
- * Usage: ocio_cdl_test   (needs $OCIO, see tests/Makefile)
+ * Usage: ocio_cdl_test   (needs $OCIO, see tests/CMakeLists.txt)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -742,7 +742,7 @@ int
 main(int, char**)
 {
     if (!std::getenv("OCIO")) {
-        std::printf("FAIL: $OCIO is not set (see tests/Makefile)\n");
+        std::printf("FAIL: $OCIO is not set (see tests/CMakeLists.txt)\n");
 
         return 1;
     }

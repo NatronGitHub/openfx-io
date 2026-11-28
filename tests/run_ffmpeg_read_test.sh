@@ -138,16 +138,16 @@
 #                              error (exit status 2); a pattern that never matches is allowed, and not reported.
 #   FFMPEG_READ_TEST_KEEP=dir  generate the clips in dir and keep them
 #   FFMPEG_READ_TEST_ARGS=...  extra harness arguments (e.g. --verbose)
-#   FFMPEG_READ_TEST_BIN=path  the harness (default: ffmpeg_read_test next to this script, as tests/Makefile
-#                              builds it; ctest sets it to the one of the CMake build)
+#   FFMPEG_READ_TEST_BIN=path  the harness (required): ctest -R '^test-ffmpeg$' sets it to the CMake build's
+#                              ffmpeg_read_test; by hand, e.g. FFMPEG_READ_TEST_BIN=build/tests/ffmpeg_read_test
 #
 # Exit status: 0 = all passed, non-zero = a failure was detected.
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")" && pwd)"
-bin="${FFMPEG_READ_TEST_BIN:-$here/ffmpeg_read_test}"
-if [ ! -x "$bin" ]; then
-    echo "error: $bin not built. Run 'make' (or build the CMake build's ffmpeg_read_test) first." >&2
+bin="${FFMPEG_READ_TEST_BIN:-}"
+if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+    echo "error: FFMPEG_READ_TEST_BIN='$bin' is not the ffmpeg_read_test program. Run ctest --test-dir build -R '^test-ffmpeg\$'," >&2
+    echo "  or build it (cmake --build build --target ffmpeg_read_test) and set FFMPEG_READ_TEST_BIN=build/tests/ffmpeg_read_test." >&2
     exit 2
 fi
 if ! command -v ffmpeg >/dev/null 2>&1; then

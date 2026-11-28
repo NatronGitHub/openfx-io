@@ -35,7 +35,7 @@
  * The colorspaces are those of swap.ocio, where xN is N times the reference (x1, the default): the image (0.25) is
  * rendered as 0.25 * N / M from xN to xM.
  *
- * Usage: ocio_colorspace_anim_test   (needs $OCIO=swap.ocio, see tests/Makefile)
+ * Usage: ocio_colorspace_anim_test   (needs $OCIO=swap.ocio, see tests/CMakeLists.txt)
  * Exit status: 0 = all checks passed.
  */
 #include "ofx_test_host.h"
@@ -2017,7 +2017,7 @@ main(int, char**)
 {
     const char* ocio = std::getenv("OCIO");
     if (!ocio) {
-        std::printf("FAIL: $OCIO is not set (see tests/Makefile)\n");
+        std::printf("FAIL: $OCIO is not set (see tests/CMakeLists.txt)\n");
 
         return 1;
     }

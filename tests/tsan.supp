@@ -1,5 +1,5 @@
-# ThreadSanitizer suppressions for the *-tsan tests (TSAN_OPTIONS=suppressions=..., tests/CMakeLists.txt and
-# tests/Makefile). Only races that a library orders with its own synchronisation, which TSan can't see in code that is
+# ThreadSanitizer suppressions for the *-tsan tests (TSAN_OPTIONS=suppressions=..., tests/CMakeLists.txt).
+# Only races that a library orders with its own synchronisation, which TSan can't see in code that is
 # not built with TSan. Races in openfx-io's code are fixed, not suppressed. Seen with Ubuntu 26.04's libraries (CI's
 # linux-sanitizers job, runs 45729104322, 45748061028 and 45748096175). macOS doesn't report them: TSan's
 # ignore_noninstrumented_modules defaults to 1 on Darwin, so accesses from uninstrumented libraries (MacPorts'

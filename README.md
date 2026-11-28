@@ -77,9 +77,8 @@ on Windows with [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/do
 packages to install and the commands to run on each platform. It builds with [CMake](https://cmake.org) and tests with
 [`ctest`](https://cmake.org/cmake/help/latest/manual/ctest.1.html): a Release C++17 build on every push to master,
 `RB-*` and tags, and on pull requests once they are ready for review (draft pull requests run no CI). Weekly (on
-Saturdays) and on demand, it also builds a Debug C++20 variant, with the same tests, and checks that the Makefiles build
-the plug-ins on Linux. The weekly run builds on Linux, Windows and macOS every week, since Ubuntu's updates, MSYS2 and
-MacPorts move. Natron's Linux testing bundle (`linux-natron`) is built on pushes to master, `RB-*` and tags, on demand,
+Saturdays) and on demand, it also builds a Debug C++20 variant, with the same tests. The weekly run builds on Linux,
+Windows and macOS every week, since Ubuntu's updates, MSYS2 and MacPorts move. Natron's Linux testing bundle (`linux-natron`) is built on pushes to master, `RB-*` and tags, on demand,
 and in the weekly run only if master changed since the last one.
 [Natron](https://github.com/NatronGitHub/Natron) 2.6 builds the plug-ins on [Rocky Linux](https://rockylinux.org) 9 (see [Linux runtime requirements](#linux-runtime-requirements)), on macOS 14 and later (arm64 and x86_64), and on
 MSYS2 UCRT64.
@@ -154,15 +153,16 @@ them: the plug-ins don't use FFmpeg's hardware decoding, and neither does OpenIm
 
 ## Compiling with CMake
 
-[CMake](https://cmake.org) (3.21 or later) builds the combined `IO.ofx` bundle, with the same plug-ins, sources and defines as
-the Makefiles. It needs an out-of-tree build directory:
+[CMake](https://cmake.org) (3.21 or later) is the only build system: it builds the combined `IO.ofx` bundle and the
+tests. (Older release tags, e.g. `Natron-2.5.0`, carry their own Makefiles.) It needs an out-of-tree build
+directory:
 
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release [-DSEEXPR_HOME=...] [-DFFMPEG_PKG_CONFIG_PATH=...]
     cmake --build build
     cmake --install build --prefix <prefix>   # installs <prefix>/OFX/Plugins/IO.ofx.bundle
 
 `PLUGIN_INSTALLDIR` (default `OFX/Plugins`) is relative to the install prefix. Use the prefix of the
-standard OFX plug-in folder of each OS, as `make install` does:
+standard OFX plug-in folder of each OS:
 - Linux, FreeBSD: `sudo cmake --install build --prefix /usr` (`/usr/OFX/Plugins`)
 - macOS: `sudo cmake --install build --prefix /Library` (`/Library/OFX/Plugins`; `/usr` is read-only on
   macOS)
@@ -180,57 +180,16 @@ libraries are not found, unless `OFX_IO_REQUIRE_ALL` is ON. Options:
 | `FFMPEG_PKG_CONFIG_PATH` | empty (pkg-config's search path) | pkg-config directory of the FFmpeg to use, e.g. `/opt/local/libexec/ffmpeg8/lib/pkgconfig` for MacPorts' [`ffmpeg8`](https://ports.macports.org/port/ffmpeg8/) port, which MacPorts' OpenImageIO links. |
 | `CMAKE_OSX_DEPLOYMENT_TARGET` | `14.0` when building natively on macOS, unless the `MACOSX_DEPLOYMENT_TARGET` environment variable is set and non-empty; no default when cross-compiling to another system. An existing build directory keeps its cached value: use a new one, or pass `-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0` | Minimum macOS version of the plug-ins ([`CMAKE_OSX_DEPLOYMENT_TARGET`](https://cmake.org/cmake/help/latest/variable/CMAKE_OSX_DEPLOYMENT_TARGET.html)). |
 | `OFX_CXX_STANDARD` | `CMAKE_CXX_STANDARD`, or 17 | C++ standard of the plug-ins and of the OFX Support library. |
-| `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: [`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh), like the Makefiles' release builds). |
+| `OFX_DEPLOY_BUNDLES` | OFF | Make the installed bundle self-contained (macOS: [`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh)). |
 | `PLUGIN_INSTALLDIR` | `OFX/Plugins` | Where the bundle is installed (relative to `CMAKE_INSTALL_PREFIX`). |
 | `OFX_PLUGIN_RPATH` | empty | Extra install rpath directories of the plug-in (`;`-separated; ignored on Windows). |
 | `OFX_USE_OPENMP` | ON | Link [OpenMP](https://www.openmp.org) when LibRaw's pkg-config file asks for it. |
-| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt), the same as [`tests/Makefile`](tests/Makefile)'s), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load`, `io-icons`, `io-load-installed`, and `io-cmake-unknown-arch`: configuring for a system without an OFX bundle folder, `ARCHDIR`, must fail). See [tests/README.md](tests/README.md). |
-| `IO_TESTS_WITH_LIBRAW` | ON | The tests that link ReadOIIO also build its RAW support, when the bundle has it (`tests/Makefile`'s `WITH_LIBRAW=1`). |
+| `BUILD_TESTING` | ON | Build the test programs of [`tests/`](tests) ([`tests/CMakeLists.txt`](tests/CMakeLists.txt)), with this build's compiler, C++ standard and FFmpeg, and run them with `ctest` (`test-*`, besides `io-load`, `io-icons`, `io-load-installed`, and `io-cmake-unknown-arch`: configuring for a system without an OFX bundle folder, `ARCHDIR`, must fail). See [tests/README.md](tests/README.md). |
+| `IO_TESTS_WITH_LIBRAW` | ON | The tests that link ReadOIIO also build its RAW support, when the bundle has it. |
 | `IO_TESTS_TIMEOUT` | 1800 | Time limit of each `test-*` test, in seconds (`test-ffmpeg`: twice as much), so that a hung test fails. |
-| `IO_TESTS_FUZZ_OPS` | 2000 | Operations of each short fuzz run of `test-ocio-anim` (`tests/Makefile`'s `FUZZ_OPS`). |
-| `IO_TESTS_SANITIZERS` | OFF | Also build and run the ThreadSanitizer, AddressSanitizer and UBSan variants of the tests that `make test` doesn't run (14 tests, `*-tsan`, `*-asan`, `*-ubsan`...: the list is in [`tests/CMakeLists.txt`](tests/CMakeLists.txt) and [tests/README.md](tests/README.md); not with MinGW). CI's `linux-sanitizers` job builds with it and runs 10 of them, those that are reliable against Ubuntu's libraries, which are not built with TSan ([#471](https://github.com/NatronGitHub/openfx-io/issues/471)). |
+| `IO_TESTS_FUZZ_OPS` | 2000 | Operations of each short fuzz run of `test-ocio-anim`. |
+| `IO_TESTS_SANITIZERS` | OFF | Also build and run the ThreadSanitizer, AddressSanitizer and UBSan variants of the tests (14 tests, `*-tsan`, `*-asan`, `*-ubsan`...: the list is in [`tests/CMakeLists.txt`](tests/CMakeLists.txt) and [tests/README.md](tests/README.md); not with MinGW). CI's `linux-sanitizers` job builds with it and runs 10 of them, those that are reliable against Ubuntu's libraries, which are not built with TSan ([#471](https://github.com/NatronGitHub/openfx-io/issues/471)). |
 | `IO_HOSTDEMO_TESTS` | OFF | Build openfx's [Python host](https://github.com/NatronGitHub/openfx/tree/master/HostSupport/examples/python) (the ofxh module: needs Python >= 3.10, [nanobind](https://github.com/wjakob/nanobind) and [NumPy](https://numpy.org); `Python_EXECUTABLE` chooses the Python); `ctest` renders every plug-in of the installed bundle with its hostDemo command line, `ofxhost.hostdemo` (`io-hostdemo`, [`tests/hostdemo/run.sh`](tests/hostdemo/run.sh)), and again in an OFX 1.4-only host, `--ofx14` (`io-hostdemo-ofx14`); it also renders the readers of the installed bundle with render windows partly or entirely out of their RoD (`io-reader-window`, [`tests/hostdemo/reader_window.sh`](tests/hostdemo/reader_window.sh)). Needs `BUILD_TESTING`. |
-
-## Compiling with Makefiles (Linux, FreeBSD, macOS, MSYS2)
-
-The plugins can be compiled by typing in a terminal:
-- `make [options]` to compile as a single combined plugin (see below
-  for valid options).
-- `make nomulti [options]` to compile as separate plugins (useful if
-only a few plugins are needed, for example). `make` can also be
-executed in any plugin's directory.
-
-The most common options are `CONFIG=release` to compile a release
-version, `CONFIG=debug` to compile a debug version. Or
-`CONFIG=relwithdebinfo` to compile an optimized version with debugging
-symbols.
-
-Another common option is `BITS=32` for compiling a 32-bits version,
-`BITS=64` for a 64-bits version, and `BITS=Universal` for a universal
-binary (macOS only).
-
-The libraries are found with [`pkg-config`](https://www.freedesktop.org/wiki/Software/pkg-config/). Other useful variables are `SEEXPR_HOME` (the SeExpr 2.11
-prefix, default `/usr`) and `FFMPEG_PKG_CONFIG_PATH` (as for CMake, above). On macOS, `MACOSX_DEPLOYMENT_TARGET` (default `14.0`; make variable or
-environment variable) is the minimum macOS version of the plug-ins. The Makefiles compile as
-C++17 by default (`-std=c++17`, so plain `make CONFIG=release` works even
-with compilers that default to an older standard, such as Apple clang),
-unless `CXX`, `CXXFLAGS`, `CXXFLAGS_ADD` or `CXXFLAGS_EXTRA` already contains a `-std=`
-option (or set `CXXSTD`). To compile as
-C++20, use e.g. `make CONFIG=release CXXSTD=c++20` (or `CXXSTD=-std=c++20`) or
-`make CONFIG=release CXX="clang++ -std=c++20"`.
-See the file [`Makefile.master`](Makefile.master) in the toplevel directory for other useful
-flags/variables.
-
-The compiled plugins are placed in subdirectories named after the
-configuration, for example `Linux-64-release` for a 64-bits Linux
-compilation. In each of these directories, a `*.bundle` directory is
-created, which has to be moved to the proper place
-(`/usr/OFX/Plugins` on Linux, `/Library/OFX/Plugins` on macOS, or
-`C:\Program Files\Common Files\OFX\Plugins` on Windows), using
-a command like the following, with the *same* options used for
-compiling:
-
-	sudo make install [options]
 
 ## Platform notes
 
@@ -253,8 +212,7 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   Natron's MacPorts tree ([`tools/MacPorts`](https://github.com/NatronGitHub/Natron/tree/RB-2.6/tools/MacPorts) in the
   Natron repository, RB-2.6 branch) and use `SEEXPR_HOME=/opt/local`; CI instead builds SeExpr 2.11 from source with that
   port's patches.
-  The plug-ins target macOS 14.0 (`MACOSX_DEPLOYMENT_TARGET` for the Makefiles,
-  `CMAKE_OSX_DEPLOYMENT_TARGET` for CMake; see Apple's
+  The plug-ins target macOS 14.0 (`CMAKE_OSX_DEPLOYMENT_TARGET`; see Apple's
   [macOS Deployment Target](https://developer.apple.com/documentation/xcode/build-settings-reference#macOS-Deployment-Target)
   setting), as Natron 2.6 does. MacPorts builds its libraries for the build machine's macOS unless the
   `macosx_deployment_target` option (read by [`macports.tcl`](https://github.com/macports/macports-base/blob/master/src/macports1.0/macports.tcl),
@@ -262,12 +220,11 @@ See the [CI workflow](.github/workflows/ci.yml) for the complete package lists a
   check the `minos` of the bundled libraries with `otool -l` (`LC_BUILD_VERSION`); a library that requires a newer macOS
   prevents the plug-ins from loading on older versions. After setting `macosx_deployment_target`, rebuild the installed ports from source
   (`sudo port -s upgrade --force installed`). With `OFX_DEPLOY_BUNDLES`, CMake warns about such libraries, and fails with
-  `-DOFX_DEPLOY_STRICT_MINOS=ON` (recommended for release packages); the Makefile bundles (`osxDeploy.sh`) are not checked.
+  `-DOFX_DEPLOY_STRICT_MINOS=ON` (recommended for release packages).
 - **MS Windows**: build in an [MSYS2](https://www.msys2.org) [UCRT64](https://www.msys2.org/docs/environments/) shell, with the `mingw-w64-ucrt-x86_64-` packages of the
   libraries above. MSYS2 packages SeExpr 2.11 ([`mingw-w64-ucrt-x86_64-seexpr`](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-seexpr)), so `SEEXPR_HOME` is
   `$MINGW_PREFIX`, as a Windows path for CMake (with [Ninja](https://ninja-build.org)):
-  `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")"`,
-  or `make CONFIG=release SEEXPR_HOME="$MINGW_PREFIX"`.
+  `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSEEXPR_HOME="$(cygpath -m "$MINGW_PREFIX")"`.
 
 ## IDE projects
 
@@ -283,7 +240,7 @@ MSVC and Visual Studio projects are not supported.
 
 The tests in [`tests/`](tests) link the plug-in sources with a minimal in-process host and need no OFX host
 application. The CMake build builds them (`BUILD_TESTING`, above), and `ctest` runs them, as CI does:
-`ctest --test-dir build --output-on-failure`. Without CMake: `cd tests; make test`. See
+`ctest --test-dir build --output-on-failure` (or a subset: `ctest --test-dir build -R '^test-ofx-'`). See
 [tests/README.md](tests/README.md).
 
 ### Natron's testing bundles
@@ -329,9 +286,9 @@ done
 ```
 
 [`tools/compare_bundles.sh`](tools/compare_bundles.sh) `BUNDLE_A BUNDLE_B` compares two bundles on Linux or macOS, e.g. the `IO.ofx.bundle`
-built by the Makefiles and the one installed by CMake: file list, `Info.plist`, resources, exported
+of a release and the one installed by a CMake build: file list, `Info.plist`, resources, exported
 symbols, linked libraries and rpaths, and the plug-ins each binary loads. It also checks that each bundle
 is self-contained. Run it without arguments for its options. On macOS, configure CMake with
-`-DOFX_DEPLOY_BUNDLES=ON` for this comparison: the Makefiles' release builds deploy the bundle
+`-DOFX_DEPLOY_BUNDLES=ON` for this comparison: release bundles are deployed
 ([`osxDeploy.sh`](https://github.com/NatronGitHub/openfx/blob/master/Support/include/osxDeploy.sh)), and without that option the bundle installed by CMake is not self-contained, so all
 its libraries differ.

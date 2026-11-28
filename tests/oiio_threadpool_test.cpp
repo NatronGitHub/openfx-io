@@ -24,7 +24,7 @@
  *   - load, render and unload OIIOResize again (the pool is restarted by the instance, stopped by its destruction)
  *   - 8 threads create and destroy OIIOThreadsUser objects (what each OIIO plug-in instance holds) concurrently, and
  *     check that the pool runs while theirs exists; at the end, nothing is alive and the pool is stopped (also built
- *     with ThreadSanitizer: make test-oiio-threads-tsan)
+ *     with ThreadSanitizer: ctest test-oiio-threads-tsan)
  *
  * Exit status: 0 = all checks passed.
  */

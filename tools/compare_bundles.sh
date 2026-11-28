@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compare two OFX plug-in bundles, e.g. the IO.ofx.bundle built by the Makefiles and the one
-# installed by CMake, on Linux or macOS.
+# Compare two OFX plug-in bundles, e.g. the IO.ofx.bundles installed by two CMake builds, on Linux
+# or macOS.
 #
 #   tools/compare_bundles.sh [-k] [-o OUTDIR] BUNDLE_A BUNDLE_B
 #

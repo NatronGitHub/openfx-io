@@ -11,8 +11,8 @@
  * ("flood"), or prints "\r"-only progress output ("cr"), to test abort and the line splitting (#111), or prints the
  * DACL of a directory ("acl"). PowerShell scripts, wsl, CR line endings and the private temporary directory (#126).
  *
- * MS Windows only (RunScript uses RunScriptPosix.h elsewhere): it does not compile on other systems, where tests/Makefile
- * and tests/CMakeLists.txt do not build it (#309).
+ * MS Windows only (RunScript uses RunScriptPosix.h elsewhere): it does not compile on other systems, where
+ * tests/CMakeLists.txt does not build it (#309).
  */
 
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
@@ -766,6 +766,6 @@ main()
 
 #else // !_WIN32
 
-#error "MS Windows only (RunScript uses RunScriptPosix.h elsewhere): tests/Makefile and tests/CMakeLists.txt build it there only (#309)"
+#error "MS Windows only (RunScript uses RunScriptPosix.h elsewhere): tests/CMakeLists.txt builds it there only (#309)"
 
 #endif
